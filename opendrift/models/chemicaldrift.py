@@ -561,31 +561,31 @@ class ChemicalDrift(OceanDrift):
         KOC_sed_updated = np.empty_like(pH_sed)
         KOC_sedcorr= np.empty_like(pH_sed)
 
-        for i in (range(len(pH_sed))):
-            if diss=='acid':
+        if diss=='acid':
+            Phi_n_sed    = 1/(1 + 10**(pH_sed-pKa_acid))
+            Phi_diss_sed = 1-Phi_n_sed
+            KOC_sed_updated = (KOC_sed_n * Phi_n_sed) + (Phi_diss_sed * KOC_sed_diss_acid)
 
-                Phi_n_sed    = 1/(1 + 10**(pH_sed[i]-pKa_acid))
-                Phi_diss_sed = 1-Phi_n_sed
-                KOC_sed_updated[i] = (KOC_sed_n * Phi_n_sed) + (Phi_diss_sed * KOC_sed_diss_acid)
-                KOC_sedcorr[i] = KOC_sed_updated[i]/KOC_sed_initial
+            KOC_sedcorr = KOC_sed_updated/KOC_sed_initial
 
-            elif diss=='base':
+        elif diss=='base':
+            Phi_n_sed    = 1/(1 + 10**(pH_sed-pKa_base))
+            Phi_diss_sed = 1-Phi_n_sed
+            KOC_sed_updated = (KOC_sed_n * Phi_n_sed) + (Phi_diss_sed * KOC_sed_diss_acid)
 
-                Phi_n_sed    = 1/(1 + 10**(pH_sed[i]-pKa_base))
-                Phi_diss_sed = 1-Phi_n_sed
-                KOC_sed_updated[i] = (KOC_sed_n * Phi_n_sed) + (Phi_diss_sed * KOC_sed_diss_acid)
-                KOC_sedcorr[i] = KOC_sed_updated[i]/KOC_sed_initial
+            KOC_sedcorr = KOC_sed_updated/KOC_sed_initial
 
-            elif diss=='amphoter':
+        elif diss=='amphoter':
+            Phi_n_sed      = 1/(1 + 10**(pH_sed-pKa_acid) + 10**(pKa_base))
+            Phi_anion_sed  = Phi_n_sed * 10**(pH_sed-pKa_acid)
+            Phi_cation_sed = Phi_n_sed * 10**(pKa_base-pH_sed)
+            KOC_sed_updated = (KOC_sed_n * Phi_n_sed) + (Phi_anion_sed * KOC_sed_diss_acid) + (Phi_cation_sed * KOC_sed_diss_base)
 
-                Phi_n_sed      = 1/(1 + 10**(pH_sed[i]-pKa_acid) + 10**(pKa_base))
-                Phi_anion_sed  = Phi_n_sed * 10**(pH_sed[i]-pKa_acid)
-                Phi_cation_sed = Phi_n_sed * 10**(pKa_base-pH_sed[i])
+            KOC_sedcorr=KOC_sed_updated/KOC_sed_initial
 
-                KOC_sed_updated[i] = (KOC_sed_n * Phi_n_sed) + (Phi_anion_sed * KOC_sed_diss_acid) + (Phi_cation_sed * KOC_sed_diss_base)
-                KOC_sedcorr[i]=KOC_sed_updated[i]/KOC_sed_initial
 
-            elif diss=='undiss':
+        elif diss=='undiss':
+            for i in (range(len(pH_sed))):
                 KOC_sedcorr[i]=1
 
         return KOC_sedcorr
@@ -601,33 +601,34 @@ class ChemicalDrift(OceanDrift):
         KOC_SPM_updated = np.empty_like(pH_water_SPM)
         KOC_SPMcorr = np.empty_like(pH_water_SPM)
 
-        for i in (range(len(pH_water_SPM))):
-            if diss=='acid':
+        
+        if diss=='acid':
 
-                Phi_n_SPM    = 1/(1 + 10**(pH_water_SPM[i]-pKa_acid))
-                Phi_diss_SPM = 1-Phi_n_SPM
-                KOC_SPM_updated[i] = (KOC_sed_n * Phi_n_SPM) + (Phi_diss_SPM * KOC_sed_diss_acid)
+            Phi_n_SPM    = 1/(1 + 10**(pH_water_SPM-pKa_acid))
+            Phi_diss_SPM = 1-Phi_n_SPM
+            KOC_SPM_updated = (KOC_sed_n * Phi_n_SPM) + (Phi_diss_SPM * KOC_sed_diss_acid)
 
-                KOC_SPMcorr[i]=KOC_SPM_updated[i]/KOC_SPM_initial
+            KOC_SPMcorr=KOC_SPM_updated/KOC_SPM_initial
 
-            elif diss=='base':
+        elif diss=='base':
 
-                Phi_n_SPM    = 1/(1 + 10**(pH_water_SPM[i]-pKa_base))
-                Phi_diss_SPM = 1-Phi_n_SPM
-                KOC_SPM_updated[i] = (KOC_sed_n * Phi_n_SPM) + (Phi_diss_SPM * KOC_sed_diss_acid)
+            Phi_n_SPM    = 1/(1 + 10**(pH_water_SPM-pKa_base))
+            Phi_diss_SPM = 1-Phi_n_SPM
+            KOC_SPM_updated = (KOC_sed_n * Phi_n_SPM) + (Phi_diss_SPM * KOC_sed_diss_acid)
 
-                KOC_SPMcorr[i]=KOC_SPM_updated[i]/KOC_SPM_initial
+            KOC_SPMcorr=KOC_SPM_updated/KOC_SPM_initial
 
-            elif diss=='amphoter':
+        elif diss=='amphoter':
 
-                Phi_n_SPM      = 1/(1 + 10**(pH_water_SPM[i]-pKa_acid) + 10**(pKa_base))
-                Phi_anion_SPM  = Phi_n_SPM * 10**(pH_water_SPM[i]-pKa_acid)
-                Phi_cation_SPM = Phi_n_SPM * 10**(pKa_base-pH_water_SPM[i])
-                KOC_SPM_updated[i] = (KOC_sed_n * Phi_n_SPM) + (Phi_anion_SPM * KOC_sed_diss_acid) + (Phi_cation_SPM * KOC_sed_diss_base)
+            Phi_n_SPM      = 1/(1 + 10**(pH_water_SPM-pKa_acid) + 10**(pKa_base))
+            Phi_anion_SPM  = Phi_n_SPM * 10**(pH_water_SPM-pKa_acid)
+            Phi_cation_SPM = Phi_n_SPM * 10**(pKa_base-pH_water_SPM)
+            KOC_SPM_updated = (KOC_sed_n * Phi_n_SPM) + (Phi_anion_SPM * KOC_sed_diss_acid) + (Phi_cation_SPM * KOC_sed_diss_base)
 
-                KOC_SPMcorr[i]=KOC_SPM_updated[i]/KOC_SPM_initial
+            KOC_SPMcorr=KOC_SPM_updated/KOC_SPM_initial
 
-            elif diss=='undiss':
+        elif diss=='undiss':
+            for i in (range(len(pH_water_SPM))):
                 KOC_SPMcorr[i]=1
 
         return KOC_SPMcorr
@@ -641,32 +642,32 @@ class ChemicalDrift(OceanDrift):
         KOC_DOM_updated = np.empty_like(pH_water_DOM)
         KOC_DOMcorr = np.empty_like(pH_water_DOM)
 
-        for i in (range(len(pH_water_DOM))):
-            if diss=='acid':
+        if diss=='acid':
 
-                Phi_n_DOM    = 1/(1 + 10**(pH_water_DOM[i]-pKa_acid))
-                Phi_diss_DOM    = 1-Phi_n_DOM
-                KOC_DOM_updated[i] = (0.08 * ((Phi_n_DOM*(KOC_DOM_n)) + ((1 - Phi_diss_DOM)*10**(np.log10(KOW)-3.5))))/0.526 # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
+            Phi_n_DOM    = 1/(1 + 10**(pH_water_DOM-pKa_acid))
+            Phi_diss_DOM    = 1-Phi_n_DOM
+            KOC_DOM_updated = (0.08 * ((Phi_n_DOM*(KOC_DOM_n)) + ((1 - Phi_diss_DOM)*10**(np.log10(KOW)-3.5))))/0.526 # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
 
-                KOC_DOMcorr[i]=KOC_DOM_updated[i]/KOC_DOM_initial
+            KOC_DOMcorr=KOC_DOM_updated/KOC_DOM_initial
 
-            elif diss=='base':
+        elif diss=='base':
 
-                Phi_n_DOM    = 1/(1 + 10**(pH_water_DOM[i]-pKa_base))
-                Phi_diss_DOM    = 1-Phi_n_DOM
-                KOC_DOM_updated[i] = (0.08 * ((Phi_n_DOM*(KOC_DOM_n)) + ((1 - Phi_diss_DOM)*10**(np.log10(KOW)-3.5))))/0.526 # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
+            Phi_n_DOM    = 1/(1 + 10**(pH_water_DOM-pKa_base))
+            Phi_diss_DOM    = 1-Phi_n_DOM
+            KOC_DOM_updated = (0.08 * ((Phi_n_DOM*(KOC_DOM_n)) + ((1 - Phi_diss_DOM)*10**(np.log10(KOW)-3.5))))/0.526 # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
 
-                KOC_DOMcorr[i]=KOC_DOM_updated[i]/KOC_DOM_initial
+            KOC_DOMcorr=KOC_DOM_updated/KOC_DOM_initial
 
-            elif diss=='amphoter':
+        elif diss=='amphoter':
 
-                Phi_n_DOM      = 1/(1 + 10**(pH_water_DOM[i]-pKa_acid) + 10**(pKa_base))
-                Phi_diss_DOM   = 1-Phi_n_DOM
-                KOC_DOM_updated[i] = (0.08 * ((Phi_n_DOM*(KOC_DOM_n)) + ((1 - Phi_diss_DOM)*10**(np.log10(KOW)-3.5))))/0.526 # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
-                KOC_DOMcorr[i]=KOC_DOM_updated[i]/KOC_DOM_initial
+            Phi_n_DOM      = 1/(1 + 10**(pH_water_DOM-pKa_acid) + 10**(pKa_base))
+            Phi_diss_DOM   = 1-Phi_n_DOM
+            KOC_DOM_updated = (0.08 * ((Phi_n_DOM*(KOC_DOM_n)) + ((1 - Phi_diss_DOM)*10**(np.log10(KOW)-3.5))))/0.526 # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
+            KOC_DOMcorr=KOC_DOM_updated/KOC_DOM_initial
 
-            elif diss=='undiss':
-                    KOC_DOMcorr[i]=1
+        elif diss=='undiss':
+            for i in (range(len(pH_water_DOM))):
+                KOC_DOMcorr[i]=1
 
         return KOC_DOMcorr
 
@@ -2506,7 +2507,7 @@ class ChemicalDrift(OceanDrift):
         return Emission_factors
         # TODO: Add emission uncertainty based on 95% confidence interval
 
-    def seed_from_STEAM(self, steam, lowerbound=0, higherbound=np.inf, radius=0, scrubber_type="open_loop", chemical_compound="Copper", mass_element_ug=100e3, number_of_elements=None, **kwargs):
+    def seed_from_STEAM(self, steam, lowerbound=0, higherbound=np.inf, radius=0, scrubber_type="open_loop", chemical_compound="Copper", mass_element_ug=100e3, number_of_elements=None, origin_marker=1, **kwargs):
             """Seed elements based on a dataarray with STEAM emission data
     
             Arguments:
@@ -2557,7 +2558,7 @@ class ChemicalDrift(OceanDrift):
                     z = -1*np.random.uniform(0, 1, number)
                     self.seed_elements(lon=lo[i]*np.ones(number), lat=la[i]*np.ones(number),
                                 radius=radius, number=number, time=time,
-                                mass=mass_element_ug,mass_degraded=0,mass_volatilized=0, z=z, origin_marker=1)
+                                mass=mass_element_ug,mass_degraded=0,mass_volatilized=0, z=z, origin_marker=origin_marker)
 
                 mass_residual = mass_ug - number*mass_element_ug
 
@@ -2565,7 +2566,7 @@ class ChemicalDrift(OceanDrift):
                     z = -1*np.random.uniform(0, 1, 1)
                     self.seed_elements(lon=lo[i], lat=la[i],
                                 radius=radius, number=1, time=time,
-                                mass=mass_residual,mass_degraded=0,mass_volatilized=0, z=z, origin_marker=1)
+                                mass=mass_residual,mass_degraded=0,mass_volatilized=0, z=z, origin_marker=origin_marker)
 
     def init_chemical_compound(self, chemical_compound = None):
         ''' Chemical parameters for a selection of PAHs:
