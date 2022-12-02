@@ -584,6 +584,7 @@ class ChemicalDrift(OceanDrift):
             KOC_sedcorr=KOC_sed_updated/KOC_sed_initial
 
 
+
         elif diss=='undiss':
             for i in (range(len(pH_sed))):
                 KOC_sedcorr[i]=1
@@ -2438,9 +2439,9 @@ class ChemicalDrift(OceanDrift):
             "Naphthalene":              [50.6,   34.3],
             "Phenanthrene":             [3.67,   2.51],
             "Fluoranthene":             [0.60,   0.96],
-            "Benzo(a)anthracene":       [0.10,   0.18],
-            "Benzo(a)pyrene":           [0.10,   0.15],
-            "Dibenzo(a,h)anthracene":   [0.02,   0.01],
+            "Benzo-a-anthracene":       [0.10,   0.18],
+            "Benzo-a-pyrene":           [0.10,   0.15],
+            "Dibenzo-ah-anthracene":   [0.02,   0.01],
             #
             "Acenaphthylene":           [0.29,   0.17],
             "Acenaphthene":             [1.42,   0.86],
@@ -2448,10 +2449,10 @@ class ChemicalDrift(OceanDrift):
             "Anthracene":               [0.22,   0.14],
             "Pyrene":                   [1.23,   1.33],
             "Chrysene":                 [0.17,   0.25],
-            "Benzo(b)fluoranthene":     [0.09,   0.13],
-            "Benzo(k)fluoranthene":     [0.03,   0.00],
-            "Indeno(1,2,3-cd)pyrene":   [0.05,   0.06],
-            "Benzo(ghi)perylene":       [0.13,   0.16],
+            "Benzo-b-fluoranthene":     [0.09,   0.13],
+            "Benzo-k-fluoranthene":     [0.03,   0.00],
+            "Indeno-123-cd-pyrene":   [0.05,   0.06],
+            "Benzo-ghi-perylene":       [0.13,   0.16],
          }
 
         emission_factors_sewage_water = {
