@@ -710,7 +710,6 @@ class ChemicalDrift(OceanDrift):
                 raise ValueError("pKa_acid must be positive")
                 # print("pKa_acid must be positive")
                 # UserWarning(("pKa_acid must be positive"))
-
             else:
                 pass
 
@@ -719,7 +718,6 @@ class ChemicalDrift(OceanDrift):
                 raise ValueError("pKa_base must be positive")
                 # print("pKa_base must be positive")
                 # UserWarning(("pKa_base must be positive"))
-
             else:
                 pass
 
@@ -1673,7 +1671,6 @@ class ChemicalDrift(OceanDrift):
             MolWt=self.get_config('chemical:transformations:MolWt')
             wind=5                  # (m/s) (to read from atmosferic forcing)
             mixedlayerdepth=50      # m     (to read from ocean forcing)
-            Undiss_n=1              # 1 for PAHs
 
             Henry=self.get_config('chemical:transformations:Henry') # (atm m3/mol)
 
@@ -1686,8 +1683,25 @@ class ChemicalDrift(OceanDrift):
             DH_Slb=self.get_config('chemical:transformations:DeltaH_Solub')
 
             R=8.206e-05 #(atm m3)/(mol K)
+            
+            diss = self.get_config('chemical:transformations:dissociation')
 
-            mixedlayerdepth = self.environment.ocean_mixed_layer_thickness
+            pKa_acid   = self.get_config('chemical:transformations:pKa_acid')
+            if pKa_acid < 0 and diss!='nondiss':
+                raise ValueError("pKa_acid must be positive")
+            else:
+                pass
+
+            pKa_base   = self.get_config('chemical:transformations:pKa_base')
+            if pKa_base < 0 and diss!='nondiss':
+                raise ValueError("pKa_base must be positive")
+            else:
+                pass
+
+            if diss == 'amphoter' and abs(pKa_acid - pKa_base) < 2:
+                raise ValueError("pKa_base and pKa_acid must differ of at least two units")
+            else:
+                pass
 
             # mask of dissolved elements within mixed layer
             W =     (self.elements.specie == self.num_lmm) \
@@ -1695,6 +1709,7 @@ class ChemicalDrift(OceanDrift):
                     # does volatilization apply only to num_lmm?
                     # check
 
+            mixedlayerdepth = self.environment.ocean_mixed_layer_thickness
             mixedlayerdepth = mixedlayerdepth[W]
 
             T=self.environment.sea_water_temperature[W]
@@ -1712,6 +1727,19 @@ class ChemicalDrift(OceanDrift):
 
             # Calculate mass transfer coefficient water side
             # Schwarzenbach et al., 2016 Eq.(19-20)
+
+            pH_water=self.environment.sea_water_ph_reported_on_total_scale[W]
+
+            if diss=='nondiss':
+                Undiss_n=1              # 1 for PAHs
+
+            elif diss=='acid' or diss=='base':
+                # Only undissociated chemicals volatilize
+                Undiss_n = 1/(1 + 10**(pH_water-pKa_acid))
+
+            elif diss=='amphoter':
+                # Only undissociated chemicals volatilize # This approach ignores the zwitterionic fraction. 10.1002/etc.115
+                Undiss_n = 1/(1 + 10**(pH_water-pKa_acid) + 10**(pKa_base))
 
             MTCw = ((9e-4)+(7.2e-6*wind**3)) * (MolWtCO2/MolWt)**0.25 / Undiss_n
 
@@ -2360,6 +2388,7 @@ class ChemicalDrift(OceanDrift):
             "Nitrite":                  [760.,     680.],
             "Ammonium":                 [730.,     30.],
             "Sulphur":                  [2200000., 446000.],
+            "Nitrogen":                 [1400., 0.0],
             }
 
         emission_factors_closed_loop = {
@@ -2400,6 +2429,7 @@ class ChemicalDrift(OceanDrift):
             "Nitrite":                  [55760.,    55000.],
             "Ammonium":                 [0.,        0.],
             "Sulphur":                  [12280000., 10104000.],
+            "Nitrogen":                 [42030., 0.0],
             }
 
         emission_factors_grey_water = {
