@@ -1733,9 +1733,13 @@ class ChemicalDrift(OceanDrift):
             if diss=='nondiss':
                 Undiss_n=1              # 1 for PAHs
 
-            elif diss=='acid' or diss=='base':
+            elif diss=='acid':
                 # Only undissociated chemicals volatilize
                 Undiss_n = 1/(1 + 10**(pH_water-pKa_acid))
+                
+            elif diss=='base':
+                # Dissociation in water
+                Undiss_n    = 1/(1 + 10**(pH_water-pKa_base))
 
             elif diss=='amphoter':
                 # Only undissociated chemicals volatilize # This approach ignores the zwitterionic fraction. 10.1002/etc.115
