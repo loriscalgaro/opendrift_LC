@@ -1730,7 +1730,7 @@ class ChemicalDrift(OceanDrift):
             DH_Slb=self.get_config('chemical:transformations:DeltaH_Solub')
 
             R=8.206e-05 #(atm m3)/(mol K)
-            
+
             diss = self.get_config('chemical:transformations:dissociation')
 
             pKa_acid   = self.get_config('chemical:transformations:pKa_acid')
@@ -1783,16 +1783,16 @@ class ChemicalDrift(OceanDrift):
             elif diss=='acid':
                 # Only undissociated chemicals volatilize
                 Undiss_n = 1/(1 + 10**(pH_water-pKa_acid))
-                
+
             elif diss=='base':
                 # Dissociation in water
-                Undiss_n    = 1/(1 + 10**(pH_water-pKa_base))
+                Undiss_n = 1/(1 + 10**(pH_water-pKa_base))
 
             elif diss=='amphoter':
                 # Only undissociated chemicals volatilize # This approach ignores the zwitterionic fraction. 10.1002/etc.115
                 Undiss_n = 1/(1 + 10**(pH_water-pKa_acid) + 10**(pKa_base))
 
-            MTCw = ((9e-4)+(7.2e-6*wind**3)) * (MolWtCO2/MolWt)**0.25 / Undiss_n
+            MTCw = (((9e-4)+(7.2e-6*wind**3)) * (MolWtCO2/MolWt)**0.25) * Undiss_n
 
             # Calculate mass transfer coefficient air side
             # Schwarzenbach et al., 2016 Eq.(19-17)(19-18)(19-19)
