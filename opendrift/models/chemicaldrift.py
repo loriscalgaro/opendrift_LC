@@ -2516,13 +2516,14 @@ class ChemicalDrift(OceanDrift):
             "Nitrite":                  [55760.,   55000.],
             "Ammonium":                 [0.,     0.],
             "Sulphur":                  [12280000., 10104000.],
+            "Nitrogen":                 [42047., 39335.],
             #
             "Naphthalene":              [50.6,   34.3],
             "Phenanthrene":             [3.67,   2.51],
             "Fluoranthene":             [0.60,   0.96],
             "Benzo-a-anthracene":       [0.10,   0.18],
             "Benzo-a-pyrene":           [0.10,   0.15],
-            "Dibenzo-ah-anthracene":   [0.02,   0.01],
+            "Dibenzo-ah-anthracene":    [0.02,   0.01],
             #
             "Acenaphthylene":           [0.29,   0.17],
             "Acenaphthene":             [1.42,   0.86],
@@ -2532,7 +2533,7 @@ class ChemicalDrift(OceanDrift):
             "Chrysene":                 [0.17,   0.25],
             "Benzo-b-fluoranthene":     [0.09,   0.13],
             "Benzo-k-fluoranthene":     [0.03,   0.00],
-            "Indeno-123-cd-pyrene":   [0.05,   0.06],
+            "Indeno-123-cd-pyrene":     [0.05,   0.06],
             "Benzo-ghi-perylene":       [0.13,   0.16],
          }
 
@@ -2549,7 +2550,7 @@ class ChemicalDrift(OceanDrift):
             "Selenium":                 [43.7,   18.3],
             "Zinc":                     [395.,   174.],
             #
-            "Nitrogen":                  [430.,  0.],
+            "Nitrogen":                 [430.,  0.],
          }
 
         emission_factors_AFP = {
