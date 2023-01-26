@@ -142,6 +142,9 @@ class ChemicalDrift(OceanDrift):
                 'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:particle_diameter': {'type': 'float', 'default': 5e-6,
                 'min': 0, 'max': 100e-6, 'units': 'm',
+                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': 'Diameter of DOM aggregates for marine water'}, # https://doi.org/10.1038/246170a0
+            'chemical:doc_particle_diameter': {'type': 'float', 'default': 5e-6,
+                'min': 0, 'max': 100e-6, 'units': 'm',
                 'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             'chemical:particle_concentration_half_depth': {'type': 'float', 'default': 20,
                 'min': 0, 'max': 100, 'units': 'm',
@@ -328,12 +331,12 @@ class ChemicalDrift(OceanDrift):
                 'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:buried_leaking_rate': {'type': 'float', 'default': 0,
                 'min': 0, 'max': 10, 'units': 'm/year',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': self.CONFIG_LEVEL_ADVANCED, 'description': 'rate of resuspension of buried sediments'},
             #
             'chemical:compound': {'type': 'enum',
                 'enum': ['Naphthalene','Phenanthrene','Fluoranthene',
                          'Benzo-a-anthracene','Benzo-a-pyrene','Dibenzo-ah-anthracene',
-                         'Copper','Cadmium','Chromium','Lead','Vanadium','Zinc','Nickel',None],
+                         'Copper','Cadmium','Chromium','Lead','Vanadium','Zinc','Nickel','Nitrogen',None],
                 'default': None,
                 'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             })
@@ -1221,27 +1224,25 @@ class ChemicalDrift(OceanDrift):
                 DOM = (self.elements.specie == self.num_humcol)
 
                 pH_sed = self.environment.pH_sediment[S]
-                # pH_sed[pH_sed==0]=np.median(pH_sed)
+                pH_sed[pH_sed==0]=np.median(pH_sed)
 
                 pH_water_SPM=self.environment.sea_water_ph_reported_on_total_scale[SPM]
-                # pH_water_SPM[pH_water_SPM==0]=np.median(TW)
+                pH_water_SPM[pH_water_SPM==0]=np.median(pH_water_SPM)
 
                 pH_water_DOM=self.environment.sea_water_ph_reported_on_total_scale[DOM]
-                # pH_water_DOM[pH_water_DOM==0]=np.median(pH_water_DOM)
+                pH_water_DOM[pH_water_DOM==0]=np.median(pH_water_DOM)
 
                 pKa_acid   = self.get_config('chemical:transformations:pKa_acid')
                 if pKa_acid < 0:
                     raise ValueError("pKa_acid must be positive")
-                    # print("pKa_acid must be positive")
-                    # UserWarning(("pKa_acid must be positive"))
+
                 else:
                     pass
 
                 pKa_base   = self.get_config('chemical:transformations:pKa_base')
                 if pKa_base < 0:
                     raise ValueError("pKa_base must be positive")
-                    # print("pKa_base must be positive")
-                    # UserWarning(("pKa_base must be positive"))
+
                 else:
                     pass
 
@@ -1517,6 +1518,7 @@ class ChemicalDrift(OceanDrift):
 
 
         dia_part=self.get_config('chemical:particle_diameter')
+        dia_DOM_part=self.get_config('chemical:doc_particle_diameter')
         dia_diss=self.get_config('chemical:dissolved_diameter')
 
 
@@ -1525,7 +1527,7 @@ class ChemicalDrift(OceanDrift):
 
         # TODO Choose a proper diameter for aggregated particles
         if self.get_config('chemical:species:Humic_colloid'):
-            self.elements.diameter[(sp_out==self.num_prev) & (sp_in==self.num_humcol)] = dia_part/2
+            self.elements.diameter[(sp_out==self.num_prev) & (sp_in==self.num_humcol)] = dia_DOM_part
 
         logger.debug('Updated particle diameter for %s elements' % len(self.elements.diameter[(sp_out==self.num_prev) & (sp_in!=self.num_prev)]))
 
@@ -1947,12 +1949,20 @@ class ChemicalDrift(OceanDrift):
                                               horizontal_smoothing=False,
                                               smoothing_cells=0,
                                               reader_sea_depth=None,
-                                              ):
+                                              landmask_shapefile=None):
         '''Write netCDF file with map of Chemical species densities and concentrations'''
 
         from netCDF4 import Dataset, date2num #, stringtochar
 
-        if 'global_landmask' not in self.readers.keys():
+        if landmask_shapefile is not None:
+            if 'shape' in self.readers.keys():
+                # removing previously stored landmask
+                del self.readers['shape']
+            # Adding new landmask
+            from opendrift.readers import reader_shape
+            custom_landmask = reader_shape.Reader.from_shpfiles(landmask_shapefile)
+            self.add_reader(custom_landmask)
+        elif 'global_landmask' not in self.readers.keys():
             from opendrift.readers import reader_global_landmask
             global_landmask = reader_global_landmask.Reader()
             self.add_reader(global_landmask)
@@ -2038,8 +2048,10 @@ class ChemicalDrift(OceanDrift):
         lat_array = (lat_array[:-1,:-1] + lat_array[1:,1:])/2
 
         landmask = np.zeros_like(H[0,0,0,:,:])
-        #landmask = self.readers['shape'].__on_land__(lon_array,lat_array)
-        landmask = self.readers['global_landmask'].__on_land__(lon_array,lat_array)
+        if landmask_shapefile is not None:
+            landmask = self.readers['shape'].__on_land__(lon_array,lat_array)
+        else:
+            landmask = self.readers['global_landmask'].__on_land__(lon_array,lat_array)
         Landmask=np.zeros_like(H)
         for zi in range(len(z_array)-1):
             for sp in range(self.nspecies):
@@ -2586,6 +2598,8 @@ class ChemicalDrift(OceanDrift):
             Emission_factors = 1e9  # 1kg = 1e9 ug: N_sewage is expressed as kg
         elif scrubber_type=="N_foodwaste": # Nitrogen from foodwaste
             Emission_factors = 1e9  # 1kg = 1e9 ug: N_sewage is expressed as kg
+        elif scrubber_type=="N_NOx": # Nitrogen from engine's NOx emissions
+            Emission_factors = 1e9*(14.0067/46.005) # 1kg = 1e9 ug: NOx is expressed in kg, then tranformed to kg of nitrogen # MW of NOx: 46.005 g/mol # https://www.epa.gov/air-emissions-inventories/how-are-oxides-nitrogen-nox-defined-nei
 
         return Emission_factors
         # TODO: Add emission uncertainty based on 95% confidence interval
@@ -2650,6 +2664,125 @@ class ChemicalDrift(OceanDrift):
                     self.seed_elements(lon=lo[i], lat=la[i],
                                 radius=radius, number=1, time=time,
                                 mass=mass_residual,mass_degraded=0,mass_volatilized=0, z=z, origin_marker=origin_marker)
+                    
+    def seed_from_NETCDF(self, NETCDF_data, mode = 'water_conc', lon_resol= 0.05, lat_resol = 0.05, lowerbound=0, higherbound=np.inf, radius=0, scrubber_type="open_loop", chemical_compound="Copper", mass_element_ug=100e3, number_of_elements=None, origin_marker=1, **kwargs):
+            """Seed elements based on a dataarray with STEAM emission data
+    
+            Arguments:
+                NETCDF_data: dataarray with concentration or emission data, with coordinates
+                    * latitude   (latitude) float32
+                    * longitude  (longitude) float32
+                    * time       (time) datetime64[ns]
+                mode: water_conc (seed from concentration in water colums), sed_conc (seed from sediment concentration), emission (seed from load)
+                radius:             scalar, unit: meters
+                lowerbound:         scalar, elements with lower values are discarded
+                higherbound:        scalar, elements with higher values are discarded
+                number_of_elements: scalar, number of elements created for each gridpoint
+                mass_element_ug:    scalar, maximum mass of elements if number_of_elements is not specificed
+                lon_resol:     scalar, longitude resolution of the NETCDF dataset
+                lat_resol:     scalar, latitude resolution of the NETCDF dataset
+                
+            """
+            if chemical_compound is None:
+                chemical_compound = self.get_config('chemical:compound')
+
+            #mass_element_ug=1e3      # 1e3 - 1 element is 1mg chemical
+            #mass_element_ug=20e3      # 100e3 - 1 element is 100mg chemical
+            #mass_element_ug=100e3      # 100e3 - 1 element is 100mg chemical
+            #mass_element_ug=1e6     # 1e6 - 1 element is 1g chemical
+            
+            
+            sel=np.where((NETCDF_data > lowerbound) & (NETCDF_data < higherbound))
+            t=NETCDF_data.time[sel[0]].data
+            lo=NETCDF_data.latitude[sel[1]].data # give position for seeding
+            la=NETCDF_data.longitude[sel[2]].data # give position for seeding
+            lon_array=lo + lon_resol/2 # find center of pixel for volume of water / sediments
+            lat_array=la + lat_resol/2# find center of pixel for volume of water / sediments
+
+
+            pixel_mean_depth  =  self.get_pixel_mean_depth(lon_array, lat_array)
+
+            data=np.array(NETCDF_data.data)
+
+            lon_grid_m = 6.371e6*(np.cos(2*(np.pi)*lo/360))*lon_resol*(2*np.pi)/360 # 6.371e6: radius of Earth in m
+            lat_grid_m = 6.371e6*la*(2*np.pi)/360
+
+            if mode == 'water_conc':
+
+                pixel_volume = np.zeros_like(sel[0,0,:])
+                for zi,zz in enumerate(pixel_mean_depth[:-1]):
+                    topotmp = -pixel_mean_depth.copy()
+                    topotmp[np.where(topotmp < zz)] = zz
+                    topotmp = pixel_mean_depth[zi+1] - topotmp
+                    topotmp[np.where(topotmp < .1)] = 0.
+        
+                    pixel_volume[zi,:,:] = topotmp * (lon_grid_m*lat_grid_m)
+
+                pixel_volume[np.where(pixel_volume==0.)] = np.nan
+                
+                if number_of_elements is not None:
+                    
+                    for i in range(0,t.size):
+                        # concentration is ug/L, volume is m: m3 * 1e3 = L
+                        mass_element_ug =(data[sel][i] * (pixel_volume[i]*1e3)) / number_of_elements
+                        number=number_of_elements.astype('int')
+
+
+                        time = datetime.utcfromtimestamp((t[i] - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's'))
+
+                    if mass_element_ug>0:
+                        z = -1*np.random.uniform(0, 1, number)
+                        self.seed_elements(lon=lo[i]*np.ones(number), lat=la[i]*np.ones(number),
+                                    radius=radius, number=number, time=time,
+                                    mass=mass_element_ug,mass_degraded=0,mass_volatilized=0, z=z, origin_marker=origin_marker)
+
+                for i in range(0,t.size):
+                    mass_ug= (data[sel][i] * (pixel_volume[i]*1e3))
+                    number=np.ceil(np.array(mass_ug / mass_element_ug)).astype('int')
+
+                    time = datetime.utcfromtimestamp((t[i] - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's'))
+
+                    if number>0:
+                        z = -1*np.random.uniform(0, 1, number)
+                        self.seed_elements(lon=lo[i]*np.ones(number), lat=la[i]*np.ones(number),
+                                    radius=radius, number=number, time=time,
+                                    mass=mass_element_ug,mass_degraded=0,mass_volatilized=0, z=z, origin_marker=origin_marker)
+
+                    mass_residual = mass_ug - number*mass_element_ug
+
+                    if mass_residual>0 and number_of_elements is None:
+                        z = -1*np.random.uniform(0, 1, 1)
+                        self.seed_elements(lon=lo[i], lat=la[i],
+                                    radius=radius, number=1, time=time,
+                                    mass=mass_residual,mass_degraded=0,mass_volatilized=0, z=z, origin_marker=origin_marker)
+                
+
+            if mode == 'sed_conc':
+
+                pixel_volume = np.zeros_like(sel[0,0,:])
+                pixel_volume = self.get_config('chemical.sediment:mixing_depth') * (lon_grid_m*lat_grid_m)
+
+
+
+
+
+
+
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
 
     def init_chemical_compound(self, chemical_compound = None):
         ''' Chemical parameters for a selection of PAHs:
@@ -2910,6 +3043,14 @@ class ChemicalDrift(OceanDrift):
 #
 # Merlin Expo Kd values are mean values from Allison and Allison 2005
 # https://cfpub.epa.gov/si/si_public_record_report.cfm?dirEntryId=135783
+
+        elif self.get_config('chemical:compound') == "Nitrogen":
+            self.set_config('chemical:transfer_setup','metals')
+            self.set_config('chemical:transformations:Kd', 0)               # Nitrogen does not interact with particulate matter or sediments
+            self.set_config('chemical:transformations:S0', 17.0)            #
+
+
+
 
     def plot_mass(self,
                   legend=['dissolved','SPM','sediment'],
