@@ -2665,7 +2665,7 @@ class ChemicalDrift(OceanDrift):
                                 radius=radius, number=1, time=time,
                                 mass=mass_residual,mass_degraded=0,mass_volatilized=0, z=z, origin_marker=origin_marker)
                     
-    def seed_from_NETCDF(self, NETCDF_data, mode = 'water_conc', lon_resol= 0.05, lat_resol = 0.05, lowerbound=0, higherbound=np.inf, radius=0, scrubber_type="open_loop", chemical_compound="Copper", mass_element_ug=100e3, number_of_elements=None, origin_marker=1, **kwargs):
+    def seed_from_NETCDF(self, NETCDF_data, mode = 'water_conc', lon_resol= 0.05, lat_resol = 0.05, lowerbound=0, higherbound=np.inf, radius=0, scrubber_type="open_loop", chemical_compound="Copper", mass_element_ug=100e3, number_of_elements=None, number_of_elements_max=None, origin_marker=1, **kwargs):
             """Seed elements based on a dataarray with STEAM emission data
     
             Arguments:
@@ -2677,7 +2677,8 @@ class ChemicalDrift(OceanDrift):
                 radius:             scalar, unit: meters
                 lowerbound:         scalar, elements with lower values are discarded
                 higherbound:        scalar, elements with higher values are discarded
-                number_of_elements: scalar, number of elements created for each gridpoint
+                number_of_elements: scalar, number of elements created for each gridpoint 
+                number_of_elements_max: scalar, approximate number of ements to be created in the simulation # TODO add this mode to the function
                 mass_element_ug:    scalar, maximum mass of elements if number_of_elements is not specificed
                 lon_resol:     scalar, longitude resolution of the NETCDF dataset
                 lat_resol:     scalar, latitude resolution of the NETCDF dataset
@@ -2720,13 +2721,13 @@ class ChemicalDrift(OceanDrift):
 
                 pixel_volume[np.where(pixel_volume==0.)] = np.nan
                 
+# Mode with number of elements fixed for each grid point
                 if number_of_elements is not None:
                     
                     for i in range(0,t.size):
                         # concentration is ug/L, volume is m: m3 * 1e3 = L
-                        mass_element_ug =(data[sel][i] * (pixel_volume[i]*1e3)) / number_of_elements
+                        mass_element_ug = (data[sel][i] * (pixel_volume[i]*1e3)) / number_of_elements
                         number=number_of_elements.astype('int')
-
 
                         time = datetime.utcfromtimestamp((t[i] - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's'))
 
@@ -2735,7 +2736,10 @@ class ChemicalDrift(OceanDrift):
                         self.seed_elements(lon=lo[i]*np.ones(number), lat=la[i]*np.ones(number),
                                     radius=radius, number=number, time=time,
                                     mass=mass_element_ug,mass_degraded=0,mass_volatilized=0, z=z, origin_marker=origin_marker)
+                else:
+                    pass
 
+# Mode with number of elements for each grid cell decided based on a max value value of mass
                 for i in range(0,t.size):
                     mass_ug= (data[sel][i] * (pixel_volume[i]*1e3))
                     number=np.ceil(np.array(mass_ug / mass_element_ug)).astype('int')
@@ -2755,13 +2759,61 @@ class ChemicalDrift(OceanDrift):
                         self.seed_elements(lon=lo[i], lat=la[i],
                                     radius=radius, number=1, time=time,
                                     mass=mass_residual,mass_degraded=0,mass_volatilized=0, z=z, origin_marker=origin_marker)
+                        
+# Mode with number of elements for the simulation specified, then the mean mass of an element to be used "mass_element_ug" will be calculated
+# Start unverified draft
+                total_mass = np.sum((data[sel] * (pixel_volume[sel]*1e3))) # TODO Verify this
+                mass_element_ug = total_mass / number_of_elements_max
+                mass_element_ug_0 = total_mass / number_of_elements_max
                 
+                number=np.ceil(np.array(mass_ug / mass_element_ug_0)).astype('int')
+                mass_element_ug=mass_ug/number
+
+                time = datetime.utcfromtimestamp((t[i] - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's'))
+
+                if number>0:
+                    z = -1*np.random.uniform(0, 1, number)
+                    self.seed_elements(lon=lo[i]*np.ones(number), lat=la[i]*np.ones(number),
+                                radius=radius, number=number, time=time,
+                                mass=mass_element_ug,mass_degraded=0,mass_volatilized=0, z=z, origin_marker=origin_marker)
+
+                mass_residual = mass_ug - number*mass_element_ug
+
+                if mass_residual>0 and number_of_elements is None:
+                    z = -1*np.random.uniform(0, 1, 1)
+                    self.seed_elements(lon=lo[i], lat=la[i],
+                                radius=radius, number=1, time=time,
+                                mass=mass_residual,mass_degraded=0,mass_volatilized=0, z=z, origin_marker=origin_marker)
+# End unverified draft
+
+
+
 
             if mode == 'sed_conc':
+                
+                
+                sed_porosity = self.get_config('chemical.sediment:porosity') # fraction of sediment volume made of water
+                sed_density_dry = self.get_config('chemical.sediment:density') # kg/m3 d.w.
+                sed_density_wet = ((sed_density_dry * (1-sed_porosity)) * 1e-3) # kg/L wet weight, kg/m3 * 1e-3 = kg/L 
+                
+                # sed_conc_ug_kg is ug/kg d.w. (dry weight)
+                
+                data=np.array(NETCDF_data.data)
+                data=((data*(1-sed_porosity)) * sed_density_wet)# from ug/kg d.w. -> ug/kg wet weight ->ug/L wet sediment
+                
 
                 pixel_volume = np.zeros_like(sel[0,0,:])
-                pixel_volume = self.get_config('chemical.sediment:mixing_depth') * (lon_grid_m*lat_grid_m)
-
+                pixel_volume = self.get_config('chemical.sediment:mixing_depth') * (lon_grid_m*lat_grid_m)                
+                
+                
+                
+                # mass_ug= (data[sel][i] * (pixel_volume[i]*1e3))
+                
+            if mode == 'emission':
+                
+                # TODO Here emission data is in kg. There is no need to estimate volume of cell
+                
+                    
 
 
 
