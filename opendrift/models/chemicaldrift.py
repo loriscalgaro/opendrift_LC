@@ -2786,9 +2786,6 @@ class ChemicalDrift(OceanDrift):
                                 mass=mass_residual,mass_degraded=0,mass_volatilized=0, z=z, origin_marker=origin_marker)
 # End unverified draft
 
-
-
-
             if mode == 'sed_conc':
                 
                 
@@ -2809,32 +2806,12 @@ class ChemicalDrift(OceanDrift):
                 
                 # mass_ug= (data[sel][i] * (pixel_volume[i]*1e3))
                 
-            if mode == 'emission':
+            # if mode == 'emission':
                 
-                # TODO Here emission data is in kg. There is no need to estimate volume of cell
-                
-                    
+            #     # TODO Here emission data is in kg. There is no need to estimate volume of cell
+            #     else:
+            #         pass
 
-
-
-
-
-
-                    
-                    
-                    
-                    
-                    
-                    
-                    
-                    
-                    
-                    
-                    
-                    
-                    
-                    
-                    
 
     def init_chemical_compound(self, chemical_compound = None):
         ''' Chemical parameters for a selection of PAHs:
