@@ -1,6 +1,6 @@
 # See https://opendrift.github.io for usage
 
-FROM condaforge/mambaforge
+FROM condaforge/mambaforge:latest@sha256:fa79a263b932954afcec9d7ef38fcc830804f30f2c9bc46694a6b2991df73196
 
 ENV DEBIAN_FRONTEND noninteractive
 
