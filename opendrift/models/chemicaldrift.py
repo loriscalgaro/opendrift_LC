@@ -571,7 +571,7 @@ class ChemicalDrift(OceanDrift):
         KOC_sed_diss_acid = (10 ** (0.11 * np.log10(
             KOW) + 1.54))  # KOC for dissociated acid species (L/kg_OC), from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202.
         KOC_sed_diss_base = 10 ** (pKa_acid ** (0.65 * ((KOW / (
-                    KOW + 1)) ** 0.14)))  # KOC for ionized form of base species (L/kg_OC) # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
+                KOW + 1)) ** 0.14)))  # KOC for ionized form of base species (L/kg_OC) # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
         # Updated values of KOC to calculate correction factor
         KOC_sed_updated = np.empty_like(pH_sed)
         KOC_sedcorr = np.empty_like(pH_sed)
@@ -595,7 +595,7 @@ class ChemicalDrift(OceanDrift):
             Phi_anion_sed = Phi_n_sed * 10 ** (pH_sed - pKa_acid)
             Phi_cation_sed = Phi_n_sed * 10 ** (pKa_base - pH_sed)
             KOC_sed_updated = (KOC_sed_n * Phi_n_sed) + (Phi_anion_sed * KOC_sed_diss_acid) + (
-                        Phi_cation_sed * KOC_sed_diss_base)
+                    Phi_cation_sed * KOC_sed_diss_base)
 
             KOC_sedcorr = KOC_sed_updated / KOC_sed_initial
 
@@ -615,7 +615,7 @@ class ChemicalDrift(OceanDrift):
             KOW) + 1.54))  # KOC for dissociated acid species (L/kg_OC), from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202.
 
         KOC_sed_diss_base = 10 ** (pKa_acid ** (0.65 * ((KOW / (
-                    KOW + 1)) ** 0.14)))  # KOC for ionized form of base species (L/kg_OC) # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
+                KOW + 1)) ** 0.14)))  # KOC for ionized form of base species (L/kg_OC) # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
 
         KOC_SPM_updated = np.empty_like(pH_water_SPM)
         KOC_SPMcorr = np.empty_like(pH_water_SPM)
@@ -642,7 +642,7 @@ class ChemicalDrift(OceanDrift):
             Phi_anion_SPM = Phi_n_SPM * 10 ** (pH_water_SPM - pKa_acid)
             Phi_cation_SPM = Phi_n_SPM * 10 ** (pKa_base - pH_water_SPM)
             KOC_SPM_updated = (KOC_sed_n * Phi_n_SPM) + (Phi_anion_SPM * KOC_sed_diss_acid) + (
-                        Phi_cation_SPM * KOC_sed_diss_base)
+                    Phi_cation_SPM * KOC_sed_diss_base)
 
             KOC_SPMcorr = KOC_SPM_updated / KOC_SPM_initial
 
@@ -825,7 +825,7 @@ class ChemicalDrift(OceanDrift):
                         pass
 
                     KOC_sed_diss_base = 10 ** (pKa_acid ** (0.65 * ((KOW / (
-                                KOW + 1)) ** 0.14)))  # KOC for ionized form of base species (L/kg_OC) # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
+                            KOW + 1)) ** 0.14)))  # KOC for ionized form of base species (L/kg_OC) # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
 
                     KOC_SPM = (KOC_sed_n * Phi_n_water) + (Phi_diss_water * KOC_sed_diss_base)
 
@@ -858,11 +858,11 @@ class ChemicalDrift(OceanDrift):
                         pass
 
                     KOC_sed_diss_base = 10 ** (pKa_acid ** (0.65 * ((KOW / (
-                                KOW + 1)) ** 0.14)))  # KOC for ionized form of base species (L/kg_OC) # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
+                            KOW + 1)) ** 0.14)))  # KOC for ionized form of base species (L/kg_OC) # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
                     KOC_sed_diss_acid = (10 ** (0.11 * np.log10(
                         KOW) + 1.54))  # KOC for dissociated acid species (L/kg_OC), from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202.
                     KOC_SPM = (KOC_sed_n * Phi_n_water) + (Phi_anion_water * KOC_sed_diss_acid) + (
-                                Phi_cation_water * KOC_sed_diss_base)
+                            Phi_cation_water * KOC_sed_diss_base)
 
                     KOC_DOM_n = self.get_config('chemical:transformations:KOC_DOM')
                     if KOC_DOM_n < 0:
@@ -879,7 +879,7 @@ class ChemicalDrift(OceanDrift):
                     Phi_cation_sed = Phi_n_sed * 10 ** (pKa_base - pH_sed)
 
                     KOC_sed = (KOC_sed_n * Phi_n_sed) + (Phi_anion_sed * KOC_sed_diss_acid) + (
-                                Phi_cation_sed * KOC_sed_diss_base)
+                            Phi_cation_sed * KOC_sed_diss_base)
 
             logger.debug('Partitioning coefficients (Tref,freshwater)')
             logger.debug('KOC_sed: %s L/KgOC' % KOC_sed)
@@ -1846,12 +1846,12 @@ class ChemicalDrift(OceanDrift):
             # logger.debug('Thick: %s ' % Thick)
 
             volatilized_now[W] = self.elements.mass[W] * (
-                        1 - np.exp(-K_volatilization * self.time_step.total_seconds()))
+                    1 - np.exp(-K_volatilization * self.time_step.total_seconds()))
 
             self.elements.mass_volatilized = self.elements.mass_volatilized + volatilized_now
             self.elements.mass = self.elements.mass - volatilized_now
             self.deactivate_elements(self.elements.mass < (
-                        self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized) / 100,
+                    self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized) / 100,
                                      reason='removed')
 
             # to_deactivate = self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100
@@ -2582,7 +2582,7 @@ class ChemicalDrift(OceanDrift):
             Emission_factors = 1e9  # 1kg = 1e9 ug: N_sewage is expressed as kg
         elif scrubber_type == "N_NOx":  # Nitrogen from engine's NOx emissions
             Emission_factors = 1e9 * (
-                        14.0067 / 46.005)  # 1kg = 1e9 ug: NOx is expressed in kg, then tranformed to kg of nitrogen # MW of NOx: 46.005 g/mol # https://www.epa.gov/air-emissions-inventories/how-are-oxides-nitrogen-nox-defined-nei
+                    14.0067 / 46.005)  # 1kg = 1e9 ug: NOx is expressed in kg, then tranformed to kg of nitrogen # MW of NOx: 46.005 g/mol # https://www.epa.gov/air-emissions-inventories/how-are-oxides-nitrogen-nox-defined-nei
 
         return Emission_factors
         # TODO: Add emission uncertainty based on 95% confidence interval
@@ -2652,22 +2652,41 @@ class ChemicalDrift(OceanDrift):
                                    mass=mass_residual, mass_degraded=0, mass_volatilized=0, z=z,
                                    origin_marker=origin_marker)
 
+    @staticmethod
+    def _get_number_of_elements(
+            mode,
+            mass_element_ug=None,
+            data_point=None,
+            n_elements=None,
+            n_max=None,
+            total_mass=None,
+            mass_ug=None
+    ):
+        if mode == 'mass' and mass_element_ug is not None and data_point is not None and mass_ug is not None:
+            return np.ceil(np.array(mass_ug / mass_element_ug)).astype('int')
+        elif mode == 'fixed' and n_elements is not None and n_elements > 0:
+            return n_elements
+        elif mode == 'tot' and data_point is not None and n_max is not None and total_mass is not None and mass_ug is not None:
+            mass_element_ug = total_mass / n_max
+            return np.ceil(np.array(mass_ug / mass_element_ug)).astype('int')
+        return 0
+
     def seed_from_NETCDF(
-        self,
-        NETCDF_data,
-        mode='water_conc',
-        lon_resol=0.05,
-        lat_resol=0.05,
-        lowerbound=0,
-        higherbound=np.inf,
-        radius=0,
-        scrubber_type="open_loop",
-        chemical_compound="Copper",
-        mass_element_ug=100e3,
-        number_of_elements=None,
-        number_of_elements_max=None,
-        origin_marker=1,
-        **kwargs
+            self,
+            NETCDF_data,
+            mode='water_conc',
+            lon_resol=0.05,
+            lat_resol=0.05,
+            lowerbound=0,
+            higherbound=np.inf,
+            radius=0,
+            scrubber_type="open_loop",
+            chemical_compound="Copper",
+            mass_element_ug=100e3,
+            number_of_elements=None,
+            number_of_elements_max=None,
+            origin_marker=1,
+            gen_mode="mass"
     ):
         """Seed elements based on a dataarray with STEAM emission data
 
@@ -2685,7 +2704,7 @@ class ChemicalDrift(OceanDrift):
                 mass_element_ug:    scalar, maximum mass of elements if number_of_elements is not specificed
                 lon_resol:     scalar, longitude resolution of the NETCDF dataset
                 lat_resol:     scalar, latitude resolution of the NETCDF dataset
-
+                gen_mode: mass (elements generated from mass), tot (elements generated from number of elements), fixed
             """
         if chemical_compound is None:
             chemical_compound = self.get_config('chemical:compound')
@@ -2707,12 +2726,14 @@ class ChemicalDrift(OceanDrift):
         data = np.array(NETCDF_data.data)
 
         lon_grid_m = 6.371e6 * (np.cos(2 * (np.pi) * lo / 360)) * lon_resol * (
-                    2 * np.pi) / 360  # 6.371e6: radius of Earth in m
+                2 * np.pi) / 360  # 6.371e6: radius of Earth in m
         lat_grid_m = 6.371e6 * la * (2 * np.pi) / 360
 
-        if mode == 'water_conc':
 
-            pixel_volume = np.zeros_like(sel[0, 0, :])
+
+        pixel_volume = np.zeros_like(sel[0, 0, :])
+
+        if mode == 'water_conc':
             for zi, zz in enumerate(pixel_mean_depth[:-1]):
                 topotmp = -pixel_mean_depth.copy()
                 topotmp[np.where(topotmp < zz)] = zz
@@ -2723,78 +2744,7 @@ class ChemicalDrift(OceanDrift):
 
             pixel_volume[np.where(pixel_volume == 0.)] = np.nan
 
-            # Mode with number of elements fixed for each grid point
-            if number_of_elements is not None:
-
-                for i in range(0, t.size):
-                    # concentration is ug/L, volume is m: m3 * 1e3 = L
-                    mass_element_ug = (data[sel][i] * (pixel_volume[i] * 1e3)) / number_of_elements
-                    number = number_of_elements.astype('int')
-
-                    time = datetime.utcfromtimestamp(
-                        (t[i] - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's'))
-
-                if mass_element_ug > 0:
-                    z = -1 * np.random.uniform(0, 1, number)
-                    self.seed_elements(lon=lo[i] * np.ones(number), lat=la[i] * np.ones(number),
-                                       radius=radius, number=number, time=time,
-                                       mass=mass_element_ug, mass_degraded=0, mass_volatilized=0, z=z,
-                                       origin_marker=origin_marker)
-            else:
-                pass
-
-            # Mode with number of elements for each grid cell decided based on a max value value of mass
-            for i in range(0, t.size):
-                mass_ug = (data[sel][i] * (pixel_volume[i] * 1e3))
-                number = np.ceil(np.array(mass_ug / mass_element_ug)).astype('int')
-
-                time = datetime.utcfromtimestamp((t[i] - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's'))
-
-                if number > 0:
-                    z = -1 * np.random.uniform(0, 1, number)
-                    self.seed_elements(lon=lo[i] * np.ones(number), lat=la[i] * np.ones(number),
-                                       radius=radius, number=number, time=time,
-                                       mass=mass_element_ug, mass_degraded=0, mass_volatilized=0, z=z,
-                                       origin_marker=origin_marker)
-
-                mass_residual = mass_ug - number * mass_element_ug
-
-                if mass_residual > 0 and number_of_elements is None:
-                    z = -1 * np.random.uniform(0, 1, 1)
-                    self.seed_elements(lon=lo[i], lat=la[i],
-                                       radius=radius, number=1, time=time,
-                                       mass=mass_residual, mass_degraded=0, mass_volatilized=0, z=z,
-                                       origin_marker=origin_marker)
-
-            # Mode with number of elements for the simulation specified, then the mean mass of an element to be used "mass_element_ug" will be calculated
-            # Start unverified draft
-            total_mass = np.sum((data[sel] * (pixel_volume[sel] * 1e3)))  # TODO Verify this
-            mass_element_ug = total_mass / number_of_elements_max
-            mass_element_ug_0 = total_mass / number_of_elements_max
-
-            number = np.ceil(np.array(mass_ug / mass_element_ug_0)).astype('int')
-            mass_element_ug = mass_ug / number
-
-            time = datetime.utcfromtimestamp((t[i] - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's'))
-
-            if number > 0:
-                z = -1 * np.random.uniform(0, 1, number)
-                self.seed_elements(lon=lo[i] * np.ones(number), lat=la[i] * np.ones(number),
-                                   radius=radius, number=number, time=time,
-                                   mass=mass_element_ug, mass_degraded=0, mass_volatilized=0, z=z,
-                                   origin_marker=origin_marker)
-
-            mass_residual = mass_ug - number * mass_element_ug
-
-            if mass_residual > 0 and number_of_elements is None:
-                z = -1 * np.random.uniform(0, 1, 1)
-                self.seed_elements(lon=lo[i], lat=la[i],
-                                   radius=radius, number=1, time=time,
-                                   mass=mass_residual, mass_degraded=0, mass_volatilized=0, z=z,
-                                   origin_marker=origin_marker)
-        # End unverified draft
-
-        if mode == 'sed_conc':
+        elif mode == 'sed_conc':
             sed_porosity = self.get_config('chemical.sediment:porosity')  # fraction of sediment volume made of water
             sed_density_dry = self.get_config('chemical.sediment:density')  # kg/m3 d.w.
             sed_density_wet = ((sed_density_dry * (1 - sed_porosity)) * 1e-3)  # kg/L wet weight, kg/m3 * 1e-3 = kg/L
@@ -2803,18 +2753,63 @@ class ChemicalDrift(OceanDrift):
 
             data = np.array(NETCDF_data.data)
             data = ((data * (
-                        1 - sed_porosity)) * sed_density_wet)  # from ug/kg d.w. -> ug/kg wet weight ->ug/L wet sediment
+                    1 - sed_porosity)) * sed_density_wet)  # from ug/kg d.w. -> ug/kg wet weight ->ug/L wet sediment
 
-            pixel_volume = np.zeros_like(sel[0, 0, :])
             pixel_volume = self.get_config('chemical.sediment:mixing_depth') * (lon_grid_m * lat_grid_m)
 
-            # mass_ug= (data[sel][i] * (pixel_volume[i]*1e3))
+        for i in range(0, t.size):
+            # concentration is ug/L, volume is m: m3 * 1e3 = L
+            mass_ug = (data[sel][i] * (pixel_volume[i] * 1e3))
 
-        # if mode == 'emission':
+            if mode == 'emissions':
+                mass_ug = data[sel][i]
 
-        #     # TODO Here emission data is in kg. There is no need to estimate volume of cell
-        #     else:
-        #         pass
+            number = self._get_number_of_elements(
+                mode=gen_mode,
+                mass_element_ug=mass_element_ug,
+                data_point=data[sel][i],
+                n_elements=number_of_elements,
+                n_max=number_of_elements_max,
+                total_mass=np.sum((data[sel] * (pixel_volume[sel] * 1e3))),
+                mass_ug=mass_ug
+            )
+
+            time = datetime.utcfromtimestamp(
+                (t[i] - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's'))
+
+            if mass_element_ug > 0:
+                z = -1 * np.random.uniform(0, 1, number)
+                self.seed_elements(
+                    lon=lo[i] * np.ones(number),
+                    lat=la[i] * np.ones(number),
+                    radius=radius,
+                    number=number,
+                    time=time,
+                    mass=mass_element_ug,
+                    mass_degraded=0,
+                    mass_volatilized=0,
+                    z=z,
+                    origin_marker=origin_marker
+                )
+                mass_residual = (data[sel][i] * (pixel_volume[i] * 1e3)) - number * mass_element_ug
+
+                if mass_residual > 0 and gen_mode != "fixed":
+                    z = -1 * np.random.uniform(0, 1, 1)
+                    self.seed_elements(
+                        lon=lo[i],
+                        lat=la[i],
+                        radius=radius,
+                        number=1,
+                        time=time,
+                        mass=mass_residual,
+                        mass_degraded=0,
+                        mass_volatilized=0,
+                        z=z,
+                        origin_marker=origin_marker
+                    )
+            else:
+                pass
+
 
     def init_chemical_compound(self, chemical_compound=None):
         ''' Chemical parameters for a selection of PAHs:
