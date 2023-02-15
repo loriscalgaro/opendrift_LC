@@ -2729,8 +2729,18 @@ class ChemicalDrift(OceanDrift):
 
         sel = np.where((NETCDF_data > lowerbound) & (NETCDF_data < higherbound))
         t = NETCDF_data.time[sel[0]].data
-        lo = NETCDF_data.latitude[sel[1]].data  # give position for seeding
-        la = NETCDF_data.longitude[sel[2]].data  # give position for seeding
+        if "latitude" in NETCDF_data.keys():
+            la = NETCDF_data.latitude[sel[1]].data
+        elif "lat" in NETCDF_data.keys():
+            la = NETCDF_data.lat[sel[1]].data
+        else:
+            raise ValueError("Incorrect dimension of input (lat)")
+        if "longitude" in NETCDF_data.keys():
+            lo = NETCDF_data.longitude[sel[1]].data
+        elif "lon" in NETCDF_data.keys():
+            lo = NETCDF_data.lon[sel[1]].data
+        else:
+            raise ValueError("Incorrect dimension of input (lon)")
         lon_array = lo + lon_resol / 2  # find center of pixel for volume of water / sediments
         lat_array = la + lat_resol / 2  # find center of pixel for volume of water / sediments
 
