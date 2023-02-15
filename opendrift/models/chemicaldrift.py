@@ -2669,7 +2669,20 @@ class ChemicalDrift(OceanDrift):
         elif mode == 'tot' and data_point is not None and n_max is not None and total_mass is not None and mass_ug is not None:
             mass_element_ug = total_mass / n_max
             return np.ceil(np.array(mass_ug / mass_element_ug)).astype('int')
-        return 0
+        else:
+            raise ValueError("Incorrect combination of mode and input - undefined inputs")
+
+
+    @staticmethod
+    def _get_z(mode, number, depth=None, mix_depth=None):
+        if mode == "water_conc" and depth is not None:
+            return -1 * np.random.uniform(0.0001, depth - 0.0001, number)
+        elif mode == "sed_conc" and depth is not None and mix_depth is not None:
+            return  -1 * np.random.uniform(depth + 0.0001, depth + mix_depth - 0.0001, number)
+        elif mode == "emissions":
+            return -1 * np.random.uniform(0.0001, 1 - 0.0001, number)
+        else:
+            raise ValueError("Incorrect mode or depth")
 
     def seed_from_NETCDF(
             self,
@@ -2729,8 +2742,6 @@ class ChemicalDrift(OceanDrift):
                 2 * np.pi) / 360  # 6.371e6: radius of Earth in m
         lat_grid_m = 6.371e6 * la * (2 * np.pi) / 360
 
-
-
         pixel_volume = np.zeros_like(sel[0, 0, :])
 
         if mode == 'water_conc':
@@ -2748,7 +2759,6 @@ class ChemicalDrift(OceanDrift):
             sed_porosity = self.get_config('chemical.sediment:porosity')  # fraction of sediment volume made of water
             sed_density_dry = self.get_config('chemical.sediment:density')  # kg/m3 d.w.
             sed_density_wet = ((sed_density_dry * (1 - sed_porosity)) * 1e-3)  # kg/L wet weight, kg/m3 * 1e-3 = kg/L
-
             # sed_conc_ug_kg is ug/kg d.w. (dry weight)
 
             data = np.array(NETCDF_data.data)
@@ -2756,6 +2766,8 @@ class ChemicalDrift(OceanDrift):
                     1 - sed_porosity)) * sed_density_wet)  # from ug/kg d.w. -> ug/kg wet weight ->ug/L wet sediment
 
             pixel_volume = self.get_config('chemical.sediment:mixing_depth') * (lon_grid_m * lat_grid_m)
+            self.init_species()
+            self.init_transfer_rates()
 
         for i in range(0, t.size):
             # concentration is ug/L, volume is m: m3 * 1e3 = L
@@ -2778,10 +2790,11 @@ class ChemicalDrift(OceanDrift):
                 (t[i] - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's'))
 
             if mass_element_ug > 0:
-                z = -1 * np.random.uniform(0, 1, number)
+                z = self._get_z(mode, pixel_mean_depth[i], self.get_config('chemical.sediment:mixing_depth'))
+
                 self.seed_elements(
-                    lon=lo[i] * np.ones(number),
-                    lat=la[i] * np.ones(number),
+                    lon=lon_array[i] * np.ones(number),
+                    lat=lat_array[i] * np.ones(number),
                     radius=radius,
                     number=number,
                     time=time,
@@ -2791,13 +2804,15 @@ class ChemicalDrift(OceanDrift):
                     z=z,
                     origin_marker=origin_marker
                 )
+
                 mass_residual = (data[sel][i] * (pixel_volume[i] * 1e3)) - number * mass_element_ug
 
                 if mass_residual > 0 and gen_mode != "fixed":
-                    z = -1 * np.random.uniform(0, 1, 1)
+                    z = self._get_z(mode, pixel_mean_depth[i], self.get_config('chemical.sediment:mixing_depth'))
+
                     self.seed_elements(
-                        lon=lo[i],
-                        lat=la[i],
+                        lon=lon_array[i],
+                        lat=lat_array[i],
                         radius=radius,
                         number=1,
                         time=time,
@@ -2807,8 +2822,6 @@ class ChemicalDrift(OceanDrift):
                         z=z,
                         origin_marker=origin_marker
                     )
-            else:
-                pass
 
 
     def init_chemical_compound(self, chemical_compound=None):
