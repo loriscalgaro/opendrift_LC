@@ -22,9 +22,7 @@ The initial version is based on Radionuclides module by Magne Simonsen
 """
 
 import numpy as np
-import logging
-
-import xarray as xr
+import logging;
 
 logger = logging.getLogger(__name__)
 
@@ -2729,7 +2727,7 @@ class ChemicalDrift(OceanDrift):
         # mass_element_ug=100e3      # 100e3 - 1 element is 100mg chemical
         # mass_element_ug=1e6     # 1e6 - 1 element is 1g chemical
 
-        sel = xr.where(lowerbound < NETCDF_data < higherbound)
+        sel = np.where((NETCDF_data.data > lowerbound) & (NETCDF_data.data < higherbound))
         t = NETCDF_data.time[sel[0]].data
         if "latitude" in NETCDF_data.keys():
             la = NETCDF_data.latitude[sel[1]].data
