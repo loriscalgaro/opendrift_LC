@@ -2699,7 +2699,8 @@ class ChemicalDrift(OceanDrift):
             number_of_elements=None,
             number_of_elements_max=None,
             origin_marker=1,
-            gen_mode="mass"
+            gen_mode="mass",
+            reader_sea_depth = None
     ):
         """Seed elements based on a dataarray with STEAM emission data
 
@@ -2726,24 +2727,78 @@ class ChemicalDrift(OceanDrift):
         # mass_element_ug=20e3      # 100e3 - 1 element is 100mg chemical
         # mass_element_ug=100e3      # 100e3 - 1 element is 100mg chemical
         # mass_element_ug=1e6     # 1e6 - 1 element is 1g chemical
+        
+        # TODO: Are we sure that .data is needed here if below ther is data = np.array(NETCDF_data.data)?
 
         sel = np.where((NETCDF_data.data > lowerbound) & (NETCDF_data.data < higherbound))
         t = NETCDF_data.time[sel[0]].data
-        if "latitude" in NETCDF_data.keys():
-            la = NETCDF_data.latitude[sel[1]].data
-        elif "lat" in NETCDF_data.keys():
-            la = NETCDF_data.lat[sel[1]].data
-        else:
-            raise ValueError("Incorrect dimension of input (lat)")
-        if "longitude" in NETCDF_data.keys():
-            lo = NETCDF_data.longitude[sel[1]].data
-        elif "lon" in NETCDF_data.keys():
-            lo = NETCDF_data.lon[sel[1]].data
-        else:
-            raise ValueError("Incorrect dimension of input (lon)")
+        # if "latitude" in NETCDF_data.keys():
+        #     la = NETCDF_data.latitude[sel[1]].data
+        # elif "lat" in NETCDF_data.keys():
+        #     la = NETCDF_data.lat[sel[1]].data
+        # else:
+        #     raise ValueError("Incorrect dimension of input (lat)")
+        # if "longitude" in NETCDF_data.keys():
+        #     lo = NETCDF_data.longitude[sel[1]].data
+        # elif "lon" in NETCDF_data.keys():
+        #     lo = NETCDF_data.lon[sel[1]].data
+        # else:
+        #     raise ValueError("Incorrect dimension of input (lon)")
+            
+        la = NETCDF_data.lat[sel[1]].data
+        print('la')
+        print(la)
+        
+        lo = NETCDF_data.lon[sel[2]].data
+        print('lo')
+        print(lo)
+
         lon_array = lo + lon_resol / 2  # find center of pixel for volume of water / sediments
         lat_array = la + lat_resol / 2  # find center of pixel for volume of water / sediments
 
+        print('lon_array')
+        print(lon_array)
+        print('lat_array')
+        print(lat_array)
+        
+        # Reading bathimetry
+        if reader_sea_depth is not None:
+            from opendrift.readers import reader_netCDF_CF_generic
+            reader_sea_depth = reader_netCDF_CF_generic.Reader(reader_sea_depth)
+        else:
+            print('A reader for ''sea_floor_depth_below_sea_level'' must be specified')
+            import sys
+            sys.exit()
+
+# From the function to calculate concentration
+        # grid = np.meshgrid(np.linspace(llcrnrlon, urcrnrlon, 1000), np.linspace(llcrnrlat, urcrnrlat, 1000))
+        # self.conc_lon = grid[0]
+        # self.conc_lat = grid[1]
+
+        # self.conc_topo = reader_sea_depth.get_variables_interpolated_xy(['sea_floor_depth_below_sea_level'],
+        #                                                                 x=self.conc_lon.flatten(),
+        #                                                                 y=self.conc_lat.flatten(),
+        #                                                                 time=reader_sea_depth.times[
+        #                                                                     0] if reader_sea_depth.times is not None else None
+        #                                                                 )[0]['sea_floor_depth_below_sea_level'].reshape(self.conc_lon.shape)
+        # lon_array = (lon_array[:-1, :-1] + lon_array[1:, 1:]) / 2
+        # lat_array = (lat_array[:-1, :-1] + lat_array[1:, 1:]) / 2
+        
+        # pixel_mean_depth = self.get_pixel_mean_depth(lon_array, lat_array)
+#End
+
+        self.conc_lon = lon_array
+        self.conc_lat = lat_array
+
+        self.conc_topo = reader_sea_depth.get_variables_interpolated_xy(['sea_floor_depth_below_sea_level'],
+                                                                        x=self.conc_lon.flatten(),
+                                                                        y=self.conc_lat.flatten(),
+                                                                        time=reader_sea_depth.times[0] if reader_sea_depth.times is not None else None
+                                                                        )[0]['sea_floor_depth_below_sea_level'].reshape(self.conc_lon.shape)
+        print("self.conc_topo")
+        print(self.conc_topo)
+        
+# Here IndexError: tuple index out of range error is displaied
         pixel_mean_depth = self.get_pixel_mean_depth(lon_array, lat_array)
 
         data = np.array(NETCDF_data.data)
@@ -2798,6 +2853,13 @@ class ChemicalDrift(OceanDrift):
 
             time = datetime.utcfromtimestamp(
                 (t[i] - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's'))
+            
+            
+            # TODO specie=self.num_srev to be added to seed parameters for sediments 
+            if mode == 'sed_conc':
+                specie_elements = 'num_srev' # Name of specie for sediment elements
+            else:
+                specie_elements = 'num_lmm' # Name of specie for dissolved elements
 
             if mass_element_ug > 0:
                 z = self._get_z(mode, pixel_mean_depth[i], self.get_config('chemical.sediment:mixing_depth'))
@@ -2811,6 +2873,7 @@ class ChemicalDrift(OceanDrift):
                     mass=mass_element_ug,
                     mass_degraded=0,
                     mass_volatilized=0,
+                    specie = specie_elements, # To be verified
                     z=z,
                     origin_marker=origin_marker
                 )
@@ -2829,6 +2892,7 @@ class ChemicalDrift(OceanDrift):
                         mass=mass_residual,
                         mass_degraded=0,
                         mass_volatilized=0,
+                        specie = specie_elements, # To be verified
                         z=z,
                         origin_marker=origin_marker
                     )
