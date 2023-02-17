@@ -53,7 +53,7 @@ DissociationMode = 'nondiss'
 ### Set time interval for simulation 
 step=12 # 3                   # simulation time step in hours
 Time_step_output = (60*60*24) # simulation output time step in seconds
-simulated_days=7         # days of simulation: should be two days longer than the emissions
+simulated_days=4         # days of simulation: should be two days longer than the emissions
 ### Set region for simulation
 region="NA_Total"
 long_min = 12.0
@@ -214,6 +214,10 @@ SCRUB_W_OPEN=SCRUB_W_OPEN.where((SCRUB_W_OPEN.longitude > long_min) & (SCRUB_W_O
                                 (SCRUB_W_OPEN.time >= Time_emiss_START) &
                                 (SCRUB_W_OPEN.time <= Time_emiss_END), drop=True)
 
+print(SCRUB_W_OPEN)
+SCRUB_W_OPEN.attrs
+SCRUB_W_OPEN.data
+
 print("Finished loading data, start seeding from data....",": ", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
 
 o.seed_from_STEAM(SCRUB_W_OPEN, lowerbound=20000, higherbound=700000, radius=50, # l=1000, h=200000
@@ -227,7 +231,7 @@ print("Finished seeding from STEAM...",": ", datetime.now().strftime("%Y_%m_%d-%
 print("Start loading data from NETCDF....",": ", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
 
 # TODO Change name of input here
-NETCDF_mfdataset = xr.open_mfdataset(simpath+'/Concentration_file_sed_ug_kg_fin.nc') 
+NETCDF_mfdataset = xr.open_mfdataset(simpath+'/Concentration_file_sed_ug_kg_fin.nc')
 
 # 'Concentration_file_sed_ug_kg_fin.nc'
 # 'Concentration_file_water_ug_L_fin.nc'
@@ -237,23 +241,73 @@ NETCDF_mfdataset = xr.open_mfdataset(simpath+'/Concentration_file_sed_ug_kg_fin.
 NETCDF=NETCDF_mfdataset.sed_conc_ug_kg 
 # NETCDF=NETCDF_mfdataset.wat_conc_ug_L
 # NETCDF=NETCDF_mfdataset.emission_kg
+print(NETCDF)
 
-NETCDF=NETCDF_mfdataset.where((NETCDF.longitude > long_min) & (NETCDF.longitude < long_max) &
-                                (NETCDF.latitude > lat_min) & (NETCDF.latitude < lat_max) &
+# For emission data
+
+# NETCDF=NETCDF_mfdataset.where((NETCDF.longitude > long_min) & (NETCDF.longitude < long_max) &
+#                                 (NETCDF.latitude > lat_min) & (NETCDF.latitude < lat_max) &
+#                                 (NETCDF.time >= Time_emiss_START) &
+#                                 (NETCDF.time <= Time_emiss_END), drop=True)
+
+# For concentration data
+
+NETCDF=NETCDF_mfdataset.where((NETCDF.lon > long_min) & (NETCDF.lon < long_max) &
+                                (NETCDF.lat > lat_min) & (NETCDF.lat < lat_max) &
                                 (NETCDF.time >= Time_emiss_START) &
                                 (NETCDF.time <= Time_emiss_END), drop=True)
+
+# Code as is, "TypeError: cannot directly convert an xarray.Dataset into a numpy array. Instead, create an xarray.DataArray first, either with indexing on the Dataset or by invoking the `to_array()` method
+# Changed NETCDF to DataArray
+NETCDF = NETCDF.to_array(dim = "data")
+# AttributeError: 'DataArray' object has no attribute 'keys', -> temporaly removed control from code in chemicaldrift.py
+# START sel test
+
+lowerbound=0.
+higherbound=1.0e15
+
+NETCDF_data = NETCDF
+
+
+# print(NETCDF_data.lat.data)
+# NETCDF_data.plot()
+# sel = np.where((NETCDF_data.data > lowerbound) & (NETCDF_data.data < higherbound))
+sel = np.where((NETCDF_data > lowerbound) & (NETCDF_data < higherbound))
+print('sel NECDF')
+print(sel)
+
+t = NETCDF_data.time[sel[0]].data
+print('t')
+print(t)
+la = NETCDF_data.lat[sel[1]].data
+print('la')
+print(la)
+# This print only one value of latitude for all the dataset
+
+lo = NETCDF_data.lon[sel[2]].data
+print('lo')
+print(lo)
+        
+        
+        
+# print(NETCDF2.keys())
+# NETCDF.data
+# print(NETCDF2)
+
 
 print("Finished loading data, start seeding from data....",": ", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
 
 o.seed_from_NETCDF(NETCDF_data = NETCDF, 
-                   mode = 'water_conc', 
+                   mode = 'sed_conc',
+                   gen_mode = 'mass',# mass, fixed, tot
                    lon_resol= 0.05, lat_resol = 0.05, 
-                   lowerbound=0, higherbound=np.inf, 
+                   lowerbound=0., higherbound=1.0e15, 
                    radius=0, 
                    mass_element_ug=100e3, 
-                   number_of_elements=number_of_elements_max, # specified at the beginning of the script
-                   number_of_elements_max=number_of_elements, # specified at the beginning of the script
-                   origin_marker=1)
+                   number_of_elements=number_of_elements, # specified at the beginning of the script
+                   number_of_elements_max=number_of_elements_max, # specified at the beginning of the script
+                   origin_marker=1,
+                   reader_sea_depth=simpath+'/Bathimetry.nc')
 
 
 
@@ -291,6 +345,32 @@ o.animation(color='specie',
             )
 
 print("Making video....","End:", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
+
+#%%
+llcrnrlon=long_min
+urcrnrlon=long_max
+llcrnrlat=lat_min
+urcrnrlat=lat_max
+
+grid = np.meshgrid(np.linspace(llcrnrlon, urcrnrlon, 1000), np.linspace(llcrnrlat, urcrnrlat, 1000))
+print(grid)
+
+
+
+# This opens a new Chemdrift object! 
+o1=opendrift.open(simpath+'/ChemDrift_output.nc')
+o1.write_netcdf_chemical_density_map(filename=simpath+'/ChemDrift_conc_output.nc',
+                                pixelsize_m=1000.,
+                                zlevels=None,
+                                mass_unit='ug',
+                                horizontal_smoothing=False,
+                                smoothing_cells=1,
+                                time_avg_conc=True,
+                                deltat=24*1, # hours
+                                llcrnrlon=llcrnrlon, llcrnrlat=llcrnrlat,
+                                urcrnrlon=urcrnrlon, urcrnrlat=urcrnrlat,
+                                reader_sea_depth=simpath+'/Bathimetry.nc',
+                                landmask_shapefile=simpath+'/Landmask.shp')
 
 #%% For debugging
 
