@@ -2687,6 +2687,7 @@ class ChemicalDrift(OceanDrift):
     def seed_from_NETCDF(
             self,
             NETCDF_data,
+            Bathimetry_data,
             mode='water_conc',
             lon_resol=0.05,
             lat_resol=0.05,
@@ -2700,7 +2701,7 @@ class ChemicalDrift(OceanDrift):
             number_of_elements_max=None,
             origin_marker=1,
             gen_mode="mass",
-            reader_sea_depth = None
+            
     ):
         """Seed elements based on a dataarray with STEAM emission data
 
@@ -2732,111 +2733,69 @@ class ChemicalDrift(OceanDrift):
 
         sel = np.where((NETCDF_data > lowerbound) & (NETCDF_data < higherbound))
         t = NETCDF_data.time[sel[0]].data
-        # if "latitude" in NETCDF_data.keys():
-        #     la = NETCDF_data.latitude[sel[1]].data
-        # elif "lat" in NETCDF_data.keys():
-        #     la = NETCDF_data.lat[sel[1]].data
-        # else:
-        #     raise ValueError("Incorrect dimension of input (lat)")
-        # if "longitude" in NETCDF_data.keys():
-        #     lo = NETCDF_data.longitude[sel[1]].data
-        # elif "lon" in NETCDF_data.keys():
-        #     lo = NETCDF_data.lon[sel[1]].data
-        # else:
-        #     raise ValueError("Incorrect dimension of input (lon)")
-            
-        la = NETCDF_data.lat[sel[1]].data
-        print('la')
-        print(la)
+        la = NETCDF_data.latitude[sel[1]].data
+        lo = NETCDF_data.longitude[sel[2]].data
         
-        lo = NETCDF_data.lon[sel[2]].data
-        print('lo')
-        print(lo)
+        print(len(t))
+        print(len(la))
+        print(len(lo))
 
         lon_array = lo + lon_resol / 2  # find center of pixel for volume of water / sediments
         lat_array = la + lat_resol / 2  # find center of pixel for volume of water / sediments
-
-        print('lon_array')
-        print(lon_array)
-        print('lat_array')
-        print(lat_array)
         
-        # Reading bathimetry
-        if reader_sea_depth is not None:
-            from opendrift.readers import reader_netCDF_CF_generic
-            reader_sea_depth = reader_netCDF_CF_generic.Reader(reader_sea_depth)
-        else:
-            print('A reader for ''sea_floor_depth_below_sea_level'' must be specified')
-            import sys
-            sys.exit()
+        data = (NETCDF_data.data)
 
-# From the function to calculate concentration
-        # grid = np.meshgrid(np.linspace(llcrnrlon, urcrnrlon, 1000), np.linspace(llcrnrlat, urcrnrlat, 1000))
-        # self.conc_lon = grid[0]
-        # self.conc_lat = grid[1]
-
-        # self.conc_topo = reader_sea_depth.get_variables_interpolated_xy(['sea_floor_depth_below_sea_level'],
-        #                                                                 x=self.conc_lon.flatten(),
-        #                                                                 y=self.conc_lat.flatten(),
-        #                                                                 time=reader_sea_depth.times[
-        #                                                                     0] if reader_sea_depth.times is not None else None
-        #                                                                 )[0]['sea_floor_depth_below_sea_level'].reshape(self.conc_lon.shape)
-        # lon_array = (lon_array[:-1, :-1] + lon_array[1:, 1:]) / 2
-        # lat_array = (lat_array[:-1, :-1] + lat_array[1:, 1:]) / 2
-        
-        # pixel_mean_depth = self.get_pixel_mean_depth(lon_array, lat_array)
-#End
-
-        self.conc_lon = lon_array
-        self.conc_lat = lat_array
-
-        self.conc_topo = reader_sea_depth.get_variables_interpolated_xy(['sea_floor_depth_below_sea_level'],
-                                                                        x=self.conc_lon.flatten(),
-                                                                        y=self.conc_lat.flatten(),
-                                                                        time=reader_sea_depth.times[0] if reader_sea_depth.times is not None else None
-                                                                        )[0]['sea_floor_depth_below_sea_level'].reshape(self.conc_lon.shape)
-        print("self.conc_topo")
-        print(self.conc_topo)
-        
-# Here IndexError: tuple index out of range error is displaied
-        pixel_mean_depth = self.get_pixel_mean_depth(lon_array, lat_array)
-
-        data = np.array(NETCDF_data.data)
-
-        lon_grid_m = 6.371e6 * (np.cos(2 * (np.pi) * lo / 360)) * lon_resol * (
-                2 * np.pi) / 360  # 6.371e6: radius of Earth in m
-        lat_grid_m = 6.371e6 * la * (2 * np.pi) / 360
-
-        pixel_volume = np.zeros_like(sel[0, 0, :])
-
-        if mode == 'water_conc':
-            for zi, zz in enumerate(pixel_mean_depth[:-1]):
-                topotmp = -pixel_mean_depth.copy()
-                topotmp[np.where(topotmp < zz)] = zz
-                topotmp = pixel_mean_depth[zi + 1] - topotmp
-                topotmp[np.where(topotmp < .1)] = 0.
-
-                pixel_volume[zi, :, :] = topotmp * (lon_grid_m * lat_grid_m)
-
-            pixel_volume[np.where(pixel_volume == 0.)] = np.nan
-
-        elif mode == 'sed_conc':
-            sed_porosity = self.get_config('chemical.sediment:porosity')  # fraction of sediment volume made of water
-            sed_density_dry = self.get_config('chemical.sediment:density')  # kg/m3 d.w.
+        if mode == 'sed_conc':
+            sed_porosity = self.get_config('chemical:sediment:porosity')  # fraction of sediment volume made of water
+            sed_density_dry = self.get_config('chemical:sediment:density')  # kg/m3 d.w.
             sed_density_wet = ((sed_density_dry * (1 - sed_porosity)) * 1e-3)  # kg/L wet weight, kg/m3 * 1e-3 = kg/L
             # sed_conc_ug_kg is ug/kg d.w. (dry weight)
-
-            data = np.array(NETCDF_data.data)
-            data = ((data * (
-                    1 - sed_porosity)) * sed_density_wet)  # from ug/kg d.w. -> ug/kg wet weight ->ug/L wet sediment
-
-            pixel_volume = self.get_config('chemical.sediment:mixing_depth') * (lon_grid_m * lat_grid_m)
+    
             self.init_species()
             self.init_transfer_rates()
 
         for i in range(0, t.size):
+            lon_grid_m = []
+            lat_grid_m = []
+            
+            if mode == 'water_conc':
+                Bathimetry_conc = []
+                Bathimetry_conc.append(Bathimetry_data.sel(latitude=la[i],longitude=lo[i],method='nearest'))
+                lon_grid_m.append(6.371e6 * (np.cos(2 * (np.pi) * lo[i] / 360)) * lon_resol * (
+                        2 * np.pi) / 360)  # 6.371e6: radius of Earth in m
+                lat_grid_m.append(6.371e6 * la[i] * (2 * np.pi) / 360)
+                
+                lat_grid_m = np.array(lat_grid_m)
+                lon_grid_m = np.array(lon_grid_m)
+                Bathimetry_conc = np.array(Bathimetry_conc)
+                pixel_volume = Bathimetry_conc * lon_grid_m * lat_grid_m
+                
+                print(len(Bathimetry_conc))
+                print(len(lat_grid_m))
+                print(len(lon_grid_m))
+                print(len(pixel_volume))
+                
+                
+                
+            
             # concentration is ug/L, volume is m: m3 * 1e3 = L
-            mass_ug = (data[sel][i] * (pixel_volume[i] * 1e3))
+                mass_ug = (data[sel][i] * (pixel_volume * 1e3))
+            
+            if mode == 'sed_conc':
+                data_sed = data[sel][i]* ((1 - sed_porosity) * sed_density_wet) # from ug/kg d.w. -> ug/kg wet weight ->ug/L wet sediment
+                
+                for j in range(len(la[i])) :
+                    lon_grid_m.append(6.371e6 * (np.cos(2 * (np.pi) * lo[i][j] / 360)) * lon_resol * (
+                            2 * np.pi) / 360)  # 6.371e6: radius of Earth in m
+                    lat_grid_m.append(6.371e6 * la[i][j] * (2 * np.pi) / 360)
+                
+                    lat_grid_m = np.array(lat_grid_m)
+                    lon_grid_m = np.array(lon_grid_m)
+                    Bathimetry_conc = np.array(Bathimetry_conc)    
+                    pixel_volume = self.get_config('chemical:sediment:mixing_depth') * (lon_grid_m * lat_grid_m)
+                
+                mass_ug = (data_sed * (pixel_volume * 1e3))
+
 
             if mode == 'emissions':
                 mass_ug = data[sel][i]
@@ -2862,7 +2821,7 @@ class ChemicalDrift(OceanDrift):
                 specie_elements = 'num_lmm' # Name of specie for dissolved elements
 
             if mass_element_ug > 0:
-                z = self._get_z(mode, pixel_mean_depth[i], self.get_config('chemical.sediment:mixing_depth'))
+                z = self._get_z(mode, Bathimetry_conc, self.get_config('chemical:sediment:mixing_depth'))
 
                 self.seed_elements(
                     lon=lon_array[i] * np.ones(number),
@@ -2881,7 +2840,7 @@ class ChemicalDrift(OceanDrift):
                 mass_residual = (data[sel][i] * (pixel_volume[i] * 1e3)) - number * mass_element_ug
 
                 if mass_residual > 0 and gen_mode != "fixed":
-                    z = self._get_z(mode, pixel_mean_depth[i], self.get_config('chemical.sediment:mixing_depth'))
+                    z = self._get_z(mode, Bathimetry_conc, self.get_config('chemical:sediment:mixing_depth'))
 
                     self.seed_elements(
                         lon=lon_array[i],

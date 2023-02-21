@@ -231,35 +231,44 @@ print("Finished seeding from STEAM...",": ", datetime.now().strftime("%Y_%m_%d-%
 print("Start loading data from NETCDF....",": ", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
 
 # TODO Change name of input here
-NETCDF_mfdataset = xr.open_mfdataset(simpath+'/Concentration_file_sed_ug_kg_fin.nc')
+NETCDF_mfdataset = xr.open_mfdataset(simpath+'/Emissions_kg.nc')
+Bathimetry_mfdataset = xr.open_mfdataset(simpath+'/Bathimetry_conc.nc')
+
+Bathimetry_conc = Bathimetry_mfdataset.elevation
+
+print(Bathimetry_mfdataset)
+print(Bathimetry_conc)
+
 
 # 'Concentration_file_sed_ug_kg_fin.nc'
 # 'Concentration_file_water_ug_L_fin.nc'
 # 'Emissions_kg.nc'
 
 # TODO Change name of data variable here (sed_conc_ug_kg, wat_conc_ug_L, emission_kg)
-NETCDF=NETCDF_mfdataset.sed_conc_ug_kg 
+# NETCDF=NETCDF_mfdataset.sed_conc_ug_kg 
 # NETCDF=NETCDF_mfdataset.wat_conc_ug_L
-# NETCDF=NETCDF_mfdataset.emission_kg
+NETCDF=NETCDF_mfdataset.emission_kg
 print(NETCDF)
 
 # For emission data
 
-# NETCDF=NETCDF_mfdataset.where((NETCDF.longitude > long_min) & (NETCDF.longitude < long_max) &
-#                                 (NETCDF.latitude > lat_min) & (NETCDF.latitude < lat_max) &
-#                                 (NETCDF.time >= Time_emiss_START) &
-#                                 (NETCDF.time <= Time_emiss_END), drop=True)
+NETCDF=NETCDF.where((NETCDF.longitude > long_min) & (NETCDF.longitude < long_max) &
+                                (NETCDF.latitude > lat_min) & (NETCDF.latitude < lat_max), drop=True)
+
+
+Bathimetry_conc = Bathimetry_conc.where((NETCDF.longitude > long_min) & (NETCDF.longitude < long_max) &
+                                (NETCDF.latitude > lat_min) & (NETCDF.latitude < lat_max), drop=True)
 
 # For concentration data
 
-NETCDF=NETCDF_mfdataset.where((NETCDF.lon > long_min) & (NETCDF.lon < long_max) &
-                                (NETCDF.lat > lat_min) & (NETCDF.lat < lat_max) &
-                                (NETCDF.time >= Time_emiss_START) &
-                                (NETCDF.time <= Time_emiss_END), drop=True)
+# NETCDF=NETCDF_mfdataset.where((NETCDF.lon > long_min) & (NETCDF.lon < long_max) &
+#                                 (NETCDF.lat > lat_min) & (NETCDF.lat < lat_max) &
+#                                 (NETCDF.time >= Time_emiss_START) &
+#                                 (NETCDF.time <= Time_emiss_END), drop=True)
 
 # Code as is, "TypeError: cannot directly convert an xarray.Dataset into a numpy array. Instead, create an xarray.DataArray first, either with indexing on the Dataset or by invoking the `to_array()` method
 # Changed NETCDF to DataArray
-NETCDF = NETCDF.to_array(dim = "data")
+# NETCDF = NETCDF.to_array(dim = "data")
 # AttributeError: 'DataArray' object has no attribute 'keys', -> temporaly removed control from code in chemicaldrift.py
 # START sel test
 
@@ -297,8 +306,9 @@ print(lo)
 
 print("Finished loading data, start seeding from data....",": ", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
 
-o.seed_from_NETCDF(NETCDF_data = NETCDF, 
-                   mode = 'sed_conc',
+o.seed_from_NETCDF(NETCDF_data = NETCDF,
+                   Bathimetry_data = Bathimetry_conc,
+                   mode = 'water_conc',
                    gen_mode = 'mass',# mass, fixed, tot
                    lon_resol= 0.05, lat_resol = 0.05, 
                    lowerbound=0., higherbound=1.0e15, 
@@ -306,8 +316,7 @@ o.seed_from_NETCDF(NETCDF_data = NETCDF,
                    mass_element_ug=100e3, 
                    number_of_elements=number_of_elements, # specified at the beginning of the script
                    number_of_elements_max=number_of_elements_max, # specified at the beginning of the script
-                   origin_marker=1,
-                   reader_sea_depth=simpath+'/Bathimetry.nc')
+                   origin_marker=1)
 
 
 
