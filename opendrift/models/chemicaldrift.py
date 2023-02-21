@@ -2730,7 +2730,7 @@ class ChemicalDrift(OceanDrift):
         
         # TODO: Are we sure that .data is needed here if below ther is data = np.array(NETCDF_data.data)?
 
-        sel = np.where((NETCDF_data.data > lowerbound) & (NETCDF_data.data < higherbound))
+        sel = np.where((NETCDF_data > lowerbound) & (NETCDF_data < higherbound))
         t = NETCDF_data.time[sel[0]].data
         # if "latitude" in NETCDF_data.keys():
         #     la = NETCDF_data.latitude[sel[1]].data
