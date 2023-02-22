@@ -215,35 +215,35 @@ SCRUB_W_OPEN=SCRUB_W_OPEN.where((SCRUB_W_OPEN.longitude > long_min) & (SCRUB_W_O
                                 (SCRUB_W_OPEN.time >= Time_emiss_START) &
                                 (SCRUB_W_OPEN.time <= Time_emiss_END), drop=True)
 
-SCRUB_W_OPEN[1,:,:].plot(cmap=plt.cm.viridis, robust = True)
+# SCRUB_W_OPEN[1,:,:].plot(cmap=plt.cm.viridis, robust = True)
 
-# print(SCRUB_W_OPEN)
-# SCRUB_W_OPEN.attrs
-# SCRUB_W_OPEN.data
-steam = SCRUB_W_OPEN
-lowerbound = 0.
-higherbound = 1e15
-
-
-sel = np.where((steam > lowerbound) & (steam < higherbound))
-t = steam.time[sel[0]].data
-la = steam.latitude[sel[1]].data
-lo = steam.longitude[sel[2]].data
-
-print(t)
-print('len t', len(t))
-print(la)
-print('len la', len(la))
-print(lo)
-print('len lo', len(lo))
+# # print(SCRUB_W_OPEN)
+# # SCRUB_W_OPEN.attrs
+# # SCRUB_W_OPEN.data
+# steam = SCRUB_W_OPEN
+# lowerbound = 0.
+# higherbound = 1e15
 
 
-data = np.array(steam.data)
-print(data.shape)
+# sel = np.where((steam > lowerbound) & (steam < higherbound))
+# t = steam.time[sel[0]].data
+# la = steam.latitude[sel[1]].data
+# lo = steam.longitude[sel[2]].data
 
-data_2 = data[sel]
-print(data_2)
-print(data_2.shape)
+# print(t)
+# print('len t', len(t))
+# print(la)
+# print('len la', len(la))
+# print(lo)
+# print('len lo', len(lo))
+
+
+# data = np.array(steam.data)
+# print(data.shape)
+
+# data_2 = data[sel]
+# print(data_2)
+# print(data_2.shape)
 
 
 
@@ -256,131 +256,105 @@ o.seed_from_STEAM(SCRUB_W_OPEN, lowerbound=20000, higherbound=700000, radius=50,
 print("Finished seeding from STEAM...",": ", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
 
 #%%
-# TODO New function
 print("Start loading data from NETCDF....",": ", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
 
 # TODO Change name of input here
-NETCDF_mfdataset = xr.open_mfdataset(simpath+'/Emissions_kg.nc')
-NETCDF_mfdataset.__setitem__('time',NETCDF_mfdataset.time + np.timedelta64(30,'D')) # Shift time coordinate from 02/07AM to 02/08 AM for emissions TODO make new files
-
-Bathimetry_mfdataset = xr.open_mfdataset(simpath+'/Bathimetry_conc.nc')
-
-Bathimetry_conc = Bathimetry_mfdataset.elevation
-
-print(Bathimetry_mfdataset)
-print(Bathimetry_conc)
+NETCDF_mfdataset = xr.open_mfdataset(simpath+'/Concentration_file_sed_ug_kg_fin.nc')
+# NETCDF_mfdataset.__setitem__('time',NETCDF_mfdataset.time + np.timedelta64(30,'D')) # Shift time coordinate from 02/07AM to 02/08 AM for emissions TODO make new files
 
 # 'Concentration_file_sed_ug_kg_fin.nc'
 # 'Concentration_file_water_ug_L_fin.nc'
 # 'Emissions_kg.nc'
 
+Bathimetry_mfdataset = xr.open_mfdataset(simpath+'/Bathimetry_conc.nc')
+Bathimetry_conc = Bathimetry_mfdataset.elevation
+Bathimetry_conc = Bathimetry_conc.where((Bathimetry_conc.longitude > long_min) & (Bathimetry_conc.longitude < long_max) &
+                                (Bathimetry_conc.latitude > lat_min) & (Bathimetry_conc.latitude < lat_max), drop=True)
+
+# print(Bathimetry_mfdataset)
+# print(Bathimetry_conc)
+
 # TODO Change name of data variable here (sed_conc_ug_kg, wat_conc_ug_L, emission_kg)
-# NETCDF=NETCDF_mfdataset.sed_conc_ug_kg 
+NETCDF=NETCDF_mfdataset.sed_conc_ug_kg
 # NETCDF=NETCDF_mfdataset.wat_conc_ug_L
-NETCDF=NETCDF_mfdataset.emission_kg
-print(NETCDF)
-
-# For emission data
-
-NETCDF=NETCDF.where((NETCDF.longitude > long_min) & (NETCDF.longitude < long_max) &
-                                (NETCDF.latitude > lat_min) & (NETCDF.latitude < lat_max), drop=True)
-
-
-Bathimetry_conc = Bathimetry_conc.where((NETCDF.longitude > long_min) & (NETCDF.longitude < long_max) &
-                                (NETCDF.latitude > lat_min) & (NETCDF.latitude < lat_max), drop=True)
-
-
-NETCDF_data = NETCDF
-lowerbound = 0.
-higherbound = 1e15
-Bathimetry_data = Bathimetry_conc
-mode = 'water_conc'
-gen_mode = 'mass'# mass, fixed, tot
-lon_resol= 0.05
-lat_resol = 0.05
-lowerbound=0. 
-higherbound=1.0e15
-radius=0.
-mass_element_ug=100e3
-number_of_elements=number_of_elements # specified at the beginning of the script
-number_of_elements_max=number_of_elements_max # specified at the beginning of the script
-origin_marker=1
-
-sel = np.where((NETCDF_data > lowerbound) & (NETCDF_data < higherbound))
-t = steam.time[sel[0]].data
-la = steam.latitude[sel[1]].data
-lo = steam.longitude[sel[2]].data
-
-t.size
-
-print(t)
-print('len t', len(t))
-print(la)
-print('len la', len(la))
-print(lo)
-print('len lo', len(lo))
-
-data = np.array(NETCDF_data.data)
-print(data.shape)
-
-data_2 = data[sel]
-# data = data[sel]
-print(data_2)
-print(data_2.shape)
-
-#%%
-lon_grid_m = []
-lat_grid_m = []
-lon_grid_m.append(6.371e6 * (np.cos(2 * (np.pi) * lo[1] / 360)) * lon_resol * (
-        2 * np.pi) / 360)  # 6.371e6: radius of Earth in m
-lat_grid_m.append(6.371e6 * la[1] * (2 * np.pi) / 360)
-
-lat_grid_m = np.array(lat_grid_m)
-lon_grid_m = np.array(lon_grid_m)
-Bathimetry_conc = []
-Bathimetry_conc.append(Bathimetry_data.sel(latitude=la[1],longitude=lo[1],method='nearest'))
-Bathimetry_conc = np.array(Bathimetry_conc)
-
-
-
-
-
-
-mode = mode
-number = 5
-depth = Bathimetry_conc
-sed_mix_depth = 0.03
-
-
-asd1 = -1 * np.random.uniform(0.0001, depth - 0.0001, number)
-
-asd2 = -1 * np.random.uniform(depth + 0.0001, depth + sed_mix_depth - 0.0001, number)
-
-asd3 = -1 * np.random.uniform(0.0001, 1 - 0.0001, number)
+# NETCDF=NETCDF_mfdataset.emission_kg
 
 
 # For concentration data
 
-# NETCDF=NETCDF_mfdataset.where((NETCDF.lon > long_min) & (NETCDF.lon < long_max) &
-#                                 (NETCDF.lat > lat_min) & (NETCDF.lat < lat_max) &
-#                                 (NETCDF.time >= Time_emiss_START) &
-#                                 (NETCDF.time <= Time_emiss_END), drop=True)
+NETCDF=NETCDF.where((NETCDF.lon > long_min) & (NETCDF.lon < long_max) &
+                                (NETCDF.lat > lat_min) & (NETCDF.lat < lat_max)&
+                                (NETCDF.time >= Time_emiss_START) &
+                                (NETCDF.time <= Time_emiss_END), drop=True)
 
-# Code as is, "TypeError: cannot directly convert an xarray.Dataset into a numpy array. Instead, create an xarray.DataArray first, either with indexing on the Dataset or by invoking the `to_array()` method
-# Changed NETCDF to DataArray
-# NETCDF = NETCDF.to_array(dim = "data")
-# AttributeError: 'DataArray' object has no attribute 'keys', -> temporaly removed control from code in chemicaldrift.py
-# START sel test
+# NETCDF=NETCDF.where((NETCDF.lon > long_min) & (NETCDF.lon < long_max) &
+#                                 (NETCDF.lat > lat_min) & (NETCDF.lat < lat_max), drop=True)
 
-# print(NETCDF2.keys())
-# NETCDF.data
-# print(NETCDF2)
+# For emission data
+NETCDF=NETCDF.where((NETCDF.longitude > long_min) & (NETCDF.longitude < long_max) &
+                                (NETCDF.latitude > lat_min) & (NETCDF.latitude < lat_max)&
+                                (NETCDF.time >= Time_emiss_START) &
+                                (NETCDF.time <= Time_emiss_END), drop=True)
+
+# NETCDF=NETCDF.where((NETCDF.longitude > long_min) & (NETCDF.longitude < long_max) &
+#                                 (NETCDF.latitude > lat_min) & (NETCDF.latitude < lat_max), drop=True)
 
 
-print("Finished loading data, start seeding from data....",": ", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
+# NETCDF_data = NETCDF
+# lowerbound = 0.
+# higherbound = 1e15
+# Bathimetry_data = Bathimetry_conc
+# mode = 'water_conc'
+# gen_mode = 'mass'# mass, fixed, tot
+# lon_resol= 0.05
+# lat_resol = 0.05
+# lowerbound=0. 
+# higherbound=1.0e15
+# radius=0.
+# mass_element_ug=100e3
+# number_of_elements=number_of_elements # specified at the beginning of the script
+# number_of_elements_max=number_of_elements_max # specified at the beginning of the script
+# origin_marker=1
 
-lon_grid_m_seed = (6.371e6 * (np.cos(2 * (np.pi) * lo[1] / 360)) * lon_resol * (2 * np.pi) / 360)  # 6.371e6: radius of Earth in m
-lat_grid_m_seed = (6.371e6 * lat_resol * (2 * np.pi) / 360)
+# sel = np.where((NETCDF_data > lowerbound) & (NETCDF_data < higherbound))
+# t = NETCDF_data.time[sel[0]].data
+# la = NETCDF_data.lat[sel[1]].data
+# lo = NETCDF_data.lon[sel[2]].data
+
+# t.size
+
+# print(t)
+# print('len t', len(t))
+# print(la)
+# print('len la', len(la))
+# print(lo)
+# print('len lo', len(lo))
+
+# data = np.array(NETCDF_data.data)
+# print(data.shape)
+
+# data_2 = data[sel]
+# # data = data[sel]
+# print(data_2)
+# print(data_2.shape)
+
+#%%
+# lon_grid_m = []
+# lat_grid_m = []
+# lon_grid_m.append(6.371e6 * (np.cos(2 * (np.pi) * lo[1] / 360)) * lon_resol * (
+#         2 * np.pi) / 360)  # 6.371e6: radius of Earth in m
+# lat_grid_m.append(6.371e6 * la[1] * (2 * np.pi) / 360)
+
+# lat_grid_m = np.array(lat_grid_m)
+# lon_grid_m = np.array(lon_grid_m)
+# Bathimetry_conc = []
+# Bathimetry_conc.append(Bathimetry_data.sel(latitude=la[1],longitude=lo[1],method='nearest'))
+# Bathimetry_conc = np.array(Bathimetry_conc)
+
+# print("Finished loading data, start seeding from data....",": ", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
+
+# lon_grid_m_seed = (6.371e6 * (np.cos(2 * (np.pi) * lo[1] / 360)) * lon_resol * (2 * np.pi) / 360)  # 6.371e6: radius of Earth in m
+# lat_grid_m_seed = (6.371e6 * lat_resol * (2 * np.pi) / 360)
 
 
 o.seed_from_NETCDF(NETCDF_data = NETCDF,
@@ -441,8 +415,8 @@ urcrnrlon=long_max
 llcrnrlat=lat_min
 urcrnrlat=lat_max
 
-grid = np.meshgrid(np.linspace(llcrnrlon, urcrnrlon, 1000), np.linspace(llcrnrlat, urcrnrlat, 1000))
-print(grid)
+# grid = np.meshgrid(np.linspace(llcrnrlon, urcrnrlon, 1000), np.linspace(llcrnrlat, urcrnrlat, 1000))
+# print(grid)
 
 
 

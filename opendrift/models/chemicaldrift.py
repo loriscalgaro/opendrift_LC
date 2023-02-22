@@ -2694,22 +2694,25 @@ class ChemicalDrift(OceanDrift):
             gen_mode="mass",
             
     ):
-        """Seed elements based on a dataarray with STEAM emission data
+        """Seed elements based on a dataarray with water/sediment concentration or direct emissions to water
 
             Arguments:
-                NETCDF_data: dataarray with concentration or emission data, with coordinates
-                    * latitude   (latitude) float32
-                    * longitude  (longitude) float32
-                    * time       (time) datetime64[ns]
-                mode: water_conc (seed from concentration in water colums), sed_conc (seed from sediment concentration), emission (seed from load)
-                radius:             scalar, unit: meters
+                NETCDF_data:        dataarray with concentration or emission data, with coordinates
+                    * latitude      (latitude) float32
+                    * longitude     (longitude) float32
+                    * time          (time) datetime64[ns]
+                Bathimetry_data:    dataarray with bathimetry data, MUST have the same grid of NETCDF_data and no time dimension
+                    * latitude      (latitude) float32
+                    * longitude     (longitude) float32
+                mode: water_conc    (seed from concentration in water colum), sed_conc (seed from sediment concentration), emission (seed from direct discharge to water)
+                radius:             scalar, unit: meters, elements will be created in a dircular area around coordinates
                 lowerbound:         scalar, elements with lower values are discarded
                 higherbound:        scalar, elements with higher values are discarded
                 number_of_elements: scalar, number of elements created for each gridpoint
                 mass_element_ug:    scalar, maximum mass of elements if number_of_elements is not specificed
-                lon_resol:     scalar, longitude resolution of the NETCDF dataset
-                lat_resol:     scalar, latitude resolution of the NETCDF dataset
-                gen_mode: mass (elements generated from mass), fixed (fixed number of elements for each data point)
+                lon_resol:          scalar, longitude resolution of the NETCDF dataset
+                lat_resol:          scalar, latitude resolution of the NETCDF dataset
+                gen_mode: mass      (elements generated from mass), fixed (fixed number of elements for each data point)
             """
 
         # mass_element_ug=1e3     # 1e3 - 1 element is 1mg chemical
