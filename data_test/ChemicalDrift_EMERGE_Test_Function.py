@@ -3,7 +3,7 @@
 # """
 # Created on Thu Jul  9 12:43:02 2020
 
-# @author: manuel
+# @author: loris
 # """
 
 import numpy as np
@@ -176,6 +176,7 @@ o.set_config('general:use_auto_landmask',True)
 print("Loading currents, T, and S Readers....", datetime.now().strftime("%Y_%m_%d-%H_%M_%S")) 
 
 r_uovo_glo  = reader_netCDF_CF_generic.Reader(simpath+'/Test_uo_vo.nc')
+# print(r_uovo_glo)
 r_so        = reader_netCDF_CF_generic.Reader(simpath+'/Test_so.nc')
 r_thetao    = reader_netCDF_CF_generic.Reader(simpath+'/Test_thetao.nc')
 o.add_reader(r_uovo_glo)
@@ -214,9 +215,37 @@ SCRUB_W_OPEN=SCRUB_W_OPEN.where((SCRUB_W_OPEN.longitude > long_min) & (SCRUB_W_O
                                 (SCRUB_W_OPEN.time >= Time_emiss_START) &
                                 (SCRUB_W_OPEN.time <= Time_emiss_END), drop=True)
 
-print(SCRUB_W_OPEN)
-SCRUB_W_OPEN.attrs
-SCRUB_W_OPEN.data
+SCRUB_W_OPEN[1,:,:].plot(cmap=plt.cm.viridis, robust = True)
+
+# print(SCRUB_W_OPEN)
+# SCRUB_W_OPEN.attrs
+# SCRUB_W_OPEN.data
+steam = SCRUB_W_OPEN
+lowerbound = 0.
+higherbound = 1e15
+
+
+sel = np.where((steam > lowerbound) & (steam < higherbound))
+t = steam.time[sel[0]].data
+la = steam.latitude[sel[1]].data
+lo = steam.longitude[sel[2]].data
+
+print(t)
+print('len t', len(t))
+print(la)
+print('len la', len(la))
+print(lo)
+print('len lo', len(lo))
+
+
+data = np.array(steam.data)
+print(data.shape)
+
+data_2 = data[sel]
+print(data_2)
+print(data_2.shape)
+
+
 
 print("Finished loading data, start seeding from data....",": ", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
 
@@ -232,13 +261,14 @@ print("Start loading data from NETCDF....",": ", datetime.now().strftime("%Y_%m_
 
 # TODO Change name of input here
 NETCDF_mfdataset = xr.open_mfdataset(simpath+'/Emissions_kg.nc')
+NETCDF_mfdataset.__setitem__('time',NETCDF_mfdataset.time + np.timedelta64(30,'D')) # Shift time coordinate from 02/07AM to 02/08 AM for emissions TODO make new files
+
 Bathimetry_mfdataset = xr.open_mfdataset(simpath+'/Bathimetry_conc.nc')
 
 Bathimetry_conc = Bathimetry_mfdataset.elevation
 
 print(Bathimetry_mfdataset)
 print(Bathimetry_conc)
-
 
 # 'Concentration_file_sed_ug_kg_fin.nc'
 # 'Concentration_file_water_ug_L_fin.nc'
@@ -259,6 +289,76 @@ NETCDF=NETCDF.where((NETCDF.longitude > long_min) & (NETCDF.longitude < long_max
 Bathimetry_conc = Bathimetry_conc.where((NETCDF.longitude > long_min) & (NETCDF.longitude < long_max) &
                                 (NETCDF.latitude > lat_min) & (NETCDF.latitude < lat_max), drop=True)
 
+
+NETCDF_data = NETCDF
+lowerbound = 0.
+higherbound = 1e15
+Bathimetry_data = Bathimetry_conc
+mode = 'water_conc'
+gen_mode = 'mass'# mass, fixed, tot
+lon_resol= 0.05
+lat_resol = 0.05
+lowerbound=0. 
+higherbound=1.0e15
+radius=0.
+mass_element_ug=100e3
+number_of_elements=number_of_elements # specified at the beginning of the script
+number_of_elements_max=number_of_elements_max # specified at the beginning of the script
+origin_marker=1
+
+sel = np.where((NETCDF_data > lowerbound) & (NETCDF_data < higherbound))
+t = steam.time[sel[0]].data
+la = steam.latitude[sel[1]].data
+lo = steam.longitude[sel[2]].data
+
+t.size
+
+print(t)
+print('len t', len(t))
+print(la)
+print('len la', len(la))
+print(lo)
+print('len lo', len(lo))
+
+data = np.array(NETCDF_data.data)
+print(data.shape)
+
+data_2 = data[sel]
+# data = data[sel]
+print(data_2)
+print(data_2.shape)
+
+#%%
+lon_grid_m = []
+lat_grid_m = []
+lon_grid_m.append(6.371e6 * (np.cos(2 * (np.pi) * lo[1] / 360)) * lon_resol * (
+        2 * np.pi) / 360)  # 6.371e6: radius of Earth in m
+lat_grid_m.append(6.371e6 * la[1] * (2 * np.pi) / 360)
+
+lat_grid_m = np.array(lat_grid_m)
+lon_grid_m = np.array(lon_grid_m)
+Bathimetry_conc = []
+Bathimetry_conc.append(Bathimetry_data.sel(latitude=la[1],longitude=lo[1],method='nearest'))
+Bathimetry_conc = np.array(Bathimetry_conc)
+
+
+
+
+
+
+mode = mode
+number = 5
+depth = Bathimetry_conc
+sed_mix_depth = 0.03
+
+
+asd1 = -1 * np.random.uniform(0.0001, depth - 0.0001, number)
+
+asd2 = -1 * np.random.uniform(depth + 0.0001, depth + sed_mix_depth - 0.0001, number)
+
+asd3 = -1 * np.random.uniform(0.0001, 1 - 0.0001, number)
+
+
 # For concentration data
 
 # NETCDF=NETCDF_mfdataset.where((NETCDF.lon > long_min) & (NETCDF.lon < long_max) &
@@ -272,33 +372,6 @@ Bathimetry_conc = Bathimetry_conc.where((NETCDF.longitude > long_min) & (NETCDF.
 # AttributeError: 'DataArray' object has no attribute 'keys', -> temporaly removed control from code in chemicaldrift.py
 # START sel test
 
-lowerbound=0.
-higherbound=1.0e15
-
-NETCDF_data = NETCDF
-
-
-# print(NETCDF_data.lat.data)
-# NETCDF_data.plot()
-# sel = np.where((NETCDF_data.data > lowerbound) & (NETCDF_data.data < higherbound))
-sel = np.where((NETCDF_data > lowerbound) & (NETCDF_data < higherbound))
-print('sel NECDF')
-print(sel)
-
-t = NETCDF_data.time[sel[0]].data
-print('t')
-print(t)
-la = NETCDF_data.lat[sel[1]].data
-print('la')
-print(la)
-# This print only one value of latitude for all the dataset
-
-lo = NETCDF_data.lon[sel[2]].data
-print('lo')
-print(lo)
-        
-        
-        
 # print(NETCDF2.keys())
 # NETCDF.data
 # print(NETCDF2)
@@ -306,16 +379,20 @@ print(lo)
 
 print("Finished loading data, start seeding from data....",": ", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
 
+lon_grid_m_seed = (6.371e6 * (np.cos(2 * (np.pi) * lo[1] / 360)) * lon_resol * (2 * np.pi) / 360)  # 6.371e6: radius of Earth in m
+lat_grid_m_seed = (6.371e6 * lat_resol * (2 * np.pi) / 360)
+
+
 o.seed_from_NETCDF(NETCDF_data = NETCDF,
                    Bathimetry_data = Bathimetry_conc,
-                   mode = 'water_conc',
-                   gen_mode = 'mass',# mass, fixed, tot
+                   mode = 'sed_conc', # sed_conc # emission
+                   gen_mode = 'mass',# mass, # fixed, 
                    lon_resol= 0.05, lat_resol = 0.05, 
                    lowerbound=0., higherbound=1.0e15, 
-                   radius=0, 
-                   mass_element_ug=100e3, 
+                   radius=0., 
+                   mass_element_ug=100e18, 
                    number_of_elements=number_of_elements, # specified at the beginning of the script
-                   number_of_elements_max=number_of_elements_max, # specified at the beginning of the script
+                   # number_of_elements_max=number_of_elements_max, # specified at the beginning of the script
                    origin_marker=1)
 
 
@@ -337,6 +414,9 @@ print("End of simulation....","End:", datetime.now().strftime("%Y_%m_%d-%H_%M_%S
 # Print and plot results
 
 o.simulation_summary(chemical_compound)
+
+
+
 
 #%% Making video to check if elements moved correctly
 print("Making video....","Start:", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))

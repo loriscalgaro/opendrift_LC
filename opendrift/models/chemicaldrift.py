@@ -468,11 +468,11 @@ class ChemicalDrift(OceanDrift):
             num_elements = self.get_config('seed:number')
 
         if 'specie' in kwargs:
-            print('num_elements', num_elements)
-            try:
-                print('len specie:', len(kwargs['specie']))
-            except:
-                print('specie:', kwargs['specie'])
+            # print('num_elements', num_elements)
+            # try:
+            #     print('len specie:', len(kwargs['specie']))
+            # except:
+            #     print('specie:', kwargs['specie'])
 
             init_specie = np.ones(num_elements, dtype=int)
             init_specie[:] = kwargs['specie']
@@ -2597,8 +2597,6 @@ class ChemicalDrift(OceanDrift):
                     * latitude   (latitude) float32
                     * longitude  (longitude) float32
                     * time       (time) datetime64[ns]
-
-
                 radius:      scalar, unit: meters
                 lowerbound:  scalar, elements with lower values are discarded
             """
@@ -2657,28 +2655,24 @@ class ChemicalDrift(OceanDrift):
             mode,
             mass_element_ug=None,
             data_point=None,
-            n_elements=None,
-            n_max=None,
-            total_mass=None,
-            mass_ug=None
-    ):
-        if mode == 'mass' and mass_element_ug is not None and data_point is not None and mass_ug is not None:
-            return np.ceil(np.array(mass_ug / mass_element_ug)).astype('int')
+            n_elements=None):
+
+        if mode == 'mass' and mass_element_ug is not None and data_point is not None:
+            # return np.ceil(np.array(data_point / mass_element_ug)).astype('int')
+            return int(np.ceil(np.array(data_point / mass_element_ug)))
         elif mode == 'fixed' and n_elements is not None and n_elements > 0:
             return n_elements
-        elif mode == 'tot' and data_point is not None and n_max is not None and total_mass is not None and mass_ug is not None:
-            mass_element_ug = total_mass / n_max
-            return np.ceil(np.array(mass_ug / mass_element_ug)).astype('int')
         else:
             raise ValueError("Incorrect combination of mode and input - undefined inputs")
 
 
     @staticmethod
-    def _get_z(mode, number, depth=None, mix_depth=None):
+    def _get_z(mode, number, depth=None, sed_mix_depth=None):
+        print(depth)
         if mode == "water_conc" and depth is not None:
             return -1 * np.random.uniform(0.0001, depth - 0.0001, number)
-        elif mode == "sed_conc" and depth is not None and mix_depth is not None:
-            return  -1 * np.random.uniform(depth + 0.0001, depth + mix_depth - 0.0001, number)
+        elif mode == "sed_conc" and depth is not None and sed_mix_depth is not None:
+            return  -1 * np.random.uniform(depth + 0.0001, depth + sed_mix_depth - 0.0001, number)
         elif mode == "emissions":
             return -1 * np.random.uniform(0.0001, 1 - 0.0001, number)
         else:
@@ -2694,11 +2688,8 @@ class ChemicalDrift(OceanDrift):
             lowerbound=0,
             higherbound=np.inf,
             radius=0,
-            scrubber_type="open_loop",
-            chemical_compound="Copper",
             mass_element_ug=100e3,
             number_of_elements=None,
-            number_of_elements_max=None,
             origin_marker=1,
             gen_mode="mass",
             
@@ -2715,113 +2706,89 @@ class ChemicalDrift(OceanDrift):
                 lowerbound:         scalar, elements with lower values are discarded
                 higherbound:        scalar, elements with higher values are discarded
                 number_of_elements: scalar, number of elements created for each gridpoint
-                number_of_elements_max: scalar, approximate number of ements to be created in the simulation # TODO add this mode to the function
                 mass_element_ug:    scalar, maximum mass of elements if number_of_elements is not specificed
                 lon_resol:     scalar, longitude resolution of the NETCDF dataset
                 lat_resol:     scalar, latitude resolution of the NETCDF dataset
-                gen_mode: mass (elements generated from mass), tot (elements generated from number of elements), fixed
+                gen_mode: mass (elements generated from mass), fixed (fixed number of elements for each data point)
             """
-        if chemical_compound is None:
-            chemical_compound = self.get_config('chemical:compound')
 
-        # mass_element_ug=1e3      # 1e3 - 1 element is 1mg chemical
-        # mass_element_ug=20e3      # 100e3 - 1 element is 100mg chemical
-        # mass_element_ug=100e3      # 100e3 - 1 element is 100mg chemical
+        # mass_element_ug=1e3     # 1e3 - 1 element is 1mg chemical
+        # mass_element_ug=100e3   # 100e3 - 1 element is 100mg chemical
         # mass_element_ug=1e6     # 1e6 - 1 element is 1g chemical
+        # mass_element_ug=1e9     # 1e9 - 1 element is 1kg chemical
         
-        # TODO: Are we sure that .data is needed here if below ther is data = np.array(NETCDF_data.data)?
-
         sel = np.where((NETCDF_data > lowerbound) & (NETCDF_data < higherbound))
         t = NETCDF_data.time[sel[0]].data
         la = NETCDF_data.latitude[sel[1]].data
         lo = NETCDF_data.longitude[sel[2]].data
         
-        print(len(t))
-        print(len(la))
-        print(len(lo))
-
         lon_array = lo + lon_resol / 2  # find center of pixel for volume of water / sediments
         lat_array = la + lat_resol / 2  # find center of pixel for volume of water / sediments
         
-        data = (NETCDF_data.data)
+        data = np.array(NETCDF_data.data)
+        data = data[sel]
+        sed_mixing_depth = np.array(self.get_config('chemical:sediment:mixing_depth'))
 
         if mode == 'sed_conc':
-            sed_porosity = self.get_config('chemical:sediment:porosity')  # fraction of sediment volume made of water
-            sed_density_dry = self.get_config('chemical:sediment:density')  # kg/m3 d.w.
-            sed_density_wet = ((sed_density_dry * (1 - sed_porosity)) * 1e-3)  # kg/L wet weight, kg/m3 * 1e-3 = kg/L
-            # sed_conc_ug_kg is ug/kg d.w. (dry weight)
-    
+            sed_porosity = np.array(self.get_config('chemical:sediment:porosity'))  # fraction of sediment volume made of water
+            sed_density_dry = np.array(self.get_config('chemical:sediment:density'))  # kg/m3 d.w.
+            sed_density_wet = np.array((sed_density_dry * (1 - sed_porosity)) * 1e-3)  # kg/L wet weight, kg/m3 * 1e-3 = kg/L
             self.init_species()
             self.init_transfer_rates()
 
+        lat_grid_m = np.array([6.371e6 * lat_resol * (2 * np.pi) / 360])
+
         for i in range(0, t.size):
-            lon_grid_m = []
-            lat_grid_m = []
-            
+            lon_grid_m = None
+            Bathimetry_conc = None
+
+            if mode != 'emissions':
+                lon_grid_m =  np.array([(6.371e6 * (np.cos(2 * (np.pi) * lo[i] / 360)) * lon_resol * (2 * np.pi) / 360)])  # 6.371e6: radius of Earth in m
+                Bathimetry_conc = np.array([(Bathimetry_data.sel(latitude=la[i],longitude=lo[i],method='nearest'))])
+
             if mode == 'water_conc':
-                Bathimetry_conc = []
-                Bathimetry_conc.append(Bathimetry_data.sel(latitude=la[i],longitude=lo[i],method='nearest'))
-                lon_grid_m.append(6.371e6 * (np.cos(2 * (np.pi) * lo[i] / 360)) * lon_resol * (
-                        2 * np.pi) / 360)  # 6.371e6: radius of Earth in m
-                lat_grid_m.append(6.371e6 * la[i] * (2 * np.pi) / 360)
-                
-                lat_grid_m = np.array(lat_grid_m)
-                lon_grid_m = np.array(lon_grid_m)
-                Bathimetry_conc = np.array(Bathimetry_conc)
                 pixel_volume = Bathimetry_conc * lon_grid_m * lat_grid_m
-                
-                print(len(Bathimetry_conc))
-                print(len(lat_grid_m))
-                print(len(lon_grid_m))
-                print(len(pixel_volume))
-                
-                
-                
-            
-            # concentration is ug/L, volume is m: m3 * 1e3 = L
-                mass_ug = (data[sel][i] * (pixel_volume * 1e3))
-            
+
+                # concentration is ug/L, volume is m: m3 * 1e3 = L
+                mass_ug = (data[i] * (pixel_volume * 1e3))
+
             if mode == 'sed_conc':
-                data_sed = data[sel][i]* ((1 - sed_porosity) * sed_density_wet) # from ug/kg d.w. -> ug/kg wet weight ->ug/L wet sediment
-                
-                for j in range(len(la[i])) :
-                    lon_grid_m.append(6.371e6 * (np.cos(2 * (np.pi) * lo[i][j] / 360)) * lon_resol * (
-                            2 * np.pi) / 360)  # 6.371e6: radius of Earth in m
-                    lat_grid_m.append(6.371e6 * la[i][j] * (2 * np.pi) / 360)
-                
-                    lat_grid_m = np.array(lat_grid_m)
-                    lon_grid_m = np.array(lon_grid_m)
-                    Bathimetry_conc = np.array(Bathimetry_conc)    
-                    pixel_volume = self.get_config('chemical:sediment:mixing_depth') * (lon_grid_m * lat_grid_m)
-                
+                # sed_conc_ug_kg is ug/kg d.w. (dry weight)
+                data_sed = data[i]* ((1 - sed_porosity) * sed_density_wet) # from ug/kg d.w. -> ug/kg wet weight -> ug/L wet sediment
+
+                pixel_volume =  sed_mixing_depth * (lon_grid_m * lat_grid_m) # m3
+                # concentration is ug/L, volume is m: m3 * 1e3 = L
                 mass_ug = (data_sed * (pixel_volume * 1e3))
 
-
             if mode == 'emissions':
-                mass_ug = data[sel][i]
+                # mass_ug = data[sel][i]*1e9 # emissions is kg, 1 kg = 1e9 ug
+                mass_ug = data[i]*1e9 # emissions is kg, 1 kg = 1e9 ug
 
             number = self._get_number_of_elements(
                 mode=gen_mode,
                 mass_element_ug=mass_element_ug,
-                data_point=data[sel][i],
-                n_elements=number_of_elements,
-                n_max=number_of_elements_max,
-                total_mass=np.sum((data[sel] * (pixel_volume[sel] * 1e3))),
-                mass_ug=mass_ug
-            )
+                data_point=mass_ug,
+                n_elements=number_of_elements)
 
             time = datetime.utcfromtimestamp(
                 (t[i] - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's'))
-            
-            
-            # TODO specie=self.num_srev to be added to seed parameters for sediments 
-            if mode == 'sed_conc':
-                specie_elements = 'num_srev' # Name of specie for sediment elements
-            else:
-                specie_elements = 'num_lmm' # Name of specie for dissolved elements
 
-            if mass_element_ug > 0:
-                z = self._get_z(mode, Bathimetry_conc, self.get_config('chemical:sediment:mixing_depth'))
+            # specie to be added to seed parameters for sediments and water
+            if mode == 'sed_conc':
+                specie_elements = 4 # 'num_srev' # Name of specie for sediment elements
+            else:
+                specie_elements = 0 # 'num_lmm' # Name of specie for dissolved elements
+
+            if gen_mode == 'fixed':
+                mass_element_seed_ug = mass_ug / number
+            elif gen_mode == 'mass':
+                mass_element_seed_ug = mass_element_ug
+
+            if mass_element_seed_ug > 0:
+                z = self._get_z(mode = mode,
+                                number = number, 
+                                depth = Bathimetry_conc, 
+                                sed_mix_depth = sed_mixing_depth)
 
                 self.seed_elements(
                     lon=lon_array[i] * np.ones(number),
@@ -2829,32 +2796,34 @@ class ChemicalDrift(OceanDrift):
                     radius=radius,
                     number=number,
                     time=time,
-                    mass=mass_element_ug,
+                    mass=mass_element_seed_ug,
                     mass_degraded=0,
                     mass_volatilized=0,
                     specie = specie_elements, # To be verified
                     z=z,
-                    origin_marker=origin_marker
-                )
+                    origin_marker=origin_marker)
 
-                mass_residual = (data[sel][i] * (pixel_volume[i] * 1e3)) - number * mass_element_ug
+                if gen_mode != "fixed":
+                    mass_residual = (mass_ug) - (number * mass_element_seed_ug)
 
-                if mass_residual > 0 and gen_mode != "fixed":
-                    z = self._get_z(mode, Bathimetry_conc, self.get_config('chemical:sediment:mixing_depth'))
+                    if mass_residual > 0:
+                        z = self._get_z(mode = mode,
+                                        number = 1, 
+                                        depth = Bathimetry_conc, 
+                                        sed_mix_depth = sed_mixing_depth)
 
-                    self.seed_elements(
-                        lon=lon_array[i],
-                        lat=lat_array[i],
-                        radius=radius,
-                        number=1,
-                        time=time,
-                        mass=mass_residual,
-                        mass_degraded=0,
-                        mass_volatilized=0,
-                        specie = specie_elements, # To be verified
-                        z=z,
-                        origin_marker=origin_marker
-                    )
+                        self.seed_elements(
+                            lon=lon_array[i],
+                            lat=lat_array[i],
+                            radius=radius,
+                            number=1,
+                            time=time,
+                            mass=mass_residual,
+                            mass_degraded=0,
+                            mass_volatilized=0,
+                            specie = specie_elements, # To be verified
+                            z=z,
+                            origin_marker=origin_marker)
 
 
     def init_chemical_compound(self, chemical_compound=None):
