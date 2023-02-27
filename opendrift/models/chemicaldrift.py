@@ -2652,15 +2652,16 @@ class ChemicalDrift(OceanDrift):
 
     @staticmethod
     def _get_number_of_elements(
-            mode,
+            g_mode,
             mass_element_ug=None,
             data_point=None,
             n_elements=None):
+        # print(n_elements)
+        # print(g_mode)
 
-        if mode == 'mass' and mass_element_ug is not None and data_point is not None:
-            # return np.ceil(np.array(data_point / mass_element_ug)).astype('int')
+        if g_mode == "mass" and mass_element_ug is not None and data_point is not None:
             return int(np.ceil(np.array(data_point / mass_element_ug)))
-        elif mode == 'fixed' and n_elements is not None and n_elements > 0:
+        elif g_mode == "fixed" and n_elements is not None and n_elements > 0.:
             return n_elements
         else:
             raise ValueError("Incorrect combination of mode and input - undefined inputs")
@@ -2668,7 +2669,7 @@ class ChemicalDrift(OceanDrift):
 
     @staticmethod
     def _get_z(mode, number, depth=None, sed_mix_depth=None):
-        print(depth)
+        # print('get_z ',depth)
         if mode == "water_conc" and depth is not None:
             return -1 * np.random.uniform(0.0001, depth - 0.0001, number)
         elif mode == "sed_conc" and depth is not None and sed_mix_depth is not None:
@@ -2682,6 +2683,7 @@ class ChemicalDrift(OceanDrift):
             self,
             NETCDF_data,
             Bathimetry_data,
+            Bathimetry_seed_data,
             mode='water_conc',
             lon_resol=0.05,
             lat_resol=0.05,
@@ -2702,6 +2704,9 @@ class ChemicalDrift(OceanDrift):
                     * longitude     (longitude) float32
                     * time          (time) datetime64[ns]
                 Bathimetry_data:    dataarray with bathimetry data, MUST have the same grid of NETCDF_data and no time dimension
+                    * latitude      (latitude) float32
+                    * longitude     (longitude) float32
+                Bathimetry_seed_data:    dataarray with bathimetry data, MUST be the same used for running the simulation and no time dimension
                     * latitude      (latitude) float32
                     * longitude     (longitude) float32
                 mode: water_conc    (seed from concentration in water colum), sed_conc (seed from sediment concentration), emission (seed from direct discharge to water)
@@ -2740,35 +2745,43 @@ class ChemicalDrift(OceanDrift):
             self.init_transfer_rates()
 
         lat_grid_m = np.array([6.371e6 * lat_resol * (2 * np.pi) / 360])
+        # mass_ug = np.array([])
 
         for i in range(0, t.size):
+            # print('start', i)
             lon_grid_m = None
             Bathimetry_conc = None
 
             if mode != 'emissions':
                 lon_grid_m =  np.array([(6.371e6 * (np.cos(2 * (np.pi) * lo[i] / 360)) * lon_resol * (2 * np.pi) / 360)])  # 6.371e6: radius of Earth in m
                 Bathimetry_conc = np.array([(Bathimetry_data.sel(latitude=la[i],longitude=lo[i],method='nearest'))])
+                # print('Bathimetry_conc ', Bathimetry_conc)
+                # depth of seeding must be the same as the one considered for resuspention process
+                Bathimetry_seed = np.array([(Bathimetry_seed_data.sel(latitude=lat_array[i],longitude=lon_array[i],method='nearest'))])
+                # print('lat ', lat_array[i])
+                # print('lon ',lon_array[i])
 
             if mode == 'water_conc':
                 pixel_volume = Bathimetry_conc * lon_grid_m * lat_grid_m
-
                 # concentration is ug/L, volume is m: m3 * 1e3 = L
                 mass_ug = (data[i] * (pixel_volume * 1e3))
-
-            if mode == 'sed_conc':
+            elif mode == 'sed_conc':
                 # sed_conc_ug_kg is ug/kg d.w. (dry weight)
                 data_sed = data[i]* ((1 - sed_porosity) * sed_density_wet) # from ug/kg d.w. -> ug/kg wet weight -> ug/L wet sediment
 
                 pixel_volume =  sed_mixing_depth * (lon_grid_m * lat_grid_m) # m3
                 # concentration is ug/L, volume is m: m3 * 1e3 = L
                 mass_ug = (data_sed * (pixel_volume * 1e3))
-
-            if mode == 'emissions':
-                # mass_ug = data[sel][i]*1e9 # emissions is kg, 1 kg = 1e9 ug
+            elif mode == 'emissions':
                 mass_ug = data[i]*1e9 # emissions is kg, 1 kg = 1e9 ug
+            else:
+                raise ValueError("Incorrect mode")
+            
+                
+            # print(mass_ug)
 
             number = self._get_number_of_elements(
-                mode=gen_mode,
+                g_mode=gen_mode,
                 mass_element_ug=mass_element_ug,
                 data_point=mass_ug,
                 n_elements=number_of_elements)
@@ -2778,7 +2791,7 @@ class ChemicalDrift(OceanDrift):
 
             # specie to be added to seed parameters for sediments and water
             if mode == 'sed_conc':
-                specie_elements = 4 # 'num_srev' # Name of specie for sediment elements
+                specie_elements = 3 # 'num_srev' # Name of specie for sediment elements
             else:
                 specie_elements = 0 # 'num_lmm' # Name of specie for dissolved elements
 
@@ -2790,7 +2803,7 @@ class ChemicalDrift(OceanDrift):
             if mass_element_seed_ug > 0:
                 z = self._get_z(mode = mode,
                                 number = number, 
-                                depth = Bathimetry_conc, 
+                                depth = Bathimetry_seed, # depth must be the same as the one considered for resuspention process
                                 sed_mix_depth = sed_mixing_depth)
 
                 self.seed_elements(
@@ -2827,6 +2840,8 @@ class ChemicalDrift(OceanDrift):
                             specie = specie_elements, # To be verified
                             z=z,
                             origin_marker=origin_marker)
+
+            # print('end', i)
 
 
     def init_chemical_compound(self, chemical_compound=None):

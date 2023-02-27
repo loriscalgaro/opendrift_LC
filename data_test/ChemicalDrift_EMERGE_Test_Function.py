@@ -51,20 +51,15 @@ volatilization=True
 ### Set partitioning and dissociation
 DissociationMode = 'nondiss'
 ### Set time interval for simulation 
-step=12 # 3                   # simulation time step in hours
-Time_step_output = (60*60*24) # simulation output time step in seconds
-simulated_days=4         # days of simulation: should be two days longer than the emissions
+step=8 # 3                   # simulation time step in hours
+Time_step_output = (60*60*8) # simulation output time step in seconds
+simulated_days=6         # days of simulation: should be two days longer than the emissions
 ### Set region for simulation
 region="NA_Total"
 long_min = 12.0
 long_max = 15.35
 lat_min = 44.35
 lat_max = 45.8
-
-mass_element_ug=1e8    # maximum mass of elements (micrograms)
-number_of_elements_max=None #Max number of elements estimated for all the simulation is to be written here  
-number_of_elements=None # Number of elements produced for each grid cell
-
 
 strandingON=False        # 
 offline=True             # offline with local NCDF files  
@@ -205,6 +200,10 @@ print("Loading wind, mlost, spm, depth, and doc Readers....","END:", datetime.no
 
 #%% Seeding elements from STEAM scrubbers discharge data: WARNING: This loads all the file to memory!!!!
 # Original function called here
+mass_element_ug_S1=1e8    # maximum mass of elements (micrograms)
+number_of_elements_max=None
+
+
 print("Start loading data from STEAM....",": ", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
 
 SCRUB_W_OPEN_mfdataset = xr.open_mfdataset(simpath+'/Test_SCRUB_W_OPEN.nc')
@@ -251,46 +250,73 @@ print("Finished loading data, start seeding from data....",": ", datetime.now().
 
 o.seed_from_STEAM(SCRUB_W_OPEN, lowerbound=20000, higherbound=700000, radius=50, # l=1000, h=200000
                   scrubber_type="open_loop", chemical_compound=chemical_compound,
-                  mass_element_ug=1e8, number_of_elements=number_of_elements_max, origin_marker = 1)
+                  mass_element_ug_S1=1e8, number_of_elements=number_of_elements_max, origin_marker = 1)
         
 print("Finished seeding from STEAM...",": ", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
 
 #%%
 print("Start loading data from NETCDF....",": ", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
 
+mode_N1 = "sed_conc" # water_conc, sed_conc, emission
+# mode_N1 = "water_conc"
+# mode_N1 = "emission"
+
+# TODO Check this for error
+gen_mode_N1 = "fixed"# mass, # fixed, 
+# gen_mode_N1 = "mass"
+
+if gen_mode_N1 == "mass":
+    mass_element_ug_N1=1e18    # maximum mass of elements (micrograms)
+    number_of_elements_N1=None # Number of elements produced for each grid cell
+if gen_mode_N1 == "fixed":
+    number_of_elements_N1=10 # Number of elements produced for each grid cell
+    mass_element_ug_N1=None    # maximum mass of elements (micrograms)
+    
 # TODO Change name of input here
 NETCDF_mfdataset = xr.open_mfdataset(simpath+'/Concentration_file_sed_ug_kg_fin.nc')
+NETCDF_mfdataset=NETCDF_mfdataset.rename({'lat': 'latitude','lon': 'longitude'}) # Change name of dimentions lon, lat if needed
 # NETCDF_mfdataset.__setitem__('time',NETCDF_mfdataset.time + np.timedelta64(30,'D')) # Shift time coordinate from 02/07AM to 02/08 AM for emissions TODO make new files
 
-# 'Concentration_file_sed_ug_kg_fin.nc'
-# 'Concentration_file_water_ug_L_fin.nc'
-# 'Emissions_kg.nc'
 
+# Find spatial resolution of dataset
+lat_resultion_data = NETCDF_mfdataset.latitude 
+lat_resol_N1 = np.array(abs(lat_resultion_data[0]-lat_resultion_data[1]))
+lat_grid_radius = (6.371e6 * lat_resol_N1 * (2 * np.pi) / 360)
+
+lon_resultion_data = NETCDF_mfdataset.longitude
+lon_resol_N1 = np.array(abs(lon_resultion_data[0]-lon_resultion_data[1]))
+lon_resol_radius_ls = []
+for i in range(len(NETCDF_mfdataset.longitude)-2):
+    lon_resol_radius_ls.append((6.371e6 * (np.cos(2 * (np.pi) * lon_resultion_data[i] / 360)) * lon_resol_N1 * (2 * np.pi) / 360))
+
+lon_resol_radius = np.mean(np.array(lon_resol_radius_ls))
+# Set radius of dataset cell
+radius_N1 = min(np.array([lat_grid_radius, lon_resol_radius]))
+
+
+# Load bathimetry for mass calculation (same grid of concentration)
 Bathimetry_mfdataset = xr.open_mfdataset(simpath+'/Bathimetry_conc.nc')
+# print(Bathimetry_mfdataset)
 Bathimetry_conc = Bathimetry_mfdataset.elevation
 Bathimetry_conc = Bathimetry_conc.where((Bathimetry_conc.longitude > long_min) & (Bathimetry_conc.longitude < long_max) &
                                 (Bathimetry_conc.latitude > lat_min) & (Bathimetry_conc.latitude < lat_max), drop=True)
-
-# print(Bathimetry_mfdataset)
 # print(Bathimetry_conc)
 
-# TODO Change name of data variable here (sed_conc_ug_kg, wat_conc_ug_L, emission_kg)
-NETCDF=NETCDF_mfdataset.sed_conc_ug_kg
-# NETCDF=NETCDF_mfdataset.wat_conc_ug_L
-# NETCDF=NETCDF_mfdataset.emission_kg
+# Load bathimetry for seeding (same as simulation)
+Bathimetry_seed_data_mfdataset = xr.open_mfdataset(simpath+'/Bathimetry.nc')
+Bathimetry_seed_data_mfdataset=Bathimetry_seed_data_mfdataset.rename({'lat': 'latitude','lon': 'longitude'})
+Bathimetry_seed_data = Bathimetry_seed_data_mfdataset.elevation
+# print(Bathimetry_seed_data)
+
+# Change name of data variable (sed_conc_ug_kg, wat_conc_ug_L, emission_kg)
+if mode_N1 == 'sed_conc': # water_conc, sed_conc, emission
+    NETCDF=NETCDF_mfdataset.sed_conc_ug_kg
+elif mode_N1 == 'water_conc':
+    NETCDF=NETCDF_mfdataset.wat_conc_ug_L
+elif mode_N1 == 'water_conc':
+    NETCDF=NETCDF_mfdataset.emission_kg
 
 
-# For concentration data
-
-NETCDF=NETCDF.where((NETCDF.lon > long_min) & (NETCDF.lon < long_max) &
-                                (NETCDF.lat > lat_min) & (NETCDF.lat < lat_max)&
-                                (NETCDF.time >= Time_emiss_START) &
-                                (NETCDF.time <= Time_emiss_END), drop=True)
-
-# NETCDF=NETCDF.where((NETCDF.lon > long_min) & (NETCDF.lon < long_max) &
-#                                 (NETCDF.lat > lat_min) & (NETCDF.lat < lat_max), drop=True)
-
-# For emission data
 NETCDF=NETCDF.where((NETCDF.longitude > long_min) & (NETCDF.longitude < long_max) &
                                 (NETCDF.latitude > lat_min) & (NETCDF.latitude < lat_max)&
                                 (NETCDF.time >= Time_emiss_START) &
@@ -299,7 +325,23 @@ NETCDF=NETCDF.where((NETCDF.longitude > long_min) & (NETCDF.longitude < long_max
 # NETCDF=NETCDF.where((NETCDF.longitude > long_min) & (NETCDF.longitude < long_max) &
 #                                 (NETCDF.latitude > lat_min) & (NETCDF.latitude < lat_max), drop=True)
 
+o.seed_from_NETCDF(NETCDF_data = NETCDF,
+                   Bathimetry_data = Bathimetry_conc,
+                   Bathimetry_seed_data = Bathimetry_seed_data,
+                   mode = mode_N1, # converts gen_mode_N1 from tuple to string if needed
+                   gen_mode = gen_mode_N1,
+                   lon_resol= lon_resol_N1, lat_resol = lat_resol_N1, 
+                   lowerbound=0., higherbound=1.0e15, 
+                   radius=radius_N1, 
+                   mass_element_ug=mass_element_ug_N1, 
+                   number_of_elements=number_of_elements_N1, # specified at the beginning of the script
+                   origin_marker=2)
 
+
+
+
+print("Finished seeding from NETCDF...",": ", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
+#%%
 # NETCDF_data = NETCDF
 # lowerbound = 0.
 # higherbound = 1e15
@@ -338,7 +380,6 @@ NETCDF=NETCDF.where((NETCDF.longitude > long_min) & (NETCDF.longitude < long_max
 # print(data_2)
 # print(data_2.shape)
 
-#%%
 # lon_grid_m = []
 # lat_grid_m = []
 # lon_grid_m.append(6.371e6 * (np.cos(2 * (np.pi) * lo[1] / 360)) * lon_resol * (
@@ -357,21 +398,7 @@ NETCDF=NETCDF.where((NETCDF.longitude > long_min) & (NETCDF.longitude < long_max
 # lat_grid_m_seed = (6.371e6 * lat_resol * (2 * np.pi) / 360)
 
 
-o.seed_from_NETCDF(NETCDF_data = NETCDF,
-                   Bathimetry_data = Bathimetry_conc,
-                   mode = 'sed_conc', # sed_conc # emission
-                   gen_mode = 'mass',# mass, # fixed, 
-                   lon_resol= 0.05, lat_resol = 0.05, 
-                   lowerbound=0., higherbound=1.0e15, 
-                   radius=0., 
-                   mass_element_ug=100e18, 
-                   number_of_elements=number_of_elements, # specified at the beginning of the script
-                   # number_of_elements_max=number_of_elements_max, # specified at the beginning of the script
-                   origin_marker=1)
 
-
-
-print("Finished seeding from NETCDF...",": ", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
 
 #%% Run simulation
 
@@ -386,10 +413,7 @@ print("End of simulation....","End:", datetime.now().strftime("%Y_%m_%d-%H_%M_%S
 
 #%%
 # Print and plot results
-
 o.simulation_summary(chemical_compound)
-
-
 
 
 #%% Making video to check if elements moved correctly
