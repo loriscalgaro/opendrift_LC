@@ -2792,8 +2792,10 @@ class ChemicalDrift(OceanDrift):
             # specie to be added to seed parameters for sediments and water
             if mode == 'sed_conc':
                 specie_elements = 3 # 'num_srev' # Name of specie for sediment elements
+                moving_emement = False # sediment particles will not move
             else:
                 specie_elements = 0 # 'num_lmm' # Name of specie for dissolved elements
+                moving_emement = True # dissolved particles will move
 
             if gen_mode == 'fixed':
                 mass_element_seed_ug = mass_ug / number
@@ -2816,6 +2818,7 @@ class ChemicalDrift(OceanDrift):
                     mass_degraded=0,
                     mass_volatilized=0,
                     specie = specie_elements, # To be verified
+                    moving = moving_emement, # To be verified
                     z=z,
                     origin_marker=origin_marker)
 
@@ -2838,6 +2841,7 @@ class ChemicalDrift(OceanDrift):
                             mass_degraded=0,
                             mass_volatilized=0,
                             specie = specie_elements, # To be verified
+                            moving = moving_emement,
                             z=z,
                             origin_marker=origin_marker)
 

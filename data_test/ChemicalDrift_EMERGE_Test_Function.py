@@ -133,7 +133,7 @@ o.set_config('chemical:sediment:desorption_depth',1.) # m, distance from seabed 
 o.set_config('chemical:sediment:desorption_depth_uncert',0.1) # m
 o.set_config('chemical:sediment:resuspension_depth',1.) # m, , distance from seabed where resuspended elements are created
 o.set_config('chemical:sediment:resuspension_depth_uncert',0.1) # m
-o.set_config('chemical:sediment:resuspension_critvel',0.15) # m/s
+o.set_config('chemical:sediment:resuspension_critvel',0.15) # m/s 0.15
 o.set_config('chemical:sediment:burial_rate',0.00003) # m/year
 
 if ~strandingON:
@@ -262,8 +262,8 @@ mode_N1 = "sed_conc" # water_conc, sed_conc, emission
 # mode_N1 = "emission"
 
 # TODO Check this for error
-gen_mode_N1 = "fixed"# mass, # fixed, 
-# gen_mode_N1 = "mass"
+# gen_mode_N1 = "fixed"# mass, # fixed, 
+gen_mode_N1 = "mass"
 
 if gen_mode_N1 == "mass":
     mass_element_ug_N1=1e18    # maximum mass of elements (micrograms)
