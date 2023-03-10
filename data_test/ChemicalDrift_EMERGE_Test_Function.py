@@ -204,66 +204,66 @@ mass_element_ug_S1=1e8    # maximum mass of elements (micrograms)
 number_of_elements_max=None
 
 
-print("Start loading data from STEAM....",": ", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
+# print("Start loading data from STEAM....",": ", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
 
-SCRUB_W_OPEN_mfdataset = xr.open_mfdataset(simpath+'/Test_SCRUB_W_OPEN.nc')
-SCRUB_W_OPEN=SCRUB_W_OPEN_mfdataset.SCRUB_W_OPEN
+# SCRUB_W_OPEN_mfdataset = xr.open_mfdataset(simpath+'/Test_SCRUB_W_OPEN.nc')
+# SCRUB_W_OPEN=SCRUB_W_OPEN_mfdataset.SCRUB_W_OPEN
 
-SCRUB_W_OPEN=SCRUB_W_OPEN.where((SCRUB_W_OPEN.longitude > long_min) & (SCRUB_W_OPEN.longitude < long_max) &
-                                (SCRUB_W_OPEN.latitude > lat_min) & (SCRUB_W_OPEN.latitude < lat_max) &
-                                (SCRUB_W_OPEN.time >= Time_emiss_START) &
-                                (SCRUB_W_OPEN.time <= Time_emiss_END), drop=True)
+# SCRUB_W_OPEN=SCRUB_W_OPEN.where((SCRUB_W_OPEN.longitude > long_min) & (SCRUB_W_OPEN.longitude < long_max) &
+#                                 (SCRUB_W_OPEN.latitude > lat_min) & (SCRUB_W_OPEN.latitude < lat_max) &
+#                                 (SCRUB_W_OPEN.time >= Time_emiss_START) &
+#                                 (SCRUB_W_OPEN.time <= Time_emiss_END), drop=True)
 
-# SCRUB_W_OPEN[1,:,:].plot(cmap=plt.cm.viridis, robust = True)
+# # SCRUB_W_OPEN[1,:,:].plot(cmap=plt.cm.viridis, robust = True)
 
-# # print(SCRUB_W_OPEN)
-# # SCRUB_W_OPEN.attrs
-# # SCRUB_W_OPEN.data
-# steam = SCRUB_W_OPEN
-# lowerbound = 0.
-# higherbound = 1e15
-
-
-# sel = np.where((steam > lowerbound) & (steam < higherbound))
-# t = steam.time[sel[0]].data
-# la = steam.latitude[sel[1]].data
-# lo = steam.longitude[sel[2]].data
-
-# print(t)
-# print('len t', len(t))
-# print(la)
-# print('len la', len(la))
-# print(lo)
-# print('len lo', len(lo))
+# # # print(SCRUB_W_OPEN)
+# # # SCRUB_W_OPEN.attrs
+# # # SCRUB_W_OPEN.data
+# # steam = SCRUB_W_OPEN
+# # lowerbound = 0.
+# # higherbound = 1e15
 
 
-# data = np.array(steam.data)
-# print(data.shape)
+# # sel = np.where((steam > lowerbound) & (steam < higherbound))
+# # t = steam.time[sel[0]].data
+# # la = steam.latitude[sel[1]].data
+# # lo = steam.longitude[sel[2]].data
 
-# data_2 = data[sel]
-# print(data_2)
-# print(data_2.shape)
+# # print(t)
+# # print('len t', len(t))
+# # print(la)
+# # print('len la', len(la))
+# # print(lo)
+# # print('len lo', len(lo))
+
+
+# # data = np.array(steam.data)
+# # print(data.shape)
+
+# # data_2 = data[sel]
+# # print(data_2)
+# # print(data_2.shape)
 
 
 
-print("Finished loading data, start seeding from data....",": ", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
+# print("Finished loading data, start seeding from data....",": ", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
 
-o.seed_from_STEAM(SCRUB_W_OPEN, lowerbound=20000, higherbound=700000, radius=50, # l=1000, h=200000
-                  scrubber_type="open_loop", chemical_compound=chemical_compound,
-                  mass_element_ug_S1=1e8, number_of_elements=number_of_elements_max, origin_marker = 1)
+# o.seed_from_STEAM(SCRUB_W_OPEN, lowerbound=20000, higherbound=700000, radius=50, # l=1000, h=200000
+#                   scrubber_type="open_loop", chemical_compound=chemical_compound,
+#                   mass_element_ug_S1=1e8, number_of_elements=number_of_elements_max, origin_marker = 1)
         
-print("Finished seeding from STEAM...",": ", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
+# print("Finished seeding from STEAM...",": ", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
 
 #%%
 print("Start loading data from NETCDF....",": ", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
 
-mode_N1 = "sed_conc" # water_conc, sed_conc, emission
-# mode_N1 = "water_conc"
+# mode_N1 = "sed_conc" # water_conc, sed_conc, emission
+mode_N1 = "water_conc"
 # mode_N1 = "emission"
 
 # TODO Check this for error
-# gen_mode_N1 = "fixed"# mass, # fixed, 
-gen_mode_N1 = "mass"
+gen_mode_N1 = "fixed"
+# gen_mode_N1 = "mass"
 
 if gen_mode_N1 == "mass":
     mass_element_ug_N1=1e18    # maximum mass of elements (micrograms)
@@ -273,7 +273,8 @@ if gen_mode_N1 == "fixed":
     mass_element_ug_N1=None    # maximum mass of elements (micrograms)
     
 # TODO Change name of input here
-NETCDF_mfdataset = xr.open_mfdataset(simpath+'/Concentration_file_sed_ug_kg_fin.nc')
+# NETCDF_mfdataset = xr.open_mfdataset(simpath+'/Concentration_file_sed_ug_kg_fin.nc')
+NETCDF_mfdataset = xr.open_mfdataset(simpath+'/Concentration_file_water_ug_L_fin.nc')
 NETCDF_mfdataset=NETCDF_mfdataset.rename({'lat': 'latitude','lon': 'longitude'}) # Change name of dimentions lon, lat if needed
 # NETCDF_mfdataset.__setitem__('time',NETCDF_mfdataset.time + np.timedelta64(30,'D')) # Shift time coordinate from 02/07AM to 02/08 AM for emissions TODO make new files
 
@@ -285,13 +286,14 @@ lat_grid_radius = (6.371e6 * lat_resol_N1 * (2 * np.pi) / 360)
 
 lon_resultion_data = NETCDF_mfdataset.longitude
 lon_resol_N1 = np.array(abs(lon_resultion_data[0]-lon_resultion_data[1]))
-lon_resol_radius_ls = []
+lon_grid_radius_ls = []
 for i in range(len(NETCDF_mfdataset.longitude)-2):
-    lon_resol_radius_ls.append((6.371e6 * (np.cos(2 * (np.pi) * lon_resultion_data[i] / 360)) * lon_resol_N1 * (2 * np.pi) / 360))
+    lon_grid_radius_ls.append((6.371e6 * (np.cos(2 * (np.pi) * lon_resultion_data[i] / 360)) * lon_resol_N1 * (2 * np.pi) / 360))
 
-lon_resol_radius = np.mean(np.array(lon_resol_radius_ls))
+lon_grid_radius = np.mean(np.array(lon_grid_radius_ls))
 # Set radius of dataset cell
-radius_N1 = min(np.array([lat_grid_radius, lon_resol_radius]))
+# radius_N1 = min(np.array([lat_grid_radius, lon_resol_radius]))
+radius_N1 = 1500
 
 
 # Load bathimetry for mass calculation (same grid of concentration)
@@ -313,7 +315,7 @@ if mode_N1 == 'sed_conc': # water_conc, sed_conc, emission
     NETCDF=NETCDF_mfdataset.sed_conc_ug_kg
 elif mode_N1 == 'water_conc':
     NETCDF=NETCDF_mfdataset.wat_conc_ug_L
-elif mode_N1 == 'water_conc':
+elif mode_N1 == 'emission':
     NETCDF=NETCDF_mfdataset.emission_kg
 
 
@@ -458,6 +460,126 @@ o1.write_netcdf_chemical_density_map(filename=simpath+'/ChemDrift_conc_output.nc
                                 urcrnrlon=urcrnrlon, urcrnrlat=urcrnrlat,
                                 reader_sea_depth=simpath+'/Bathimetry.nc',
                                 landmask_shapefile=simpath+'/Landmask.shp')
+
+#%% Calculate and verify mass of chemical from sediments
+
+# NETCDF_data = NETCDF
+# lowerbound = 0.
+# higherbound = 1e25
+# sel = np.where((NETCDF_data > lowerbound) & (NETCDF_data < higherbound))
+# t = NETCDF_data.time[sel[0]].data
+# la = NETCDF_data.latitude[sel[1]].data
+# lo = NETCDF_data.longitude[sel[2]].data
+
+
+# lon_resultion_data = NETCDF_data.longitude
+# lon_resol_N1 = np.array(abs(lon_resultion_data[0]-lon_resultion_data[1]))
+# lon_grid_radius_ls = []
+# for i in range(len(lo)):
+#     lon_grid_radius_ls.append((6.371e6 * (np.cos(2 * (np.pi) * lo[i] / 360)) * lon_resol_N1 * (2 * np.pi) / 360))
+
+# lon_grid_radius = np.array(np.array(lon_grid_radius_ls))
+# print(lon_grid_radius)
+
+# lat_resultion_data = NETCDF_data.latitude 
+# lat_resol_N1 = np.array(abs(lat_resultion_data[0]-lat_resultion_data[1]))
+# lat_grid_radius = (6.371e6 * lat_resol_N1 * (2 * np.pi) / 360)
+
+
+# sed_mixing_depth = 0.03
+# sed_porosity = np.array(0.6)  # fraction of sediment volume made of water
+# sed_density_dry = np.array(2600)  # kg/m3 d.w.
+# sed_density_wet = np.array((sed_density_dry * (1 - sed_porosity)) * 1e-3)  # kg/L wet weight, kg/m3 * 1e-3 = kg/L
+
+# Bathimetry_mfdataset = xr.open_mfdataset(simpath+'/Bathimetry_conc.nc')
+# # print(Bathimetry_mfdataset)
+# Bathimetry_conc = Bathimetry_mfdataset.elevation
+# Bathimetry_conc = Bathimetry_conc.where((Bathimetry_conc.longitude > long_min) & (Bathimetry_conc.longitude < long_max) &
+#                                 (Bathimetry_conc.latitude > lat_min) & (Bathimetry_conc.latitude < lat_max), drop=True)
+
+# Volume = np.array(sed_mixing_depth * lat_grid_radius * lon_grid_radius)  # m3
+# print(len(Volume))
+# print((Volume))
+
+# sed_data = np.array(NETCDF_data.data)
+# sed_data = sed_data[sel]
+# # print(sed_data)
+# data_sed = sed_data * ((1 - sed_porosity) * sed_density_wet)
+# print(data_sed)
+
+# mass_sed = []
+# for j in range(len(data_sed)):
+#     mass_sed.append(Volume[j] * data_sed[j]* 1e3)
+
+# mass_sed = np.array(mass_sed)
+# # print(mass_sed)
+
+# mass_sed_g = mass_sed/1e6 # from ug to g
+# print('mass_sed_g test: ', sum(mass_sed_g))
+
+# run o.simulation_summary(chemical_compound) to get final mass of elements during simulation
+
+#%% Calculate and verify mass of chemical from water
+
+# NETCDF_data = NETCDF
+# lowerbound = 0.
+# higherbound = 1e25
+# sel = np.where((NETCDF_data > lowerbound) & (NETCDF_data < higherbound))
+# t = NETCDF_data.time[sel[0]].data
+# la = NETCDF_data.latitude[sel[1]].data
+# lo = NETCDF_data.longitude[sel[2]].data
+
+
+# lon_resultion_data = NETCDF_data.longitude
+# lon_resol_N1 = np.array(abs(lon_resultion_data[0]-lon_resultion_data[1]))
+# lon_grid_radius_ls = []
+# for i in range(len(lo)):
+#     lon_grid_radius_ls.append((6.371e6 * (np.cos(2 * (np.pi) * lo[i] / 360)) * lon_resol_N1 * (2 * np.pi) / 360))
+
+# lon_grid_radius = np.array(np.array(lon_grid_radius_ls))
+# # print(lon_grid_radius)
+
+# lat_resultion_data = NETCDF_data.latitude 
+# lat_resol_N1 = np.array(abs(lat_resultion_data[0]-lat_resultion_data[1]))
+# lat_grid_radius = (6.371e6 * lat_resol_N1 * (2 * np.pi) / 360)
+
+
+
+# Bathimetry_mfdataset = xr.open_mfdataset(simpath+'/Bathimetry_conc.nc')
+# # print(Bathimetry_mfdataset)
+# Bathimetry_conc = Bathimetry_mfdataset.elevation
+# Bathimetry_conc = Bathimetry_conc.where((Bathimetry_conc.longitude > long_min) & (Bathimetry_conc.longitude < long_max) &
+#                                 (Bathimetry_conc.latitude > lat_min) & (Bathimetry_conc.latitude < lat_max), drop=True)
+
+
+# Bathimetry_conc_data = []
+
+# for i in range(len(la)):
+#     Bathimetry_conc_data.append(np.array([(Bathimetry_conc.sel(latitude=la[i],longitude=lo[i],method='nearest'))]))
+
+# Bathimetry_conc_data = np.array(Bathimetry_conc_data)
+# print(Bathimetry_conc_data)
+# Volume = np.array(Bathimetry_conc_data * lat_grid_radius * lon_grid_radius)  # m3
+
+# Volume = np.mean(Volume, axis=1)
+
+# wat_data = np.array(NETCDF_data.data)
+# wat_data = wat_data[sel]
+# print(wat_data)
+
+# # print(wat_data)
+
+# mass_wat = []
+# for j in range(len(wat_data)):
+#     mass_wat.append(Volume[j] * wat_data[j]* 1e3)
+
+# mass_wat = np.array(mass_wat)
+# # print(mass_wat)
+
+# mass_wat_g = mass_wat/1e6 # from ug to g
+# print('mass_wat_g test: ', sum(mass_wat_g))
+
+# run o.simulation_summary(chemical_compound) to get final mass of elements during simulation
 
 #%% For debugging
 
