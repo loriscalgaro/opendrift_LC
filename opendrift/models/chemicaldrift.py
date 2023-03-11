@@ -2658,7 +2658,7 @@ class ChemicalDrift(OceanDrift):
             return -1 * np.random.uniform(0.0001, depth - 0.0001, number)
         elif mode == "sed_conc" and depth is not None and sed_mix_depth is not None:
             return  -1 * np.random.uniform(depth + 0.0001, depth + sed_mix_depth - 0.0001, number)
-        elif mode == "emissions":
+        elif mode == "emission":
             return -1 * np.random.uniform(0.0001, 1 - 0.0001, number)
         else:
             raise ValueError("Incorrect mode or depth")
@@ -2734,7 +2734,7 @@ class ChemicalDrift(OceanDrift):
             lon_grid_m = None
             Bathimetry_conc = None
 
-            if mode != 'emissions':
+            if mode != 'emission':
                 lon_grid_m =  np.array([(6.371e6 * (np.cos(2 * (np.pi) * lo[i] / 360)) * lon_resol * (2 * np.pi) / 360)])  # 6.371e6: radius of Earth in m
                 Bathimetry_conc = np.array([(Bathimetry_data.sel(latitude=la[i],longitude=lo[i],method='nearest'))]) # m
                 # depth of seeding must be the same as the one considered for resuspention process
@@ -2752,7 +2752,7 @@ class ChemicalDrift(OceanDrift):
                 # concentration is ug/L, volume is m: m3 * 1e3 = L
                 mass_ug = (data_sed * (pixel_volume * 1e3))
 
-            elif mode == 'emissions':
+            elif mode == 'emission':
                 mass_ug = data[i]*1e9 # emissions is kg, 1 kg = 1e9 ug
             else:
                 raise ValueError("Incorrect mode")
@@ -3088,8 +3088,7 @@ class ChemicalDrift(OceanDrift):
 
         elif self.get_config('chemical:compound') == "Nitrogen":
             self.set_config('chemical:transfer_setup', 'metals')
-            self.set_config('chemical:transformations:Kd',
-                            0)  # Nitrogen does not interact with particulate matter or sediments
+            self.set_config('chemical:transformations:Kd', 0.)  # Nitrogen does not interact with particulate matter or sediments
             self.set_config('chemical:transformations:S0', 17.0)  #
 
     def plot_mass(self,
