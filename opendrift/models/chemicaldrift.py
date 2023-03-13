@@ -2729,6 +2729,9 @@ class ChemicalDrift(OceanDrift):
             self.init_transfer_rates()
 
         lat_grid_m = np.array([6.371e6 * lat_resol * (2 * np.pi) / 360])
+        
+        if mode == 'emission':
+            Bathimetry_seed = None
 
         for i in range(0, t.size):
             lon_grid_m = None
@@ -2739,6 +2742,7 @@ class ChemicalDrift(OceanDrift):
                 Bathimetry_conc = np.array([(Bathimetry_data.sel(latitude=la[i],longitude=lo[i],method='nearest'))]) # m
                 # depth of seeding must be the same as the one considered for resuspention process
                 Bathimetry_seed = np.array([(Bathimetry_seed_data.sel(latitude=lat_array[i],longitude=lon_array[i],method='nearest'))]) # m
+
 
             if mode == 'water_conc':
                 pixel_volume = Bathimetry_conc * lon_grid_m * lat_grid_m
