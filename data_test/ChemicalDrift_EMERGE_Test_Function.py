@@ -448,6 +448,13 @@ urcrnrlat=lat_max
 
 # This opens a new Chemdrift object! 
 o1=opendrift.open(simpath+'/ChemDrift_output.nc')
+
+
+
+
+
+
+
 o1.write_netcdf_chemical_density_map(filename=simpath+'/ChemDrift_conc_output.nc',
                                 pixelsize_m=1000.,
                                 zlevels=None,
