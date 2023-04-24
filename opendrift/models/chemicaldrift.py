@@ -22,6 +22,7 @@ The initial version is based on Radionuclides module by Magne Simonsen
 """
 
 import numpy as np
+import xarray as xr
 import logging;
 
 logger = logging.getLogger(__name__)
@@ -2850,7 +2851,104 @@ class ChemicalDrift(OceanDrift):
                             z=z,
                             origin_marker=origin_marker)
 
+    def correct_conc_coorddinates(self, DC_Conc_array, lon_coord, lat_coord, time_coord):
+        """
+        Add longitude, latitude, and time coordinates to water and sediments concentration array
+        
+        DC_Conc_array: xarray DataArray for water or sediment concetration from sum of "species"
+            from "write_netcdf_chemical_density_map" output
+        lon_coord: np array of float64, with longitude of "write_netcdf_chemical_density_map" output
+        lat_coord: np array of float64, with latitude of "write_netcdf_chemical_density_map" output
+        time_coord: np. array of datetime64[ns] with avg_time of "write_netcdf_chemical_density_map" output
 
+        Returns
+        DC_Conc_array_corrected: DataArray with latitute, longitude and time coordinates
+        """
+        # Add latitude and longitude to the concentration dataset
+        DC_Conc_array["y"] = ("y", lat_coord)
+        DC_Conc_array["x"] = ("x", lon_coord)
+        DC_Conc_array=DC_Conc_array.rename({'x': 'longitude','y': 'latitude'})
+        # Shifts back time 1 timestep so that the timestamp corresponds to the beginning of the first simulation timestep, not the next one
+        time_correction = time_coord[1] - time_coord[0]
+        time_corrected = np.array(time_coord - time_correction)
+        DC_Conc_array["avg_time"] = ("avg_time", time_corrected)
+        DC_Conc_array_corrected=DC_Conc_array.rename({'avg_time': 'time'})
+        
+        return DC_Conc_array_corrected
+    
+    def calculate_water_sediment_conc(self,
+                                      File_Path,
+                                      File_Name,
+                                      File_Path_out,
+                                      Chemical_name,
+                                      Origin_marker_name,
+                                      Concentration_file = None,):
+        """
+        Add dissolved, DOC, and SPM concentration arrays to obtain total water concentration and save sediment concentration array
+        Results can be used as inputs by "seed_from_NETCDF" function
+        
+        File_Path: string, path of "write_netcdf_chemical_density_map" output file
+        File_Name: string, name of "write_netcdf_chemical_density_map" output file
+        File_Path_out: string, path where created concentration files will be saved, must end with "/"
+        Chemical_name: string, name of modelled chemical
+        Origin_marker_name: string, name of source indicated by "origin_marker" parameter
+        Concentration_file = "write_netcdf_chemical_density_map" output if already loaded into memory
+        """
+        
+        if ((Concentration_file is None) and (File_Path and File_Name is not None)):
+            Concentration_file = xr.open_dataset(File_Path + File_Name)
+            print("Loading Concentration_file from File_Path")
+        else:
+            raise ValueError("Concentration file or path not specified")
+        
+        # Sum DataArray for specie 0, 1, and 2 (dissolved, DOC, and SPM) to obtain total water concentration
+        print("Running sum of water concentration", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
+        DC_Conc_array_wat = (Concentration_file.concentration_avg[:,0,:,:,:] +\
+                            Concentration_file.concentration_avg[:,1,:,:,:] + \
+                            Concentration_file.concentration_avg[:,2,:,:,:])
+        
+        print("Running sediment concentration", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
+        DC_Conc_array_sed = Concentration_file.concentration_avg[:,3,:,:,:]
+        
+        print("Changing coordinates", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
+        lat = np.array(Concentration_file.lat[:,1])
+        lon = np.array(Concentration_file.lon[1,:])
+        time_avg = np.array(Concentration_file.avg_time)
+        
+        DC_Conc_array_wat = self.correct_conc_coorddinates(DC_Conc_array = DC_Conc_array_wat, 
+                                                      lon_coord = lon, 
+                                                      lat_coord = lat, 
+                                                      time_coord = time_avg)
+        
+        DC_Conc_array_sed = self.correct_conc_coorddinates(DC_Conc_array = DC_Conc_array_sed, 
+                                                      lon_coord = lon, 
+                                                      lat_coord = lat, 
+                                                      time_coord = time_avg)
+
+        DC_Conc_array_wat.name = "concentration_avg_water"
+        DC_Conc_array_wat.attrs['standard_name'] = "water_concentration"
+        DC_Conc_array_wat.attrs['long_name'] = Chemical_name + " time averaged water concentration"
+        DC_Conc_array_wat.attrs['units'] = 'ug/m3'
+        DC_Conc_array_wat.attrs['grid_mapping'] = 'projection_lonlat, EPSG 4326 WGS 84'
+        DC_Conc_array_wat.attrs['lon_resol'] = str(np.around(abs(lon[0]-lon[1]), decimals = 8)) + " degrees E"
+        DC_Conc_array_wat.attrs['lat_resol'] = str(np.around(abs(lat[0]-lat[1]), decimals = 8)) + " degrees N"
+        
+        DC_Conc_array_sed.name = "concentration_avg_sediments"
+        DC_Conc_array_sed.attrs['standard_name'] = "sediment_concentration"
+        DC_Conc_array_sed.attrs['long_name'] = Chemical_name + " time averaged sediment concentration"
+        DC_Conc_array_sed.attrs['units'] = 'ug/Kg d.w.'
+        DC_Conc_array_sed.attrs['grid_mapping'] = 'projection_lonlat, EPSG 4326 WGS 84'
+        DC_Conc_array_sed.attrs['lon_resol'] = str(np.around(abs(lon[0]-lon[1]), decimals = 8)) + " degrees E"
+        DC_Conc_array_sed.attrs['lat_resol'] = str(np.around(abs(lat[0]-lat[1]), decimals = 8)) + " degrees N"
+
+        Conc_time = datetime.now().strftime("%Y%m%d-%H%M%S")
+        wat_file = File_Path_out + Conc_time + "_water_conc_" + Chemical_name + "_" + Origin_marker_name + ".nc"
+        sed_file = File_Path_out + Conc_time + "_sediments_conc_" + Chemical_name + "_" + Origin_marker_name + ".nc"
+        
+        print("Saving water concentration file", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
+        DC_Conc_array_wat.to_netcdf(wat_file)
+        print("Saving sediment concentration file", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
+        DC_Conc_array_sed.to_netcdf(sed_file)
 
     def init_chemical_compound(self, chemical_compound=None):
         ''' Chemical parameters for a selection of PAHs:
@@ -3115,6 +3213,11 @@ class ChemicalDrift(OceanDrift):
         elif self.get_config('chemical:compound') == "Nitrogen":
             self.set_config('chemical:transfer_setup', 'metals')
             self.set_config('chemical:transformations:Kd', 0.)  # Nitrogen does not interact with particulate matter or sediments
+            self.set_config('chemical:transformations:S0', 17.0)#
+            
+        elif self.get_config('chemical:compound') == "Alkalinity":
+            self.set_config('chemical:transfer_setup', 'metals')
+            self.set_config('chemical:transformations:Kd', 0.)  # Alkalinity does not interact with particulate matter or sediments
             self.set_config('chemical:transformations:S0', 17.0)  #
 
     def plot_mass(self,
