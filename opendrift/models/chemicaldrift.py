@@ -2421,6 +2421,8 @@ class ChemicalDrift(OceanDrift):
             "Ammonium": [730., 30.],
             "Sulphur": [2200000., 446000.],
             "Nitrogen": [1400., 0.0],
+            #
+            "Alkalinity": [142.39, 0.0], # H+ ions concentration form pH
         }
 
         emission_factors_closed_loop = {
@@ -2462,6 +2464,8 @@ class ChemicalDrift(OceanDrift):
             "Ammonium": [0., 0.],
             "Sulphur": [12280000., 10104000.],
             "Nitrogen": [42030., 0.0],
+            #
+            "Alkalinity": [29.07, 0.0], # H+ ions concentration form pH
         }
 
         emission_factors_grey_water = {
@@ -2533,6 +2537,18 @@ class ChemicalDrift(OceanDrift):
             #
             "Nitrogen": [430., 0.],
         }
+        
+        emission_factors_NOx = {
+            #                           mean    +/-95%
+            #                           ug/L    ug/L
+            "Alkalinity": [(1.0080/46.005), 0.0], # H+ ions from NOx, MW H+/MW NOx, from kg_NOx to kg_H+
+        }
+
+        emission_factors_SOx = {
+            #                           mean    +/-95%
+            #                           ug/L    ug/L
+            "Alkalinity": [(1.0080/64.066)* 2, 0.0], # H+ ions from SOx, MW H+/MW SOx, from kg_SOx to kg_H+
+        }
 
         emission_factors_AFP = {
             # Copper = 63.546 g/mol
@@ -2569,7 +2585,13 @@ class ChemicalDrift(OceanDrift):
             Emission_factors = 1e9  # 1kg = 1e9 ug: N_sewage is expressed as kg
         elif scrubber_type == "N_NOx":  # Nitrogen from engine's NOx emissions
             Emission_factors = 1e9 * (14.0067 / 46.005)  # 1kg = 1e9 ug: NOx is expressed in kg, then tranformed to kg of nitrogen # MW of NOx: 46.005 g/mol # https://www.epa.gov/air-emissions-inventories/how-are-oxides-nitrogen-nox-defined-nei
-
+        elif scrubber_type == "NOx":  # Nitrogen from engine's NOx emissions
+            Emission_factors = 1e9 *emission_factors_NOx.get(chemical_compound)[0]
+        elif scrubber_type == "SOx":  # Nitrogen from engine's NOx emissions
+            Emission_factors = 1e9 *emission_factors_SOx.get(chemical_compound)[0]
+        elif scrubber_type == "emission_kg":  # Generic emission expresses as kg
+            Emission_factors = 1e9
+            
         return Emission_factors
         # TODO: Add emission uncertainty based on 95% confidence interval
 
