@@ -2741,7 +2741,7 @@ class ChemicalDrift(OceanDrift):
         lat_array = la + lat_resol / 2  # find center of pixel for volume of water / sediments
         
         data = np.array(NETCDF_data.data)
-        data = data[sel]
+        # data = data[sel]
         sed_mixing_depth = np.array(self.get_config('chemical:sediment:mixing_depth'))
 
         if mode == 'sed_conc':
@@ -2770,17 +2770,17 @@ class ChemicalDrift(OceanDrift):
             if mode == 'water_conc':
                 pixel_volume = Bathimetry_conc * lon_grid_m * lat_grid_m
                 # concentration is ug/L, volume is m: m3 * 1e3 = L
-                mass_ug = (data[i] * (pixel_volume * 1e3))
+                mass_ug = (data[sel][i] * (pixel_volume * 1e3))
 
             elif mode == 'sed_conc':
                 # sed_conc_ug_kg is ug/kg d.w. (dry weight)
-                data_sed = data[i]* ((1 - sed_porosity) * sed_density_wet) # from ug/kg d.w. -> ug/kg wet weight -> ug/L wet sediment
+                data_sed = data[sel][i]* ((1 - sed_porosity) * sed_density_wet) # from ug/kg d.w. -> ug/kg wet weight -> ug/L wet sediment
                 pixel_volume =  sed_mixing_depth * (lon_grid_m * lat_grid_m) # m3
                 # concentration is ug/L, volume is m: m3 * 1e3 = L
                 mass_ug = (data_sed * (pixel_volume * 1e3))
 
             elif mode == 'emission':
-                mass_ug = data[i]*1e9 # emissions is kg, 1 kg = 1e9 ug
+                mass_ug = data[sel][i]*1e9 # emissions is kg, 1 kg = 1e9 ug
             else:
                 raise ValueError("Incorrect mode")
 
