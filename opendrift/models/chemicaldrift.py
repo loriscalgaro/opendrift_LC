@@ -2555,17 +2555,13 @@ class ChemicalDrift(OceanDrift):
             # Copper = 63.546 g/mol
             # Zinc = 65.38 g/mol
             # CuPyr = 315.86 g/mol = Copper(II) pyrithione = 0.2012 of Cu
-            # CuO = 79.55 g/mol = Copper(II) oxide = 0.7989 of Cu
             # Zineb = 275.7 g/mol = Zinc ethylenebis(dithiocarbamate) = 0.2371 of Zn
-            # ZnO = 81.38 g/mol = Zinc(II) oxide = 0.8033 of Zn
             # ZPyr = 317.70 g/mol = Zinc(II) pyrithione = 0.2058 of Zn
 
             #                           mean    +/-95%
             #                           ug/L    ug/L
-            "CuO_AFP": [0.2012, 0.],
             "CuPyr_AFP": [0.7989, 0.],
             "Zineb_AFP": [0.2371, 0.],
-            "ZnO_AFP": [0.8033, 0.],
             "ZnPyr_AFP": [0.2058, 0.],
         }
         if scrubber_type == "open_loop":
