@@ -21,31 +21,28 @@ import types
 import traceback
 import inspect
 import logging
-
 logging.captureWarnings(True)
 logger = logging.getLogger(__name__)
 from datetime import datetime, timedelta
 from collections import OrderedDict
 from abc import ABCMeta, abstractmethod, abstractproperty
+
 import geojson
 import xarray as xr
-
 import numpy as np
 import scipy
 import pyproj
-try:
-    import matplotlib
-    matplotlib.rcParams['legend.numpoints'] = 1
-    matplotlib.rcParams['legend.scatterpoints'] = 1
-    import matplotlib.pyplot as plt
-    from matplotlib import animation
-    from matplotlib.patches import Polygon
-    from matplotlib.path import Path
-    import cartopy
-    import cartopy.crs as ccrs
-    import cartopy.feature as cfeature
-except ImportError:
-    print('matplotlib and/or cartopy is not available, can not make plots')
+import matplotlib
+matplotlib.rcParams['legend.numpoints'] = 1
+matplotlib.rcParams['legend.scatterpoints'] = 1
+matplotlib.rcParams['figure.autolayout'] = True
+import matplotlib.pyplot as plt
+from matplotlib import animation
+from matplotlib.patches import Polygon
+from matplotlib.path import Path
+#import cartopy
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
 
 import opendrift
 from opendrift.timer import Timeable
@@ -997,7 +994,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
             if var not in self.priority_list
         ]
 
-    def get_reader_groups(self, variables=None):
+    def get_reader_groups(self, variables=None, time=None):
         """Find which groups of variables are provided by the same readers.
 
         This function loops through 'priority_list' (see above) and groups
@@ -1217,11 +1214,10 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
             if co is not None:
                 env[variable] = np.ma.ones(env[variable].shape) * co
 
-        for i, variable_group in enumerate(variable_groups):
+        for variable_group, reader_group in zip(variable_groups, reader_groups):
             logger.debug('----------------------------------------')
             logger.debug('Variable group %s' % (str(variable_group)))
             logger.debug('----------------------------------------')
-            reader_group = reader_groups[i]
             missing_indices = np.array(range(len(lon)))
             # For each reader:
             for reader_name in reader_group:
@@ -1230,10 +1226,6 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
                 self.timer_start('main loop:readers:' +
                                  reader_name.replace(':', '<colon>'))
                 reader = self.readers[reader_name]
-                if reader.is_lazy:
-                    logger.warning('Reader is lazy, should not happen')
-                    import sys
-                    sys.exit('Should not happen')
                 if not reader.covers_time(time):
                     logger.debug('\tOutside time coverage of reader.')
                     if reader_name == reader_group[-1]:
@@ -3313,7 +3305,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
         gl.top_labels = None
 
         fig.canvas.draw()
-        fig.set_tight_layout(True)
+        fig.set_layout_engine('tight')
 
         if not hasattr(self, 'ds'):
             try:
@@ -3786,7 +3778,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
             plt.legend()
 
         fig.canvas.draw()
-        fig.set_tight_layout(True)
+        fig.set_layout_engine('tight')
         if colorbar is True:
             if color is not False:
                 if isinstance(color, str) or clabel is not None:
@@ -4511,7 +4503,6 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
         #plt.gca().tick_params(labelsize=14)
 
         #fig.canvas.draw()
-        #fig.set_tight_layout(True)
         if filename is not None:
             plt.savefig(filename)
             logger.info('Time to make plot: ' +
