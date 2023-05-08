@@ -23,13 +23,13 @@ The initial version is based on Radionuclides module by Magne Simonsen
 
 import numpy as np
 import xarray as xr
-import logging; logger = logging.getLogger(__name__)
+import logging;
+
+logger = logging.getLogger(__name__)
 
 from opendrift.models.oceandrift import OceanDrift, Lagrangian3DArray
 import pyproj
 from datetime import datetime
-
-
 
 
 # Defining the Chemical element properties
@@ -41,7 +41,7 @@ class Chemical(Lagrangian3DArray):
         ('diameter', {'dtype': np.float32,
                       'units': 'm',
                       'default': 0.}),
-        #('neutral_buoyancy_salinity', {'dtype': np.float32,
+        # ('neutral_buoyancy_salinity', {'dtype': np.float32,
         #                               'units': '[]',
         #                               'default': 31.25}),  # for NEA Cod
         ('density', {'dtype': np.float32,
@@ -107,15 +107,15 @@ class ChemicalDrift(OceanDrift):
         # 'conc3': {'fallback': 1.e-3},
         'spm': {'fallback': 1},
         'ocean_mixed_layer_thickness': {'fallback': 50},
-        'active_sediment_layer_thickness': {'fallback': 0.03},# TODO - currently not used, redundant with 'chemical:sediment:mixing_depth'
+        'active_sediment_layer_thickness': {'fallback': 0.03},
+        # TODO - currently not used, redundant with 'chemical:sediment:mixing_depth'
         'doc': {'fallback': 0.0},
         # Variables for dissociation
-        'sea_water_ph_reported_on_total_scale': {'fallback': 8.1, 'profiles': True}, # water_pH from CMENS with standard name #
-        'pH_sediment': {'fallback': 6.9, 'profiles': False}, # supplied by the user, with pH_sediment as standard name #
+        'sea_water_ph_reported_on_total_scale': {'fallback': 8.1, 'profiles': True},
+        # water_pH from CMENS with standard name #
+        'pH_sediment': {'fallback': 6.9, 'profiles': False},
+        # supplied by the user, with pH_sediment as standard name #
     }
-
-
-
 
     # The depth range (in m) which profiles shall cover
     required_profiles_z_range = [-20, 0]
@@ -135,7 +135,8 @@ class ChemicalDrift(OceanDrift):
         # TODO: descriptions and units must be added in config setting below
         self._add_config({
             'chemical:transfer_setup': {'type': 'enum',
-                                        'enum': ['Sandnesfj_Al', 'metals', '137Cs_rev', 'custom', 'organics'],default': 'custom',
+                                        'enum': ['Sandnesfj_Al', 'metals', '137Cs_rev', 'custom', 'organics'],
+                                        'default': 'custom',
                                         'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             'chemical:dynamic_partitioning': {'type': 'bool', 'default': True,
                                               'level': self.CONFIG_LEVEL_BASIC,
@@ -149,202 +150,208 @@ class ChemicalDrift(OceanDrift):
                                             'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:particle_diameter': {'type': 'float', 'default': 5e-6,
                                            'min': 0, 'max': 100e-6, 'units': 'm',
-                                           'level': self.CONFIG_LEVEL_ESSENTIAL,'description': 'Diameter of DOM aggregates for marine water'}, # https://doi.org/10.1038/246170a0
+                                           'level': self.CONFIG_LEVEL_ESSENTIAL,
+                                           'description': 'Diameter of DOM aggregates for marine water'},
+            # https://doi.org/10.1038/246170a0
             'chemical:doc_particle_diameter': {'type': 'float', 'default': 5e-6,
                                                'min': 0, 'max': 100e-6, 'units': 'm',
                                                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
-                                               
             'chemical:particle_concentration_half_depth': {'type': 'float', 'default': 20,
-                'min': 0, 'max': 100, 'units': 'm',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
-            'chemical:doc_concentration_half_depth': {'type': 'float', 'default': 1000, # TODO: check better
-                'min': 0, 'max': 1000, 'units': 'm',                                     # Vertical conc drops more slowly slower than for SPM
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},                # example: 10.3389/fmars.2017.00436. lower limit around 40 umol/L
+                                                           'min': 0, 'max': 100, 'units': 'm',
+                                                           'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+            'chemical:doc_concentration_half_depth': {'type': 'float', 'default': 20,
+                                                      'min': 0, 'max': 100, 'units': 'm',
+                                                      'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:particle_diameter_uncertainty': {'type': 'float', 'default': 1e-7,
-                'min': 0, 'max': 100e-6, 'units': 'm',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
-            'seed:LMM_fraction': {'type': 'float','default': .1,
-                'min': 0, 'max': 1, 'units': '',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
-            'seed:particle_fraction': {'type': 'float','default': 0.9,
-                'min': 0, 'max': 1, 'units': '',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                                                       'min': 0, 'max': 100e-6, 'units': 'm',
+                                                       'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+            'seed:LMM_fraction': {'type': 'float', 'default': .1,
+                                  'min': 0, 'max': 1, 'units': '',
+                                  'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+            'seed:particle_fraction': {'type': 'float', 'default': 0.9,
+                                       'min': 0, 'max': 1, 'units': '',
+                                       'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             # Species
             'chemical:species:LMM': {'type': 'bool', 'default': True,
-                'level': self.CONFIG_LEVEL_BASIC, 'description': 'Toggle LMM species'},
+                                     'level': self.CONFIG_LEVEL_BASIC, 'description': 'Toggle LMM species'},
             'chemical:species:LMMcation': {'type': 'bool', 'default': False,
-                'level': self.CONFIG_LEVEL_BASIC, 'description': ''},
+                                           'level': self.CONFIG_LEVEL_BASIC, 'description': ''},
             'chemical:species:LMManion': {'type': 'bool', 'default': False,
-                'level': self.CONFIG_LEVEL_BASIC, 'description': ''},
+                                          'level': self.CONFIG_LEVEL_BASIC, 'description': ''},
             'chemical:species:Colloid': {'type': 'bool', 'default': False,
-                'level': self.CONFIG_LEVEL_BASIC, 'description': ''},
+                                         'level': self.CONFIG_LEVEL_BASIC, 'description': ''},
             'chemical:species:Humic_colloid': {'type': 'bool', 'default': False,
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                                               'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:species:Polymer': {'type': 'bool', 'default': False,
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                                         'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:species:Particle_reversible': {'type': 'bool', 'default': True,
-                'level': self.CONFIG_LEVEL_BASIC, 'description': ''},
+                                                     'level': self.CONFIG_LEVEL_BASIC, 'description': ''},
             'chemical:species:Particle_slowly_reversible': {'type': 'bool', 'default': False,
-                'level': self.CONFIG_LEVEL_BASIC, 'description': ''},
+                                                            'level': self.CONFIG_LEVEL_BASIC, 'description': ''},
             'chemical:species:Particle_irreversible': {'type': 'bool', 'default': False,
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                                                       'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:species:Sediment_reversible': {'type': 'bool', 'default': True,
-                'level': self.CONFIG_LEVEL_BASIC, 'description': ''},
+                                                     'level': self.CONFIG_LEVEL_BASIC, 'description': ''},
             'chemical:species:Sediment_slowly_reversible': {'type': 'bool', 'default': False,
-                'level': self.CONFIG_LEVEL_BASIC, 'description': ''},
+                                                            'level': self.CONFIG_LEVEL_BASIC, 'description': ''},
             'chemical:species:Sediment_irreversible': {'type': 'bool', 'default': False,
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                                                       'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             # Transformations
             'chemical:transformations:Kd': {'type': 'float', 'default': 2.0,
-                'min': 0, 'max': 1e9, 'units': 'm3/kg',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                                            'min': 0, 'max': 1e9, 'units': 'm3/kg',
+                                            'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             'chemical:transformations:S0': {'type': 'float', 'default': 0.0,
-                'min': 0, 'max': 100, 'units': 'PSU',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': 'parameter controlling salinity dependency of Kd for metals'},
-            'chemical:transformations:Dc': {'type': 'float', 'default': 1.16e-5,                # Simonsen 2019
-                'min': 0, 'max': 1e6, 'units': '',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
-            'chemical:transformations:slow_coeff': {'type': 'float', 'default': 0, #1.2e-7,         # Simonsen 2019
-                'min': 0, 'max': 1e6, 'units': '',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                                            'min': 0, 'max': 100, 'units': 'PSU',
+                                            'level': self.CONFIG_LEVEL_ESSENTIAL,
+                                            'description': 'parameter controlling salinity dependency of Kd for metals'},
+            'chemical:transformations:Dc': {'type': 'float', 'default': 1.16e-5,  # Simonsen 2019
+                                            'min': 0, 'max': 1e6, 'units': '',
+                                            'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+            'chemical:transformations:slow_coeff': {'type': 'float', 'default': 0,  # 1.2e-7,         # Simonsen 2019
+                                                    'min': 0, 'max': 1e6, 'units': '',
+                                                    'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:transformations:volatilization': {'type': 'bool', 'default': False,
-                'description': 'Chemical is evaporated.',
-                'level': self.CONFIG_LEVEL_BASIC},
+                                                        'description': 'Chemical is evaporated.',
+                                                        'level': self.CONFIG_LEVEL_BASIC},
             'chemical:transformations:degradation': {'type': 'bool', 'default': False,
-                'description': 'Chemical mass is degraded.',
-                'level': self.CONFIG_LEVEL_BASIC},
+                                                     'description': 'Chemical mass is degraded.',
+                                                     'level': self.CONFIG_LEVEL_BASIC},
             'chemical:transformations:degradation_mode': {'type': 'enum',
-                'enum': ['OverallRateConstants'], 'default': 'OverallRateConstants',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                                                          'enum': ['OverallRateConstants'],
+                                                          'default': 'OverallRateConstants',
+                                                          'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             # sorption/desorption
             'chemical:transformations:dissociation': {'type': 'enum',
-                'enum': ['nondiss', 'acid', 'base', 'amphoter'], 'default': 'nondiss',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
-            'chemical:transformations:LogKOW': {'type': 'float', 'default': 3.361,          # Naphthalene
-                'min': -3, 'max': 10, 'units': 'Log L/Kg',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
-            'chemical:transformations:TrefKOW': {'type': 'float', 'default': 25.,           # Naphthalene
-                'min': -3, 'max': 30, 'units': 'C',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
-            'chemical:transformations:DeltaH_KOC_Sed': {'type': 'float', 'default': -21036., # Naphthalene
-                'min': -100000., 'max': 100000., 'units': 'J/mol',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
-            'chemical:transformations:DeltaH_KOC_DOM': {'type': 'float', 'default': -25900., # Naphthalene
-                'min': -100000., 'max': 100000., 'units': 'J/mol',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
-            'chemical:transformations:Setchenow': {'type': 'float', 'default': 0.2503,      # Naphthalene
-                'min': 0, 'max': 1, 'units': 'L/mol',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                                                      'enum': ['nondiss', 'acid', 'base', 'amphoter'],
+                                                      'default': 'nondiss',
+                                                      'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+            'chemical:transformations:LogKOW': {'type': 'float', 'default': 3.361,  # Naphthalene
+                                                'min': -3, 'max': 10, 'units': 'Log L/Kg',
+                                                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+            'chemical:transformations:TrefKOW': {'type': 'float', 'default': 25.,  # Naphthalene
+                                                 'min': -3, 'max': 30, 'units': 'C',
+                                                 'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+            'chemical:transformations:DeltaH_KOC_Sed': {'type': 'float', 'default': -21036.,  # Naphthalene
+                                                        'min': -100000., 'max': 100000., 'units': 'J/mol',
+                                                        'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+            'chemical:transformations:DeltaH_KOC_DOM': {'type': 'float', 'default': -25900.,  # Naphthalene
+                                                        'min': -100000., 'max': 100000., 'units': 'J/mol',
+                                                        'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+            'chemical:transformations:Setchenow': {'type': 'float', 'default': 0.2503,  # Naphthalene
+                                                   'min': 0, 'max': 1, 'units': 'L/mol',
+                                                   'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             'chemical:transformations:pKa_acid': {'type': 'float', 'default': -1,
-                'min': -1, 'max': 14, 'units': '',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                                                  'min': 0, 'max': 14, 'units': '',
+                                                  'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:transformations:pKa_base': {'type': 'float', 'default': -1,
-                'min': -1, 'max': 14, 'units': '',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                                                  'min': 0, 'max': 14, 'units': '',
+                                                  'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:transformations:KOC_DOM': {'type': 'float', 'default': -1,
-                'min': -1, 'max': 10000000000, 'units': 'L/KgOC',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                                                 'min': 1, 'max': 10000000000, 'units': 'L/KgOC',
+                                                 'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:transformations:KOC_sed': {'type': 'float', 'default': -1,
-                'min': -1, 'max': 10000000000, 'units': 'L/KgOC',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                                                 'min': 1, 'max': 10000000000, 'units': 'L/KgOC',
+                                                 'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:transformations:fOC_SPM': {'type': 'float', 'default': 0.05,
-                'min': 0.01, 'max': 0.1, 'units': 'gOC/g',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                                                 'min': 0.01, 'max': 0.1, 'units': 'gOC/g',
+                                                 'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:transformations:fOC_sed': {'type': 'float', 'default': 0.05,
-                'min': 0.01, 'max': 0.1, 'units': 'gOC/g',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
-            'chemical:transformations:aggregation_rate': {'type': 'float', 'default': 0,
-                'min': 0, 'max': 1, 'units': 's-1',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                                                 'min': 0.01, 'max': 0.1, 'units': 'gOC/g',
+                                                 'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             # Degradation in water column
-            'chemical:transformations:t12_W_tot': {'type': 'float', 'default': 224.08,      # Naphthalene
-                'min': 1, 'max': None, 'units': 'hours',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': 'half life in water, total'},
-            'chemical:transformations:Tref_kWt': {'type': 'float', 'default': 25.,          # Naphthalene
-                'min': -3, 'max': 30, 'units': 'C',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
-            'chemical:transformations:DeltaH_kWt': {'type': 'float', 'default': 50000.,     # generic
-                'min': -100000., 'max': 100000., 'units': 'J/mol',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+            'chemical:transformations:t12_W_tot': {'type': 'float', 'default': 224.08,  # Naphthalene
+                                                   'min': 1, 'max': None, 'units': 'hours',
+                                                   'level': self.CONFIG_LEVEL_ADVANCED,
+                                                   'description': 'half life in water, total'},
+            'chemical:transformations:Tref_kWt': {'type': 'float', 'default': 25.,  # Naphthalene
+                                                  'min': -3, 'max': 30, 'units': 'C',
+                                                  'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+            'chemical:transformations:DeltaH_kWt': {'type': 'float', 'default': 50000.,  # generic
+                                                    'min': -100000., 'max': 100000., 'units': 'J/mol',
+                                                    'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             # Degradation in sediment layer
-            'chemical:transformations:t12_S_tot': {'type': 'float', 'default': 5012.4,      # Naphthalene
-                'min': 1, 'max': None, 'units': 'hours',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': 'half life in sediments, total'},
-            'chemical:transformations:Tref_kSt': {'type': 'float', 'default': 25.,          # Naphthalene
-                'min': -3, 'max': 30, 'units': 'C',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
-            'chemical:transformations:DeltaH_kSt': {'type': 'float', 'default': 50000.,     # generic
-                'min': -100000., 'max': 100000., 'units': 'J/mol',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+            'chemical:transformations:t12_S_tot': {'type': 'float', 'default': 5012.4,  # Naphthalene
+                                                   'min': 1, 'max': None, 'units': 'hours',
+                                                   'level': self.CONFIG_LEVEL_ADVANCED,
+                                                   'description': 'half life in sediments, total'},
+            'chemical:transformations:Tref_kSt': {'type': 'float', 'default': 25.,  # Naphthalene
+                                                  'min': -3, 'max': 30, 'units': 'C',
+                                                  'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+            'chemical:transformations:DeltaH_kSt': {'type': 'float', 'default': 50000.,  # generic
+                                                    'min': -100000., 'max': 100000., 'units': 'J/mol',
+                                                    'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             # Volatilization
-            'chemical:transformations:MolWt': {'type': 'float', 'default': 128.1705,         # Naphthalene
-                'min': 50, 'max': 1000, 'units': 'amu',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': 'molecular weight'},
-            'chemical:transformations:Henry': {'type': 'float', 'default': 4.551e-4,        # Napththalene
-                'min': None, 'max': None, 'units': 'atm m3 mol-1',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': 'Henry constant'},
+            'chemical:transformations:MolWt': {'type': 'float', 'default': 128.1705,  # Naphthalene
+                                               'min': 50, 'max': 1000, 'units': 'amu',
+                                               'level': self.CONFIG_LEVEL_ADVANCED, 'description': 'molecular weight'},
+            'chemical:transformations:Henry': {'type': 'float', 'default': 4.551e-4,  # Napththalene
+                                               'min': None, 'max': None, 'units': 'atm m3 mol-1',
+                                               'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': 'Henry constant'},
             # vapour pressure
-            'chemical:transformations:Vpress': {'type': 'float', 'default': 11.2,           # Naphthalene
-                'min': None, 'max': None, 'units': 'Pa',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': 'Vapour pressure'},
-            'chemical:transformations:Tref_Vpress': {'type': 'float', 'default': 25.,        # Naphthalene
-                'min': None, 'max': None, 'units': 'C',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': 'Vapour pressure ref temp'},
-            'chemical:transformations:DeltaH_Vpress': {'type': 'float', 'default': 55925.,   # Naphthalene
-                'min': -100000., 'max': 115000., 'units': 'J/mol',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': 'Enthalpy of volatilization'},
-            
-            
+            'chemical:transformations:Vpress': {'type': 'float', 'default': 11.2,  # Naphthalene
+                                                'min': None, 'max': None, 'units': 'Pa',
+                                                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': 'Vapour pressure'},
+            'chemical:transformations:Tref_Vpress': {'type': 'float', 'default': 25.,  # Naphthalene
+                                                     'min': None, 'max': None, 'units': 'C',
+                                                     'level': self.CONFIG_LEVEL_ESSENTIAL,
+                                                     'description': 'Vapour pressure ref temp'},
+            'chemical:transformations:DeltaH_Vpress': {'type': 'float', 'default': 55925.,  # Naphthalene
+                                                       'min': -100000., 'max': 115000., 'units': 'J/mol',
+                                                       'level': self.CONFIG_LEVEL_ESSENTIAL,
+                                                       'description': 'Enthalpy of volatilization'},
             # solubility
-            'chemical:transformations:Solub': {'type': 'float', 'default': 31.4,            # Naphthalene
-                'min': None, 'max': None, 'units': 'g/m3',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': 'Solubility'},
-            'chemical:transformations:Tref_Solub': {'type': 'float', 'default': 25.,         # Naphthalene
-                'min': None, 'max': None, 'units': 'C',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': 'Solubility ref temp'},
-            'chemical:transformations:DeltaH_Solub': {'type': 'float', 'default': 25300.,    # Naphthalene
-                'min': -100000., 'max': 100000., 'units': 'J/mol',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': 'Enthalpy of solubilization'},
+            'chemical:transformations:Solub': {'type': 'float', 'default': 31.4,  # Naphthalene
+                                               'min': None, 'max': None, 'units': 'g/m3',
+                                               'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': 'Solubility'},
+            'chemical:transformations:Tref_Solub': {'type': 'float', 'default': 25.,  # Naphthalene
+                                                    'min': None, 'max': None, 'units': 'C',
+                                                    'level': self.CONFIG_LEVEL_ESSENTIAL,
+                                                    'description': 'Solubility ref temp'},
+            'chemical:transformations:DeltaH_Solub': {'type': 'float', 'default': 25300.,  # Naphthalene
+                                                      'min': -100000., 'max': 100000., 'units': 'J/mol',
+                                                      'level': self.CONFIG_LEVEL_ESSENTIAL,
+                                                      'description': 'Enthalpy of solubilization'},
             # Sedimentation/Resuspension
             'chemical:sediment:mixing_depth': {'type': 'float', 'default': 0.03,
-                'min': 0, 'max': 100, 'units': 'm',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                                               'min': 0, 'max': 100, 'units': 'm',
+                                               'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:density': {'type': 'float', 'default': 2600,
-                'min': 0, 'max': 10000, 'units': 'kg/m3',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                                          'min': 0, 'max': 10000, 'units': 'kg/m3',
+                                          'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:effective_fraction': {'type': 'float', 'default': 0.9,
-                'min': 0, 'max': 1, 'units': '',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                                                     'min': 0, 'max': 1, 'units': '',
+                                                     'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:corr_factor': {'type': 'float', 'default': 0.1,
-                'min': 0, 'max': 10, 'units': '',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                                              'min': 0, 'max': 10, 'units': '',
+                                              'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:porosity': {'type': 'float', 'default': 0.6,
-                'min': 0, 'max': 1, 'units': '',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                                           'min': 0, 'max': 1, 'units': '',
+                                           'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:layer_thickness': {'type': 'float', 'default': 1,
-                'min': 0, 'max': 100, 'units': 'm',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                                                  'min': 0, 'max': 100, 'units': 'm',
+                                                  'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:desorption_depth': {'type': 'float', 'default': 1,
-                'min': 0, 'max': 100, 'units': 'm',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                                                   'min': 0, 'max': 100, 'units': 'm',
+                                                   'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:desorption_depth_uncert': {'type': 'float', 'default': .5,
-                'min': 0, 'max': 100, 'units': 'm',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                                                          'min': 0, 'max': 100, 'units': 'm',
+                                                          'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:resuspension_depth': {'type': 'float', 'default': 1,
-                'min': 0, 'max': 100, 'units': 'm',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                                                     'min': 0, 'max': 100, 'units': 'm',
+                                                     'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:resuspension_depth_uncert': {'type': 'float', 'default': .5,
-                'min': 0, 'max': 100, 'units': 'm',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                                                            'min': 0, 'max': 100, 'units': 'm',
+                                                            'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:resuspension_critvel': {'type': 'float', 'default': .01,
-                'min': 0, 'max': 1, 'units': 'm/s',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
-            'chemical:sediment:burial_rate': {'type': 'float', 'default': .00003,   # MacKay
-                'min': 0, 'max': 10, 'units': 'm/year',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                                                       'min': 0, 'max': 1, 'units': 'm/s',
+                                                       'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+            'chemical:sediment:burial_rate': {'type': 'float', 'default': .00003,  # MacKay
+                                              'min': 0, 'max': 10, 'units': 'm/year',
+                                              'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:buried_leaking_rate': {'type': 'float', 'default': 0,
-                'min': 0, 'max': 10, 'units': 's-1',
-                'level': self.CONFIG_LEVEL_ADVANCED,'description': 'rate of resuspension of buried sediments'},
+                                                      'min': 0, 'max': 10, 'units': 'm/year',
+                                                      'level': self.CONFIG_LEVEL_ADVANCED,
+                                                      'description': 'rate of resuspension of buried sediments'},
             #
             'chemical:compound': {'type': 'enum',
                                   'enum': ['Naphthalene', 'Phenanthrene', 'Fluoranthene',
@@ -360,7 +367,6 @@ class ChemicalDrift(OceanDrift):
         logger.info('Number of species: {}'.format(self.nspecies))
         for i, sp in enumerate(self.name_species):
             logger.info('{:>3} {}'.format(i, sp))
-
 
         logger.info('transfer setup: %s' % self.get_config('chemical:transfer_setup'))
 
@@ -378,7 +384,6 @@ class ChemicalDrift(OceanDrift):
             if 'doc' in value.variables:
                 if (hasattr(value, 'sigma') or hasattr(value, 'z')):
                     self.DOC_vertical_levels_given = True
-
 
     def init_species(self):
         # Initialize specie types
@@ -413,7 +418,6 @@ class ChemicalDrift(OceanDrift):
         else:
             logger.error('No valid transfer_setup {}'.format(self.get_config('chemical:transfer_setup')))
 
-        
         self.name_species = []
         if self.get_config('chemical:species:LMM'):
             self.name_species.append('LMM')
@@ -447,13 +451,11 @@ class ChemicalDrift(OceanDrift):
                 self.get_config('chemical:species:Particle_irreversible'):
             self.set_config('chemical:irreversible_fraction', True)
 
-
         self.nspecies = len(self.name_species)
+
     #         logger.info( 'Number of species: {}'.format(self.nspecies) )
     #         for i,sp in enumerate(self.name_species):
     #             logger.info( '{:>3} {}'.format( i, sp ) )
-
-
 
     def seed_elements(self, *args, **kwargs):
 
@@ -461,20 +463,17 @@ class ChemicalDrift(OceanDrift):
             self.init_species()
             self.init_transfer_rates()
 
-
-
         if 'number' in kwargs:
             num_elements = kwargs['number']
         else:
             num_elements = self.get_config('seed:number')
 
-
         if 'specie' in kwargs:
-            print('num_elements', num_elements)
-            try:
-                print('len specie:',len(kwargs['specie']))
-            except:
-                print('specie:',kwargs['specie'])
+            # print('num_elements', num_elements)
+            # try:
+            #     print('len specie:', len(kwargs['specie']))
+            # except:
+            #     print('specie:', kwargs['specie'])
 
             init_specie = np.ones(num_elements, dtype=int)
             init_specie[:] = kwargs['specie']
@@ -526,8 +525,6 @@ class ChemicalDrift(OceanDrift):
         init_diam[init_specie == self.num_prev] = diameter + np.random.normal(0, std, sum(init_specie == self.num_prev))
         kwargs['diameter'] = init_diam
 
-
-
         super(ChemicalDrift, self).seed_elements(*args, **kwargs)
 
     def tempcorr(self, mode, DeltaH, T_C, Tref_C):
@@ -537,9 +534,9 @@ class ChemicalDrift(OceanDrift):
             R = 8.3145  # J/(mol*K)
             T_K = T_C + 273.15
             Tref_K = Tref_C + 273.15
-            corr = np.e**(-(DeltaH/R)*(1/T_K - 1/Tref_K))
-        elif mode =='Q10':
-            corr = 2**((T_C - Tref_C)/10)
+            corr = np.e ** (-(DeltaH / R) * (1 / T_K - 1 / Tref_K))
+        elif mode == 'Q10':
+            corr = 2 ** ((T_C - Tref_C) / 10)
         return corr
 
     def salinitycorr(self, Setschenow, Temperature, Salinity):
@@ -572,7 +569,8 @@ class ChemicalDrift(OceanDrift):
         ''' Calculate correction of KOC due to pH of sediments
         '''
         # Estimate KOC for dissociated forms from KOW
-        KOC_sed_diss_acid = (10 ** (0.11 * np.log10(KOW) + 1.54))  # KOC for dissociated acid species (L/kg_OC), from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202.
+        KOC_sed_diss_acid = (10 ** (0.11 * np.log10(
+            KOW) + 1.54))  # KOC for dissociated acid species (L/kg_OC), from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202.
         KOC_sed_diss_base = 10 ** (pKa_acid ** (0.65 * ((KOW / (KOW + 1)) ** 0.14))) # KOC for ionized form of base species (L/kg_OC) # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
         # Updated values of KOC to calculate correction factor
         KOC_sed_updated = np.empty_like(pH_sed)
@@ -687,7 +685,6 @@ class ChemicalDrift(OceanDrift):
 
         return KOC_DOMcorr
 
-
     def init_transfer_rates(self):
         ''' Initialization of background values in the transfer rates 2D array.
         '''
@@ -701,30 +698,28 @@ class ChemicalDrift(OceanDrift):
 
         if transfer_setup == 'organics':
 
-            self.num_lmm    = self.specie_name2num('LMM')
+            self.num_lmm = self.specie_name2num('LMM')
             self.num_humcol = self.specie_name2num('Humic colloid')
-            self.num_prev   = self.specie_name2num('Particle reversible')
-            self.num_srev   = self.specie_name2num('Sediment reversible')
-            #self.num_psrev  = self.specie_name2num('Particle slowly reversible')
-            self.num_ssrev  = self.specie_name2num('Sediment slowly reversible')
+            self.num_prev = self.specie_name2num('Particle reversible')
+            self.num_srev = self.specie_name2num('Sediment reversible')
+            # self.num_psrev  = self.specie_name2num('Particle slowly reversible')
+            self.num_ssrev = self.specie_name2num('Sediment slowly reversible')
 
             # Values from EMERGE-Aquatox
-            Org2C      = 0.526  # kgOC/KgOM
-            #Kd         = self.get_config('chemical:transformations:Kd')
-            KOW        = 10**self.get_config('chemical:transformations:LogKOW')
-            KOWTref    = self.get_config('chemical:transformations:TrefKOW')
+            Org2C = 0.526  # kgOC/KgOM
+            # Kd         = self.get_config('chemical:transformations:Kd')
+            KOW = 10 ** self.get_config('chemical:transformations:LogKOW')
+            KOWTref = self.get_config('chemical:transformations:TrefKOW')
             DH_KOC_Sed = self.get_config('chemical:transformations:DeltaH_KOC_Sed')
             DH_KOC_DOM = self.get_config('chemical:transformations:DeltaH_KOC_DOM')
-            Setchenow  = self.get_config('chemical:transformations:Setchenow')
+            Setchenow = self.get_config('chemical:transformations:Setchenow')
 
-
-            diss       = self.get_config('chemical:transformations:dissociation')
-            pKa_acid   = self.get_config('chemical:transformations:pKa_acid')
+            diss = self.get_config('chemical:transformations:dissociation')
+            pKa_acid = self.get_config('chemical:transformations:pKa_acid')
             if pKa_acid < 0 and diss != 'nondiss':
                 raise ValueError("pKa_acid must be positive")
                 # print("pKa_acid must be positive")
                 # UserWarning(("pKa_acid must be positive"))
-
             else:
                 pass
 
@@ -751,7 +746,7 @@ class ChemicalDrift(OceanDrift):
             fOC_sed = self.get_config('chemical:transformations:fOC_sed')  # typical values from 0.01 to 0.1 gOC/g
 
             concDOM = 1.e-3 / Org2C  # concentration of available dissolved organic matter (kg/m3)
-            						 # rough initial estimate for coastal waters, doi: 10.1002/lom3.10118
+            # rough initial estimate for coastal waters, doi: 10.1002/lom3.10118
             # concDOM   = 50.e-3     # HIGHER VALUE FOR TESTING!!!!!!!!!!!!
 
             # Values from Simonsen et al (2019a)
@@ -854,9 +849,13 @@ class ChemicalDrift(OceanDrift):
                     else:
                         pass
 
-                    KOC_sed_diss_base = 10 ** (pKa_acid ** (0.65 * ((KOW / (KOW + 1)) ** 0.14)))  # KOC for ionized form of base species (L/kg_OC) # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
-                    KOC_sed_diss_acid = (10 ** (0.11 * np.log10(KOW) + 1.54))  # KOC for dissociated acid species (L/kg_OC), from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202.
-                    KOC_SPM = (KOC_sed_n * Phi_n_water) + (Phi_anion_water * KOC_sed_diss_acid) + (Phi_cation_water * KOC_sed_diss_base)
+                    KOC_sed_diss_base = 10 ** (pKa_acid ** (0.65 * ((KOW / (
+                            KOW + 1)) ** 0.14)))  # KOC for ionized form of base species (L/kg_OC) # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
+                    KOC_sed_diss_acid = (10 ** (0.11 * np.log10(
+                        KOW) + 1.54))  # KOC for dissociated acid species (L/kg_OC), from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202.
+                    KOC_SPM = (KOC_sed_n * Phi_n_water) + (Phi_anion_water * KOC_sed_diss_acid) + (
+                            Phi_cation_water * KOC_sed_diss_base)
+
                     KOC_DOM_n = self.get_config('chemical:transformations:KOC_DOM')
                     if KOC_DOM_n < 0:
                         KOC_DOM_n = 2.88 * KOW ** 0.67  # (L/KgOC), Park and Clough, 2014 TO DO Add if choice between input and estimation
@@ -912,10 +911,6 @@ class ChemicalDrift(OceanDrift):
             self.k21_0 = k_des_DOM
             self.k31_0 = k_des_SPM
             self.k41_0 = k_des_sed * sed_phi
-            
-            
-            
-            
             # TODO Use setconfig() to store these?
 
             self.transfer_rates[self.num_lmm, self.num_humcol] = k_ads * concDOM  # k12
@@ -939,11 +934,11 @@ class ChemicalDrift(OceanDrift):
                 self.num_srev, self.num_ssrev] = sed_burial / sed_L / 31556926  # k46 (m/y) / m / (s/y) = s-1
             self.transfer_rates[self.num_ssrev, self.num_srev] = sed_leaking_rate  # k64
 
-
-            self.transfer_rates[self.num_humcol,self.num_prev] = self.get_config('chemical:transformations:aggregation_rate')
-            self.transfer_rates[self.num_prev,self.num_humcol] = 0          # TODO check if valid for organics
+            self.transfer_rates[self.num_humcol, self.num_prev] = 1.e-5  # k23, Salinity interval >20 psu
+            self.transfer_rates[self.num_prev, self.num_humcol] = 0  # TODO check if valid for organics
 
         elif transfer_setup == 'metals':  # renamed from radionuclides Bokna_137Cs
+
             self.num_lmm = self.specie_name2num('LMM')
             self.num_prev = self.specie_name2num('Particle reversible')
             self.num_srev = self.specie_name2num('Sediment reversible')
@@ -2569,23 +2564,6 @@ class ChemicalDrift(OceanDrift):
             "Zineb_AFP": [0.2371, 0.],
             "ZnPyr_AFP": [0.2058, 0.],
         }
-    
-    
-
-        emission_factors_SILAM_ash = {
-            #                           g/g
-            "Aresenic":                 [8.09E-5],
-            "Cadmium":                  [6.30E-6],
-            "Chromium":                 [2.10E-4],
-            "Copper":                   [2.52E-4],
-            "Iron":                     [2.52E-2],
-            "Mercury":                  [6.30E-6],
-            "Nickel":                   [4.10E-2],
-            "Lead":                     [1.16E-4],
-            "Vanadium":                 [8.30E-2],
-            "Zinc":                     [2.42E-3],
-         }
-    
         if scrubber_type == "open_loop":
             Emission_factors = emission_factors_open_loop.get(chemical_compound)[0]
         elif scrubber_type == "closed_loop":
@@ -2598,29 +2576,23 @@ class ChemicalDrift(OceanDrift):
             Emission_factors = emission_factors_sewage_water.get(chemical_compound)[0]
         elif scrubber_type == "AFP":  # Copper and Zinc from antifouling paint
             Emission_factors = 1e6 * emission_factors_AFP.get(chemical_compound)[0]  # 1g = 1e6 ug: AFP is expressed as g
-        elif scrubber_type=="AFP_metals_total":
-            Emission_factors = 1e6 # g to ug
-        elif scrubber_type=="N_sewage": # Nitrogen from sewage
+        elif scrubber_type == "N_sewage":  # Nitrogen from sewage
             Emission_factors = 1e9  # 1kg = 1e9 ug: N_sewage is expressed as kg
         elif scrubber_type == "N_foodwaste":  # Nitrogen from foodwaste
             Emission_factors = 1e9  # 1kg = 1e9 ug: N_sewage is expressed as kg
-                elif scrubber_type=="SILAM_metals":
-            Emission_factors = 1e9  #+ 1kg = 1e9 ug: Lead and Cadmium depositions given in kg
-        elif scrubber_type=="SILAM_metals_from_ash":
-            Emission_factors = 1e9*emission_factors_SILAM_ash.get(chemical_compound)[0] # 1kg=1e9ug: Ash depositions given in kg        
         elif scrubber_type == "N_NOx":  # Nitrogen from engine's NOx emissions
             Emission_factors = 1e9 * (14.0067 / 46.005)  # 1kg = 1e9 ug: NOx is expressed in kg, then tranformed to kg of nitrogen # MW of NOx: 46.005 g/mol # https://www.epa.gov/air-emissions-inventories/how-are-oxides-nitrogen-nox-defined-nei
         elif scrubber_type == "NOx":  # Nitrogen from engine's NOx emissions
             Emission_factors = 1e9 *emission_factors_NOx.get(chemical_compound)[0]
         elif scrubber_type == "SOx":  # Nitrogen from engine's NOx emissions
             Emission_factors = 1e9 *emission_factors_SOx.get(chemical_compound)[0]
-        elif scrubber_type == "emission_kg":  # Generic emission expressed as kg
+        elif scrubber_type == "emission_kg":  # Generic emission expresses as kg
             Emission_factors = 1e9
             
         return Emission_factors
         # TODO: Add emission uncertainty based on 95% confidence interval
 
-    def seed_from_DataArray(self, steam, lowerbound=0, higherbound=np.inf, radius=0, scrubber_type="open_loop",
+    def seed_from_STEAM(self, steam, lowerbound=0, higherbound=np.inf, radius=0, scrubber_type="open_loop",
                         chemical_compound="Copper", mass_element_ug=100e3, number_of_elements=None, origin_marker=1,
                         **kwargs):
         """Seed elements based on a dataarray with STEAM emission data
