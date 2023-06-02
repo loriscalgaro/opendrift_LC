@@ -143,6 +143,9 @@ class ChemicalDrift(OceanDrift):
             'chemical:particle_diameter': {'type': 'float', 'default': 5e-6,
                 'min': 0, 'max': 100e-6, 'units': 'm',
                 'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+			'chemical:doc_particle_diameter': {'type': 'float', 'default': 5e-6,
+			    'min': 0, 'max': 100e-6, 'units': 'm',
+			    'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': 'Diameter of DOM aggregates for marine water'}, # https://doi.org/10.1038/246170a0
             'chemical:particle_concentration_half_depth': {'type': 'float', 'default': 20,
                 'min': 0, 'max': 100, 'units': 'm',
                 'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
@@ -331,12 +334,12 @@ class ChemicalDrift(OceanDrift):
                 'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:buried_leaking_rate': {'type': 'float', 'default': 0,
                 'min': 0, 'max': 10, 'units': 's-1',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': self.CONFIG_LEVEL_ADVANCED, 'description': 'rate of resuspension of buried sediments'},
             #
             'chemical:compound': {'type': 'enum',
                 'enum': ['Naphthalene','Phenanthrene','Fluoranthene',
                          'Benzo-a-anthracene','Benzo-a-pyrene','Dibenzo-ah-anthracene',
-                         'Copper','Cadmium','Chromium','Lead','Vanadium','Zinc','Nickel',None],
+                         'Copper','Cadmium','Chromium','Lead','Vanadium','Zinc','Nickel','Nitrogen', 'Alkalinity', None],
                 'default': None,
                 'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             })
@@ -566,34 +569,34 @@ class ChemicalDrift(OceanDrift):
         KOC_sed_diss_base = 10**(pKa_acid**(0.65*((KOW/(KOW+1))**0.14))) # KOC for ionized form of base species (L/kg_OC) # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
         # Updated values of KOC to calculate correction factor
         KOC_sed_updated = np.empty_like(pH_sed)
-        KOC_sedcorr= np.empty_like(pH_sed)
+        KOC_sedcorr = np.empty_like(pH_sed)
 
-        for i in (range(len(pH_sed))):
-            if diss=='acid':
 
-                Phi_n_sed    = 1/(1 + 10**(pH_sed[i]-pKa_acid))
-                Phi_diss_sed = 1-Phi_n_sed
-                KOC_sed_updated[i] = (KOC_sed_n * Phi_n_sed) + (Phi_diss_sed * KOC_sed_diss_acid)
-                KOC_sedcorr[i] = KOC_sed_updated[i]/KOC_sed_initial
+        if diss == 'acid':
+            Phi_n_sed = 1/(1+10**(pH_sed-pKa_acid))
+            Phi_diss_sed = 1-Phi_n_sed
+            KOC_sed_updated = (KOC_sed_n*Phi_n_sed)+(Phi_diss_sed*KOC_sed_diss_acid)
 
-            elif diss=='base':
+            KOC_sedcorr = KOC_sed_updated/KOC_sed_initial
 
-                Phi_n_sed    = 1/(1 + 10**(pH_sed[i]-pKa_base))
-                Phi_diss_sed = 1-Phi_n_sed
-                KOC_sed_updated[i] = (KOC_sed_n * Phi_n_sed) + (Phi_diss_sed * KOC_sed_diss_acid)
-                KOC_sedcorr[i] = KOC_sed_updated[i]/KOC_sed_initial
+        elif diss == 'base':
+            Phi_n_sed = 1/(1+10**(pH_sed-pKa_base))
+            Phi_diss_sed = 1-Phi_n_sed
+            KOC_sed_updated = (KOC_sed_n*Phi_n_sed) + (Phi_diss_sed*KOC_sed_diss_acid)
 
-            elif diss=='amphoter':
+            KOC_sedcorr = KOC_sed_updated/KOC_sed_initial
 
-                Phi_n_sed      = 1/(1 + 10**(pH_sed[i]-pKa_acid) + 10**(pKa_base))
-                Phi_anion_sed  = Phi_n_sed * 10**(pH_sed[i]-pKa_acid)
-                Phi_cation_sed = Phi_n_sed * 10**(pKa_base-pH_sed[i])
+        elif diss == 'amphoter':
+            Phi_n_sed = 1/(1+10**(pH_sed-pKa_acid)+10**(pKa_base))
+            Phi_anion_sed = Phi_n_sed*10**(pH_sed-pKa_acid)
+            Phi_cation_sed = Phi_n_sed*10**(pKa_base-pH_sed)
+            KOC_sed_updated = (KOC_sed_n*Phi_n_sed)+(Phi_anion_sed*KOC_sed_diss_acid) + (Phi_cation_sed*KOC_sed_diss_base)
 
-                KOC_sed_updated[i] = (KOC_sed_n * Phi_n_sed) + (Phi_anion_sed * KOC_sed_diss_acid) + (Phi_cation_sed * KOC_sed_diss_base)
-                KOC_sedcorr[i]=KOC_sed_updated[i]/KOC_sed_initial
+            KOC_sedcorr = KOC_sed_updated/KOC_sed_initial
 
-            elif diss=='undiss':
-                KOC_sedcorr[i]=1
+        elif diss == 'undiss':
+            for i in (range(len(pH_sed))):
+                KOC_sedcorr[i] = 1
 
         return KOC_sedcorr
 
@@ -607,36 +610,35 @@ class ChemicalDrift(OceanDrift):
 
         KOC_SPM_updated = np.empty_like(pH_water_SPM)
         KOC_SPMcorr = np.empty_like(pH_water_SPM)
-
-        for i in (range(len(pH_water_SPM))):
-            if diss=='acid':
-
-                Phi_n_SPM    = 1/(1 + 10**(pH_water_SPM[i]-pKa_acid))
-                Phi_diss_SPM = 1-Phi_n_SPM
-                KOC_SPM_updated[i] = (KOC_sed_n * Phi_n_SPM) + (Phi_diss_SPM * KOC_sed_diss_acid)
-
-                KOC_SPMcorr[i]=KOC_SPM_updated[i]/KOC_SPM_initial
-
-            elif diss=='base':
-
-                Phi_n_SPM    = 1/(1 + 10**(pH_water_SPM[i]-pKa_base))
-                Phi_diss_SPM = 1-Phi_n_SPM
-                KOC_SPM_updated[i] = (KOC_sed_n * Phi_n_SPM) + (Phi_diss_SPM * KOC_sed_diss_acid)
-
-                KOC_SPMcorr[i]=KOC_SPM_updated[i]/KOC_SPM_initial
-
-            elif diss=='amphoter':
-
-                Phi_n_SPM      = 1/(1 + 10**(pH_water_SPM[i]-pKa_acid) + 10**(pKa_base))
-                Phi_anion_SPM  = Phi_n_SPM * 10**(pH_water_SPM[i]-pKa_acid)
-                Phi_cation_SPM = Phi_n_SPM * 10**(pKa_base-pH_water_SPM[i])
-                KOC_SPM_updated[i] = (KOC_sed_n * Phi_n_SPM) + (Phi_anion_SPM * KOC_sed_diss_acid) + (Phi_cation_SPM * KOC_sed_diss_base)
-
-                KOC_SPMcorr[i]=KOC_SPM_updated[i]/KOC_SPM_initial
-
-            elif diss=='undiss':
-                KOC_SPMcorr[i]=1
-
+        
+		if diss == 'acid':
+		
+	            Phi_n_SPM = 1 / (1 + 10 ** (pH_water_SPM - pKa_acid))
+	            Phi_diss_SPM = 1 - Phi_n_SPM
+	            KOC_SPM_updated = (KOC_sed_n * Phi_n_SPM) + (Phi_diss_SPM * KOC_sed_diss_acid)
+	
+	            KOC_SPMcorr = KOC_SPM_updated / KOC_SPM_initial
+	
+	        elif diss == 'base':
+	
+	            Phi_n_SPM = 1 / (1 + 10 ** (pH_water_SPM - pKa_base))
+	            Phi_diss_SPM = 1 - Phi_n_SPM
+	            KOC_SPM_updated = (KOC_sed_n * Phi_n_SPM) + (Phi_diss_SPM * KOC_sed_diss_acid)
+	
+	            KOC_SPMcorr = KOC_SPM_updated / KOC_SPM_initial
+	
+	        elif diss == 'amphoter':
+	
+	            Phi_n_SPM = 1 / (1 + 10 ** (pH_water_SPM - pKa_acid) + 10 ** (pKa_base))
+	            Phi_anion_SPM = Phi_n_SPM * 10 ** (pH_water_SPM - pKa_acid)
+	            Phi_cation_SPM = Phi_n_SPM * 10 ** (pKa_base - pH_water_SPM)
+	            KOC_SPM_updated = (KOC_sed_n * Phi_n_SPM) + (Phi_anion_SPM * KOC_sed_diss_acid) + (Phi_cation_SPM * KOC_sed_diss_base)
+	
+	            KOC_SPMcorr = KOC_SPM_updated / KOC_SPM_initial
+	
+	        elif diss == 'undiss':
+	            for i in (range(len(pH_water_SPM))):
+	                KOC_SPMcorr[i] = 1
         return KOC_SPMcorr
 
     def calc_KOC_watcorrDOM(self, KOC_DOM_initial, KOC_DOM_n, pKa_acid, pKa_base, KOW, pH_water_DOM, diss):
@@ -648,33 +650,33 @@ class ChemicalDrift(OceanDrift):
         KOC_DOM_updated = np.empty_like(pH_water_DOM)
         KOC_DOMcorr = np.empty_like(pH_water_DOM)
 
-        for i in (range(len(pH_water_DOM))):
-            if diss=='acid':
+        if diss == 'acid':
 
-                Phi_n_DOM    = 1/(1 + 10**(pH_water_DOM[i]-pKa_acid))
-                Phi_diss_DOM    = 1-Phi_n_DOM
-                KOC_DOM_updated[i] = (0.08 * ((Phi_n_DOM*(KOC_DOM_n)) + ((1 - Phi_diss_DOM)*10**(np.log10(KOW)-3.5))))/0.526 # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
+            Phi_n_DOM = 1 / (1 + 10 ** (pH_water_DOM - pKa_acid))
+            Phi_diss_DOM = 1 - Phi_n_DOM
+            KOC_DOM_updated = (0.08 * ((Phi_n_DOM * (KOC_DOM_n)) + ((1 - Phi_diss_DOM) * 10 ** (np.log10(
+                KOW) - 3.5)))) / 0.526  # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
 
-                KOC_DOMcorr[i]=KOC_DOM_updated[i]/KOC_DOM_initial
+            KOC_DOMcorr = KOC_DOM_updated / KOC_DOM_initial
 
-            elif diss=='base':
+        elif diss == 'base':
 
-                Phi_n_DOM    = 1/(1 + 10**(pH_water_DOM[i]-pKa_base))
-                Phi_diss_DOM    = 1-Phi_n_DOM
-                KOC_DOM_updated[i] = (0.08 * ((Phi_n_DOM*(KOC_DOM_n)) + ((1 - Phi_diss_DOM)*10**(np.log10(KOW)-3.5))))/0.526 # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
+            Phi_n_DOM = 1 / (1 + 10 ** (pH_water_DOM - pKa_base))
+            Phi_diss_DOM = 1 - Phi_n_DOM
+            KOC_DOM_updated = (0.08 * ((Phi_n_DOM * (KOC_DOM_n)) + ((1 - Phi_diss_DOM) * 10 ** (np.log10(KOW) - 3.5)))) / 0.526  # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
 
-                KOC_DOMcorr[i]=KOC_DOM_updated[i]/KOC_DOM_initial
+            KOC_DOMcorr = KOC_DOM_updated / KOC_DOM_initial
 
-            elif diss=='amphoter':
+        elif diss == 'amphoter':
 
-                Phi_n_DOM      = 1/(1 + 10**(pH_water_DOM[i]-pKa_acid) + 10**(pKa_base))
-                Phi_diss_DOM   = 1-Phi_n_DOM
-                KOC_DOM_updated[i] = (0.08 * ((Phi_n_DOM*(KOC_DOM_n)) + ((1 - Phi_diss_DOM)*10**(np.log10(KOW)-3.5))))/0.526 # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
-                KOC_DOMcorr[i]=KOC_DOM_updated[i]/KOC_DOM_initial
+            Phi_n_DOM = 1 / (1 + 10 ** (pH_water_DOM - pKa_acid) + 10 ** (pKa_base))
+            Phi_diss_DOM = 1 - Phi_n_DOM
+            KOC_DOM_updated = (0.08 * ((Phi_n_DOM * (KOC_DOM_n)) + ((1 - Phi_diss_DOM) * 10 ** (np.log10(KOW) - 3.5)))) / 0.526  # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
+            KOC_DOMcorr = KOC_DOM_updated / KOC_DOM_initial
 
-            elif diss=='undiss':
-                    KOC_DOMcorr[i]=1
-
+        elif diss == 'undiss':
+            for i in (range(len(pH_water_DOM))):
+                KOC_DOMcorr[i] = 1
         return KOC_DOMcorr
 
 
@@ -1235,16 +1237,14 @@ class ChemicalDrift(OceanDrift):
                 pKa_acid   = self.get_config('chemical:transformations:pKa_acid')
                 if pKa_acid < 0:
                     raise ValueError("pKa_acid must be positive")
-                    # print("pKa_acid must be positive")
-                    # UserWarning(("pKa_acid must be positive"))
+
                 else:
                     pass
 
                 pKa_base   = self.get_config('chemical:transformations:pKa_base')
                 if pKa_base < 0:
                     raise ValueError("pKa_base must be positive")
-                    # print("pKa_base must be positive")
-                    # UserWarning(("pKa_base must be positive"))
+
                 else:
                     pass
 
@@ -1520,6 +1520,7 @@ class ChemicalDrift(OceanDrift):
 
 
         dia_part=self.get_config('chemical:particle_diameter')
+        dia_DOM_part = self.get_config('chemical:doc_particle_diameter')
         dia_diss=self.get_config('chemical:dissolved_diameter')
 
 
@@ -1528,7 +1529,7 @@ class ChemicalDrift(OceanDrift):
 
         # TODO Choose a proper diameter for aggregated particles
         if self.get_config('chemical:species:Humic_colloid'):
-            self.elements.diameter[(sp_out==self.num_prev) & (sp_in==self.num_humcol)] = dia_part/2
+            self.elements.diameter[(sp_out==self.num_prev) & (sp_in==self.num_humcol)] = = dia_DOM_part
 
         logger.debug('Updated particle diameter for %s elements' % len(self.elements.diameter[(sp_out==self.num_prev) & (sp_in!=self.num_prev)]))
 
@@ -1721,7 +1722,7 @@ class ChemicalDrift(OceanDrift):
             MolWt=self.get_config('chemical:transformations:MolWt')
             wind=5                  # (m/s) (to read from atmosferic forcing)
             mixedlayerdepth=50      # m     (to read from ocean forcing)
-            Undiss_n=1              # 1 for PAHs
+            
 
             Henry=self.get_config('chemical:transformations:Henry') # (atm m3/mol)
 
@@ -1735,7 +1736,24 @@ class ChemicalDrift(OceanDrift):
 
             R=8.206e-05 #(atm m3)/(mol K)
 
-            mixedlayerdepth = self.environment.ocean_mixed_layer_thickness
+            diss = self.get_config('chemical:transformations:dissociation')
+
+            pKa_acid = self.get_config('chemical:transformations:pKa_acid')
+            if pKa_acid < 0 and diss != 'nondiss':
+                raise ValueError("pKa_acid must be positive")
+            else:
+                pass
+
+            pKa_base = self.get_config('chemical:transformations:pKa_base')
+            if pKa_base < 0 and diss != 'nondiss':
+                raise ValueError("pKa_base must be positive")
+            else:
+                pass
+
+            if diss == 'amphoter' and abs(pKa_acid - pKa_base) < 2:
+                raise ValueError("pKa_base and pKa_acid must differ of at least two units")
+            else:
+                pass
 
             # mask of dissolved elements within mixed layer
             W =     (self.elements.specie == self.num_lmm) \
@@ -1743,6 +1761,7 @@ class ChemicalDrift(OceanDrift):
                     # does volatilization apply only to num_lmm?
                     # check
 
+			mixedlayerdepth = self.environment.ocean_mixed_layer_thickness
             mixedlayerdepth = mixedlayerdepth[W]
 
             T=self.environment.sea_water_temperature[W]
@@ -1761,8 +1780,21 @@ class ChemicalDrift(OceanDrift):
             # Calculate mass transfer coefficient water side
             # Schwarzenbach et al., 2016 Eq.(19-20)
 
-            MTCw = ((9e-4)+(7.2e-6*wind**3)) * (MolWtCO2/MolWt)**0.25 / Undiss_n
+            pH_water = self.environment.sea_water_ph_reported_on_total_scale[W]
 
+            if diss == 'nondiss':
+                Undiss_n = 1  # 1 for PAHs
+            elif diss == 'acid':
+                # Only undissociated chemicals volatilize
+                Undiss_n = 1 / (1 + 10 ** (pH_water - pKa_acid))
+            elif diss == 'base':
+                # Dissociation in water
+                Undiss_n = 1 / (1 + 10 ** (pH_water - pKa_base))
+            elif diss == 'amphoter':
+                # Only undissociated chemicals volatilize # This approach ignores the zwitterionic fraction. 10.1002/etc.115
+                Undiss_n = 1 / (1 + 10 ** (pH_water - pKa_acid) + 10 ** (pKa_base))
+
+            MTCw = (((9e-4) + (7.2e-6 * wind ** 3)) * (MolWtCO2 / MolWt) ** 0.25) * Undiss_n
             # Calculate mass transfer coefficient air side
             # Schwarzenbach et al., 2016 Eq.(19-17)(19-18)(19-19)
 
@@ -2421,6 +2453,9 @@ class ChemicalDrift(OceanDrift):
             "Nitrite":                  [760.,     680.],
             "Ammonium":                 [730.,     30.],
             "Sulphur":                  [2200000., 446000.],
+            "Nitrogen":                 [1400.,    0.0],
+            #
+            "Alkalinity":               [142.39,   0.0], # H+ ions concentration form pH
             }
 
         emission_factors_closed_loop = {
@@ -2461,6 +2496,9 @@ class ChemicalDrift(OceanDrift):
             "Nitrite":                  [55760.,    55000.],
             "Ammonium":                 [0.,        0.],
             "Sulphur":                  [12280000., 10104000.],
+            "Nitrogen": 				[42030.,    0.0],
+            #
+            "Alkalinity": 				[29.07, 0.0], # H+ ions concentration form pH
             }
 
         emission_factors_grey_water = {
@@ -2476,26 +2514,27 @@ class ChemicalDrift(OceanDrift):
             "Selenium":                 [16.1,    10.64],
             "Zinc":                     [517.,    112.],
             #
-            "Nitrogen":                  [28900., 0.0],
+            "Nitrogen":                 [28900.,  0.0],
          }
 
         emission_factors_bilge_water = {
             #                           mean    +/-95%
             #                           ug/L    ug/L
             "Arsenic":                  [35.9,    33.2],
-            "Cadmium":                  [0.32,   0.07],
-            "Chromium":                 [16.3,   15.4],
-            "Copper":                   [49.7,   22.9],
-            "Lead":                     [3.0,    1.24],
-            "Nickel":                   [71.1,   11.8],
-            "Selenium":                 [2.95,     1.01],
-            "Vanadium":                 [76.5,   22.4],
-            "Zinc":                     [949.,   660.],
+            "Cadmium":                  [0.32,    0.07],
+            "Chromium":                 [16.3,    15.4],
+            "Copper":                   [49.7,    22.9],
+            "Lead":                     [3.0,     1.24],
+            "Nickel":                   [71.1,    11.8],
+            "Selenium":                 [2.95,    1.01],
+            "Vanadium":                 [76.5,    22.4],
+            "Zinc":                     [949.,    660.],
             #
-            "Nitrate":                  [110980.,  100000.],
-            "Nitrite":                  [55760.,   55000.],
-            "Ammonium":                 [0.,     0.],
+            "Nitrate":                  [110980.,   100000.],
+            "Nitrite":                  [55760.,    55000.],
+            "Ammonium":                 [0.,        0.],
             "Sulphur":                  [12280000., 10104000.],
+            "Nitrogen": 				[42047.,    39335.],
             #
             "Naphthalene":              [50.6,   34.3],
             "Phenanthrene":             [3.67,   2.51],
@@ -2510,10 +2549,10 @@ class ChemicalDrift(OceanDrift):
             "Anthracene":               [0.22,   0.14],
             "Pyrene":                   [1.23,   1.33],
             "Chrysene":                 [0.17,   0.25],
-            "Benzo(b)fluoranthene":     [0.09,   0.13],
-            "Benzo(k)fluoranthene":     [0.03,   0.00],
-            "Indeno(1,2,3-cd)pyrene":   [0.05,   0.06],
-            "Benzo(ghi)perylene":       [0.13,   0.16],
+            "Benzo-b-fluoranthene":     [0.09,   0.13],
+            "Benzo-k-fluoranthene":     [0.03,   0.00],
+            "Indeno-123-cd-pyrene":     [0.05,   0.06],
+            "Benzo-ghi-perylene":       [0.13,   0.16],
          }
 
         emission_factors_sewage_water = {
@@ -2531,6 +2570,18 @@ class ChemicalDrift(OceanDrift):
             #
             "Nitrogen":                  [430.,  0.],
          }
+        
+        emission_factors_NOx = {
+            #                           mean    +/-95%
+            #                           ug/L    ug/L
+            "Alkalinity": [(1.0080/46.005), 0.0], # H+ ions from NOx, MW H+/MW NOx, from kg_NOx to kg_H+
+        }
+
+        emission_factors_SOx = {
+            #                           mean    +/-95%
+            #                           ug/L    ug/L
+            "Alkalinity": [(1.0080/64.066)* 2, 0.0], # H+ ions from SOx, MW H+/MW SOx, from kg_SOx to kg_H+
+        }
 
         emission_factors_AFP = {
             # Copper = 63.546 g/mol
@@ -2582,6 +2633,14 @@ class ChemicalDrift(OceanDrift):
             Emission_factors = 1e9  # 1kg = 1e9 ug: N_sewage is expressed as kg
         elif scrubber_type=="N_foodwaste": # Nitrogen from foodwaste
             Emission_factors = 1e9  # 1kg = 1e9 ug: N_sewage is expressed as kg
+        elif scrubber_type == "N_NOx":  # Nitrogen from engine's NOx emissions
+            Emission_factors = 1e9 * (14.0067 / 46.005)  # 1kg = 1e9 ug: NOx is expressed in kg, then tranformed to kg of nitrogen # MW of NOx: 46.005 g/mol # https://www.epa.gov/air-emissions-inventories/how-are-oxides-nitrogen-nox-defined-nei
+        elif scrubber_type == "NOx":  # Nitrogen from engine's NOx emissions
+            Emission_factors = 1e9 *emission_factors_NOx.get(chemical_compound)[0]
+        elif scrubber_type == "SOx":  # Nitrogen from engine's NOx emissions
+            Emission_factors = 1e9 *emission_factors_SOx.get(chemical_compound)[0]
+        elif scrubber_type == "emission_kg":  # Generic emission expresses as kg
+        	Emission_factors = 1e9
         elif scrubber_type=="SILAM_metals":
             Emission_factors = 1e9  #+ 1kg = 1e9 ug: Lead and Cadmium depositions given in kg
         elif scrubber_type=="SILAM_metals_from_ash":
@@ -2655,6 +2714,297 @@ class ChemicalDrift(OceanDrift):
     ''' Alias of seed_from_DataArray method for backward compatibility
     '''
 
+        @staticmethod
+    def _get_number_of_elements(
+            g_mode,
+            mass_element_ug=None,
+            data_point=None,
+            n_elements=None):
+
+        if g_mode == "mass" and mass_element_ug is not None and data_point is not None:
+            return int(np.ceil(np.array(data_point / mass_element_ug)))
+        elif g_mode == "fixed" and n_elements is not None and n_elements > 0.:
+            return n_elements
+        else:
+            raise ValueError("Incorrect combination of mode and input - undefined inputs")
+
+
+    @staticmethod
+    def _get_z(mode, number, depth=None, sed_mix_depth=None):
+
+        if mode == "water_conc" and depth is not None:
+            return -1 * np.random.uniform(0.0001, depth - 0.0001, number)
+        elif mode == "sed_conc" and depth is not None and sed_mix_depth is not None:
+            return  -1 * np.random.uniform(depth + 0.0001, depth + sed_mix_depth - 0.0001, number)
+        elif mode == "emission":
+            return -1 * np.random.uniform(0.0001, 1 - 0.0001, number)
+        else:
+            raise ValueError("Incorrect mode or depth")
+
+    def seed_from_NETCDF(
+            self,
+            NETCDF_data,
+            Bathimetry_data,
+            Bathimetry_seed_data,
+            mode='water_conc',
+            lon_resol=0.05,
+            lat_resol=0.05,
+            lowerbound=0,
+            higherbound=np.inf,
+            radius=0,
+            mass_element_ug=100e3,
+            number_of_elements=None,
+            origin_marker=1,
+            gen_mode="mass",
+            
+    ):
+        """Seed elements based on a dataarray with water/sediment concentration or direct emissions to water
+
+            Arguments:
+                NETCDF_data:        dataarray with concentration or emission data, with coordinates
+                    * latitude      (latitude) float32
+                    * longitude     (longitude) float32
+                    * time          (time) datetime64[ns]
+                Bathimetry_data:    dataarray with bathimetry data, MUST have the same grid of NETCDF_data and no time dimension
+                    * latitude      (latitude) float32
+                    * longitude     (longitude) float32
+                Bathimetry_seed_data:    dataarray with bathimetry data, MUST be the same used for running the simulation and no time dimension
+                    * latitude      (latitude) float32
+                    * longitude     (longitude) float32
+                mode: water_conc    (seed from concentration in water colum, in ug/L), sed_conc (seed from sediment concentration, in ug/kg d.w.), emission (seed from direct discharge to water, in kg)
+                radius:             scalar, unit: meters, elements will be created in a circular area around coordinates
+                lowerbound:         scalar, elements with lower values are discarded
+                higherbound:        scalar, elements with higher values are discarded
+                number_of_elements: scalar, number of elements created for each gridpoint
+                mass_element_ug:    scalar, maximum mass of elements if number_of_elements is not specificed
+                lon_resol:          scalar, longitude resolution of the NETCDF dataset
+                lat_resol:          scalar, latitude resolution of the NETCDF dataset
+                gen_mode: mass      (elements generated from mass), fixed (fixed number of elements for each data point)
+            """
+
+        # mass_element_ug=1e3     # 1e3 - 1 element is 1mg chemical
+        # mass_element_ug=100e3   # 100e3 - 1 element is 100mg chemical
+        # mass_element_ug=1e6     # 1e6 - 1 element is 1g chemical
+        # mass_element_ug=1e9     # 1e9 - 1 element is 1kg chemical
+
+        sel = np.where((NETCDF_data > lowerbound) & (NETCDF_data < higherbound))
+        t = NETCDF_data.time[sel[0]].data
+        la = NETCDF_data.latitude[sel[1]].data
+        lo = NETCDF_data.longitude[sel[2]].data
+        
+        lon_array = lo + lon_resol / 2  # find center of pixel for volume of water / sediments
+        lat_array = la + lat_resol / 2  # find center of pixel for volume of water / sediments
+        
+        data = np.array(NETCDF_data.data)
+        # data = data[sel]
+        sed_mixing_depth = np.array(self.get_config('chemical:sediment:mixing_depth'))
+
+        if mode == 'sed_conc':
+            sed_porosity = np.array(self.get_config('chemical:sediment:porosity'))  # fraction of sediment volume made of water, adimentional (m3/m3)
+            sed_density_dry = np.array(self.get_config('chemical:sediment:density'))  # density of sediment particles, in kg/m3 d.w.
+            sed_density_wet = np.array((sed_density_dry * (1 - sed_porosity)) * 1e-3)  # kg/L wet weight, kg/m3 * 1e-3 = kg/L
+            self.init_species()
+            self.init_transfer_rates()
+
+        lat_grid_m = np.array([6.371e6 * lat_resol * (2 * np.pi) / 360])
+        
+        if mode == 'emission':
+            Bathimetry_seed = None
+
+        for i in range(0, t.size):
+            lon_grid_m = None
+            Bathimetry_conc = None
+
+            if mode != 'emission':
+                lon_grid_m =  np.array([(6.371e6 * (np.cos(2 * (np.pi) * la[i] / 360)) * lon_resol * (2 * np.pi) / 360)])  # 6.371e6: radius of Earth in m
+                Bathimetry_conc = np.array([(Bathimetry_data.sel(latitude=la[i],longitude=lo[i],method='nearest'))]) # m
+                # depth of seeding must be the same as the one considered for resuspention process
+                Bathimetry_seed = np.array([(Bathimetry_seed_data.sel(latitude=lat_array[i],longitude=lon_array[i],method='nearest'))]) # m
+
+
+            if mode == 'water_conc':
+                pixel_volume = Bathimetry_conc * lon_grid_m * lat_grid_m
+                # concentration is ug/L, volume is m: m3 * 1e3 = L
+                mass_ug = (data[sel][i] * (pixel_volume * 1e3))
+
+            elif mode == 'sed_conc':
+                # sed_conc_ug_kg is ug/kg d.w. (dry weight)
+                data_sed = data[sel][i]* ((1 - sed_porosity) * sed_density_wet) # from ug/kg d.w. -> ug/kg wet weight -> ug/L wet sediment
+                pixel_volume =  sed_mixing_depth * (lon_grid_m * lat_grid_m) # m3
+                # concentration is ug/L, volume is m: m3 * 1e3 = L
+                mass_ug = (data_sed * (pixel_volume * 1e3))
+
+            elif mode == 'emission':
+                mass_ug = data[sel][i]*1e9 # emissions is kg, 1 kg = 1e9 ug
+            else:
+                raise ValueError("Incorrect mode")
+
+            number = self._get_number_of_elements(
+                g_mode=gen_mode,
+                mass_element_ug=mass_element_ug,
+                data_point=mass_ug,
+                n_elements=number_of_elements)
+
+            time = datetime.utcfromtimestamp(
+                (t[i] - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's'))
+
+            # specie to be added to seed parameters for sediments and water
+            if mode == 'sed_conc':
+                specie_elements = 3 # 'num_srev' # Name of specie for sediment elements
+                moving_emement = False # sediment particles will not move
+            else:
+                specie_elements = 0 # 'num_lmm' # Name of specie for dissolved elements
+                moving_emement = True # dissolved particles will move
+
+            if gen_mode == 'fixed':
+                mass_element_seed_ug = mass_ug / number
+            elif gen_mode == 'mass':
+                mass_element_seed_ug = mass_element_ug
+
+            if mass_element_seed_ug > 0:
+                z = self._get_z(mode = mode,
+                                number = number, 
+                                depth = Bathimetry_seed, # depth must be the same as the one considered for resuspention process
+                                sed_mix_depth = sed_mixing_depth)
+
+            for k in range(len(z)):
+
+                self.seed_elements(
+                    lon=lon_array[i],
+                    lat=lat_array[i],
+                    radius=radius,
+                    number=1,
+                    time=time,
+                    mass=mass_element_seed_ug,
+                    mass_degraded=0,
+                    mass_volatilized=0,
+                    specie = specie_elements,
+                    moving = moving_emement,
+                    z=z[k],
+                    origin_marker=origin_marker)
+
+                if gen_mode != "fixed":
+                    mass_residual = (mass_ug) - (number * mass_element_seed_ug)
+
+                    if mass_residual > 0:
+                        z = self._get_z(mode = mode,
+                                        number = 1, 
+                                        depth = Bathimetry_conc, 
+                                        sed_mix_depth = sed_mixing_depth)
+
+                        self.seed_elements(
+                            lon=lon_array[i],
+                            lat=lat_array[i],
+                            radius=radius,
+                            number=1,
+                            time=time,
+                            mass=mass_residual,
+                            mass_degraded=0,
+                            mass_volatilized=0,
+                            specie = specie_elements,
+                            moving = moving_emement,
+                            z=z,
+                            origin_marker=origin_marker)
+
+    def correct_conc_coorddinates(self, DC_Conc_array, lon_coord, lat_coord, time_coord):
+        """
+        Add longitude, latitude, and time coordinates to water and sediments concentration array
+        
+        DC_Conc_array: xarray DataArray for water or sediment concetration from sum of "species"
+            from "write_netcdf_chemical_density_map" output
+        lon_coord: np array of float64, with longitude of "write_netcdf_chemical_density_map" output
+        lat_coord: np array of float64, with latitude of "write_netcdf_chemical_density_map" output
+        time_coord: np. array of datetime64[ns] with avg_time of "write_netcdf_chemical_density_map" output
+
+        Returns
+        DC_Conc_array_corrected: DataArray with latitute, longitude and time coordinates
+        """
+        # Add latitude and longitude to the concentration dataset
+        DC_Conc_array["y"] = ("y", lat_coord)
+        DC_Conc_array["x"] = ("x", lon_coord)
+        DC_Conc_array=DC_Conc_array.rename({'x': 'longitude','y': 'latitude'})
+        # Shifts back time 1 timestep so that the timestamp corresponds to the beginning of the first simulation timestep, not the next one
+        time_correction = time_coord[1] - time_coord[0]
+        time_corrected = np.array(time_coord - time_correction)
+        DC_Conc_array["avg_time"] = ("avg_time", time_corrected)
+        DC_Conc_array_corrected=DC_Conc_array.rename({'avg_time': 'time'})
+        
+        return DC_Conc_array_corrected
+    
+    def calculate_water_sediment_conc(self,
+                                      File_Path,
+                                      File_Name,
+                                      File_Path_out,
+                                      Chemical_name,
+                                      Origin_marker_name,
+                                      Concentration_file = None,):
+        """
+        Add dissolved, DOC, and SPM concentration arrays to obtain total water concentration and save sediment concentration array
+        Results can be used as inputs by "seed_from_NETCDF" function
+        
+        File_Path: string, path of "write_netcdf_chemical_density_map" output file
+        File_Name: string, name of "write_netcdf_chemical_density_map" output file
+        File_Path_out: string, path where created concentration files will be saved, must end with "/"
+        Chemical_name: string, name of modelled chemical
+        Origin_marker_name: string, name of source indicated by "origin_marker" parameter
+        Concentration_file = "write_netcdf_chemical_density_map" output if already loaded into memory
+        """
+        
+        if ((Concentration_file is None) and (File_Path and File_Name is not None)):
+            Concentration_file = xr.open_dataset(File_Path + File_Name)
+            print("Loading Concentration_file from File_Path")
+        else:
+            raise ValueError("Concentration file or path not specified")
+        
+        # Sum DataArray for specie 0, 1, and 2 (dissolved, DOC, and SPM) to obtain total water concentration
+        print("Running sum of water concentration", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
+        DC_Conc_array_wat = (Concentration_file.concentration_avg[:,0,:,:,:] +\
+                            Concentration_file.concentration_avg[:,1,:,:,:] + \
+                            Concentration_file.concentration_avg[:,2,:,:,:])
+        
+        print("Running sediment concentration", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
+        DC_Conc_array_sed = Concentration_file.concentration_avg[:,3,:,:,:]
+        
+        print("Changing coordinates", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
+        lat = np.array(Concentration_file.lat[:,1])
+        lon = np.array(Concentration_file.lon[1,:])
+        time_avg = np.array(Concentration_file.avg_time)
+        
+        DC_Conc_array_wat = self.correct_conc_coorddinates(DC_Conc_array = DC_Conc_array_wat, 
+                                                      lon_coord = lon, 
+                                                      lat_coord = lat, 
+                                                      time_coord = time_avg)
+        
+        DC_Conc_array_sed = self.correct_conc_coorddinates(DC_Conc_array = DC_Conc_array_sed, 
+                                                      lon_coord = lon, 
+                                                      lat_coord = lat, 
+                                                      time_coord = time_avg)
+
+        DC_Conc_array_wat.name = "concentration_avg_water"
+        DC_Conc_array_wat.attrs['standard_name'] = "water_concentration"
+        DC_Conc_array_wat.attrs['long_name'] = Chemical_name + " time averaged water concentration"
+        DC_Conc_array_wat.attrs['units'] = 'ug/m3'
+        DC_Conc_array_wat.attrs['grid_mapping'] = 'projection_lonlat, EPSG 4326 WGS 84'
+        DC_Conc_array_wat.attrs['lon_resol'] = str(np.around(abs(lon[0]-lon[1]), decimals = 8)) + " degrees E"
+        DC_Conc_array_wat.attrs['lat_resol'] = str(np.around(abs(lat[0]-lat[1]), decimals = 8)) + " degrees N"
+        
+        DC_Conc_array_sed.name = "concentration_avg_sediments"
+        DC_Conc_array_sed.attrs['standard_name'] = "sediment_concentration"
+        DC_Conc_array_sed.attrs['long_name'] = Chemical_name + " time averaged sediment concentration"
+        DC_Conc_array_sed.attrs['units'] = 'ug/Kg d.w.'
+        DC_Conc_array_sed.attrs['grid_mapping'] = 'projection_lonlat, EPSG 4326 WGS 84'
+        DC_Conc_array_sed.attrs['lon_resol'] = str(np.around(abs(lon[0]-lon[1]), decimals = 8)) + " degrees E"
+        DC_Conc_array_sed.attrs['lat_resol'] = str(np.around(abs(lat[0]-lat[1]), decimals = 8)) + " degrees N"
+
+        Conc_time = datetime.now().strftime("%Y%m%d-%H%M%S")
+        wat_file = File_Path_out + Conc_time + "_water_conc_" + Chemical_name + "_" + Origin_marker_name + ".nc"
+        sed_file = File_Path_out + Conc_time + "_sediments_conc_" + Chemical_name + "_" + Origin_marker_name + ".nc"
+        
+        print("Saving water concentration file", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
+        DC_Conc_array_wat.to_netcdf(wat_file)
+        print("Saving sediment concentration file", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
+        DC_Conc_array_sed.to_netcdf(sed_file)
+       
     def init_chemical_compound(self, chemical_compound = None):
         ''' Chemical parameters for a selection of PAHs:
             Naphthalene, Phenanthrene, Fluorene,
@@ -2914,6 +3264,16 @@ class ChemicalDrift(OceanDrift):
 #
 # Merlin Expo Kd values are mean values from Allison and Allison 2005
 # https://cfpub.epa.gov/si/si_public_record_report.cfm?dirEntryId=135783
+
+        elif self.get_config('chemical:compound') == "Nitrogen":
+            self.set_config('chemical:transfer_setup', 'metals')
+            self.set_config('chemical:transformations:Kd', 0.)  # Nitrogen does not interact with particulate matter or sediments
+            self.set_config('chemical:transformations:S0', 17.0)#
+            
+        elif self.get_config('chemical:compound') == "Alkalinity":
+            self.set_config('chemical:transfer_setup', 'metals')
+            self.set_config('chemical:transformations:Kd', 0.)  # Alkalinity does not interact with particulate matter or sediments
+            self.set_config('chemical:transformations:S0', 17.0)  #
 
     def plot_mass(self,
                   legend=['dissolved','SPM','sediment'],
