@@ -542,11 +542,12 @@ class Variables(ReaderDomain):
                     time_step_seconds = 3600  # 1 hour if not given
                 else:
                     time_step_seconds = time_coverage.total_seconds()
+            time_step_seconds = abs(time_step_seconds)
             self.buffer = int(
                 np.ceil(max_speed * time_step_seconds / pixelsize)) + 2
             logger.debug('Setting buffer size %i for reader %s, assuming '
                          'a maximum average speed of %g m/s and time span of %s' %
-                         (self.buffer, self.name, max_speed, timedelta(seconds=time_step_seconds)))
+                         (self.buffer, self.name, max_speed,timedelta(seconds=time_step_seconds)))
 
     def __check_env_coordinates__(self, env):
         """
@@ -564,6 +565,7 @@ class Variables(ReaderDomain):
 
         # Convert any masked arrays to NumPy arrays
         if isinstance(variable, np.ma.MaskedArray):
+            variable = variable.astype(np.float32)
             variable = variable.filled(np.nan)
 
         # Mask values outside valid_min, valid_max (self.standard_names)
