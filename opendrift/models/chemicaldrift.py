@@ -569,34 +569,34 @@ class ChemicalDrift(OceanDrift):
         ''' Calculate correction of KOC due to pH of sediments
         '''
         # Estimate KOC for dissociated forms from KOW
-        KOC_sed_diss_acid = (10 ** (0.11 * np.log10(
-            KOW) + 1.54))  # KOC for dissociated acid species (L/kg_OC), from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202.
-        KOC_sed_diss_base = 10 ** (pKa_acid ** (0.65 * ((KOW / (KOW + 1)) ** 0.14))) # KOC for ionized form of base species (L/kg_OC) # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
+        KOC_sed_diss_acid = (10**(0.11*np.log10(KOW)+1.54)) # KOC for dissociated acid species (L/kg_OC), from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202.
+        KOC_sed_diss_base = 10**(pKa_acid**(0.65*((KOW/(KOW+1))**0.14))) # KOC for ionized form of base species (L/kg_OC) # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
         # Updated values of KOC to calculate correction factor
-        KOC_sed_updated = np.empty_like(pH_sed)
+        KOC_sed_updated = np.empty_like(pH_sed)       
         KOC_sedcorr = np.empty_like(pH_sed)
-
+        
+        
         if diss == 'acid':
-            Phi_n_sed = 1 / (1 + 10 ** (pH_sed - pKa_acid))
-            Phi_diss_sed = 1 - Phi_n_sed
-            KOC_sed_updated = (KOC_sed_n * Phi_n_sed) + (Phi_diss_sed * KOC_sed_diss_acid)
+            Phi_n_sed = 1/(1+10**(pH_sed-pKa_acid))
+            Phi_diss_sed = 1-Phi_n_sed
+            KOC_sed_updated = (KOC_sed_n*Phi_n_sed)+(Phi_diss_sed*KOC_sed_diss_acid)
 
-            KOC_sedcorr = KOC_sed_updated / KOC_sed_initial
+            KOC_sedcorr = KOC_sed_updated/KOC_sed_initial
 
         elif diss == 'base':
-            Phi_n_sed = 1 / (1 + 10 ** (pH_sed - pKa_base))
-            Phi_diss_sed = 1 - Phi_n_sed
-            KOC_sed_updated = (KOC_sed_n * Phi_n_sed) + (Phi_diss_sed * KOC_sed_diss_acid)
+            Phi_n_sed = 1/(1+10**(pH_sed-pKa_base))
+            Phi_diss_sed = 1-Phi_n_sed
+            KOC_sed_updated = (KOC_sed_n*Phi_n_sed) + (Phi_diss_sed*KOC_sed_diss_acid)
 
-            KOC_sedcorr = KOC_sed_updated / KOC_sed_initial
+            KOC_sedcorr = KOC_sed_updated/KOC_sed_initial
 
         elif diss == 'amphoter':
-            Phi_n_sed = 1 / (1 + 10 ** (pH_sed - pKa_acid) + 10 ** (pKa_base))
-            Phi_anion_sed = Phi_n_sed * 10 ** (pH_sed - pKa_acid)
-            Phi_cation_sed = Phi_n_sed * 10 ** (pKa_base - pH_sed)
-            KOC_sed_updated = (KOC_sed_n * Phi_n_sed) + (Phi_anion_sed * KOC_sed_diss_acid) + (Phi_cation_sed * KOC_sed_diss_base)
+            Phi_n_sed = 1/(1+10**(pH_sed-pKa_acid)+10**(pKa_base))
+            Phi_anion_sed = Phi_n_sed*10**(pH_sed-pKa_acid)
+            Phi_cation_sed = Phi_n_sed*10**(pKa_base-pH_sed)
+            KOC_sed_updated = (KOC_sed_n*Phi_n_sed)+(Phi_anion_sed*KOC_sed_diss_acid) + (Phi_cation_sed*KOC_sed_diss_base)
 
-            KOC_sedcorr = KOC_sed_updated / KOC_sed_initial
+            KOC_sedcorr = KOC_sed_updated/KOC_sed_initial
 
         elif diss == 'undiss':
             for i in (range(len(pH_sed))):
@@ -608,13 +608,13 @@ class ChemicalDrift(OceanDrift):
         ''' Calculate correction of KOC due to pH of water for SPM
         '''
         # Estimate KOC for dissociated forms from KOW
-        KOC_sed_diss_acid = (10 ** (0.11 * np.log10(KOW) + 1.54))  # KOC for dissociated acid species (L/kg_OC), from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202.
+        KOC_sed_diss_acid = (10**(0.11*np.log10(KOW)+1.54)) # KOC for dissociated acid species (L/kg_OC), from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202.
 
-        KOC_sed_diss_base = 10 ** (pKa_acid ** (0.65 * ((KOW / (KOW + 1)) ** 0.14)))  # KOC for ionized form of base species (L/kg_OC) # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
+        KOC_sed_diss_base = 10**(pKa_acid**(0.65*((KOW/(KOW+1))**0.14))) # KOC for ionized form of base species (L/kg_OC) # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
 
         KOC_SPM_updated = np.empty_like(pH_water_SPM)
         KOC_SPMcorr = np.empty_like(pH_water_SPM)
-
+       
         if diss == 'acid':
 
             Phi_n_SPM = 1 / (1 + 10 ** (pH_water_SPM - pKa_acid))
@@ -785,8 +785,7 @@ class ChemicalDrift(OceanDrift):
                     else:
                         pass
 
-                    KOC_sed_diss_acid = (10 ** (0.11 * np.log10(
-                        KOW) + 1.54))  # KOC for dissociated acid species (L/kg_OC), from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202.
+                    KOC_sed_diss_acid = (10 ** (0.11 * np.log10(KOW) + 1.54))  # KOC for dissociated acid species (L/kg_OC), from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202.
 
                     KOC_SPM = (KOC_sed_n * Phi_n_water) + (Phi_diss_water * KOC_sed_diss_acid)
 
@@ -797,8 +796,7 @@ class ChemicalDrift(OceanDrift):
                     else:
                         pass
 
-                    KOC_DOM = (0.08 * ((Phi_n_water * (KOC_DOM_n)) + ((1 - Phi_diss_water) * 10 ** (np.log10(
-                        KOW) - 3.5)))) / 0.526  # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
+                    KOC_DOM = (0.08 * ((Phi_n_water * (KOC_DOM_n)) + ((1 - Phi_diss_water) * 10 ** (np.log10(KOW) - 3.5)))) / 0.526  # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
 
                     # Dissociation in sediments
                     Phi_n_sed = 1 / (1 + 10 ** (pH_sed - pKa_acid))
@@ -849,12 +847,9 @@ class ChemicalDrift(OceanDrift):
                     else:
                         pass
 
-                    KOC_sed_diss_base = 10 ** (pKa_acid ** (0.65 * ((KOW / (
-                            KOW + 1)) ** 0.14)))  # KOC for ionized form of base species (L/kg_OC) # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
-                    KOC_sed_diss_acid = (10 ** (0.11 * np.log10(
-                        KOW) + 1.54))  # KOC for dissociated acid species (L/kg_OC), from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202.
-                    KOC_SPM = (KOC_sed_n * Phi_n_water) + (Phi_anion_water * KOC_sed_diss_acid) + (
-                            Phi_cation_water * KOC_sed_diss_base)
+                    KOC_sed_diss_base = 10 ** (pKa_acid ** (0.65 * ((KOW / (KOW + 1)) ** 0.14)))  # KOC for ionized form of base species (L/kg_OC) # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
+                    KOC_sed_diss_acid = (10 ** (0.11 * np.log10(KOW) + 1.54))  # KOC for dissociated acid species (L/kg_OC), from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202.
+                    KOC_SPM = (KOC_sed_n * Phi_n_water) + (Phi_anion_water * KOC_sed_diss_acid) + (Phi_cation_water * KOC_sed_diss_base)
 
                     KOC_DOM_n = self.get_config('chemical:transformations:KOC_DOM')
                     if KOC_DOM_n < 0:
@@ -862,8 +857,7 @@ class ChemicalDrift(OceanDrift):
                     else:
                         pass
 
-                    KOC_DOM = (0.08 * ((Phi_n_water * (KOC_DOM_n)) + ((1 - Phi_diss_water) * 10 ** (np.log10(
-                        KOW) - 3.5)))) / 0.526  # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
+                    KOC_DOM = (0.08 * ((Phi_n_water * (KOC_DOM_n)) + ((1 - Phi_diss_water) * 10 ** (np.log10(KOW) - 3.5)))) / 0.526  # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
 
                     # Dissociation in sediments
                     Phi_n_sed = 1 / (1 + 10 ** (pH_sed - pKa_acid) + 10 ** (pKa_base))
@@ -1205,16 +1199,13 @@ class ChemicalDrift(OceanDrift):
                 # Temperature and salinity correction for desorption rates (inversely proportional to Kd)
 
                 self.elements.transfer_rates1D[self.elements.specie == self.num_humcol, self.num_lmm] = \
-                    self.k21_0 / tempcorrDOM[self.elements.specie == self.num_humcol] / salinitycorr[
-                        self.elements.specie == self.num_humcol]
+                    self.k21_0 / tempcorrDOM[self.elements.specie == self.num_humcol] / salinitycorr[self.elements.specie == self.num_humcol]
 
                 self.elements.transfer_rates1D[self.elements.specie == self.num_prev, self.num_lmm] = \
-                    self.k31_0 / tempcorrSed[self.elements.specie == self.num_prev] / salinitycorr[
-                        self.elements.specie == self.num_prev]
+                    self.k31_0 / tempcorrSed[self.elements.specie == self.num_prev] / salinitycorr[self.elements.specie == self.num_prev]
 
                 self.elements.transfer_rates1D[self.elements.specie == self.num_srev, self.num_lmm] = \
-                    self.k41_0 / tempcorrSed[self.elements.specie == self.num_srev] / salinitycorr[
-                        self.elements.specie == self.num_srev]
+                    self.k41_0 / tempcorrSed[self.elements.specie == self.num_srev] / salinitycorr[self.elements.specie == self.num_srev]
 
             elif transfer_setup == 'organics' and diss != 'nondiss':
                 # Select elements for updating trasfer rates in sediments, SPM, and DOM
@@ -1293,26 +1284,21 @@ class ChemicalDrift(OceanDrift):
                 salinitycorr = self.salinitycorr(Setchenow, temperature, salinity)
 
                 KOC_sedcorr = self.calc_KOC_sedcorr(KOC_sed_initial, KOC_sed_n, pKa_acid, pKa_base, KOW, pH_sed, diss)
-                KOC_watcorrSPM = self.calc_KOC_watcorrSPM(KOC_SPM_initial, KOC_sed_n, pKa_acid, pKa_base, KOW,
-                                                          pH_water_SPM, diss)
-                KOC_watcorrDOM = self.calc_KOC_watcorrDOM(KOC_DOM_initial, KOC_DOM_n, pKa_acid, pKa_base, KOW,
-                                                          pH_water_DOM, diss)
+                KOC_watcorrSPM = self.calc_KOC_watcorrSPM(KOC_SPM_initial, KOC_sed_n, pKa_acid, pKa_base, KOW,pH_water_SPM, diss)
+                KOC_watcorrDOM = self.calc_KOC_watcorrDOM(KOC_DOM_initial, KOC_DOM_n, pKa_acid, pKa_base, KOW,pH_water_DOM, diss)
 
                 # Temperature and salinity correction for desorption rates (inversely proportional to Kd)
 
                 ####
 
                 self.elements.transfer_rates1D[self.elements.specie == self.num_humcol, self.num_lmm] = \
-                    self.k21_0 * KOC_watcorrDOM / tempcorrDOM[self.elements.specie == self.num_humcol] / salinitycorr[
-                        self.elements.specie == self.num_humcol]
+                    self.k21_0 * KOC_watcorrDOM / tempcorrDOM[self.elements.specie == self.num_humcol] / salinitycorr[self.elements.specie == self.num_humcol]
 
                 self.elements.transfer_rates1D[self.elements.specie == self.num_prev, self.num_lmm] = \
-                    self.k31_0 * KOC_watcorrSPM / tempcorrSed[self.elements.specie == self.num_prev] / salinitycorr[
-                        self.elements.specie == self.num_prev]
+                    self.k31_0 * KOC_watcorrSPM / tempcorrSed[self.elements.specie == self.num_prev] / salinitycorr[self.elements.specie == self.num_prev]
 
                 self.elements.transfer_rates1D[self.elements.specie == self.num_srev, self.num_lmm] = \
-                    self.k41_0 * KOC_sedcorr / tempcorrSed[self.elements.specie == self.num_srev] / salinitycorr[
-                        self.elements.specie == self.num_srev]
+                    self.k41_0 * KOC_sedcorr / tempcorrSed[self.elements.specie == self.num_srev] / salinitycorr[self.elements.specie == self.num_srev]
 
             # Updating sorption rates
 
@@ -1421,8 +1407,7 @@ class ChemicalDrift(OceanDrift):
         specie_in = self.elements.specie.copy()  # for storage of the initial partitioning
         specie_out = self.elements.specie.copy()  # for storage of the final partitioning
         deltat = self.time_step.total_seconds()  # length of a time step
-        phaseshift = np.array(
-            self.num_elements_active() * [False])  # Denotes which trajectory that shall be transformed
+        phaseshift = np.array(self.num_elements_active() * [False])  # Denotes which trajectory that shall be transformed
 
         p = 1. - np.exp(-self.elements.transfer_rates1D * deltat)  # Probability for transformation
 
@@ -1454,8 +1439,7 @@ class ChemicalDrift(OceanDrift):
 
         for iin in range(self.nspecies):
             for iout in range(self.nspecies):
-                self.ntransformations[iin, iout] += sum(
-                    (specie_in[phaseshift] == iin) & (specie_out[phaseshift] == iout))
+                self.ntransformations[iin, iout] += sum((specie_in[phaseshift] == iin) & (specie_out[phaseshift] == iout))
 
         logger.debug('Number of transformations total:\n %s' % self.ntransformations)
 
@@ -1693,8 +1677,7 @@ class ChemicalDrift(OceanDrift):
 
             self.elements.mass_degraded = self.elements.mass_degraded + degraded_now
             self.elements.mass = self.elements.mass - degraded_now
-            self.deactivate_elements(self.elements.mass < (
-                    self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized) / 100,
+            self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized) / 100,
                                      reason='removed')
 
             # to_deactivate = self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100
@@ -1839,8 +1822,7 @@ class ChemicalDrift(OceanDrift):
 
             self.elements.mass_volatilized = self.elements.mass_volatilized + volatilized_now
             self.elements.mass = self.elements.mass - volatilized_now
-            self.deactivate_elements(self.elements.mass < (
-                    self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized) / 100,
+            self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized) / 100,
                                      reason='removed')
 
             # to_deactivate = self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100
@@ -1879,8 +1861,7 @@ class ChemicalDrift(OceanDrift):
 
         # Resuspension
         self.resuspension()
-        logger.info('partitioning: {} {}'.format([sum(self.elements.specie == ii) for ii in range(self.nspecies)],
-                                                 self.name_species))
+        logger.info('partitioning: {} {}'.format([sum(self.elements.specie == ii) for ii in range(self.nspecies)],self.name_species))
 
         # Horizontal advection
         self.advect_ocean_current()
@@ -1985,8 +1966,7 @@ class ChemicalDrift(OceanDrift):
                                                                         y=self.conc_lat.flatten(),
                                                                         time=reader_sea_depth.times[
                                                                             0] if reader_sea_depth.times is not None else None
-                                                                        )[0]['sea_floor_depth_below_sea_level'].reshape(
-            self.conc_lon.shape)
+                                                                        )[0]['sea_floor_depth_below_sea_level'].reshape(self.conc_lon.shape)
 
         if pixelsize_m == 'auto':
             lon, lat = self.get_lonlats()
@@ -2163,8 +2143,7 @@ class ChemicalDrift(OceanDrift):
         nc.variables['lat'].units = 'degrees_north'
         nc.variables['depth'][:] = z_array[1:]
         nc.variables['specie'][:] = np.arange(self.nspecies)
-        nc.variables['specie'].long_name = ' '.join(
-            ['{}:{}'.format(isp, sp) for isp, sp in enumerate(self.name_species)])
+        nc.variables['specie'].long_name = ' '.join(['{}:{}'.format(isp, sp) for isp, sp in enumerate(self.name_species)])
 
         # Density
         # nc.createVariable('density', 'i4',
@@ -2564,6 +2543,23 @@ class ChemicalDrift(OceanDrift):
             "Zineb_AFP": [0.2371, 0.],
             "ZnPyr_AFP": [0.2058, 0.],
         }
+    
+    
+
+        emission_factors_SILAM_ash = {
+            #                           g/g
+            "Aresenic":                 [8.09E-5],
+            "Cadmium":                  [6.30E-6],
+            "Chromium":                 [2.10E-4],
+            "Copper":                   [2.52E-4],
+            "Iron":                     [2.52E-2],
+            "Mercury":                  [6.30E-6],
+            "Nickel":                   [4.10E-2],
+            "Lead":                     [1.16E-4],
+            "Vanadium":                 [8.30E-2],
+            "Zinc":                     [2.42E-3],
+         }
+    
         if scrubber_type == "open_loop":
             Emission_factors = emission_factors_open_loop.get(chemical_compound)[0]
         elif scrubber_type == "closed_loop":
@@ -2576,7 +2572,9 @@ class ChemicalDrift(OceanDrift):
             Emission_factors = emission_factors_sewage_water.get(chemical_compound)[0]
         elif scrubber_type == "AFP":  # Copper and Zinc from antifouling paint
             Emission_factors = 1e6 * emission_factors_AFP.get(chemical_compound)[0]  # 1g = 1e6 ug: AFP is expressed as g
-        elif scrubber_type == "N_sewage":  # Nitrogen from sewage
+        elif scrubber_type=="AFP_metals_total":
+            Emission_factors = 1e6 # g to ug
+        elif scrubber_type= "N_sewage":  # Nitrogen from sewage
             Emission_factors = 1e9  # 1kg = 1e9 ug: N_sewage is expressed as kg
         elif scrubber_type == "N_foodwaste":  # Nitrogen from foodwaste
             Emission_factors = 1e9  # 1kg = 1e9 ug: N_sewage is expressed as kg
@@ -2592,11 +2590,9 @@ class ChemicalDrift(OceanDrift):
         return Emission_factors
         # TODO: Add emission uncertainty based on 95% confidence interval
 
-    def seed_from_STEAM(self, steam, lowerbound=0, higherbound=np.inf, radius=0, scrubber_type="open_loop",
-                        chemical_compound="Copper", mass_element_ug=100e3, number_of_elements=None, origin_marker=1,
-                        **kwargs):
-        """Seed elements based on a dataarray with STEAM emission data
-
+    def seed_from_DataArray(self, steam, lowerbound=0, higherbound=np.inf, radius=0, scrubber_type="open_loop", chemical_compound="Copper", mass_element_ug=100e3, number_of_elements=None, **kwargs):
+            """Seed elements based on a dataarray with STEAM emission data
+    
             Arguments:
                 steam: dataarray with steam emission data, with coordinates
                     * latitude   (latitude) float32
@@ -2606,54 +2602,56 @@ class ChemicalDrift(OceanDrift):
                 lowerbound:  scalar, elements with lower values are discarded
             """
 
-        if chemical_compound is None:
-            chemical_compound = self.get_config('chemical:compound')
+            if chemical_compound is None:
+                chemical_compound = self.get_config('chemical:compound')
 
-        # mass_element_ug=1e3      # 1e3 - 1 element is 1mg chemical
-        # mass_element_ug=20e3      # 100e3 - 1 element is 100mg chemical
-        # mass_element_ug=100e3      # 100e3 - 1 element is 100mg chemical
-        # mass_element_ug=1e6     # 1e6 - 1 element is 1g chemical
+            #mass_element_ug=1e3      # 1e3 - 1 element is 1mg chemical
+            #mass_element_ug=20e3      # 100e3 - 1 element is 100mg chemical
+            #mass_element_ug=100e3      # 100e3 - 1 element is 100mg chemical
+            #mass_element_ug=1e6     # 1e6 - 1 element is 1g chemical
 
-        sel = np.where((steam > lowerbound) & (steam < higherbound))
-        t = steam.time[sel[0]].data
-        la = steam.latitude[sel[1]].data
-        lo = steam.longitude[sel[2]].data
+            sel=np.where((steam > lowerbound) & (steam < higherbound))
+            t=steam.time[sel[0]].data
+            la=steam.latitude[sel[1]].data
+            lo=steam.longitude[sel[2]].data
 
-        data = np.array(steam.data)
+            data=np.array(steam.data)
 
-        if number_of_elements is not None:
-            total_volume = np.sum(data[sel])
-            total_mass = total_volume * self.emission_factors(scrubber_type, chemical_compound)
-            mass_element_ug = total_mass / number_of_elements
-            mass_element_ug_0 = total_mass / number_of_elements
+            if number_of_elements is not None:
+                total_volume = np.sum(data[sel])
+                total_mass = total_volume * self.emission_factors(scrubber_type, chemical_compound)
+                mass_element_ug = total_mass / number_of_elements
+                mass_element_ug_0 = total_mass / number_of_elements
 
-        for i in range(0, t.size):
-            scrubberwater_vol_l = data[sel][i]
-            mass_ug = scrubberwater_vol_l * self.emission_factors(scrubber_type, chemical_compound)
+            for i in range(0,t.size):
+                scrubberwater_vol_l=data[sel][i]
+                mass_ug=scrubberwater_vol_l * self.emission_factors(scrubber_type, chemical_compound)
 
-            if number_of_elements is None:
-                number = np.array(mass_ug / mass_element_ug).astype('int')
-            else:
-                number = np.ceil(np.array(mass_ug / mass_element_ug_0)).astype('int')
-                mass_element_ug = mass_ug / number
+                if number_of_elements is None:
+                    number=np.array(mass_ug / mass_element_ug).astype('int')
+                else:
+                    number=np.ceil(np.array(mass_ug / mass_element_ug_0)).astype('int')
+                    mass_element_ug=mass_ug/number
 
-            time = datetime.utcfromtimestamp((t[i] - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's'))
+                time = datetime.utcfromtimestamp((t[i] - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's'))
 
-            if number > 0:
-                z = -1 * np.random.uniform(0, 1, number)
-                self.seed_elements(lon=lo[i] * np.ones(number), lat=la[i] * np.ones(number),
-                                   radius=radius, number=number, time=time,
-                                   mass=mass_element_ug, mass_degraded=0, mass_volatilized=0, z=z,
-                                   origin_marker=origin_marker)
+                if number>0:
+                    z = -1*np.random.uniform(0, 1, number)
+                    self.seed_elements(lon=lo[i]*np.ones(number), lat=la[i]*np.ones(number),
+                                radius=radius, number=number, time=time,
+                                mass=mass_element_ug,mass_degraded=0,mass_volatilized=0, z=z, origin_marker=1)
 
-            mass_residual = mass_ug - number * mass_element_ug
+                mass_residual = mass_ug - number*mass_element_ug
 
-            if mass_residual > 0 and number_of_elements is None:
-                z = -1 * np.random.uniform(0, 1, 1)
-                self.seed_elements(lon=lo[i], lat=la[i],
-                                   radius=radius, number=1, time=time,
-                                   mass=mass_residual, mass_degraded=0, mass_volatilized=0, z=z,
-                                   origin_marker=origin_marker)
+                if mass_residual>0 and number_of_elements is None:
+                    z = -1*np.random.uniform(0, 1, 1)
+                    self.seed_elements(lon=lo[i], lat=la[i],
+                                radius=radius, number=1, time=time,
+                                mass=mass_residual,mass_degraded=0,mass_volatilized=0, z=z, origin_marker=1)
+
+    seed_from_STEAM = seed_from_DataArray
+    ''' Alias of seed_from_DataArray method for backward compatibility
+    '''
 
     @staticmethod
     def _get_number_of_elements(
@@ -2757,7 +2755,7 @@ class ChemicalDrift(OceanDrift):
             Bathimetry_conc = None
 
             if mode != 'emission':
-                lon_grid_m =  np.array([(6.371e6 * (np.cos(2 * (np.pi) * lo[i] / 360)) * lon_resol * (2 * np.pi) / 360)])  # 6.371e6: radius of Earth in m
+                lon_grid_m =  np.array([(6.371e6 * (np.cos(2 * (np.pi) * la[i] / 360)) * lon_resol * (2 * np.pi) / 360)])  # 6.371e6: radius of Earth in m
                 Bathimetry_conc = np.array([(Bathimetry_data.sel(latitude=la[i],longitude=lo[i],method='nearest'))]) # m
                 # depth of seeding must be the same as the one considered for resuspention process
                 Bathimetry_seed = np.array([(Bathimetry_seed_data.sel(latitude=lat_array[i],longitude=lon_array[i],method='nearest'))]) # m
@@ -2958,31 +2956,31 @@ class ChemicalDrift(OceanDrift):
         '''
 
         if chemical_compound is not None:
-            self.set_config('chemical:compound', chemical_compound)
+            self.set_config('chemical:compound',chemical_compound)
 
         if self.get_config('chemical:compound') is None:
             raise ValueError("Chemical compound not defined")
 
-        if self.get_config('chemical:compound') == "Naphthalene":
+        if  self.get_config('chemical:compound') == "Naphthalene":
 
-            # partitioning
-            self.set_config('chemical:transfer_setup', 'organics')
-            self.set_config('chemical:transformations:dissociation', 'nondiss')
-            self.set_config('chemical:transformations:LogKOW', 3.361)
-            self.set_config('chemical:transformations:TrefKOW', 25)
-            self.set_config('chemical:transformations:DeltaH_KOC_Sed', -21036)
-            self.set_config('chemical:transformations:DeltaH_KOC_DOM', -25900)  ### Phenanthrene value
+            #partitioning
+            self.set_config('chemical:transfer_setup','organics')
+            self.set_config('chemical:transformations:dissociation','nondiss')
+            self.set_config('chemical:transformations:LogKOW',3.361)
+            self.set_config('chemical:transformations:TrefKOW',25)
+            self.set_config('chemical:transformations:DeltaH_KOC_Sed',-21036)
+            self.set_config('chemical:transformations:DeltaH_KOC_DOM',-25900)                 ### Phenanthrene value
             self.set_config('chemical:transformations:Setchenow', 0.2503)
 
-            # degradation
+            #degradation
             self.set_config('chemical:transformations:t12_W_tot', 224.08)
             self.set_config('chemical:transformations:Tref_kWt', 25)
-            self.set_config('chemical:transformations:DeltaH_kWt', 50000)  ### generic
+            self.set_config('chemical:transformations:DeltaH_kWt', 50000)                     ### generic
             self.set_config('chemical:transformations:t12_S_tot', 5012.4)
             self.set_config('chemical:transformations:Tref_kSt', 25)
-            self.set_config('chemical:transformations:DeltaH_kSt', 50000)  ### generic
+            self.set_config('chemical:transformations:DeltaH_kSt', 50000)                     ### generic
 
-            # volatilization
+            #volatilization
             self.set_config('chemical:transformations:MolWt', 128.1705)
             self.set_config('chemical:transformations:Henry', 4.551e-4)
 
@@ -2996,24 +2994,24 @@ class ChemicalDrift(OceanDrift):
 
         elif self.get_config('chemical:compound') == "Phenanthrene":
 
-            # partitioning
-            self.set_config('chemical:transfer_setup', 'organics')
-            self.set_config('chemical:transformations:dissociation', 'nondiss')
-            self.set_config('chemical:transformations:LogKOW', 4.505)
-            self.set_config('chemical:transformations:TrefKOW', 25)
-            self.set_config('chemical:transformations:DeltaH_KOC_Sed', -24900)
-            self.set_config('chemical:transformations:DeltaH_KOC_DOM', -25900)
+            #partitioning
+            self.set_config('chemical:transfer_setup','organics')
+            self.set_config('chemical:transformations:dissociation','nondiss')
+            self.set_config('chemical:transformations:LogKOW',4.505)
+            self.set_config('chemical:transformations:TrefKOW',25)
+            self.set_config('chemical:transformations:DeltaH_KOC_Sed',-24900)
+            self.set_config('chemical:transformations:DeltaH_KOC_DOM',-25900)
             self.set_config('chemical:transformations:Setchenow', 0.3026)
 
-            # degradation
+            #degradation
             self.set_config('chemical:transformations:t12_W_tot', 1125.79)
             self.set_config('chemical:transformations:Tref_kWt', 25)
-            self.set_config('chemical:transformations:DeltaH_kWt', 50000)  ### generic
+            self.set_config('chemical:transformations:DeltaH_kWt', 50000)                     ### generic
             self.set_config('chemical:transformations:t12_S_tot', 29124.96)
             self.set_config('chemical:transformations:Tref_kSt', 25)
-            self.set_config('chemical:transformations:DeltaH_kSt', 50000)  ### generic
+            self.set_config('chemical:transformations:DeltaH_kSt', 50000)                     ### generic
 
-            # volatilization
+            #volatilization
             self.set_config('chemical:transformations:MolWt', 178.226)
             self.set_config('chemical:transformations:Henry', 4.294e-5)
 
@@ -3027,24 +3025,24 @@ class ChemicalDrift(OceanDrift):
 
         elif self.get_config('chemical:compound') == "Fluoranthene":
 
-            # partitioning
-            self.set_config('chemical:transfer_setup', 'organics')
-            self.set_config('chemical:transformations:dissociation', 'nondiss')
-            self.set_config('chemical:transformations:LogKOW', 5.089)
-            self.set_config('chemical:transformations:TrefKOW', 25)
-            self.set_config('chemical:transformations:DeltaH_KOC_Sed', -47413)
-            self.set_config('chemical:transformations:DeltaH_KOC_DOM', -27900)
+            #partitioning
+            self.set_config('chemical:transfer_setup','organics')
+            self.set_config('chemical:transformations:dissociation','nondiss')
+            self.set_config('chemical:transformations:LogKOW',5.089)
+            self.set_config('chemical:transformations:TrefKOW',25)
+            self.set_config('chemical:transformations:DeltaH_KOC_Sed',-47413)
+            self.set_config('chemical:transformations:DeltaH_KOC_DOM',-27900)
             self.set_config('chemical:transformations:Setchenow', 0.2885)
 
-            # degradation
+            #degradation
             self.set_config('chemical:transformations:t12_W_tot', 1705.02)
             self.set_config('chemical:transformations:Tref_kWt', 25)
-            self.set_config('chemical:transformations:DeltaH_kWt', 50000)  ### generic
+            self.set_config('chemical:transformations:DeltaH_kWt', 50000)                     ### generic
             self.set_config('chemical:transformations:t12_S_tot', 55000)
             self.set_config('chemical:transformations:Tref_kSt', 25)
-            self.set_config('chemical:transformations:DeltaH_kSt', 50000)  ### generic
+            self.set_config('chemical:transformations:DeltaH_kSt', 50000)                     ### generic
 
-            # volatilization
+            #volatilization
             self.set_config('chemical:transformations:MolWt', 202.26)
             self.set_config('chemical:transformations:Henry', 1.439e-5)
 
@@ -3058,24 +3056,24 @@ class ChemicalDrift(OceanDrift):
 
         elif self.get_config('chemical:compound') == "Benzo-a-anthracene":
 
-            # partitioning
-            self.set_config('chemical:transfer_setup', 'organics')
-            self.set_config('chemical:transformations:dissociation', 'nondiss')
-            self.set_config('chemical:transformations:LogKOW', 5.724)
-            self.set_config('chemical:transformations:TrefKOW', 25)
-            self.set_config('chemical:transformations:DeltaH_KOC_Sed', -38000)  ### Pyrene value
-            self.set_config('chemical:transformations:DeltaH_KOC_DOM', -25400)  ### Pyrene value
+            #partitioning
+            self.set_config('chemical:transfer_setup','organics')
+            self.set_config('chemical:transformations:dissociation','nondiss')
+            self.set_config('chemical:transformations:LogKOW',5.724)
+            self.set_config('chemical:transformations:TrefKOW',25)
+            self.set_config('chemical:transformations:DeltaH_KOC_Sed', -38000)                ### Pyrene value
+            self.set_config('chemical:transformations:DeltaH_KOC_DOM', -25400)                ### Pyrene value
             self.set_config('chemical:transformations:Setchenow', 0.3605)
 
-            # degradation
+            #degradation
             self.set_config('chemical:transformations:t12_W_tot', 1467.62)
             self.set_config('chemical:transformations:Tref_kWt', 25)
-            self.set_config('chemical:transformations:DeltaH_kWt', 50000)  ### generic
+            self.set_config('chemical:transformations:DeltaH_kWt', 50000)                     ### generic
             self.set_config('chemical:transformations:t12_S_tot', 46600)
             self.set_config('chemical:transformations:Tref_kSt', 25)
-            self.set_config('chemical:transformations:DeltaH_kSt', 50000)  ### generic
+            self.set_config('chemical:transformations:DeltaH_kSt', 50000)                     ### generic
 
-            # volatilization
+            #volatilization
             self.set_config('chemical:transformations:MolWt', 228.29)
             self.set_config('chemical:transformations:Henry', 6.149e-6)
 
@@ -3089,24 +3087,24 @@ class ChemicalDrift(OceanDrift):
 
         elif self.get_config('chemical:compound') == "Benzo-a-pyrene":
 
-            # partitioning
-            self.set_config('chemical:transfer_setup', 'organics')
-            self.set_config('chemical:transformations:dissociation', 'nondiss')
+            #partitioning
+            self.set_config('chemical:transfer_setup','organics')
+            self.set_config('chemical:transformations:dissociation','nondiss')
             self.set_config('chemical:transformations:LogKOW', 6.124)
-            self.set_config('chemical:transformations:TrefKOW', 25)
-            self.set_config('chemical:transformations:DeltaH_KOC_Sed', -43700)  ### mean value 16 PAHs
+            self.set_config('chemical:transformations:TrefKOW',25)
+            self.set_config('chemical:transformations:DeltaH_KOC_Sed', -43700)                ### mean value 16 PAHs
             self.set_config('chemical:transformations:DeltaH_KOC_DOM', -31280)
             self.set_config('chemical:transformations:Setchenow', 0.171)
 
-            # degradation
+            #degradation
             self.set_config('chemical:transformations:t12_W_tot', 1491.42)
             self.set_config('chemical:transformations:Tref_kWt', 25)
-            self.set_config('chemical:transformations:DeltaH_kWt', 50000)  ### generic
+            self.set_config('chemical:transformations:DeltaH_kWt', 50000)                     ### generic
             self.set_config('chemical:transformations:t12_S_tot', 44934.76)
             self.set_config('chemical:transformations:Tref_kSt', 25)
-            self.set_config('chemical:transformations:DeltaH_kSt', 50000)  ### generic
+            self.set_config('chemical:transformations:DeltaH_kSt', 50000)                     ### generic
 
-            # volatilization
+            #volatilization
             self.set_config('chemical:transformations:MolWt', 252.32)
             self.set_config('chemical:transformations:Henry', 6.634e-7)
 
@@ -3120,24 +3118,24 @@ class ChemicalDrift(OceanDrift):
 
         elif self.get_config('chemical:compound') == "Dibenzo-ah-anthracene":
 
-            # partitioning
-            self.set_config('chemical:transfer_setup', 'organics')
-            self.set_config('chemical:transformations:dissociation', 'nondiss')
+            #partitioning
+            self.set_config('chemical:transfer_setup','organics')
+            self.set_config('chemical:transformations:dissociation','nondiss')
             self.set_config('chemical:transformations:LogKOW', 6.618)
-            self.set_config('chemical:transformations:TrefKOW', 25)
-            self.set_config('chemical:transformations:DeltaH_KOC_Sed', -43700)  ### mean value 16 PAHs
+            self.set_config('chemical:transformations:TrefKOW',25)
+            self.set_config('chemical:transformations:DeltaH_KOC_Sed', -43700)                ### mean value 16 PAHs
             self.set_config('chemical:transformations:DeltaH_KOC_DOM', -30900)
             self.set_config('chemical:transformations:Setchenow', 0.338)
 
-            # degradation
+            #degradation
             self.set_config('chemical:transformations:t12_W_tot', 1464.67)
             self.set_config('chemical:transformations:Tref_kWt', 25)
-            self.set_config('chemical:transformations:DeltaH_kWt', 50000)  ### generic
+            self.set_config('chemical:transformations:DeltaH_kWt', 50000)                     ### generic
             self.set_config('chemical:transformations:t12_S_tot', 40890.08)
             self.set_config('chemical:transformations:Tref_kSt', 25)
-            self.set_config('chemical:transformations:DeltaH_kSt', 50000)  ### generic
+            self.set_config('chemical:transformations:DeltaH_kSt', 50000)                     ### generic
 
-            # volatilization
+            #volatilization
             self.set_config('chemical:transformations:MolWt', 278.35)
             self.set_config('chemical:transformations:Henry', 4.894e-8)
 
@@ -3147,64 +3145,64 @@ class ChemicalDrift(OceanDrift):
 
             self.set_config('chemical:transformations:Solub', 0.00142)
             self.set_config('chemical:transformations:Tref_Solub', 25)
-            self.set_config('chemical:transformations:DeltaH_Solub', 38000)  ### Benzo-a-pyrene value
+            self.set_config('chemical:transformations:DeltaH_Solub', 38000)                   ### Benzo-a-pyrene value
 
         elif self.get_config('chemical:compound') == "Copper":
-            self.set_config('chemical:transfer_setup', 'metals')
-            self.set_config('chemical:transformations:Kd', 60.1)  # Tomczak et Al 2019
-            # self.set_config('chemical:transformations:Kd', 50)             # Merlin Expo, high confidence
-            self.set_config('chemical:transformations:S0', 17.0)  # note below
+            self.set_config('chemical:transfer_setup','metals')
+            self.set_config('chemical:transformations:Kd', 60.1)            # Tomczak et Al 2019
+            #self.set_config('chemical:transformations:Kd', 50)             # Merlin Expo, high confidence
+            self.set_config('chemical:transformations:S0', 17.0)            # note below
 
         elif self.get_config('chemical:compound') == "Zinc":
-            self.set_config('chemical:transfer_setup', 'metals')
-            self.set_config('chemical:transformations:Kd', 173)  # Tomczak et Al 2019
-            # self.set_config('chemical:transformations:Kd', 100)            # Merlin Expo, high confidence
-            self.set_config('chemical:transformations:S0', 17.0)  # note below
+            self.set_config('chemical:transfer_setup','metals')
+            self.set_config('chemical:transformations:Kd', 173)             # Tomczak et Al 2019
+            #self.set_config('chemical:transformations:Kd', 100)            # Merlin Expo, high confidence
+            self.set_config('chemical:transformations:S0', 17.0)            # note below
 
         elif self.get_config('chemical:compound') == "Lead":
-            self.set_config('chemical:transfer_setup', 'metals')
-            self.set_config('chemical:transformations:Kd', 369)  # Tomczak et Al 2019
-            # self.set_config('chemical:transformations:Kd', 500)            # Merlin Expo, strong confidence
-            self.set_config('chemical:transformations:S0', 17.0)  # note below
+            self.set_config('chemical:transfer_setup','metals')
+            self.set_config('chemical:transformations:Kd', 369)             # Tomczak et Al 2019
+            #self.set_config('chemical:transformations:Kd', 500)            # Merlin Expo, strong confidence
+            self.set_config('chemical:transformations:S0', 17.0)            # note below
 
         elif self.get_config('chemical:compound') == "Vanadium":
-            self.set_config('chemical:transfer_setup', 'metals')
-            self.set_config('chemical:transformations:Kd', 42.9)  # Tomczak et Al 2019
-            # self.set_config('chemical:transformations:Kd', 5)              # Merlin Expo, weak confidence
-            self.set_config('chemical:transformations:S0', 17.0)  # note below
+            self.set_config('chemical:transfer_setup','metals')
+            self.set_config('chemical:transformations:Kd', 42.9)            # Tomczak et Al 2019
+            #self.set_config('chemical:transformations:Kd', 5)              # Merlin Expo, weak confidence
+            self.set_config('chemical:transformations:S0', 17.0)            # note below
 
         elif self.get_config('chemical:compound') == "Cadmium":
-            self.set_config('chemical:transfer_setup', 'metals')
-            self.set_config('chemical:transformations:Kd', 134)  # Tomczak et Al 2019
-            # self.set_config('chemical:transformations:Kd', 79)             # Merlin Expo, strong confidence
-            # self.set_config('chemical:transformations:Kd', 6.6)            # Turner Millward 2002
-            self.set_config('chemical:transformations:S0', 17.0)  # note below
+            self.set_config('chemical:transfer_setup','metals')
+            self.set_config('chemical:transformations:Kd', 134)             # Tomczak et Al 2019
+            #self.set_config('chemical:transformations:Kd', 79)             # Merlin Expo, strong confidence
+            #self.set_config('chemical:transformations:Kd', 6.6)            # Turner Millward 2002
+            self.set_config('chemical:transformations:S0', 17.0)            # note below
 
         elif self.get_config('chemical:compound') == "Chromium":
-            self.set_config('chemical:transfer_setup', 'metals')
-            self.set_config('chemical:transformations:Kd', 124)  # Tomczak et Al 2019
-            # self.set_config('chemical:transformations:Kd', 130)            # Cr(III) Merlin Expo, moderate confidence
-            # self.set_config('chemical:transformations:Kd', 180)            # Turner Millward 2002
-            self.set_config('chemical:transformations:S0', 17.0)  # note below
+            self.set_config('chemical:transfer_setup','metals')
+            self.set_config('chemical:transformations:Kd', 124)             # Tomczak et Al 2019
+            #self.set_config('chemical:transformations:Kd', 130)            # Cr(III) Merlin Expo, moderate confidence
+            #self.set_config('chemical:transformations:Kd', 180)            # Turner Millward 2002
+            self.set_config('chemical:transformations:S0', 17.0)            # note below
 
         elif self.get_config('chemical:compound') == "Nickel":
-            self.set_config('chemical:transfer_setup', 'metals')
-            self.set_config('chemical:transformations:Kd', 31.1)  # Tomczak et Al 2019
-            # self.set_config('chemical:transformations:Kd', 25)             # Merlin Expo, strong confidence
-            # self.set_config('chemical:transformations:Kd', 5.3)            # Turner Millward 2002
-            self.set_config('chemical:transformations:S0', 17.0)  # note below
+            self.set_config('chemical:transfer_setup','metals')
+            self.set_config('chemical:transformations:Kd', 31.1)            # Tomczak et Al 2019
+            #self.set_config('chemical:transformations:Kd', 25)             # Merlin Expo, strong confidence
+            #self.set_config('chemical:transformations:Kd', 5.3)            # Turner Millward 2002
+            self.set_config('chemical:transformations:S0', 17.0)            # note below
 
-        # Default value for S0 is set to 17.0. This correspond to a Kd at salinity 35 being 32.7%
-        # of the fresh water value, which was the average reduction obtained comparing the values
-        # in Tomczak et Al 2019 to the "ocean margins" recommended values in IAEA TRS no.422, for a
-        # selection of metals (Cd, Cr, Hg, Ni, Pb, Zn). This gives very similar results the value
-        # 15.8, suggested in Perianez 2018.
-        # https://doi.org/10.1016/j.apgeochem.2019.04.003
-        # https://www-pub.iaea.org/MTCD/Publications/PDF/TRS422_web.pdf
-        # https://doi.org/10.1016/j.jenvrad.2018.02.014
-        #
-        # Merlin Expo Kd values are mean values from Allison and Allison 2005
-        # https://cfpub.epa.gov/si/si_public_record_report.cfm?dirEntryId=135783
+# Default value for S0 is set to 17.0. This correspond to a Kd at salinity 35 being 32.7%
+# of the fresh water value, which was the average reduction obtained comparing the values
+# in Tomczak et Al 2019 to the "ocean margins" recommended values in IAEA TRS no.422, for a
+# selection of metals (Cd, Cr, Hg, Ni, Pb, Zn). This gives very similar results the value
+# 15.8, suggested in Perianez 2018.
+# https://doi.org/10.1016/j.apgeochem.2019.04.003
+# https://www-pub.iaea.org/MTCD/Publications/PDF/TRS422_web.pdf
+# https://doi.org/10.1016/j.jenvrad.2018.02.014
+#
+# Merlin Expo Kd values are mean values from Allison and Allison 2005
+# https://cfpub.epa.gov/si/si_public_record_report.cfm?dirEntryId=135783
 
         elif self.get_config('chemical:compound') == "Nitrogen":
             self.set_config('chemical:transfer_setup', 'metals')
@@ -3217,7 +3215,7 @@ class ChemicalDrift(OceanDrift):
             self.set_config('chemical:transformations:S0', 17.0)  #
 
     def plot_mass(self,
-                  legend=['dissolved', 'SPM', 'sediment'],
+                  legend=['dissolved','SPM','sediment'],
                   mass_unit='g',
                   time_unit='hours',
                   title=None,
@@ -3236,51 +3234,52 @@ class ChemicalDrift(OceanDrift):
         if not title == []:
             fig.suptitle(title)
 
-        mass = self.get_property('mass')
-        sp = self.get_property('specie')
+        mass=self.get_property('mass')
+        sp=self.get_property('specie')
 
-        steps = self.steps_output
+        steps=self.steps_output
 
-        bars = np.zeros((steps, 5))
+        bars=np.zeros((steps,5))
 
-        mass_conversion_factor = 1e-6
-        if mass_unit == 'g' and self.elements.variables['mass']['units'] == 'ug':
-            mass_conversion_factor = 1e-6
-        if mass_unit == 'mg' and self.elements.variables['mass']['units'] == 'ug':
-            mass_conversion_factor = 1e-3
-        if mass_unit == 'ug' and self.elements.variables['mass']['units'] == 'ug':
-            mass_conversion_factor = 1
+        mass_conversion_factor=1e-6
+        if mass_unit=='g' and self.elements.variables['mass']['units']=='ug':
+            mass_conversion_factor=1e-6
+        if mass_unit=='mg' and self.elements.variables['mass']['units']=='ug':
+            mass_conversion_factor=1e-3
+        if mass_unit=='ug' and self.elements.variables['mass']['units']=='ug':
+            mass_conversion_factor=1
 
-        time_conversion_factor = self.time_step_output.total_seconds() / (60 * 60)
-        if time_unit == 'seconds':
+        time_conversion_factor = self.time_step_output.total_seconds() / (60*60)
+        if time_unit=='seconds':
             time_conversion_factor = self.time_step_output.total_seconds()
-        if time_unit == 'minutes':
+        if time_unit=='minutes':
             time_conversion_factor = self.time_step_output.total_seconds() / 60
-        if time_unit == 'hours':
-            time_conversion_factor = self.time_step_output.total_seconds() / (60 * 60)
-        if time_unit == 'days':
-            time_conversion_factor = self.time_step_output.total_seconds() / (24 * 60 * 60)
+        if time_unit=='hours':
+            time_conversion_factor = self.time_step_output.total_seconds() / (60*60)
+        if time_unit=='days':
+            time_conversion_factor = self.time_step_output.total_seconds() / (24*60*60)
 
         for i in range(steps):
-            bars[i] = [np.sum(mass[0][i, :] * (sp[0][i, :] == 0)) * mass_conversion_factor,
-                       np.sum(mass[0][i, :] * (sp[0][i, :] == 1)) * mass_conversion_factor,
-                       np.sum(mass[0][i, :] * (sp[0][i, :] == 2)) * mass_conversion_factor,
-                       np.sum(mass[0][i, :] * (sp[0][i, :] == 3)) * mass_conversion_factor,
-                       np.sum(mass[0][i, :] * (sp[0][i, :] == 4)) * mass_conversion_factor]
 
-        bottom = np.zeros_like(bars[:, 0])
+            bars[i]=[np.sum(mass[0][i,:]*(sp[0][i,:]==0))*mass_conversion_factor,
+                     np.sum(mass[0][i,:]*(sp[0][i,:]==1))*mass_conversion_factor,
+                     np.sum(mass[0][i,:]*(sp[0][i,:]==2))*mass_conversion_factor,
+                     np.sum(mass[0][i,:]*(sp[0][i,:]==3))*mass_conversion_factor,
+                     np.sum(mass[0][i,:]*(sp[0][i,:]==4))*mass_conversion_factor]
+
+        bottom=np.zeros_like(bars[:,0])
         if 'dissolved' in legend:
-            ax.bar(np.arange(steps), bars[:, self.num_lmm], width=1.25, color='midnightblue')
-            bottom = bars[:, self.num_lmm]
+            ax.bar(np.arange(steps),bars[:,self.num_lmm],width=1.25,color='midnightblue')
+            bottom=bars[:,self.num_lmm]
         if 'DOC' in legend:
-            ax.bar(np.arange(steps), bars[:, self.num_humcol], bottom=bottom, width=1.25, color='royalblue')
-            bottom = bottom + bars[:, self.num_humcol]
+            ax.bar(np.arange(steps),bars[:,self.num_humcol],bottom=bottom,width=1.25,color='royalblue')
+            bottom=bottom+bars[:,self.num_humcol]
         if 'SPM' in legend:
-            ax.bar(np.arange(steps), bars[:, self.num_prev], bottom=bottom, width=1.25, color='palegreen')
-            bottom = bottom + bars[:, self.num_prev]
+            ax.bar(np.arange(steps),bars[:,self.num_prev],bottom=bottom,width=1.25,color='palegreen')
+            bottom=bottom+bars[:,self.num_prev]
         if 'sediment' in legend:
-            ax.bar(np.arange(steps), bars[:, self.num_srev], bottom=bottom, width=1.25, color='orange')
-            bottom = bottom + bars[:, self.num_srev]
+            ax.bar(np.arange(steps),bars[:,self.num_srev],bottom=bottom,width=1.25,color='orange')
+            bottom=bottom+bars[:,self.num_srev]
 
         ax.legend(list(filter(None, legend)))
         ax.set_ylabel('mass [' + mass_unit + ']')
