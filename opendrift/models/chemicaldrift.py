@@ -2973,6 +2973,8 @@ class ChemicalDrift(OceanDrift):
 
         first=True
         # loop over every value of avg_time, specie, and depth
+        for t, s, d in np.ndindex(ds.sizes['avg_time'], ds.sizes['specie'], ds.sizes['depth']):
+            # select the data for the current avg_time, specie, and depth
             points = ds.concentration_avg[t,s,d,:,:].values.reshape(-1)
 
             if first:
