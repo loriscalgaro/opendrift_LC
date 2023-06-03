@@ -2906,6 +2906,94 @@ class ChemicalDrift(OceanDrift):
                             z=z,
                             origin_marker=origin_marker)
 
+    def interp_weights(self, xyz, uvw):
+        """
+        Calculate interpolation weights within regrid_conc function
+        # https://stackoverflow.com/questions/20915502/speedup-scipy-griddata-for-multiple-interpolations-between-two-irregular-grids
+        """
+        import scipy.spatial as sp
+
+        tri = sp.Delaunay(xyz)
+        simplex = tri.find_simplex(uvw)
+        vertices = np.take(tri.simplices, simplex, axis=0)
+        temp = np.take(tri.transform, simplex, axis=0)
+        d=2                                               ## CHECK
+        delta = uvw - temp[:, d]
+        bary = np.einsum('njk,nk->nj', temp[:, :d, :], delta)
+        return vertices, np.hstack((bary, 1 - bary.sum(axis=1, keepdims=True)))
+
+    def interpolate_regrid(self, values, vtx, wts):
+        """
+        Interpolate the value of each concentration gridpoint within regrid_conc function
+        """
+        return np.einsum('nj,nj->n', np.take(values, vtx), wts)
+
+    def regrid_conc(self, filename, filename_regridded, latmin, latmax, latstep, lonmin, lonmax, lonstep, concfile = None):
+        """
+        Regrid "write_netcdf_chemical_density_map" output to regular latlon grid.
+                filename: string, path or filename of "write_netcdf_chemical_density_map" output file to be regridded
+                filename_regridded: string, path or filename of regridded output
+                latmin: float 32, min latitude of new grid
+                latmax: float 32, max latitude of new grid
+                latstep: float 32 latitude resolution of new grid, in degrees
+                lonmin: float 32, min longitude of new grid
+                lonmax: float 32, max longitude of new grid
+                lonstep: float 32 longitude resolution of new grid, in degrees
+                concfile: xarray Dataset of "write_netcdf_chemical_density_map" output file to be regridded
+        """
+        import numpy as np
+        import xarray as xr
+        from datetime import datetime as dt
+        
+        if ((concfile is None) and (filename is not None)):
+            print("Loading concentration file from filename")
+            ds = xr.open_dataset(filename)
+        else:
+            ds = concfile
+
+        ds.load()
+        start=dt.now()
+
+        new_lat_coords = np.arange(latmin,latmax,latstep)
+        new_lon_coords = np.arange(lonmin,lonmax,lonstep)
+
+        # define new grid of latitude and longitude
+        new_lat, new_lon = np.meshgrid(new_lat_coords, new_lon_coords)
+
+        # create an empty array to store the regridded data
+        regridded_concentration_avg_data = np.zeros((ds.sizes['avg_time'], ds.sizes['specie'], ds.sizes['depth'], new_lat.shape[1], new_lon.shape[0]))
+
+        # create 2D array of (y*x,) coordinates from the 2D (y,x) lat-lon grid
+        lon_2d = ds['lon'].values.flatten()
+        lat_2d = ds['lat'].values.flatten()
+        lonlat_2d = np.column_stack((lat_2d, lon_2d))
+
+        # create 2D array of the new coordinates
+        lonlat_2d_new=np.column_stack((new_lat.flatten(),new_lon.flatten()))
+
+        first=True
+        # loop over every value of avg_time, specie, and depth
+            points = ds.concentration_avg[t,s,d,:,:].values.reshape(-1)
+
+            if first:
+                # Store the weights for the interpolation
+                vtx, wts = self.interp_weights(lonlat_2d, lonlat_2d_new)
+                first=False
+            
+            # interpolate the concentration data onto the new grid using griddata
+            new_concentration_2d = self.interpolate_regrid(points, vtx, wts)
+            # store the interpolated data in the regridded_concentration_avg_data array
+            regridded_concentration_avg_data[t, s, d] = np.transpose(np.reshape(new_concentration_2d,(len(new_lon_coords),len(new_lat_coords))))
+
+        # create a new xarray dataarray with the regridded data
+        regridded_concentration_avg = xr.DataArray(regridded_concentration_avg_data, coords=[ds['avg_time'], ds['specie'], ds['depth'], new_lat_coords, new_lon_coords], dims=['avg_time', 'specie', 'depth', 'y', 'x'])
+        regridded_concentration_avg.name = "concentration_avg"
+        print("Time elapsed (hr:min:sec): ", dt.now()-start)
+
+        print("Saving to netcdf")
+        regridded_concentration_avg.to_netcdf(filename_regridded)
+        print("Time elapsed (hr:min:sec): ", dt.now()-start)
+
     def correct_conc_coorddinates(self, DC_Conc_array, lon_coord, lat_coord, time_coord):
         """
         Add longitude, latitude, and time coordinates to water and sediments concentration array
@@ -2937,44 +3025,68 @@ class ChemicalDrift(OceanDrift):
                                       File_Path_out,
                                       Chemical_name,
                                       Origin_marker_name,
-                                      Concentration_file = None,):
+                                      Concentration_file = None):
         """
         Add dissolved, DOC, and SPM concentration arrays to obtain total water concentration and save sediment concentration array
         Results can be used as inputs by "seed_from_NETCDF" function
         
-        File_Path: string, path of "write_netcdf_chemical_density_map" output file
-        File_Name: string, name of "write_netcdf_chemical_density_map" output file
+        Concentration_file = "write_netcdf_chemical_density_map" output if already loaded (original or after regrid_conc)
+        File_Path: string, path of "write_netcdf_chemical_density_map" output
+        File_Name: string, name of "write_netcdf_chemical_density_map" output
         File_Path_out: string, path where created concentration files will be saved, must end with "/"
         Chemical_name: string, name of modelled chemical
         Origin_marker_name: string, name of source indicated by "origin_marker" parameter
-        Concentration_file = "write_netcdf_chemical_density_map" output if already loaded into memory
+        
+        Returns
+        Save file of total concentration in water and sediments from "write_netcdf_chemical_density_map" output
         """
-        
+        from datetime import datetime
+
         if ((Concentration_file is None) and (File_Path and File_Name is not None)):
-            Concentration_file = xr.open_dataset(File_Path + File_Name)
             print("Loading Concentration_file from File_Path")
+            Concentration_file = xr.open_dataset(File_Path + File_Name)
         else:
-            raise ValueError("Concentration file or path not specified")
-        
+            if "concentration_avg" in Concentration_file.data_vars:
+                print("input is write_netcdf_chemical_density_map file")
+            else:
+                raise ValueError("Incorrect file or file/path not specified")
+
         # Sum DataArray for specie 0, 1, and 2 (dissolved, DOC, and SPM) to obtain total water concentration
         print("Running sum of water concentration", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
         DC_Conc_array_wat = (Concentration_file.concentration_avg[:,0,:,:,:] +\
                             Concentration_file.concentration_avg[:,1,:,:,:] + \
                             Concentration_file.concentration_avg[:,2,:,:,:])
-        
+
         print("Running sediment concentration", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
         DC_Conc_array_sed = Concentration_file.concentration_avg[:,3,:,:,:]
-        
+
         print("Changing coordinates", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
-        lat = np.array(Concentration_file.lat[:,1])
-        lon = np.array(Concentration_file.lon[1,:])
+
+        if "lat" in Concentration_file.data_vars:
+            lat = np.array(Concentration_file.lat[:,1])
+            print("lat data_var used")
+        elif "y" in Concentration_file.dims:
+            lat = np.array(Concentration_file.y)
+            print("y dimention from regridded file used")
+        else:
+            raise ValueError("Incorrect dimention lat/y")
+
+        if "lon" in Concentration_file.data_vars:
+            lon = np.array(Concentration_file.lon[1,:])
+            print("lon data_var used")
+        elif ("lon" not in Concentration_file.dims) and ("y" in Concentration_file.dims):
+            lon = np.array(Concentration_file.x)
+            print("x dimention from regridded file used")
+        else:
+            raise ValueError("Incorrect dimention lon/x")
+
         time_avg = np.array(Concentration_file.avg_time)
-        
+
         DC_Conc_array_wat = self.correct_conc_coorddinates(DC_Conc_array = DC_Conc_array_wat, 
                                                       lon_coord = lon, 
                                                       lat_coord = lat, 
                                                       time_coord = time_avg)
-        
+
         DC_Conc_array_sed = self.correct_conc_coorddinates(DC_Conc_array = DC_Conc_array_sed, 
                                                       lon_coord = lon, 
                                                       lat_coord = lat, 
@@ -2982,29 +3094,37 @@ class ChemicalDrift(OceanDrift):
 
         DC_Conc_array_wat.name = "concentration_avg_water"
         DC_Conc_array_wat.attrs['standard_name'] = "water_concentration"
-        DC_Conc_array_wat.attrs['long_name'] = Chemical_name + " time averaged water concentration"
+        DC_Conc_array_wat.attrs['long_name'] = (Chemical_name or "") + " time averaged water concentration"
         DC_Conc_array_wat.attrs['units'] = 'ug/m3'
-        DC_Conc_array_wat.attrs['grid_mapping'] = 'projection_lonlat, EPSG 4326 WGS 84'
+        if "projection" in Concentration_file.data_vars:
+            DC_Conc_array_wat.attrs['grid_mapping'] = str(Concentration_file.projection.proj4)
+        else:
+            DC_Conc_array_wat.attrs['grid_mapping'] = 'projection_lonlat, EPSG 4326 WGS 84'
+
         DC_Conc_array_wat.attrs['lon_resol'] = str(np.around(abs(lon[0]-lon[1]), decimals = 8)) + " degrees E"
         DC_Conc_array_wat.attrs['lat_resol'] = str(np.around(abs(lat[0]-lat[1]), decimals = 8)) + " degrees N"
-        
+
         DC_Conc_array_sed.name = "concentration_avg_sediments"
         DC_Conc_array_sed.attrs['standard_name'] = "sediment_concentration"
-        DC_Conc_array_sed.attrs['long_name'] = Chemical_name + " time averaged sediment concentration"
+        DC_Conc_array_sed.attrs['long_name'] = ((Chemical_name or "") + " time averaged sediment concentration")
         DC_Conc_array_sed.attrs['units'] = 'ug/Kg d.w.'
-        DC_Conc_array_sed.attrs['grid_mapping'] = 'projection_lonlat, EPSG 4326 WGS 84'
+        if "projection" in Concentration_file.data_vars:
+            DC_Conc_array_sed.attrs['grid_mapping'] = str(Concentration_file.projection.proj4)
+        else:
+            DC_Conc_array_sed.attrs['grid_mapping'] = 'projection_lonlat, EPSG 4326 WGS 84'
+
         DC_Conc_array_sed.attrs['lon_resol'] = str(np.around(abs(lon[0]-lon[1]), decimals = 8)) + " degrees E"
         DC_Conc_array_sed.attrs['lat_resol'] = str(np.around(abs(lat[0]-lat[1]), decimals = 8)) + " degrees N"
 
         Conc_time = datetime.now().strftime("%Y%m%d-%H%M%S")
-        wat_file = File_Path_out + Conc_time + "_water_conc_" + Chemical_name + "_" + Origin_marker_name + ".nc"
-        sed_file = File_Path_out + Conc_time + "_sediments_conc_" + Chemical_name + "_" + Origin_marker_name + ".nc"
-        
+        wat_file = File_Path_out + Conc_time + "_water_conc_" + (Chemical_name or "") + "_" + (Origin_marker_name or "") + ".nc"
+        sed_file = File_Path_out + Conc_time + "_sediments_conc_" + (Chemical_name or "") + "_" + (Origin_marker_name or "")+ ".nc"
+
         print("Saving water concentration file", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
         DC_Conc_array_wat.to_netcdf(wat_file)
         print("Saving sediment concentration file", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
         DC_Conc_array_sed.to_netcdf(sed_file)
-       
+
     def init_chemical_compound(self, chemical_compound = None):
         ''' Chemical parameters for a selection of PAHs:
             Naphthalene, Phenanthrene, Fluorene,
