@@ -611,34 +611,32 @@ class ChemicalDrift(OceanDrift):
         KOC_SPM_updated = np.empty_like(pH_water_SPM)
         KOC_SPMcorr = np.empty_like(pH_water_SPM)
         
-		if diss == 'acid':
-		
-	            Phi_n_SPM = 1 / (1 + 10 ** (pH_water_SPM - pKa_acid))
-	            Phi_diss_SPM = 1 - Phi_n_SPM
-	            KOC_SPM_updated = (KOC_sed_n * Phi_n_SPM) + (Phi_diss_SPM * KOC_sed_diss_acid)
-	
-	            KOC_SPMcorr = KOC_SPM_updated / KOC_SPM_initial
-	
-	        elif diss == 'base':
-	
-	            Phi_n_SPM = 1 / (1 + 10 ** (pH_water_SPM - pKa_base))
-	            Phi_diss_SPM = 1 - Phi_n_SPM
-	            KOC_SPM_updated = (KOC_sed_n * Phi_n_SPM) + (Phi_diss_SPM * KOC_sed_diss_acid)
-	
-	            KOC_SPMcorr = KOC_SPM_updated / KOC_SPM_initial
-	
-	        elif diss == 'amphoter':
-	
-	            Phi_n_SPM = 1 / (1 + 10 ** (pH_water_SPM - pKa_acid) + 10 ** (pKa_base))
-	            Phi_anion_SPM = Phi_n_SPM * 10 ** (pH_water_SPM - pKa_acid)
-	            Phi_cation_SPM = Phi_n_SPM * 10 ** (pKa_base - pH_water_SPM)
-	            KOC_SPM_updated = (KOC_sed_n * Phi_n_SPM) + (Phi_anion_SPM * KOC_sed_diss_acid) + (Phi_cation_SPM * KOC_sed_diss_base)
-	
-	            KOC_SPMcorr = KOC_SPM_updated / KOC_SPM_initial
-	
-	        elif diss == 'undiss':
-	            for i in (range(len(pH_water_SPM))):
-	                KOC_SPMcorr[i] = 1
+        if diss == 'acid':
+            Phi_n_SPM = 1 / (1 + 10 ** (pH_water_SPM - pKa_acid))
+            Phi_diss_SPM = 1 - Phi_n_SPM
+            KOC_SPM_updated = (KOC_sed_n * Phi_n_SPM) + (Phi_diss_SPM * KOC_sed_diss_acid)
+
+            KOC_SPMcorr = KOC_SPM_updated / KOC_SPM_initial
+
+        elif diss == 'base':
+            Phi_n_SPM = 1 / (1 + 10 ** (pH_water_SPM - pKa_base))
+            Phi_diss_SPM = 1 - Phi_n_SPM
+            KOC_SPM_updated = (KOC_sed_n * Phi_n_SPM) + (Phi_diss_SPM * KOC_sed_diss_acid)
+
+            KOC_SPMcorr = KOC_SPM_updated / KOC_SPM_initial
+
+        elif diss == 'amphoter':
+            Phi_n_SPM = 1 / (1 + 10 ** (pH_water_SPM - pKa_acid) + 10 ** (pKa_base))
+            Phi_anion_SPM = Phi_n_SPM * 10 ** (pH_water_SPM - pKa_acid)
+            Phi_cation_SPM = Phi_n_SPM * 10 ** (pKa_base - pH_water_SPM)
+            KOC_SPM_updated = (KOC_sed_n * Phi_n_SPM) + (Phi_anion_SPM * KOC_sed_diss_acid) + (Phi_cation_SPM * KOC_sed_diss_base)
+
+            KOC_SPMcorr = KOC_SPM_updated / KOC_SPM_initial
+
+        elif diss == 'undiss':
+            for i in (range(len(pH_water_SPM))):
+                KOC_SPMcorr[i] = 1
+
         return KOC_SPMcorr
 
     def calc_KOC_watcorrDOM(self, KOC_DOM_initial, KOC_DOM_n, pKa_acid, pKa_base, KOW, pH_water_DOM, diss):
@@ -1529,7 +1527,7 @@ class ChemicalDrift(OceanDrift):
 
         # TODO Choose a proper diameter for aggregated particles
         if self.get_config('chemical:species:Humic_colloid'):
-            self.elements.diameter[(sp_out==self.num_prev) & (sp_in==self.num_humcol)] = = dia_DOM_part
+            self.elements.diameter[(sp_out==self.num_prev) & (sp_in==self.num_humcol)] = dia_DOM_part
 
         logger.debug('Updated particle diameter for %s elements' % len(self.elements.diameter[(sp_out==self.num_prev) & (sp_in!=self.num_prev)]))
 
@@ -1761,7 +1759,7 @@ class ChemicalDrift(OceanDrift):
                     # does volatilization apply only to num_lmm?
                     # check
 
-			mixedlayerdepth = self.environment.ocean_mixed_layer_thickness
+            mixedlayerdepth = self.environment.ocean_mixed_layer_thickness
             mixedlayerdepth = mixedlayerdepth[W]
 
             T=self.environment.sea_water_temperature[W]
@@ -2714,7 +2712,7 @@ class ChemicalDrift(OceanDrift):
     ''' Alias of seed_from_DataArray method for backward compatibility
     '''
 
-        @staticmethod
+    @staticmethod
     def _get_number_of_elements(
             g_mode,
             mass_element_ug=None,
@@ -2954,6 +2952,20 @@ class ChemicalDrift(OceanDrift):
         ds.load()
         start=dt.now()
 
+        if (latmin < min(ds['lat'].values.flatten()) or latmax > max(ds['lat'].values.flatten())\
+        or lonmin < min(ds['lon'].values.flatten()) or lonmax > max(ds['lon'].values.flatten())):
+            print((latmin < min(ds['lat'].values.flatten())*latmin))
+            print((latmax > max(ds['lat'].values.flatten())*latmax))
+            print((lonmin < min(ds['lon'].values.flatten())*lonmin))
+            print((lonmax > max(ds['lon'].values.flatten())*lonmax))
+            
+            
+            
+            
+            raise ValueError("Regrid coordinates out of bonds from input file range")
+        else:
+            pass
+
         new_lat_coords = np.arange(latmin,latmax,latstep)
         new_lon_coords = np.arange(lonmin,lonmax,lonstep)
 
@@ -2990,10 +3002,15 @@ class ChemicalDrift(OceanDrift):
         # create a new xarray dataarray with the regridded data
         regridded_concentration_avg = xr.DataArray(regridded_concentration_avg_data, coords=[ds['avg_time'], ds['specie'], ds['depth'], new_lat_coords, new_lon_coords], dims=['avg_time', 'specie', 'depth', 'y', 'x'])
         regridded_concentration_avg.name = "concentration_avg"
+        # change negative concentration values to 0
+        regridded_concentration_avg_nan = regridded_concentration_avg.copy()
+        regridded_concentration_avg_nan = xr.where(regridded_concentration_avg_nan < 0, 0, regridded_concentration_avg_nan)
+        
+        
         print("Time elapsed (hr:min:sec): ", dt.now()-start)
 
         print("Saving to netcdf")
-        regridded_concentration_avg.to_netcdf(filename_regridded)
+        regridded_concentration_avg_nan.to_netcdf(filename_regridded)
         print("Time elapsed (hr:min:sec): ", dt.now()-start)
 
     def correct_conc_coorddinates(self, DC_Conc_array, lon_coord, lat_coord, time_coord):
@@ -3032,7 +3049,7 @@ class ChemicalDrift(OceanDrift):
         Add dissolved, DOC, and SPM concentration arrays to obtain total water concentration and save sediment concentration array
         Results can be used as inputs by "seed_from_NETCDF" function
         
-        Concentration_file = "write_netcdf_chemical_density_map" output if already loaded (original or after regrid_conc)
+        Concentration_file: "write_netcdf_chemical_density_map" output if already loaded (original or after regrid_conc)
         File_Path: string, path of "write_netcdf_chemical_density_map" output
         File_Name: string, name of "write_netcdf_chemical_density_map" output
         File_Path_out: string, path where created concentration files will be saved, must end with "/"
@@ -3043,6 +3060,7 @@ class ChemicalDrift(OceanDrift):
         Save file of total concentration in water and sediments from "write_netcdf_chemical_density_map" output
         """
         from datetime import datetime
+        import xarray as xr
 
         if ((Concentration_file is None) and (File_Path and File_Name is not None)):
             print("Loading Concentration_file from File_Path")
