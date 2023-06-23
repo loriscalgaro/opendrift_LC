@@ -2954,14 +2954,11 @@ class ChemicalDrift(OceanDrift):
 
         if (latmin < min(ds['lat'].values.flatten()) or latmax > max(ds['lat'].values.flatten())\
         or lonmin < min(ds['lon'].values.flatten()) or lonmax > max(ds['lon'].values.flatten())):
-            print((latmin < min(ds['lat'].values.flatten())*latmin))
-            print((latmax > max(ds['lat'].values.flatten())*latmax))
-            print((lonmin < min(ds['lon'].values.flatten())*lonmin))
-            print((lonmax > max(ds['lon'].values.flatten())*lonmax))
-            
-            
-            
-            
+            print("latmin is not in range, lower than: ", min(ds['lat'].values.flatten()), (latmin < min(ds['lat'].values.flatten())*latmin))
+            print("latmax is not in range, higher than: ",max(ds['lat'].values.flatten()), (latmax > max(ds['lat'].values.flatten())*latmax))
+            print("lonmin is not in range: lower than:", min(ds['lon'].values.flatten()), (lonmin < min(ds['lon'].values.flatten())*lonmin))
+            print("lonmax is not in range, higher than: ",max(ds['lon'].values.flatten()), (lonmax > max(ds['lon'].values.flatten())*lonmax))
+
             raise ValueError("Regrid coordinates out of bonds from input file range")
         else:
             pass
@@ -3119,7 +3116,7 @@ class ChemicalDrift(OceanDrift):
         if "projection" in Concentration_file.data_vars:
             DC_Conc_array_wat.attrs['grid_mapping'] = str(Concentration_file.projection.proj4)
         else:
-            DC_Conc_array_wat.attrs['grid_mapping'] = 'projection_lonlat, EPSG 4326 WGS 84'
+            DC_Conc_array_wat.attrs['grid_mapping'] = "projection_lonlat_EPSG_4326_WGS_84"
 
         DC_Conc_array_wat.attrs['lon_resol'] = str(np.around(abs(lon[0]-lon[1]), decimals = 8)) + " degrees E"
         DC_Conc_array_wat.attrs['lat_resol'] = str(np.around(abs(lat[0]-lat[1]), decimals = 8)) + " degrees N"
@@ -3131,7 +3128,7 @@ class ChemicalDrift(OceanDrift):
         if "projection" in Concentration_file.data_vars:
             DC_Conc_array_sed.attrs['grid_mapping'] = str(Concentration_file.projection.proj4)
         else:
-            DC_Conc_array_sed.attrs['grid_mapping'] = 'projection_lonlat, EPSG 4326 WGS 84'
+            DC_Conc_array_sed.attrs['grid_mapping'] = "projection_lonlat_EPSG_4326_WGS_84"
 
         DC_Conc_array_sed.attrs['lon_resol'] = str(np.around(abs(lon[0]-lon[1]), decimals = 8)) + " degrees E"
         DC_Conc_array_sed.attrs['lat_resol'] = str(np.around(abs(lat[0]-lat[1]), decimals = 8)) + " degrees N"
@@ -3144,6 +3141,191 @@ class ChemicalDrift(OceanDrift):
         DC_Conc_array_wat.to_netcdf(wat_file)
         print("Saving sediment concentration file", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
         DC_Conc_array_sed.to_netcdf(sed_file)
+
+def mask_netcdf_map (self,
+                     shp_mask_file,
+                     DataArray,
+                     shp_epsg = "epsg:4326",
+                     invert_shp = False,
+                     drop_data = False,
+                     save_masked_file = False,
+                     file_output_path = None,
+                     file_output_name = None
+                     ):
+    '''
+    Mask xarray DataArray using shapefile, return a masked xarray DataArray
+        Used for xarray DataArray with regular lat/lon coordinates. 
+        "write_netcdf_chemical_density_map" output must be regridded to regular lat/lon coordinates with "regrid_conc" function
+
+    shp_mask_file: string, full path to mask shapefile 
+    DataArray: xarray DataArray to be masked
+        *latitude/longitude, lat/lon, y/x are accepted as coordinates
+    shp_epsg: string, reference system of shp file (e.g. "epsg:4326")
+    invert_shp: boolean, select if values inside (False) or outside (True) shp are masked
+    drop_data: boolean, select if spatial extent of DataArray is mantained (False) or reduced to the extent of shp (True)
+    save_masked_file: boolean,select if DataArray_masked is saved (True) or returned (False)
+    file_output_path: string, path of the file to be saved. Must end with /
+    file_output_name: string, name of the DataArray_masked output file (.nc)
+    '''
+    import geopandas as gpd
+    import rasterio
+    from shapely.geometry import mapping
+    import os as os
+
+    shp_mask = gpd.read_file(shp_mask_file, crs=shp_epsg)
+
+    if ("latitude" in DataArray.dims) and ("longitude" in DataArray.dims):
+        DataArray = DataArray.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude", inplace=True)
+        print("latitude/longitude dimentions used")
+    elif ("lat" in DataArray.dims) and ("lon" in DataArray.dims):
+        DataArray = DataArray.rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=True)
+        print("lat/lon dimentions used")
+    elif ("x" in DataArray.dims) and ("y" in DataArray.dims):
+        DataArray = DataArray.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=True)
+        print("x/y dimentions used")
+    else:
+        raise ValueError("Unspecified lat/lon dimentions in DataArray")
+
+    DataArray = DataArray.rio.write_crs(shp_epsg, inplace=True)
+    DataArray_masked = DataArray.rio.clip(shp_mask.geometry.apply(mapping), shp_mask.crs, drop=drop_data, invert = invert_shp)
+
+    if save_masked_file == True:
+        if not os.path.exists(file_output_path):
+            os.makedirs(file_output_path)
+            print("file_output_path did not exist and was created")
+        else:
+            pass
+        print("Saving DataArray_masked file")
+
+        del DataArray_masked.attrs['grid_mapping'] # delete grid_mapping attribute to avoid ValueError in safe_setitem from xarray
+        DataArray_masked.to_netcdf(file_output_path + file_output_name)
+
+    else:
+        return DataArray_masked
+
+    def create_gif_images(self,
+                          Conc_Dataset,
+                          time_start, 
+                          time_end,
+                          long_min, long_max,
+                          lat_min, lat_max,
+                          file_out_path,
+                          file_out_sub_folder,
+                          shp_file_path,
+                          title_caption,
+                          unit_measure,
+                          vmin = None, 
+                          vmax = None,
+                          selected_colormap = None,
+                          levels_colormap = None,
+                          selected_depth = 0,
+                          fig_format = ".jpg",
+                          add_shp_to_figure = False):
+        '''
+        Create images for creating a .gif image from REGRIDDED "calculate_water_sediment_conc" function output
+        
+        Conc_Dataset: xarray dataset of concentration after calculate_water_sediment_conc
+            *latitude, degrees N
+            *longitude, degrees E
+            *time, datetime64[ns]
+        time_start : datetime64[ns], start time of gif
+        time_end : datetime64[ns],  end time of gif.
+        long_min: float64, min longitude of figure
+        long_max: float64, max longitude of figure
+        lat_min: float64, min latitude of figure
+        lat_max: float64, max latitude of figure
+        vmin: float64, min value of concentration in the figure, specify to keep colorscale constant
+        vmax: float64, max value of concentration in the figure, specify to keep colorscale constant
+        file_out_path: string, main output path of figure produced must end with /
+        file_out_sub_folder: string, subforlder of file_out_path, must end with /
+        shp_file_path: string, full path and name of shp file
+        title_caption: First part of figure title before date and unit_measure
+        unit_measure: string, (ug/m3) or (ug/kg d.w)
+        levels_colormap: list of float64, levels used for colorbar (e.g., [0., 1., 15.])
+        selected_colormap: e.g. plt.cm.Blues
+        selected_depth: integer, depth selected if present. If no depth was selected when creating conc map, use 0
+        fig_format = string, format of produced images (e.g.,".jpg", ".png"),
+        add_shp_to_figure = boolean,select if shp is added to the figure (True) or not (False)
+        '''
+
+        import geopandas as gpd
+        import numpy as np
+        import matplotlib.pyplot as plt
+        import os as os
+        from mpl_toolkits.axes_grid1 import make_axes_locatable, axes_size
+
+        aspect = 15
+        pad_fraction = 1e-5
+        file_output_path = file_out_path + file_out_sub_folder
+
+        if not os.path.exists(file_output_path):
+            os.makedirs(file_output_path)
+            print("file_output_path did not exist and was created")
+        else:
+            pass
+
+        shp = gpd.read_file(shp_file_path)
+
+        if "concentration_avg_water" in Conc_Dataset.data_vars:
+            Conc_DataArray = Conc_Dataset.concentration_avg_water
+        elif "concentration_avg_sediments" in Conc_Dataset.data_vars:
+            Conc_DataArray = Conc_Dataset.concentration_avg_sediments
+        else:
+            raise ValueError("Wrong input, concentration_avg_sediments/water not present in conc file")
+
+        attribute_list = list(Conc_DataArray.attrs)
+        for attr in attribute_list:
+            del Conc_DataArray.attrs[attr]
+
+        Conc_DataArray = Conc_DataArray.where(((Conc_DataArray.time >= time_start) &
+                                               (Conc_DataArray.time <= time_end)), drop=True)
+
+        if add_shp_to_figure == True:
+            print("shp was added over the figures")
+            for timestep in range(0, len(Conc_DataArray.time)):
+                print("creating image n° ", str(timestep+1), " out of ", str(len(Conc_DataArray.time)))
+            
+                Conc_DataArray_selected = Conc_DataArray.isel(time = timestep, depth = selected_depth)
+                fig, ax = plt.subplots(figsize = (8,8))
+                shp.plot(ax = ax, color = "black")
+                ax2 = Conc_DataArray_selected.plot.pcolormesh(ax = ax, 
+                                                        x = 'longitude', 
+                                                        y = 'latitude', 
+                                                        cmap=selected_colormap, 
+                                                        robust = True, 
+                                                        vmin = vmin, vmax = vmax,
+                                                        levels = levels_colormap,
+                                                        add_colorbar=False) # colorbar is added ex-post
+                ax.set_xlim(long_min, long_max)
+                ax.set_ylim(lat_min, lat_max)
+                ax.set_xlabel("Longitude")
+                ax.set_ylabel("Latitude")
+                ax.set_title(title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:10] + " " +"(" +unit_measure +")", pad=10)
+                # from https://stackoverflow.com/questions/18195758/set-matplotlib-colorbar-size-to-match-graph
+                divider = make_axes_locatable(ax)
+                width = axes_size.AxesY(ax, aspect=1./aspect)
+                pad_cb = axes_size.Fraction(pad_fraction, width)
+                cax = divider.append_axes("right", size=width, pad=pad_cb)
+                plt.colorbar(ax2, cax=cax)
+                
+                fig.savefig(file_out_path + file_out_sub_folder+str(f"{timestep:03d}")+fig_format)
+        else:
+            print("shp was not added over the figures")
+            for timestep in range(0, len(Conc_DataArray.time)):
+                print("creating image n° ", str(timestep+1), " out of ", str(len(Conc_DataArray.time)))
+            
+                Conc_DataArray_selected = Conc_DataArray.isel(time = timestep, depth = selected_depth)
+                fig =Conc_DataArray_selected.plot(vmin = vmin, vmax = vmax, 
+                                                  robust = True, 
+                                                  cmap=selected_colormap, 
+                                                  levels = levels_colormap)
+                plt.title(title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:10] + " " +"(" +unit_measure +")", pad=20)
+                plt.ylabel("Latitude")
+                plt.xlabel("Longitude")
+                plt.xlim(long_min, long_max)
+                plt.ylim(lat_min, lat_max)
+                fig.figure.savefig(file_out_path + file_out_sub_folder+str(f"{timestep:03d}")+fig_format)
+                plt.close()
 
     def init_chemical_compound(self, chemical_compound = None):
         ''' Chemical parameters for a selection of PAHs:
