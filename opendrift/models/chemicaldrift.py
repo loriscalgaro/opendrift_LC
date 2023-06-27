@@ -3120,6 +3120,7 @@ class ChemicalDrift(OceanDrift):
 
         DC_Conc_array_wat.attrs['lon_resol'] = str(np.around(abs(lon[0]-lon[1]), decimals = 8)) + " degrees E"
         DC_Conc_array_wat.attrs['lat_resol'] = str(np.around(abs(lat[0]-lat[1]), decimals = 8)) + " degrees N"
+        DC_Conc_array_wat = DC_Conc_array_wat.drop_vars("specie") # drop "specie" coordinate since only water elements were selected
 
         DC_Conc_array_sed.name = "concentration_avg_sediments"
         DC_Conc_array_sed.attrs['standard_name'] = "sediment_concentration"
@@ -3132,6 +3133,7 @@ class ChemicalDrift(OceanDrift):
 
         DC_Conc_array_sed.attrs['lon_resol'] = str(np.around(abs(lon[0]-lon[1]), decimals = 8)) + " degrees E"
         DC_Conc_array_sed.attrs['lat_resol'] = str(np.around(abs(lat[0]-lat[1]), decimals = 8)) + " degrees N"
+        DC_Conc_array_sed = DC_Conc_array_sed.drop_vars("specie") # drop "specie" coordinate since only sed elements were selected
 
         Conc_time = datetime.now().strftime("%Y%m%d-%H%M%S")
         wat_file = File_Path_out + Conc_time + "_water_conc_" + (Chemical_name or "") + "_" + (Origin_marker_name or "") + ".nc"
