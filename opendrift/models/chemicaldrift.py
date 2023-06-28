@@ -461,11 +461,11 @@ class ChemicalDrift(OceanDrift):
 
 
         if 'specie' in kwargs:
-            print('num_elements', num_elements)
-            try:
-                print('len specie:',len(kwargs['specie']))
-            except:
-                print('specie:',kwargs['specie'])
+            # print('num_elements', num_elements)
+            # try:
+            #     print('len specie:',len(kwargs['specie']))
+            # except:
+            #     print('specie:',kwargs['specie'])
 
             init_specie = np.ones(num_elements,dtype=int)
             init_specie[:] = kwargs['specie']
