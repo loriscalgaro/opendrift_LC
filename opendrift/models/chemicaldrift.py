@@ -3144,66 +3144,66 @@ class ChemicalDrift(OceanDrift):
         print("Saving sediment concentration file", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
         DC_Conc_array_sed.to_netcdf(sed_file)
 
-def mask_netcdf_map (self,
-                     shp_mask_file,
-                     DataArray,
-                     shp_epsg = "epsg:4326",
-                     invert_shp = False,
-                     drop_data = False,
-                     save_masked_file = False,
-                     file_output_path = None,
-                     file_output_name = None
-                     ):
-    '''
-    Mask xarray DataArray using shapefile, return a masked xarray DataArray
-        Used for xarray DataArray with regular lat/lon coordinates. 
-        "write_netcdf_chemical_density_map" output must be regridded to regular lat/lon coordinates with "regrid_conc" function
-
-    shp_mask_file: string, full path to mask shapefile 
-    DataArray: xarray DataArray to be masked
-        *latitude/longitude, lat/lon, y/x are accepted as coordinates
-    shp_epsg: string, reference system of shp file (e.g. "epsg:4326")
-    invert_shp: boolean, select if values inside (False) or outside (True) shp are masked
-    drop_data: boolean, select if spatial extent of DataArray is mantained (False) or reduced to the extent of shp (True)
-    save_masked_file: boolean,select if DataArray_masked is saved (True) or returned (False)
-    file_output_path: string, path of the file to be saved. Must end with /
-    file_output_name: string, name of the DataArray_masked output file (.nc)
-    '''
-    import geopandas as gpd
-    import rasterio
-    from shapely.geometry import mapping
-    import os as os
-
-    shp_mask = gpd.read_file(shp_mask_file, crs=shp_epsg)
-
-    if ("latitude" in DataArray.dims) and ("longitude" in DataArray.dims):
-        DataArray = DataArray.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude", inplace=True)
-        print("latitude/longitude dimentions used")
-    elif ("lat" in DataArray.dims) and ("lon" in DataArray.dims):
-        DataArray = DataArray.rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=True)
-        print("lat/lon dimentions used")
-    elif ("x" in DataArray.dims) and ("y" in DataArray.dims):
-        DataArray = DataArray.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=True)
-        print("x/y dimentions used")
-    else:
-        raise ValueError("Unspecified lat/lon dimentions in DataArray")
-
-    DataArray = DataArray.rio.write_crs(shp_epsg, inplace=True)
-    DataArray_masked = DataArray.rio.clip(shp_mask.geometry.apply(mapping), shp_mask.crs, drop=drop_data, invert = invert_shp)
-
-    if save_masked_file == True:
-        if not os.path.exists(file_output_path):
-            os.makedirs(file_output_path)
-            print("file_output_path did not exist and was created")
+    def mask_netcdf_map (self,
+                         shp_mask_file,
+                         DataArray,
+                         shp_epsg = "epsg:4326",
+                         invert_shp = False,
+                         drop_data = False,
+                         save_masked_file = False,
+                         file_output_path = None,
+                         file_output_name = None
+                         ):
+        '''
+        Mask xarray DataArray using shapefile, return a masked xarray DataArray
+            Used for xarray DataArray with regular lat/lon coordinates. 
+            "write_netcdf_chemical_density_map" output must be regridded to regular lat/lon coordinates with "regrid_conc" function
+    
+        shp_mask_file: string, full path to mask shapefile 
+        DataArray: xarray DataArray to be masked
+            *latitude/longitude, lat/lon, y/x are accepted as coordinates
+        shp_epsg: string, reference system of shp file (e.g. "epsg:4326")
+        invert_shp: boolean, select if values inside (False) or outside (True) shp are masked
+        drop_data: boolean, select if spatial extent of DataArray is mantained (False) or reduced to the extent of shp (True)
+        save_masked_file: boolean,select if DataArray_masked is saved (True) or returned (False)
+        file_output_path: string, path of the file to be saved. Must end with /
+        file_output_name: string, name of the DataArray_masked output file (.nc)
+        '''
+        import geopandas as gpd
+        import rasterio
+        from shapely.geometry import mapping
+        import os as os
+    
+        shp_mask = gpd.read_file(shp_mask_file, crs=shp_epsg)
+    
+        if ("latitude" in DataArray.dims) and ("longitude" in DataArray.dims):
+            DataArray = DataArray.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude", inplace=True)
+            print("latitude/longitude dimentions used")
+        elif ("lat" in DataArray.dims) and ("lon" in DataArray.dims):
+            DataArray = DataArray.rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=True)
+            print("lat/lon dimentions used")
+        elif ("x" in DataArray.dims) and ("y" in DataArray.dims):
+            DataArray = DataArray.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=True)
+            print("x/y dimentions used")
         else:
-            pass
-        print("Saving DataArray_masked file")
-
-        del DataArray_masked.attrs['grid_mapping'] # delete grid_mapping attribute to avoid ValueError in safe_setitem from xarray
-        DataArray_masked.to_netcdf(file_output_path + file_output_name)
-
-    else:
-        return DataArray_masked
+            raise ValueError("Unspecified lat/lon dimentions in DataArray")
+    
+        DataArray = DataArray.rio.write_crs(shp_epsg, inplace=True)
+        DataArray_masked = DataArray.rio.clip(shp_mask.geometry.apply(mapping), shp_mask.crs, drop=drop_data, invert = invert_shp)
+    
+        if save_masked_file == True:
+            if not os.path.exists(file_output_path):
+                os.makedirs(file_output_path)
+                print("file_output_path did not exist and was created")
+            else:
+                pass
+            print("Saving DataArray_masked file")
+    
+            del DataArray_masked.attrs['grid_mapping'] # delete grid_mapping attribute to avoid ValueError in safe_setitem from xarray
+            DataArray_masked.to_netcdf(file_output_path + file_output_name)
+    
+        else:
+            return DataArray_masked
 
     def create_gif_images(self,
                           Conc_Dataset,
