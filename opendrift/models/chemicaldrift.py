@@ -3010,7 +3010,7 @@ class ChemicalDrift(OceanDrift):
         regridded_concentration_avg_nan.to_netcdf(filename_regridded)
         print("Time elapsed (hr:min:sec): ", dt.now()-start)
 
-    def correct_conc_coorddinates(self, DC_Conc_array, lon_coord, lat_coord, time_coord):
+    def correct_conc_coordinates(self, DC_Conc_array, lon_coord, lat_coord, time_coord):
         """
         Add longitude, latitude, and time coordinates to water and sediments concentration array
         
@@ -3099,12 +3099,12 @@ class ChemicalDrift(OceanDrift):
 
         time_avg = np.array(Concentration_file.avg_time)
 
-        DC_Conc_array_wat = self.correct_conc_coorddinates(DC_Conc_array = DC_Conc_array_wat, 
+        DC_Conc_array_wat = self.correct_conc_coordinates(DC_Conc_array = DC_Conc_array_wat, 
                                                       lon_coord = lon, 
                                                       lat_coord = lat, 
                                                       time_coord = time_avg)
 
-        DC_Conc_array_sed = self.correct_conc_coorddinates(DC_Conc_array = DC_Conc_array_sed, 
+        DC_Conc_array_sed = self.correct_conc_coordinates(DC_Conc_array = DC_Conc_array_sed, 
                                                       lon_coord = lon, 
                                                       lat_coord = lat, 
                                                       time_coord = time_avg)
@@ -3135,9 +3135,11 @@ class ChemicalDrift(OceanDrift):
         DC_Conc_array_sed.attrs['lat_resol'] = str(np.around(abs(lat[0]-lat[1]), decimals = 8)) + " degrees N"
         DC_Conc_array_sed = DC_Conc_array_sed.drop_vars("specie") # drop "specie" coordinate since only sed elements were selected
 
-        Conc_time = datetime.now().strftime("%Y%m%d-%H%M%S")
-        wat_file = File_Path_out + Conc_time + "_water_conc_" + (Chemical_name or "") + "_" + (Origin_marker_name or "") + ".nc"
-        sed_file = File_Path_out + Conc_time + "_sediments_conc_" + (Chemical_name or "") + "_" + (Origin_marker_name or "")+ ".nc"
+        # Conc_time = datetime.now().strftime("%Y%m%d-%H%M%S")
+        # wat_file = File_Path_out + Conc_time + "_water_conc_" + (Chemical_name or "") + "_" + (Origin_marker_name or "") + ".nc"
+        # sed_file = File_Path_out + Conc_time + "_sediments_conc_" + (Chemical_name or "") + "_" + (Origin_marker_name or "")+ ".nc"
+        wat_file = File_Path_out + "water_conc_" + (Chemical_name or "") + "_" + (Origin_marker_name or "") + ".nc"
+        sed_file = File_Path_out + "sediments_conc_" + (Chemical_name or "") + "_" + (Origin_marker_name or "")+ ".nc"
 
         print("Saving water concentration file", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
         DC_Conc_array_wat.to_netcdf(wat_file)
