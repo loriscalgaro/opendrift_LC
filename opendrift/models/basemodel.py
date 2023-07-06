@@ -1114,6 +1114,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
                 rlatmax = np.max(corners[1])
                 if hasattr(reader, 'proj4') and 'stere' in reader.proj4 and 'lat_0=90' in reader.proj4:
                     rlatmax = 90
+                if hasattr(reader, 'projected') and reader.projected is False:
+                    rlatmax = 90
                 if hasattr(reader, 'proj4') and 'stere' in reader.proj4 and 'lat_0=-90' in reader.proj4:
                     rlatmin = -90
                 if rlatmin > self.simulation_extent[3]:
@@ -1293,7 +1295,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
                     if reader.number_of_fails > max_fails:
                         logger.warning(f'Reader {reader.name} is discarded after failing '
                                        f'more times than allowed ({max_fails})')
-                        self.discard_reader(reader, reason=f'Failed more than {max_fails} times.')
+                        self.discard_reader(reader, reason=f'failed more than {max_fails} times')
 
                     self.timer_end('main loop:readers:' +
                                    reader_name.replace(':', '<colon>'))
