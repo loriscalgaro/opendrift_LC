@@ -3200,8 +3200,12 @@ class ChemicalDrift(OceanDrift):
             else:
                 pass
             print("Saving DataArray_masked file")
-    
-            del DataArray_masked.attrs['grid_mapping'] # delete grid_mapping attribute to avoid ValueError in safe_setitem from xarray
+            
+            if 'grid_mapping' in DataArray_masked.attrs:
+                del DataArray_masked.attrs['grid_mapping'] # delete grid_mapping attribute to avoid "ValueError in safe_setitem" from xarray
+            else:
+                pass
+            
             DataArray_masked.to_netcdf(file_output_path + file_output_name)
     
         else:
