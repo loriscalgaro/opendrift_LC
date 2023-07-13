@@ -2784,11 +2784,27 @@ class ChemicalDrift(OceanDrift):
         # mass_element_ug=100e3   # 100e3 - 1 element is 100mg chemical
         # mass_element_ug=1e6     # 1e6 - 1 element is 1g chemical
         # mass_element_ug=1e9     # 1e9 - 1 element is 1kg chemical
-
+        
+        # import xarray as xr
+        
         sel = np.where((NETCDF_data > lowerbound) & (NETCDF_data < higherbound))
-        t = NETCDF_data.time[sel[0]].data
-        la = NETCDF_data.latitude[sel[1]].data
-        lo = NETCDF_data.longitude[sel[2]].data
+        time_check = (NETCDF_data.time).size
+        
+        if (time_check) == 1:
+            t = np.datetime64(NETCDF_data.time.data)
+            la = NETCDF_data.latitude[sel[0]].data
+            lo = NETCDF_data.longitude[sel[1]].data
+            # print("a")
+        elif time_check > 1:
+            t = NETCDF_data.time[sel[0]].data
+            la = NETCDF_data.latitude[sel[1]].data
+            lo = NETCDF_data.longitude[sel[2]].data
+            # print("b")
+        
+        print ("seedding ", t.size*la.size*lo.size, "elements")
+        # t = NETCDF_data.time[sel[0]].data
+        # la = NETCDF_data.latitude[sel[1]].data
+        # lo = NETCDF_data.longitude[sel[2]].data
         
         lon_array = lo + lon_resol / 2  # find center of pixel for volume of water / sediments
         lat_array = la + lat_resol / 2  # find center of pixel for volume of water / sediments
@@ -2842,10 +2858,16 @@ class ChemicalDrift(OceanDrift):
                 mass_element_ug=mass_element_ug,
                 data_point=mass_ug,
                 n_elements=number_of_elements)
-
-            time = datetime.utcfromtimestamp(
-                (t[i] - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's'))
-
+            
+            if t.size == 1:
+                time = datetime.utcfromtimestamp(
+                    (np.array(t - np.datetime64('1970-01-01T00:00:00'))) / np.timedelta64(1, 's'))
+                # print("t1")
+            elif t.size > 1:
+                time = datetime.utcfromtimestamp(
+                    (t[i] - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's'))
+                # print("t2")
+                
             # specie to be added to seed parameters for sediments and water
             if mode == 'sed_conc':
                 specie_elements = 3 # 'num_srev' # Name of specie for sediment elements
