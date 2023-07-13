@@ -2789,7 +2789,7 @@ class ChemicalDrift(OceanDrift):
         
         sel = np.where((NETCDF_data > lowerbound) & (NETCDF_data < higherbound))
         time_check = (NETCDF_data.time).size
-        
+                
         if (time_check) == 1:
             t = np.datetime64(NETCDF_data.time.data)
             la = NETCDF_data.latitude[sel[0]].data
@@ -2800,12 +2800,8 @@ class ChemicalDrift(OceanDrift):
             la = NETCDF_data.latitude[sel[1]].data
             lo = NETCDF_data.longitude[sel[2]].data
             # print("b")
-        
-        print ("seedding ", t.size*la.size*lo.size, "elements")
-        # t = NETCDF_data.time[sel[0]].data
-        # la = NETCDF_data.latitude[sel[1]].data
-        # lo = NETCDF_data.longitude[sel[2]].data
-        
+        # print("Seeding " + str(la.size*t.size) + " datapoints")
+               
         lon_array = lo + lon_resol / 2  # find center of pixel for volume of water / sediments
         lat_array = la + lat_resol / 2  # find center of pixel for volume of water / sediments
         
@@ -2825,7 +2821,7 @@ class ChemicalDrift(OceanDrift):
         if mode == 'emission':
             Bathimetry_seed = None
 
-        for i in range(0, t.size):
+        for i in range(0, max(t.size, lo.size, la.size)):
             lon_grid_m = None
             Bathimetry_conc = None
 
