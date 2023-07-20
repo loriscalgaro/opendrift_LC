@@ -2084,7 +2084,7 @@ class ChemicalDrift(OceanDrift):
         sed_L       = self.get_config('chemical:sediment:mixing_depth')
         sed_dens    = self.get_config('chemical:sediment:density')
         sed_poro    = self.get_config('chemical:sediment:porosity')
-        pixel_sed_mass = (pixelsize_m**2 *sed_L)*(1-sed_poro)*sed_dens      # mass in kg
+        pixel_sed_mass = (pixelsize_m**2 *sed_L)*(1-sed_poro)*sed_dens      # mass in kg dry weight
 
         # TODO this should be multiplied for the fraction og grid cell are that is not on land
 
@@ -2213,7 +2213,7 @@ class ChemicalDrift(OceanDrift):
             nc.variables['concentration'].long_name = self.get_config('chemical:compound') +' concentration ' + '\n' + 'specie '+ \
                                                             ' '.join(['{}:{}'.format(isp,sp) for isp,sp in enumerate(self.name_species)])
             nc.variables['concentration'].grid_mapping = 'projection_lonlat'
-            nc.variables['concentration'].units = mass_unit+'/m3'+' (sed '+mass_unit+'/Kg)'
+            nc.variables['concentration'].units = mass_unit+'/m3'+' (sed '+mass_unit+'/Kg d.w.)'
 
 
         # Chemical concentration, horizontally smoothed
@@ -2769,7 +2769,7 @@ class ChemicalDrift(OceanDrift):
                 Bathimetry_seed_data:    dataarray with bathimetry data, MUST be the same used for running the simulation and no time dimension
                     * latitude      (latitude) float32
                     * longitude     (longitude) float32
-                mode: water_conc    (seed from concentration in water colum, in ug/L), sed_conc (seed from sediment concentration, in ug/kg d.w.), emission (seed from direct discharge to water, in kg)
+                mode:               "water_conc" (seed from concentration in water colum, in ug/L), "sed_conc" (seed from sediment concentration, in ug/kg d.w.), "emission" (seed from direct discharge to water, in kg)
                 radius:             scalar, unit: meters, elements will be created in a circular area around coordinates
                 lowerbound:         scalar, elements with lower values are discarded
                 higherbound:        scalar, elements with higher values are discarded
@@ -2777,16 +2777,14 @@ class ChemicalDrift(OceanDrift):
                 mass_element_ug:    scalar, maximum mass of elements if number_of_elements is not specificed
                 lon_resol:          scalar, longitude resolution of the NETCDF dataset
                 lat_resol:          scalar, latitude resolution of the NETCDF dataset
-                gen_mode: mass      (elements generated from mass), fixed (fixed number of elements for each data point)
+                gen_mode:           "mass" (elements generated from mass), "fixed" (fixed number of elements for each data point)
             """
 
         # mass_element_ug=1e3     # 1e3 - 1 element is 1mg chemical
         # mass_element_ug=100e3   # 100e3 - 1 element is 100mg chemical
         # mass_element_ug=1e6     # 1e6 - 1 element is 1g chemical
         # mass_element_ug=1e9     # 1e9 - 1 element is 1kg chemical
-        
-        # import xarray as xr
-        
+                
         sel = np.where((NETCDF_data > lowerbound) & (NETCDF_data < higherbound))
         time_check = (NETCDF_data.time).size
                 
@@ -2794,25 +2792,22 @@ class ChemicalDrift(OceanDrift):
             t = np.datetime64(NETCDF_data.time.data)
             la = NETCDF_data.latitude[sel[0]].data
             lo = NETCDF_data.longitude[sel[1]].data
-            # print("a")
         elif time_check > 1:
             t = NETCDF_data.time[sel[0]].data
             la = NETCDF_data.latitude[sel[1]].data
             lo = NETCDF_data.longitude[sel[2]].data
-            # print("b")
         # print("Seeding " + str(la.size*t.size) + " datapoints")
                
         lon_array = lo + lon_resol / 2  # find center of pixel for volume of water / sediments
         lat_array = la + lat_resol / 2  # find center of pixel for volume of water / sediments
         
         data = np.array(NETCDF_data.data)
-        # data = data[sel]
-        sed_mixing_depth = np.array(self.get_config('chemical:sediment:mixing_depth'))
 
         if mode == 'sed_conc':
-            sed_porosity = np.array(self.get_config('chemical:sediment:porosity'))  # fraction of sediment volume made of water, adimentional (m3/m3)
-            sed_density_dry = np.array(self.get_config('chemical:sediment:density'))  # density of sediment particles, in kg/m3 d.w.
-            sed_density_wet = np.array((sed_density_dry * (1 - sed_porosity)) * 1e-3)  # kg/L wet weight, kg/m3 * 1e-3 = kg/L
+            # Compute mass of dry sediment in each pixel grid cell
+            sed_mixing_depth = np.array(self.get_config('chemical:sediment:mixing_depth')) # m
+            sed_density      = np.array(self.get_config('chemical:sediment:density')) # density of sediment particles, in kg/m3 d.w.
+            sed_porosity     = np.array(self.get_config('chemical:sediment:porosity') )# fraction of sediment volume made of water, adimentional (m3/m3)
             self.init_species()
             self.init_transfer_rates()
 
@@ -2831,7 +2826,6 @@ class ChemicalDrift(OceanDrift):
                 # depth of seeding must be the same as the one considered for resuspention process
                 Bathimetry_seed = np.array([(Bathimetry_seed_data.sel(latitude=lat_array[i],longitude=lon_array[i],method='nearest'))]) # m
 
-
             if mode == 'water_conc':
                 pixel_volume = Bathimetry_conc * lon_grid_m * lat_grid_m
                 # concentration is ug/L, volume is m: m3 * 1e3 = L
@@ -2839,11 +2833,10 @@ class ChemicalDrift(OceanDrift):
 
             elif mode == 'sed_conc':
                 # sed_conc_ug_kg is ug/kg d.w. (dry weight)
-                data_sed = data[sel][i]* ((1 - sed_porosity) * sed_density_wet) # from ug/kg d.w. -> ug/kg wet weight -> ug/L wet sediment
                 pixel_volume =  sed_mixing_depth * (lon_grid_m * lat_grid_m) # m3
-                # concentration is ug/L, volume is m: m3 * 1e3 = L
-                mass_ug = (data_sed * (pixel_volume * 1e3))
-
+                pixel_sed_mass = (pixel_volume)*(1-sed_porosity)*sed_density # kg
+                mass_ug = data[sel][i]*pixel_sed_mass
+              
             elif mode == 'emission':
                 mass_ug = data[sel][i]*1e9 # emissions is kg, 1 kg = 1e9 ug
             else:
@@ -2858,11 +2851,9 @@ class ChemicalDrift(OceanDrift):
             if t.size == 1:
                 time = datetime.utcfromtimestamp(
                     (np.array(t - np.datetime64('1970-01-01T00:00:00'))) / np.timedelta64(1, 's'))
-                # print("t1")
             elif t.size > 1:
                 time = datetime.utcfromtimestamp(
                     (t[i] - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's'))
-                # print("t2")
                 
             # specie to be added to seed parameters for sediments and water
             if mode == 'sed_conc':
@@ -3020,8 +3011,7 @@ class ChemicalDrift(OceanDrift):
         # change negative concentration values to 0
         regridded_concentration_avg_nan = regridded_concentration_avg.copy()
         regridded_concentration_avg_nan = xr.where(regridded_concentration_avg_nan < 0, 0, regridded_concentration_avg_nan)
-        
-        
+
         print("Time elapsed (hr:min:sec): ", dt.now()-start)
 
         print("Saving to netcdf")
