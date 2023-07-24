@@ -2802,12 +2802,13 @@ class ChemicalDrift(OceanDrift):
         lat_array = la + lat_resol / 2  # find center of pixel for volume of water / sediments
         
         data = np.array(NETCDF_data.data)
+        sed_mixing_depth = np.array(self.get_config('chemical:sediment:mixing_depth')) # m
 
         if mode == 'sed_conc':
             # Compute mass of dry sediment in each pixel grid cell
             sed_mixing_depth = np.array(self.get_config('chemical:sediment:mixing_depth')) # m
             sed_density      = np.array(self.get_config('chemical:sediment:density')) # density of sediment particles, in kg/m3 d.w.
-            sed_porosity     = np.array(self.get_config('chemical:sediment:porosity') )# fraction of sediment volume made of water, adimentional (m3/m3)
+            sed_porosity     = np.array(self.get_config('chemical:sediment:porosity') ) # fraction of sediment volume made of water, adimentional (m3/m3)
             self.init_species()
             self.init_transfer_rates()
 
@@ -3342,6 +3343,118 @@ class ChemicalDrift(OceanDrift):
                 plt.ylim(lat_min, lat_max)
                 fig.figure.savefig(file_out_path + file_out_sub_folder+str(f"{timestep:03d}")+fig_format)
                 plt.close()
+                
+    def summary_created_elements(file_folder,
+                                 file_name,
+                                 variable_name,
+                                 emiss_factor,
+                                 upper_limit,
+                                 lower_limit,
+                                 name_dataset,
+                                 range_max = None,
+                                 range_min = None,
+                                 n_bins = 100
+                                 ):
+        '''
+        Calculate the maxium number of elements in a simulation created by seed_from_NETCDF from xarray DataArray.
+        Produce histographs with frequency of datapoints values within the specified limits
+        ----------
+        file_folder:    string, path to file, must end with /
+        file_name:      string, name of file, must end with .nc
+        variable_name:  string, name of xarray DataArray variable
+        emiss_factor:   float32, conversion factor between data and mass expressed as ug (e.g. ug/L, ug/kg), 1e9 if DataArray is in Kg
+        upper_limit:    float32, limit under which datapoints in DataArray wll be ignored by seed_from_NETCDF
+        lower_limit:    float32, limit over which datapoints in DataArray wll be ignored by seed_from_NETCDF
+        name_dataset:   string, name of data to be reported in the title of figures
+        range_max:      float32, max value shown in the figure on data frequency for the whole dataset 
+        range_min:      float32, min value shown in the figure on data frequency for the whole dataset 
+        n_bins:         int, number of bins used for histograms
+        '''
+        import xarray as xr
+        import matplotlib.pyplot as plt
+        import numpy as np
+        
+        DS = xr.open_dataset(file_folder + file_name)
+        DS_np = xr.DataArray.to_numpy(DS[variable_name])
+        print ("##START##")
+
+        DS_np= np.ndarray.flatten(DS_np)
+        DS_np= DS_np[DS_np != 0] # Remove 0 from dataArray
+        DS_np= DS_np[~np.isnan(DS_np)] # Remove NA from dataArray
+        
+        DS_max = DS_np.max() 
+        DS_min = DS_np.min() 
+        print("DS_max: ", DS_max)
+        print("DS_min: ", DS_min)
+        print("number of data-points without limits: ", (np.count_nonzero(DS_np)))
+        
+        # See number and percentage of elements over upper limit
+        print("upper limit: ", upper_limit)
+        print("lower limit: ", lower_limit)
+        
+        print('total mass of chemical')
+        mass_total = (sum((DS_np)* emiss_factor)) # (L*ug/L)/10^9 -> Kg
+        print (mass_total/1e9, ' kg')
+
+        print("n° of data-points over upper limit")
+        print(np.count_nonzero(DS_np > upper_limit))
+
+        print("% of data-points over upper limit")
+        print((np.count_nonzero(DS_np > upper_limit)/np.prod(DS_np.shape))*100)
+
+        print('mass of chemical over upper limit')
+        mass_over_limit = (sum((DS_np[DS_np > upper_limit])* emiss_factor)) # e.g. (L*ug/L)/10^9 -> Kg
+        print (mass_over_limit/1e9, ' kg')
+
+        print("% of total volume or mass of the elements over upper limit")
+        print((np.sum(DS_np[DS_np > upper_limit])/np.sum(DS_np))*100)
+
+        # See number and percentage of elements under lower limit
+        print('mass of chemical under limit')
+        mass_under_limit = (sum((DS_np[DS_np < lower_limit])* emiss_factor)) # e.g. (L*ug/L)/10^9 -> Kg
+        print (mass_under_limit/1e9, ' kg')
+
+        print("n° of emissions under lower limit")
+        print(np.count_nonzero(DS_np < lower_limit))
+
+        print("% of emissions under lower limit")
+        print((np.count_nonzero(DS_np < lower_limit)/np.prod(DS_np.shape))*100)
+
+        print("% of total volume or mass of the elements under lower limit")
+        print(((np.sum(DS_np[DS_np < lower_limit]))/(np.sum(DS_np)))*100)
+
+        print("% of total volume or mass of elements undel lower limit considering also upper limit")
+        print(((np.sum(DS_np[DS_np < lower_limit]))/(np.sum(DS_np[DS_np < upper_limit])))*100)
+
+        print("number of emissions within the limits")
+        print(np.count_nonzero(DS_np[(DS_np > lower_limit) & (DS_np < upper_limit)]))
+        
+        # Plot histogram for frequency of all values
+        if range_max == None:
+            range_max = DS_max
+        
+        if range_min == None:
+            range_min = DS_min
+               
+        plt.hist(x=DS_np, bins=n_bins, range=(range_min,range_max)) 
+        plt.title("Complete dataset: " + name_dataset)
+        plt.xlabel("Value")
+        plt.ylabel("Frequency")
+        plt.show()
+
+        plt.hist(x=DS_np, bins=n_bins, range=(lower_limit,upper_limit)) 
+        plt.title("Datapoints between lower and upper limit for "+ name_dataset)
+        plt.xlabel("Value")
+        plt.ylabel("Frequency")
+        plt.show()
+
+        plt.hist(x=DS_np, bins=n_bins, range=(0,lower_limit)) 
+        plt.title("Datapoints between 0 and lower limit for "+ name_dataset)
+        plt.xlabel("Value")
+        plt.ylabel("Frequency")
+        plt.show()
+        print ("##END##")
+        
 
     def init_chemical_compound(self, chemical_compound = None):
         ''' Chemical parameters for a selection of PAHs:
