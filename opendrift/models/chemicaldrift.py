@@ -3344,7 +3344,39 @@ class ChemicalDrift(OceanDrift):
                 fig.figure.savefig(file_out_path + file_out_sub_folder+str(f"{timestep:03d}")+fig_format)
                 plt.close()
                 
-    def summary_created_elements(file_folder,
+    def plot_emission_data_frequency(self, emissions, title, n_bins = 100, zoom_max = 100, zoom_min = 0):
+         '''
+         Plot distribuion of emissions dataset values, mass, and cumulative mass
+
+         emissions:  masked array of float32 with selected data points to plot
+         title:      string, title of main plot 
+         n_bins:     int, number of bins to group datapoints 
+         zoom_max:   int, % of dataset lenght where the zoomed area stops
+         zoom_min:   int, % of dataset lenght where the zoomed area starts
+         '''
+         import matplotlib as plt
+         import numpy as np
+         
+         values,base=np.histogram(emissions,n_bins)
+         cumulative = np.cumsum(values*base[0:-1])
+         fig5,(ax1,ax2)=plt.subplots(nrows=2, ncols=1)
+         fig5.tight_layout(pad=1.5)
+         ax1.plot(base[:-1], 100*values*base[0:-1]/max(values*base[0:-1]), c='red')
+         ax1.plot(base[:-1], 100*cumulative/cumulative[-1], c='blue')
+         ax1.plot(base[:-1], 100*values/max(values), c='black')
+         ax1.set_title(title)
+         ax1.set_ylabel("Frequency (%)")
+         ax1.legend(['Mass','Cumulative mass','Data points'])
+         ax2.plot(base[zoom_min:zoom_max], 100*values[zoom_min:zoom_max]*base[zoom_min:zoom_max]/max(values*base[0:-1]), c='red')
+         ax2.plot(base[zoom_min:zoom_max], 100*cumulative[zoom_min:zoom_max]/cumulative[-1], c='blue')
+         ax2.plot(base[zoom_min:zoom_max], 100*values[zoom_min:zoom_max]/max(values), c='black')
+         ax2.set_title("Zoom from " + str(zoom_min) +" to "+str(zoom_max)+"% of dataset")
+         ax2.set_ylabel("Frequency (%)")
+         ax2.set_xlabel("Value")
+         plt.show()
+                
+    def summary_created_elements(self,
+                                 file_folder,
                                  file_name,
                                  variable_name,
                                  emiss_factor,
@@ -3353,7 +3385,9 @@ class ChemicalDrift(OceanDrift):
                                  name_dataset,
                                  range_max = None,
                                  range_min = None,
-                                 n_bins = 100
+                                 n_bins = 100,
+                                 zoom_max=100,
+                                 zoom_min=0
                                  ):
         '''
         Calculate the maxium number of elements in a simulation created by seed_from_NETCDF from xarray DataArray.
@@ -3366,89 +3400,85 @@ class ChemicalDrift(OceanDrift):
         upper_limit:    float32, limit under which datapoints in DataArray wll be ignored by seed_from_NETCDF
         lower_limit:    float32, limit over which datapoints in DataArray wll be ignored by seed_from_NETCDF
         name_dataset:   string, name of data to be reported in the title of figures
-        range_max:      float32, max value shown in the figure on data frequency for the whole dataset 
-        range_min:      float32, min value shown in the figure on data frequency for the whole dataset 
+        range_max:      float32, max value shown in the figure on data frequency for the whole dataset
+        range_min:      float32, min value shown in the figure on data frequency for the whole dataset
         n_bins:         int, number of bins used for histograms
+        zoom_max:       int, % of dataset lenght where the zoomed area stops
+        zoom_min:       int, % of dataset lenght where the zoomed area starts
         '''
         import xarray as xr
         import matplotlib.pyplot as plt
         import numpy as np
         
         DS = xr.open_dataset(file_folder + file_name)
-        DS_np = xr.DataArray.to_numpy(DS[variable_name])
+        DS_ma = DS[variable_name].to_masked_array() # Remove 0 and NA from dataArray, then change to np.array
+        emissions = DS_ma[DS_ma>0]
+        selected =np.all((emissions<upper_limit,emissions>lower_limit),axis=0)
         print ("##START##")
-
-        DS_np= np.ndarray.flatten(DS_np)
-        DS_np= DS_np[DS_np != 0] # Remove 0 from dataArray
-        DS_np= DS_np[~np.isnan(DS_np)] # Remove NA from dataArray
-        
-        DS_max = DS_np.max() 
-        DS_min = DS_np.min() 
+    
+        DS_max = emissions.max() 
+        DS_min = emissions.min() 
         print("DS_max: ", DS_max)
-        print("DS_min: ", DS_min)
-        print("number of data-points without limits: ", (np.count_nonzero(DS_np)))
+        print("DS_min: ", DS_min, "\n")
+        print("number of data-points without limits: ", (len(emissions)))
+        print("upper limit: ", upper_limit)
+        print("lower limit: ", lower_limit, "\n")
+        
+        emissions_sum = np.sum(emissions)
+        total_mass = (emissions_sum* emiss_factor)/1e9 # (L*ug/L)/10^9 -> Kg
+        selected_mass = (sum((emissions[selected])* emiss_factor))/1e9
+    
+        print('total mass of chemical: ', total_mass, ' kg')
+        print('selected mass of chemical: ', selected_mass, ' kg')
+        print('% of total mass selected: ', (selected_mass/total_mass)*100, " %")
+        print("number of data-points selected within the limits: ", len(emissions[selected]), "\n")
         
         # See number and percentage of elements over upper limit
-        print("upper limit: ", upper_limit)
-        print("lower limit: ", lower_limit)
-        
-        print('total mass of chemical')
-        mass_total = (sum((DS_np)* emiss_factor)) # (L*ug/L)/10^9 -> Kg
-        print (mass_total/1e9, ' kg')
-
-        print("n° of data-points over upper limit")
-        print(np.count_nonzero(DS_np > upper_limit))
-
-        print("% of data-points over upper limit")
-        print((np.count_nonzero(DS_np > upper_limit)/np.prod(DS_np.shape))*100)
-
-        print('mass of chemical over upper limit')
-        mass_over_limit = (sum((DS_np[DS_np > upper_limit])* emiss_factor)) # e.g. (L*ug/L)/10^9 -> Kg
-        print (mass_over_limit/1e9, ' kg')
-
-        print("% of total volume or mass of the elements over upper limit")
-        print((np.sum(DS_np[DS_np > upper_limit])/np.sum(DS_np))*100)
-
+        print("n° of data-points over upper limit: ", np.count_nonzero(emissions > upper_limit))
+        print("% of data-points over upper limit: ", 
+              (np.count_nonzero(emissions > upper_limit)/np.prod(emissions.shape))*100, " %")
+        print('mass of chemical over upper limit: ',
+              (sum((emissions[emissions > upper_limit])* emiss_factor))/1e9, ' kg')  # e.g. (L*ug/L)/10^9 -> Kg
+        print("% of total volume or mass of the elements over upper limit:", 
+              (np.sum(emissions[emissions > upper_limit])/emissions_sum)*100, " %", "\n")
+    
         # See number and percentage of elements under lower limit
-        print('mass of chemical under limit')
-        mass_under_limit = (sum((DS_np[DS_np < lower_limit])* emiss_factor)) # e.g. (L*ug/L)/10^9 -> Kg
-        print (mass_under_limit/1e9, ' kg')
-
-        print("n° of emissions under lower limit")
-        print(np.count_nonzero(DS_np < lower_limit))
-
-        print("% of emissions under lower limit")
-        print((np.count_nonzero(DS_np < lower_limit)/np.prod(DS_np.shape))*100)
-
-        print("% of total volume or mass of the elements under lower limit")
-        print(((np.sum(DS_np[DS_np < lower_limit]))/(np.sum(DS_np)))*100)
-
+        print("n° of data-points under lower limit: ", np.count_nonzero(emissions < lower_limit))
+        print("% of data-points under lower limit: ", 
+              (np.count_nonzero(emissions < lower_limit)/np.prod(emissions.shape))*100, " %")
+        print('mass of chemical under limit: ',
+        (sum((emissions[emissions < lower_limit])* emiss_factor))/1e9, ' kg') # e.g. (L*ug/L)/10^9 -> Kg
+        print("% of total volume or mass of the elements under lower limit: ", 
+              ((np.sum(emissions[emissions < lower_limit]))/(emissions_sum))*100, "%", "\n")
+    
         print("% of total volume or mass of elements undel lower limit considering also upper limit")
-        print(((np.sum(DS_np[DS_np < lower_limit]))/(np.sum(DS_np[DS_np < upper_limit])))*100)
-
-        print("number of emissions within the limits")
-        print(np.count_nonzero(DS_np[(DS_np > lower_limit) & (DS_np < upper_limit)]))
-        
-        # Plot histogram for frequency of all values
-        if range_max == None:
-            range_max = DS_max
-        
-        if range_min == None:
-            range_min = DS_min
-               
-        plt.hist(x=DS_np, bins=n_bins, range=(range_min,range_max)) 
-        plt.title("Complete dataset: " + name_dataset)
-        plt.xlabel("Value")
-        plt.ylabel("Frequency")
-        plt.show()
-
-        plt.hist(x=DS_np, bins=n_bins, range=(lower_limit,upper_limit)) 
-        plt.title("Datapoints between lower and upper limit for "+ name_dataset)
-        plt.xlabel("Value")
-        plt.ylabel("Frequency")
-        plt.show()
-
-        plt.hist(x=DS_np, bins=n_bins, range=(0,lower_limit)) 
+        print(((np.sum(emissions[emissions < lower_limit]))/(np.sum(emissions[emissions < upper_limit])))*100, "\n")
+    
+        # Plot histograms for frequency of values
+    
+        self.plot_emission_data_frequency(emissions= emissions,
+                            title = "Complete dataset",
+                            n_bins = n_bins, 
+                            zoom_max = zoom_max, 
+                            zoom_min = zoom_min)
+    
+        self.plot_emission_data_frequency(emissions= emissions[selected],
+                            title = "Selected dataset between lower and upper limit",
+                            n_bins = n_bins, 
+                            zoom_max = zoom_max, 
+                            zoom_min = zoom_min)
+    
+        if range_max is not None and range_min is not None:
+            zoom_max = (range_max/DS_max)*100
+            zoom_min = (range_min/DS_max)*100
+            
+            self.plot_emission_data_frequency(emissions= emissions[selected],
+                                              title = "Selected dataset between range_min and range_max",
+                                              n_bins = n_bins, 
+                                              zoom_max = zoom_max, 
+                                              zoom_min = zoom_min)
+    
+        plt.hist(x=emissions, bins=n_bins, range=(0,lower_limit)) 
         plt.title("Datapoints between 0 and lower limit for "+ name_dataset)
         plt.xlabel("Value")
         plt.ylabel("Frequency")
