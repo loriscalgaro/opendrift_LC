@@ -2494,9 +2494,9 @@ class ChemicalDrift(OceanDrift):
             "Nitrite":                  [55760.,    55000.],
             "Ammonium":                 [0.,        0.],
             "Sulphur":                  [12280000., 10104000.],
-            "Nitrogen": 				[42030.,    0.0],
+            "Nitrogen":                 [42030.,    0.0],
             #
-            "Alkalinity": 				[29.07, 0.0], # H+ ions concentration form pH
+            "Alkalinity":               [29.07, 0.0], # H+ ions concentration form pH
             }
 
         emission_factors_grey_water = {
@@ -2939,15 +2939,15 @@ class ChemicalDrift(OceanDrift):
     def regrid_conc(self, filename, filename_regridded, latmin, latmax, latstep, lonmin, lonmax, lonstep, concfile = None):
         """
         Regrid "write_netcdf_chemical_density_map" output to regular latlon grid.
-                filename: string, path or filename of "write_netcdf_chemical_density_map" output file to be regridded
-                filename_regridded: string, path or filename of regridded output
-                latmin: float 32, min latitude of new grid
-                latmax: float 32, max latitude of new grid
-                latstep: float 32 latitude resolution of new grid, in degrees
-                lonmin: float 32, min longitude of new grid
-                lonmax: float 32, max longitude of new grid
-                lonstep: float 32 longitude resolution of new grid, in degrees
-                concfile: xarray Dataset of "write_netcdf_chemical_density_map" output file to be regridded
+            filename:               string, path or filename of "write_netcdf_chemical_density_map" output file to be regridded
+            filename_regridded:     string, path or filename of regridded output
+            latmin:                 float 32, min latitude of new grid
+            latmax:                 float 32, max latitude of new grid
+            latstep:                float 32, latitude resolution of new grid, in degrees
+            lonmin:                 float 32, min longitude of new grid
+            lonmax:                 float 32, max longitude of new grid
+            lonstep:                float 32 longitude resolution of new grid, in degrees
+            concfile:               xarray Dataset of "write_netcdf_chemical_density_map" output file to be regridded
         """
         import numpy as np
         import xarray as xr
@@ -3021,16 +3021,14 @@ class ChemicalDrift(OceanDrift):
 
     def correct_conc_coordinates(self, DC_Conc_array, lon_coord, lat_coord, time_coord):
         """
-        Add longitude, latitude, and time coordinates to water and sediments concentration array
+        Add longitude, latitude, and time coordinates to water and sediments concentration xarray DataArray
         
-        DC_Conc_array: xarray DataArray for water or sediment concetration from sum of "species"
-            from "write_netcdf_chemical_density_map" output
-        lon_coord: np array of float64, with longitude of "write_netcdf_chemical_density_map" output
-        lat_coord: np array of float64, with latitude of "write_netcdf_chemical_density_map" output
-        time_coord: np. array of datetime64[ns] with avg_time of "write_netcdf_chemical_density_map" output
+        DC_Conc_array:     xarray DataArray for water or sediment concetration from sum of "species"
+                           from "write_netcdf_chemical_density_map" output
+        lon_coord:         np array of float64, with longitude of "write_netcdf_chemical_density_map" output
+        lat_coord:         np array of float64, with latitude of "write_netcdf_chemical_density_map" output
+        time_coord:        np. array of datetime64[ns] with avg_time of "write_netcdf_chemical_density_map" output
 
-        Returns
-        DC_Conc_array_corrected: DataArray with latitute, longitude and time coordinates
         """
         # Add latitude and longitude to the concentration dataset
         DC_Conc_array["y"] = ("y", lat_coord)
@@ -3052,18 +3050,17 @@ class ChemicalDrift(OceanDrift):
                                       Origin_marker_name,
                                       Concentration_file = None):
         """
-        Add dissolved, DOC, and SPM concentration arrays to obtain total water concentration and save sediment concentration array
+        Add dissolved, DOC, and SPM concentration arrays to obtain total water concentration and save the resulting xarray as netCDF file 
+        Save sediment concentration DataArray as netDCF file
         Results can be used as inputs by "seed_from_NETCDF" function
-        
-        Concentration_file: "write_netcdf_chemical_density_map" output if already loaded (original or after regrid_conc)
-        File_Path: string, path of "write_netcdf_chemical_density_map" output
-        File_Name: string, name of "write_netcdf_chemical_density_map" output
-        File_Path_out: string, path where created concentration files will be saved, must end with "/"
-        Chemical_name: string, name of modelled chemical
-        Origin_marker_name: string, name of source indicated by "origin_marker" parameter
-        
-        Returns
-        Save file of total concentration in water and sediments from "write_netcdf_chemical_density_map" output
+
+        Concentration_file:    "write_netcdf_chemical_density_map" output if already loaded (original or after regrid_conc)
+        File_Path:             string, path of "write_netcdf_chemical_density_map" output
+        File_Name:             string, name of "write_netcdf_chemical_density_map" output
+        File_Path_out:         string, path where created concentration files will be saved, must end with "/"
+        Chemical_name:         string, name of modelled chemical
+        Origin_marker_name:    string, name of source indicated by "origin_marker" parameter
+
         """
         from datetime import datetime
         import xarray as xr
@@ -3170,15 +3167,15 @@ class ChemicalDrift(OceanDrift):
             Used for xarray DataArray with regular lat/lon coordinates. 
             "write_netcdf_chemical_density_map" output must be regridded to regular lat/lon coordinates with "regrid_conc" function
     
-        shp_mask_file: string, full path to mask shapefile 
-        DataArray: xarray DataArray to be masked
-            *latitude/longitude, lat/lon, y/x are accepted as coordinates
-        shp_epsg: string, reference system of shp file (e.g. "epsg:4326")
-        invert_shp: boolean, select if values inside (False) or outside (True) shp are masked
-        drop_data: boolean, select if spatial extent of DataArray is mantained (False) or reduced to the extent of shp (True)
-        save_masked_file: boolean,select if DataArray_masked is saved (True) or returned (False)
-        file_output_path: string, path of the file to be saved. Must end with /
-        file_output_name: string, name of the DataArray_masked output file (.nc)
+        shp_mask_file:       string, full path to mask shapefile 
+        DataArray:           xarray DataArray to be masked
+                                 *latitude/longitude, lat/lon, y/x are accepted as coordinates
+        shp_epsg:            string, reference system of shp file (e.g. "epsg:4326")
+        invert_shp:          boolean, select if values inside (False) or outside (True) shp are masked
+        drop_data:           boolean, select if spatial extent of DataArray is mantained (False) or reduced to the extent of shp (True)
+        save_masked_file:    boolean,select if DataArray_masked is saved (True) or returned (False)
+        file_output_path:    string, path of the file to be saved. Must end with /
+        file_output_name:    string, name of the DataArray_masked output file (.nc)
         '''
         import geopandas as gpd
         import rasterio
@@ -3219,61 +3216,94 @@ class ChemicalDrift(OceanDrift):
     
         else:
             return DataArray_masked
-
-    def create_gif_images(self,
-                          Conc_Dataset,
-                          time_start, 
-                          time_end,
-                          long_min, long_max,
-                          lat_min, lat_max,
-                          file_out_path,
-                          file_out_sub_folder,
-                          shp_file_path,
-                          title_caption,
-                          unit_measure,
-                          vmin = None, 
-                          vmax = None,
-                          selected_colormap = None,
-                          levels_colormap = None,
-                          selected_depth = 0,
-                          fig_format = ".jpg",
-                          add_shp_to_figure = False):
-        '''
-        Create images for creating a .gif image from REGRIDDED "calculate_water_sediment_conc" function output
         
-        Conc_Dataset: xarray dataset of concentration after calculate_water_sediment_conc
-            *latitude, degrees N
-            *longitude, degrees E
-            *time, datetime64[ns]
-        time_start : datetime64[ns], start time of gif
-        time_end : datetime64[ns],  end time of gif.
-        long_min: float64, min longitude of figure
-        long_max: float64, max longitude of figure
-        lat_min: float64, min latitude of figure
-        lat_max: float64, max latitude of figure
-        vmin: float64, min value of concentration in the figure, specify to keep colorscale constant
-        vmax: float64, max value of concentration in the figure, specify to keep colorscale constant
-        file_out_path: string, main output path of figure produced must end with /
+    @staticmethod
+    def _simmetrical_colormap(cmap):
+        '''
+        Take a colormap and create a new one, as the concatenation of itself by a symmetrical fold around 0
+        from https://stackoverflow.com/questions/28439251/symmetric-colormap-matplotlib
+
+        cmap:     matplotlib colormap that will be returned symmetrical with respect to 0
+        '''
+        import numpy as np
+        import matplotlib.colors as mcolors
+
+        new_cmap_name = "sym_" + cmap.name
+        # Define the roughness of the colormap, default is 128 
+        n= 128 
+        # get the list of color from colormap
+        colors_r = cmap(np.linspace(0, 1, n))    # take the standard colormap # 'right-part'
+        colors_l = colors_r[::-1]                # take the first list of color and flip the order # "left-part"
+
+        # combine them and build a new colormap
+        colors = np.vstack((colors_l, colors_r))
+        new_cmap = mcolors.LinearSegmentedColormap.from_list(new_cmap_name, colors)
+
+        return new_cmap
+
+    def create_images(self,
+                      Conc_Dataset,
+                      time_start, 
+                      time_end,
+                      long_min, long_max,
+                      lat_min, lat_max,
+                      file_out_path,
+                      file_out_sub_folder,
+                      shp_file_path,
+                      title_caption,
+                      unit_measure,
+                      vmin = None, 
+                      vmax = None,
+                      selected_colormap = None,
+                      levels_colormap = None,
+                      simmetrical_cmap = False,
+                      selected_depth = 0,
+                      fig_format = ".jpg",
+                      add_shp_to_figure = False):
+        '''
+        Create a series of .jpg or .png for each timestep of a concentration map
+        from REGRIDDED "calculate_water_sediment_conc" function output
+        
+        Conc_Dataset:        xarray dataset of concentration after calculate_water_sediment_conc
+                                *latitude, degrees N
+                                *longitude, degrees E
+                                *time, datetime64[ns]
+        time_start:          datetime64[ns], start time of gif
+        time_end:            datetime64[ns],  end time of gif.
+        long_min:            float64, min longitude of figure
+        long_max:            float64, max longitude of figure
+        lat_min:             float64, min latitude of figure
+        lat_max:             float64, max latitude of figure
+        vmin:                float64, min value of concentration in the figure, specify to keep colorscale constant
+        vmax:                float64, max value of concentration in the figure, specify to keep colorscale constant
+        file_out_path:       string, main output path of figure produced must end with /
         file_out_sub_folder: string, subforlder of file_out_path, must end with /
-        shp_file_path: string, full path and name of shp file
-        title_caption: First part of figure title before date and unit_measure
-        unit_measure: string, (ug/m3) or (ug/kg d.w)
-        levels_colormap: list of float64, levels used for colorbar (e.g., [0., 1., 15.])
-        selected_colormap: e.g. plt.cm.Blues
-        selected_depth: integer, depth selected if present. If no depth was selected when creating conc map, use 0
-        fig_format = string, format of produced images (e.g.,".jpg", ".png"),
-        add_shp_to_figure = boolean,select if shp is added to the figure (True) or not (False)
+        shp_file_path:       string, full path and name of shp file
+        title_caption:       string, first part of figure title before date and unit_measure
+        unit_measure:        string, (ug/m3) or (ug/kg d.w)
+        levels_colormap:     list of float64, levels used for colorbar (e.g., [0., 1., 15.])
+        selected_colormap:   e.g. plt.cm.Blues
+        simmetrical_cmap:    boolean,select if cmap is simmetrical to 0 (True) or not (False)
+        selected_depth:      int, depth selected if present. If no depth was selected when creating conc map, use 0
+        fig_format =         string, format of produced images (e.g.,".jpg", ".png"),
+        add_shp_to_figure:   boolean,select if shp is added to the figure (True) or not (False)
         '''
 
-        import geopandas as gpd
         import numpy as np
         import matplotlib.pyplot as plt
         import os as os
         from mpl_toolkits.axes_grid1 import make_axes_locatable, axes_size
+        if add_shp_to_figure:
+            import geopandas as gpd
 
         aspect = 15
         pad_fraction = 1e-5
         file_output_path = file_out_path + file_out_sub_folder
+
+        if simmetrical_cmap == True:
+            if selected_colormap == None:
+                selected_colormap = plt.colormaps["viridis"]
+            selected_colormap = self._simmetrical_colormap(cmap = selected_colormap)
 
         if not os.path.exists(file_output_path):
             os.makedirs(file_output_path)
@@ -3281,12 +3311,15 @@ class ChemicalDrift(OceanDrift):
         else:
             pass
 
-        shp = gpd.read_file(shp_file_path)
+        if add_shp_to_figure:
+            shp = gpd.read_file(shp_file_path)
 
         if "concentration_avg_water" in Conc_Dataset.data_vars:
             Conc_DataArray = Conc_Dataset.concentration_avg_water
+            colorbar_title = "concentration_avg_water"
         elif "concentration_avg_sediments" in Conc_Dataset.data_vars:
             Conc_DataArray = Conc_Dataset.concentration_avg_sediments
+            colorbar_title = "concentration_avg_sediments"
         else:
             raise ValueError("Wrong input, concentration_avg_sediments/water not present in conc file")
 
@@ -3296,6 +3329,7 @@ class ChemicalDrift(OceanDrift):
 
         Conc_DataArray = Conc_DataArray.where(((Conc_DataArray.time >= time_start) &
                                                (Conc_DataArray.time <= time_end)), drop=True)
+        
 
         if add_shp_to_figure == True:
             print("shp was added over the figures")
@@ -3303,26 +3337,28 @@ class ChemicalDrift(OceanDrift):
                 print("creating image n° ", str(timestep+1), " out of ", str(len(Conc_DataArray.time)))
             
                 Conc_DataArray_selected = Conc_DataArray.isel(time = timestep, depth = selected_depth)
-                fig, ax = plt.subplots(figsize = (8,8))
+                fig, ax = plt.subplots(figsize = (15,15)) # Change here size of figure
                 shp.plot(ax = ax, color = "black")
                 ax2 = Conc_DataArray_selected.plot.pcolormesh(ax = ax, 
                                                         x = 'longitude', 
                                                         y = 'latitude', 
-                                                        cmap=selected_colormap, 
+                                                        cmap=selected_colormap,
                                                         robust = True, 
                                                         vmin = vmin, vmax = vmax,
                                                         levels = levels_colormap,
                                                         add_colorbar=False) # colorbar is added ex-post
                 ax.set_xlim(long_min, long_max)
                 ax.set_ylim(lat_min, lat_max)
-                ax.set_xlabel("Longitude")
-                ax.set_ylabel("Latitude")
-                ax.set_title(title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:10] + " " +"(" +unit_measure +")", pad=10)
+                ax.set_xlabel("Longitude", fontsize = 22) # Change here size of ax labels
+                ax.set_ylabel("Latitude", fontsize = 22) # Change here size of ax labels
+                ax.tick_params(labelsize=18) # Change here size of ax ticks
+                ax.set_title(title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:10] + " " +"(" +unit_measure +")", pad=10, fontsize = 22)
                 # from https://stackoverflow.com/questions/18195758/set-matplotlib-colorbar-size-to-match-graph
                 divider = make_axes_locatable(ax)
                 width = axes_size.AxesY(ax, aspect=1./aspect)
                 pad_cb = axes_size.Fraction(pad_fraction, width)
                 cax = divider.append_axes("right", size=width, pad=pad_cb)
+                cax.tick_params(labelsize=18)
                 plt.colorbar(ax2, cax=cax)
                 
                 fig.savefig(file_out_path + file_out_sub_folder+str(f"{timestep:03d}")+fig_format)
@@ -3335,12 +3371,16 @@ class ChemicalDrift(OceanDrift):
                 fig =Conc_DataArray_selected.plot(vmin = vmin, vmax = vmax, 
                                                   robust = True, 
                                                   cmap=selected_colormap, 
-                                                  levels = levels_colormap)
-                plt.title(title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:10] + " " +"(" +unit_measure +")", pad=20)
-                plt.ylabel("Latitude")
-                plt.xlabel("Longitude")
+                                                  levels = levels_colormap,
+                                                  figsize = (20,15),
+                                                  add_colorbar=False) # colorbar is added ex-post
+                plt.title(title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:10] + " " +"(" +unit_measure +")", pad=20, fontsize = 30)
+                plt.ylabel("Latitude", fontsize = 30)
+                plt.xlabel("Longitude", fontsize = 30)
                 plt.xlim(long_min, long_max)
                 plt.ylim(lat_min, lat_max)
+                plt.tick_params(labelsize=18)
+                plt.colorbar(fig).set_label(label=colorbar_title,size=22)
                 fig.figure.savefig(file_out_path + file_out_sub_folder+str(f"{timestep:03d}")+fig_format)
                 plt.close()
                 
