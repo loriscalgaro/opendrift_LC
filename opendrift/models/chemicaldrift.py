@@ -2729,7 +2729,6 @@ class ChemicalDrift(OceanDrift):
 
     @staticmethod
     def _get_z(mode, number, depth=None, sed_mix_depth=None):
-
         if mode == "water_conc" and depth is not None:
             return -1 * np.random.uniform(0.0001, depth - 0.0001, number)
         elif mode == "sed_conc" and depth is not None and sed_mix_depth is not None:
@@ -2875,44 +2874,45 @@ class ChemicalDrift(OceanDrift):
                                 depth = Bathimetry_seed, # depth must be the same as the one considered for resuspention process
                                 sed_mix_depth = sed_mixing_depth)
 
-            for k in range(len(z)):
+                for k in range(len(z)):
 
-                self.seed_elements(
-                    lon=lon_array[i],
-                    lat=lat_array[i],
-                    radius=radius,
-                    number=1,
-                    time=time,
-                    mass=mass_element_seed_ug,
-                    mass_degraded=0,
-                    mass_volatilized=0,
-                    specie = specie_elements,
-                    moving = moving_emement,
-                    z=z[k],
-                    origin_marker=origin_marker)
-
-                if gen_mode != "fixed":
-                    mass_residual = (mass_ug) - (number * mass_element_seed_ug)
-
-                    if mass_residual > 0:
-                        z = self._get_z(mode = mode,
-                                        number = 1, 
-                                        depth = Bathimetry_conc, 
-                                        sed_mix_depth = sed_mixing_depth)
-
-                        self.seed_elements(
-                            lon=lon_array[i],
-                            lat=lat_array[i],
-                            radius=radius,
-                            number=1,
-                            time=time,
-                            mass=mass_residual,
-                            mass_degraded=0,
-                            mass_volatilized=0,
-                            specie = specie_elements,
-                            moving = moving_emement,
-                            z=z,
-                            origin_marker=origin_marker)
+                    self.seed_elements(
+                        lon=lon_array[i],
+                        lat=lat_array[i],
+                        radius=radius,
+                        number=1,
+                        time=time,
+                        mass=mass_element_seed_ug,
+                        mass_degraded=0,
+                        mass_volatilized=0,
+                        specie = specie_elements,
+                        moving = moving_emement,
+                        z=z[k],
+                        origin_marker=origin_marker)
+                    
+    
+                    if gen_mode != "fixed":
+                        mass_residual = (mass_ug) - (number * mass_element_seed_ug)
+    
+                        if mass_residual > 0:
+                            z = self._get_z(mode = mode,
+                                            number = 1, 
+                                            depth = Bathimetry_conc, 
+                                            sed_mix_depth = sed_mixing_depth)
+    
+                            self.seed_elements(
+                                lon=lon_array[i],
+                                lat=lat_array[i],
+                                radius=radius,
+                                number=1,
+                                time=time,
+                                mass=mass_residual,
+                                mass_degraded=0,
+                                mass_volatilized=0,
+                                specie = specie_elements,
+                                moving = moving_emement,
+                                z=z,
+                                origin_marker=origin_marker)
 
     def interp_weights(self, xyz, uvw):
         """
