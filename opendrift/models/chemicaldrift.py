@@ -3276,7 +3276,7 @@ class ChemicalDrift(OceanDrift):
         lat_max:             float64, max latitude of figure
         vmin:                float64, min value of concentration in the figure, specify to keep colorscale constant
         vmax:                float64, max value of concentration in the figure, specify to keep colorscale constant
-        file_out_path:       string, main output path of figure produced must end with /
+        file_out_path:       string, main output path of figure produced, must end with /
         file_out_sub_folder: string, subforlder of file_out_path, must end with /
         shp_file_path:       string, full path and name of shp file
         title_caption:       string, first part of figure title before date and unit_measure
@@ -3333,10 +3333,13 @@ class ChemicalDrift(OceanDrift):
 
         if add_shp_to_figure == True:
             print("shp was added over the figures")
-            for timestep in range(0, len(Conc_DataArray.time)):
-                print("creating image n° ", str(timestep+1), " out of ", str(len(Conc_DataArray.time)))
-            
-                Conc_DataArray_selected = Conc_DataArray.isel(time = timestep, depth = selected_depth)
+            for timestep in range(0, (Conc_DataArray.time.to_numpy()).size):
+                print("creating image n° ", str(timestep+1), " out of ", str((Conc_DataArray.time.to_numpy()).size))
+                if (Conc_DataArray.time.to_numpy()).size > 1:
+                    Conc_DataArray_selected = Conc_DataArray.isel(time = timestep, depth = selected_depth)
+                else:
+                    Conc_DataArray_selected = Conc_DataArray.isel(depth = selected_depth)
+                    
                 fig, ax = plt.subplots(figsize = (15,15)) # Change here size of figure
                 shp.plot(ax = ax, color = "black")
                 ax2 = Conc_DataArray_selected.plot.pcolormesh(ax = ax, 
@@ -3352,7 +3355,10 @@ class ChemicalDrift(OceanDrift):
                 ax.set_xlabel("Longitude", fontsize = 22) # Change here size of ax labels
                 ax.set_ylabel("Latitude", fontsize = 22) # Change here size of ax labels
                 ax.tick_params(labelsize=18) # Change here size of ax ticks
-                ax.set_title(title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:10] + " " +"(" +unit_measure +")", pad=10, fontsize = 22)
+                if (Conc_DataArray.time.to_numpy()).size > 1:
+                    ax.set_title(title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:10] + " " +"(" +unit_measure +")", pad=20, fontsize = 30)
+                else:
+                    ax.set_title(title_caption + "  (" +unit_measure +")", pad=20, fontsize = 30)
                 # from https://stackoverflow.com/questions/18195758/set-matplotlib-colorbar-size-to-match-graph
                 divider = make_axes_locatable(ax)
                 width = axes_size.AxesY(ax, aspect=1./aspect)
@@ -3364,17 +3370,24 @@ class ChemicalDrift(OceanDrift):
                 fig.savefig(file_out_path + file_out_sub_folder+str(f"{timestep:03d}")+fig_format)
         else:
             print("shp was not added over the figures")
-            for timestep in range(0, len(Conc_DataArray.time)):
-                print("creating image n° ", str(timestep+1), " out of ", str(len(Conc_DataArray.time)))
-            
-                Conc_DataArray_selected = Conc_DataArray.isel(time = timestep, depth = selected_depth)
+            for timestep in range(0, (Conc_DataArray.time.to_numpy()).size):
+                print("creating image n° ", str(timestep+1), " out of ", str((Conc_DataArray.time.to_numpy()).size))
+                if (Conc_DataArray.time.to_numpy()).size > 1:
+                    Conc_DataArray_selected = Conc_DataArray.isel(time = timestep, depth = selected_depth)
+                else:
+                    Conc_DataArray_selected = Conc_DataArray.isel(depth = selected_depth)
+                
                 fig =Conc_DataArray_selected.plot(vmin = vmin, vmax = vmax, 
                                                   robust = True, 
                                                   cmap=selected_colormap, 
                                                   levels = levels_colormap,
                                                   figsize = (20,15),
                                                   add_colorbar=False) # colorbar is added ex-post
-                plt.title(title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:10] + " " +"(" +unit_measure +")", pad=20, fontsize = 30)
+                if (Conc_DataArray.time.to_numpy()).size > 1:
+                    plt.title(title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:10] + " " +"(" +unit_measure +")", pad=20, fontsize = 30)
+                else:
+                    plt.title(title_caption + "  (" +unit_measure +")", pad=20, fontsize = 30)
+
                 plt.ylabel("Latitude", fontsize = 30)
                 plt.xlabel("Longitude", fontsize = 30)
                 plt.xlim(long_min, long_max)
