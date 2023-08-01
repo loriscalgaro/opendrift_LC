@@ -3034,6 +3034,17 @@ class ChemicalDrift(OceanDrift):
         DC_Conc_array["y"] = ("y", lat_coord)
         DC_Conc_array["x"] = ("x", lon_coord)
         DC_Conc_array=DC_Conc_array.rename({'x': 'longitude','y': 'latitude'})
+        # Add attributes to latitude and longitude so that "remapcon" function from cdo can interpolate results
+        DC_Conc_array['latitude'] = DC_Conc_array['latitude'].assign_attrs(standard_name='latitude')
+        DC_Conc_array['latitude'] = DC_Conc_array['latitude'].assign_attrs(long_name='latitude')
+        DC_Conc_array['latitude'] = DC_Conc_array['latitude'].assign_attrs(units='degrees_north')
+        DC_Conc_array['latitude'] = DC_Conc_array['latitude'].assign_attrs(axis='Y')
+
+        DC_Conc_array['longitude'] = DC_Conc_array['longitude'].assign_attrs(standard_name='longitude')
+        DC_Conc_array['longitude'] = DC_Conc_array['longitude'].assign_attrs(long_name='longitude')
+        DC_Conc_array['longitude'] = DC_Conc_array['longitude'].assign_attrs(units='degrees_east')
+        DC_Conc_array['longitude'] = DC_Conc_array['longitude'].assign_attrs(axis='X')
+        
         # Shifts back time 1 timestep so that the timestamp corresponds to the beginning of the first simulation timestep, not the next one
         time_correction = time_coord[1] - time_coord[0]
         time_corrected = np.array(time_coord - time_correction)
