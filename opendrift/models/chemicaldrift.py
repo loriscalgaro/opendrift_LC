@@ -2793,14 +2793,19 @@ class ChemicalDrift(OceanDrift):
         time_check = (NETCDF_data.time).size
                 
         if (time_check) == 1:
-            t = np.datetime64(NETCDF_data.time.data)
+        # fix for different encoding of single time step emissions
+            try:
+                t = np.datetime64(str(np.array(NETCDF_data.time.data)))
+            except:
+                t = np.datetime64(str(np.array(NETCDF_data.time[0])))
+            
             la = NETCDF_data.latitude[sel[0]].data
             lo = NETCDF_data.longitude[sel[1]].data
         elif time_check > 1:
             t = NETCDF_data.time[sel[0]].data
             la = NETCDF_data.latitude[sel[1]].data
             lo = NETCDF_data.longitude[sel[2]].data
-        # print("Seeding " + str(la.size*t.size) + " datapoints")
+        print("Seeding " + str(la.size) + " datapoints")
                
         lon_array = lo + lon_resol / 2  # find center of pixel for volume of water / sediments
         lat_array = la + lat_resol / 2  # find center of pixel for volume of water / sediments
@@ -3423,13 +3428,13 @@ class ChemicalDrift(OceanDrift):
          zoom_max:   int, % of dataset lenght where the zoomed area stops
          zoom_min:   int, % of dataset lenght where the zoomed area starts
          '''
-         import matplotlib as plt
+         import matplotlib.pyplot as plt
          import numpy as np
          
          values,base=np.histogram(emissions,n_bins)
          cumulative = np.cumsum(values*base[0:-1])
-         fig5,(ax1,ax2)=plt.subplots(nrows=2, ncols=1)
-         fig5.tight_layout(pad=1.5)
+         fig,(ax1,ax2)=plt.subplots(nrows=2, ncols=1)
+         fig.tight_layout(pad=1.5)
          ax1.plot(base[:-1], 100*values*base[0:-1]/max(values*base[0:-1]), c='red')
          ax1.plot(base[:-1], 100*cumulative/cumulative[-1], c='blue')
          ax1.plot(base[:-1], 100*values/max(values), c='black')
@@ -3483,7 +3488,7 @@ class ChemicalDrift(OceanDrift):
         DS_ma = DS[variable_name].to_masked_array() # Remove 0 and NA from dataArray, then change to np.array
         emissions = DS_ma[DS_ma>0]
         selected =np.all((emissions<upper_limit,emissions>lower_limit),axis=0)
-        print ("##START##")
+        print ("##START "+ name_dataset + " ##")
     
         DS_max = emissions.max() 
         DS_min = emissions.min() 
@@ -3496,11 +3501,12 @@ class ChemicalDrift(OceanDrift):
         emissions_sum = np.sum(emissions)
         total_mass = (emissions_sum* emiss_factor)/1e9 # (L*ug/L)/10^9 -> Kg
         selected_mass = (sum((emissions[selected])* emiss_factor))/1e9
-    
+        
+        print("number of data-points selected within the limits: ", len(emissions[selected]), "\n")
         print('total mass of chemical: ', total_mass, ' kg')
         print('selected mass of chemical: ', selected_mass, ' kg')
         print('% of total mass selected: ', (selected_mass/total_mass)*100, " %")
-        print("number of data-points selected within the limits: ", len(emissions[selected]), "\n")
+        
         
         # See number and percentage of elements over upper limit
         print("n° of data-points over upper limit: ", np.count_nonzero(emissions > upper_limit))
@@ -3520,7 +3526,7 @@ class ChemicalDrift(OceanDrift):
         print("% of total volume or mass of the elements under lower limit: ", 
               ((np.sum(emissions[emissions < lower_limit]))/(emissions_sum))*100, "%", "\n")
     
-        print("% of total volume or mass of elements undel lower limit considering also upper limit")
+        print("% of total volume or mass of elements under lower limit considering also upper limit")
         print(((np.sum(emissions[emissions < lower_limit]))/(np.sum(emissions[emissions < upper_limit])))*100, "\n")
     
         # Plot histograms for frequency of values
