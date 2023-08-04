@@ -2330,7 +2330,9 @@ class ChemicalDrift(OceanDrift):
                 if weight is not None:
                     weights = weight_array[i,:]
                     if origin_marker is not None:
-                        weight_array = weight_array * (originmarker[i,:]==origin_marker)
+                        #print(origin_marker)
+                        #print(np.sum(originmarker[i,:]==origin_marker))
+                        weight_array[i,:] = weight_array[i,:] * (originmarker[i,:]==origin_marker)
                 else:
                     weights = None
                 for zi in range(len(z_array)-1):
