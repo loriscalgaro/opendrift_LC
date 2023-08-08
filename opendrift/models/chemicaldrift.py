@@ -3031,7 +3031,7 @@ class ChemicalDrift(OceanDrift):
         regridded_concentration_avg_nan.to_netcdf(filename_regridded)
         print("Time elapsed (hr:min:sec): ", dt.now()-start)
 
-    def correct_conc_coordinates(self, DC_Conc_array, lon_coord, lat_coord, time_coord):
+    def correct_conc_coordinates(self, DC_Conc_array, lon_coord, lat_coord, time_coord, shift_time=False):
         """
         Add longitude, latitude, and time coordinates to water and sediments concentration xarray DataArray
         
@@ -3039,7 +3039,9 @@ class ChemicalDrift(OceanDrift):
                            from "write_netcdf_chemical_density_map" output
         lon_coord:         np array of float64, with longitude of "write_netcdf_chemical_density_map" output
         lat_coord:         np array of float64, with latitude of "write_netcdf_chemical_density_map" output
-        time_coord:        np. array of datetime64[ns] with avg_time of "write_netcdf_chemical_density_map" output
+        time_coord:        np array of datetime64[ns] with avg_time of "write_netcdf_chemical_density_map" output
+        shift_time:        boolean, if True shifts back time of 1 timestep so that the timestamp corresponds to 
+                           the beginning of the first simulation timestep, not to the next one 
 
         """
         # Add latitude and longitude to the concentration dataset
@@ -3057,10 +3059,12 @@ class ChemicalDrift(OceanDrift):
         DC_Conc_array['longitude'] = DC_Conc_array['longitude'].assign_attrs(units='degrees_east')
         DC_Conc_array['longitude'] = DC_Conc_array['longitude'].assign_attrs(axis='X')
         
-        # Shifts back time 1 timestep so that the timestamp corresponds to the beginning of the first simulation timestep, not the next one
-        time_correction = time_coord[1] - time_coord[0]
-        time_corrected = np.array(time_coord - time_correction)
-        DC_Conc_array["avg_time"] = ("avg_time", time_corrected)
+        if shift_time == True:
+            # Shifts back time 1 timestep so that the timestamp corresponds to the beginning of the first simulation timestep, not the next one
+            time_correction = time_coord[1] - time_coord[0]
+            time_corrected = np.array(time_coord - time_correction)
+            DC_Conc_array["avg_time"] = ("avg_time", time_corrected)
+        
         DC_Conc_array_corrected=DC_Conc_array.rename({'avg_time': 'time'})
         
         return DC_Conc_array_corrected
@@ -3071,7 +3075,8 @@ class ChemicalDrift(OceanDrift):
                                       File_Path_out,
                                       Chemical_name,
                                       Origin_marker_name,
-                                      Concentration_file = None):
+                                      Concentration_file = None,
+                                      shift_time = False):
         """
         Add dissolved, DOC, and SPM concentration arrays to obtain total water concentration and save the resulting xarray as netCDF file 
         Save sediment concentration DataArray as netDCF file
@@ -3083,6 +3088,8 @@ class ChemicalDrift(OceanDrift):
         File_Path_out:         string, path where created concentration files will be saved, must end with "/"
         Chemical_name:         string, name of modelled chemical
         Origin_marker_name:    string, name of source indicated by "origin_marker" parameter
+        shift_time:            boolean, if True shifts back time of 1 timestep so that the timestamp corresponds to 
+                               the beginning of the first simulation timestep, not to the next one
 
         """
         from datetime import datetime
@@ -3099,9 +3106,20 @@ class ChemicalDrift(OceanDrift):
 
         # Sum DataArray for specie 0, 1, and 2 (dissolved, DOC, and SPM) to obtain total water concentration
         print("Running sum of water concentration", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
-        DC_Conc_array_wat = (Concentration_file.concentration_avg[:,0,:,:,:] +\
-                            Concentration_file.concentration_avg[:,1,:,:,:] + \
-                            Concentration_file.concentration_avg[:,2,:,:,:])
+
+        Dissolved_conc = Concentration_file.sel(specie = 0)
+        Dissolved_conc = Dissolved_conc.concentration_avg
+        SPM_conc = Concentration_file.sel(specie = 2)
+        SPM_conc = SPM_conc.concentration_avg
+        
+        if 1 in Concentration_file.specie:
+            DOC_conc = Concentration_file.sel(specie = 1)
+            DOC_conc = DOC_conc.concentration_avg
+            # print("DOC was considered for partitioning of chemical")
+            DC_Conc_array_wat = Dissolved_conc + SPM_conc + DOC_conc
+        else: 
+            DC_Conc_array_wat = Dissolved_conc + SPM_conc
+
 
         print("Running sediment concentration", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
         DC_Conc_array_sed = Concentration_file.concentration_avg[:,3,:,:,:]
@@ -3131,12 +3149,14 @@ class ChemicalDrift(OceanDrift):
         DC_Conc_array_wat = self.correct_conc_coordinates(DC_Conc_array = DC_Conc_array_wat, 
                                                       lon_coord = lon, 
                                                       lat_coord = lat, 
-                                                      time_coord = time_avg)
+                                                      time_coord = time_avg,
+                                                      shift_time = shift_time)
 
         DC_Conc_array_sed = self.correct_conc_coordinates(DC_Conc_array = DC_Conc_array_sed, 
                                                       lon_coord = lon, 
                                                       lat_coord = lat, 
-                                                      time_coord = time_avg)
+                                                      time_coord = time_avg,
+                                                      shift_time = shift_time)
 
         DC_Conc_array_wat.name = "concentration_avg_water"
         DC_Conc_array_wat.attrs['standard_name'] = "water_concentration"
