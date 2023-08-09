@@ -3303,7 +3303,9 @@ class ChemicalDrift(OceanDrift):
                       selected_depth = 0,
                       fig_format = ".jpg",
                       add_shp_to_figure = False,
-                      variable_name = None):
+                      variable_name = None,
+                      labels_font_sizes = [30,30,30,25,25,25,25],
+                      shp_color = "black"):
         '''
         Create a series of .jpg or .png for each timestep of a concentration map
         from REGRIDDED "calculate_water_sediment_conc" function output
@@ -3332,10 +3334,14 @@ class ChemicalDrift(OceanDrift):
         fig_format:          string, format of produced images (e.g.,".jpg", ".png"),
         add_shp_to_figure:   boolean,select if shp is added to the figure (True) or not (False)
         variable_name:       string, name of Conc_Datasetdata variable to plot if not concentration_avg_water/sediments
+        labels_font_sizes:   list of int, [title_font_size, x_label_font_size, y_label_font_size, x_ticks_font_size
+                                           y_ticks_font_size, cbar_label_font_size, cbar_ticks_font_size]
+        shp_color:           string, color of shapefile when plotted
         '''
 
         import numpy as np
         import matplotlib.pyplot as plt
+        import matplotlib.ticker as ticker
         import os as os
         from mpl_toolkits.axes_grid1 import make_axes_locatable, axes_size
         if add_shp_to_figure:
@@ -3344,6 +3350,14 @@ class ChemicalDrift(OceanDrift):
         aspect = 15
         pad_fraction = 1e-5
         file_output_path = file_out_path + file_out_sub_folder
+        
+        title_font_size = labels_font_sizes[0]
+        x_label_font_size = labels_font_sizes[1]
+        y_label_font_size = labels_font_sizes[2]
+        x_ticks_font_size = labels_font_sizes[3]
+        # y_ticks_font_size = labels_font_sizes[4]
+        cbar_label_font_size = labels_font_sizes[5]
+        cbar_ticks_font_size = labels_font_sizes[6]
 
         if simmetrical_cmap == True:
             if selected_colormap == None:
@@ -3373,14 +3387,15 @@ class ChemicalDrift(OceanDrift):
             
         if 'time' in Conc_DataArray.dims:
             Conc_DataArray = Conc_DataArray.where(((Conc_DataArray.time >= time_start) &
-                                                   (Conc_DataArray.time <= time_end)), drop=True)
+                                           (Conc_DataArray.time <= time_end)), drop=True)
+        elif time_start is not None:
+            Conc_DataArray['time'] = time_start
         else:
-            pass
+            raise ValueError("Conc_DataArray.time is missing, time_start must be specified")
         
         attribute_list = list(Conc_DataArray.attrs)
         for attr in attribute_list:
             del Conc_DataArray.attrs[attr]
-
 
         if add_shp_to_figure == True:
             print("shp was added over the figures")
@@ -3395,8 +3410,8 @@ class ChemicalDrift(OceanDrift):
                 elif (Conc_DataArray.time.to_numpy()).size <= 1 and "depth" not in Conc_DataArray.dims:
                     Conc_DataArray_selected = Conc_DataArray
                     
-                fig, ax = plt.subplots(figsize = (15,15)) # Change here size of figure
-                shp.plot(ax = ax, color = "black")
+                fig, ax = plt.subplots(figsize = (20,15)) # Change here size of figure
+                shp.plot(ax = ax, color = shp_color)
                 ax2 = Conc_DataArray_selected.plot.pcolormesh(ax = ax, 
                                                         x = 'longitude', 
                                                         y = 'latitude', 
@@ -3407,19 +3422,20 @@ class ChemicalDrift(OceanDrift):
                                                         add_colorbar=False) # colorbar is added ex-post
                 ax.set_xlim(long_min, long_max)
                 ax.set_ylim(lat_min, lat_max)
-                ax.set_xlabel("Longitude", fontsize = 22) # Change here size of ax labels
-                ax.set_ylabel("Latitude", fontsize = 22) # Change here size of ax labels
-                ax.tick_params(labelsize=18) # Change here size of ax ticks
+                ax.set_xlabel("Longitude", fontsize = x_label_font_size) # Change here size of ax labels
+                ax.set_ylabel("Latitude", fontsize = y_label_font_size) # Change here size of ax labels
+                ax.tick_params(labelsize=x_ticks_font_size) # Change here size of ax ticks
                 if (Conc_DataArray.time.to_numpy()).size > 1:
-                    ax.set_title(title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:10] + " " +"(" +unit_measure +")", pad=20, fontsize = 30)
+                    ax.set_title(title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:10] + " " +"(" +unit_measure +")", pad=20, fontsize = title_font_size)
                 else:
-                    ax.set_title(title_caption + "  (" +unit_measure +")", pad=20, fontsize = 30)
+                    ax.set_title(title_caption + "  (" +unit_measure +")", pad=20, fontsize = title_font_size)
                 # from https://stackoverflow.com/questions/18195758/set-matplotlib-colorbar-size-to-match-graph
                 divider = make_axes_locatable(ax)
                 width = axes_size.AxesY(ax, aspect=1./aspect)
                 pad_cb = axes_size.Fraction(pad_fraction, width)
                 cax = divider.append_axes("right", size=width, pad=pad_cb)
-                cax.tick_params(labelsize=18)
+                cax.tick_params(labelsize=cbar_label_font_size)
+                cax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%0.2e'))
                 plt.colorbar(ax2, cax=cax)
                 
                 fig.savefig(file_out_path + file_out_sub_folder+str(f"{timestep:03d}")+fig_format)
@@ -3448,13 +3464,17 @@ class ChemicalDrift(OceanDrift):
                                                   levels = levels_colormap,
                                                   figsize = (20,15),
                                                   add_colorbar=False) # colorbar is added ex-post
-                plt.title(plt_title, pad=20, fontsize = 30)
-                plt.ylabel("Latitude", fontsize = 30)
-                plt.xlabel("Longitude", fontsize = 30)
+                plt.title(plt_title, pad=20, fontsize = title_font_size)
+                plt.ylabel("Latitude", fontsize = x_label_font_size)
+                plt.xlabel("Longitude", fontsize = y_label_font_size)
                 plt.xlim(long_min, long_max)
                 plt.ylim(lat_min, lat_max)
-                plt.tick_params(labelsize=25)
-                plt.colorbar(fig).set_label(label=colorbar_title,size=25)
+                plt.tick_params(labelsize=x_ticks_font_size)
+                colorbar = plt.colorbar(fig)
+                colorbar.set_label(label=colorbar_title,size=cbar_label_font_size)
+                cax=colorbar.ax
+                cax.tick_params(labelsize=cbar_ticks_font_size)
+                cax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%0.2e'))
 
                 fig.figure.savefig(file_out_path + file_out_sub_folder+str(f"{timestep:03d}")+fig_format)
                 plt.close()
