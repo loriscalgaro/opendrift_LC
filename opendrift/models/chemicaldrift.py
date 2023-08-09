@@ -3302,7 +3302,8 @@ class ChemicalDrift(OceanDrift):
                       simmetrical_cmap = False,
                       selected_depth = 0,
                       fig_format = ".jpg",
-                      add_shp_to_figure = False):
+                      add_shp_to_figure = False,
+                      variable_name = None):
         '''
         Create a series of .jpg or .png for each timestep of a concentration map
         from REGRIDDED "calculate_water_sediment_conc" function output
@@ -3328,8 +3329,9 @@ class ChemicalDrift(OceanDrift):
         selected_colormap:   e.g. plt.cm.Blues
         simmetrical_cmap:    boolean,select if cmap is simmetrical to 0 (True) or not (False)
         selected_depth:      int, depth selected if present. If no depth was selected when creating conc map, use 0
-        fig_format =         string, format of produced images (e.g.,".jpg", ".png"),
+        fig_format:          string, format of produced images (e.g.,".jpg", ".png"),
         add_shp_to_figure:   boolean,select if shp is added to the figure (True) or not (False)
+        variable_name:       string, name of Conc_Datasetdata variable to plot if not concentration_avg_water/sediments
         '''
 
         import numpy as np
@@ -3357,31 +3359,41 @@ class ChemicalDrift(OceanDrift):
         if add_shp_to_figure:
             shp = gpd.read_file(shp_file_path)
 
-        if "concentration_avg_water" in Conc_Dataset.data_vars:
+        if "concentration_avg_water" in Conc_Dataset.keys():
             Conc_DataArray = Conc_Dataset.concentration_avg_water
             colorbar_title = "concentration_avg_water"
-        elif "concentration_avg_sediments" in Conc_Dataset.data_vars:
+        elif "concentration_avg_sediments" in Conc_Dataset.keys():
             Conc_DataArray = Conc_Dataset.concentration_avg_sediments
             colorbar_title = "concentration_avg_sediments"
+        elif variable_name is not None:
+            Conc_DataArray = Conc_Dataset[variable_name]
+            colorbar_title = variable_name
         else:
-            raise ValueError("Wrong input, concentration_avg_sediments/water not present in conc file")
-
+            raise ValueError("specified variable_name is not present in Conc_Dataset")
+            
+        if 'time' in Conc_DataArray.dims:
+            Conc_DataArray = Conc_DataArray.where(((Conc_DataArray.time >= time_start) &
+                                                   (Conc_DataArray.time <= time_end)), drop=True)
+        else:
+            pass
+        
         attribute_list = list(Conc_DataArray.attrs)
         for attr in attribute_list:
             del Conc_DataArray.attrs[attr]
 
-        Conc_DataArray = Conc_DataArray.where(((Conc_DataArray.time >= time_start) &
-                                               (Conc_DataArray.time <= time_end)), drop=True)
-        
 
         if add_shp_to_figure == True:
             print("shp was added over the figures")
             for timestep in range(0, (Conc_DataArray.time.to_numpy()).size):
                 print("creating image n° ", str(timestep+1), " out of ", str((Conc_DataArray.time.to_numpy()).size))
-                if (Conc_DataArray.time.to_numpy()).size > 1:
+                if (Conc_DataArray.time.to_numpy()).size > 1 and "depth" in Conc_DataArray.dims:
                     Conc_DataArray_selected = Conc_DataArray.isel(time = timestep, depth = selected_depth)
-                else:
+                elif (Conc_DataArray.time.to_numpy()).size > 1 and "depth" not in Conc_DataArray.dims:
+                    Conc_DataArray_selected = Conc_DataArray.isel(time = timestep)
+                elif (Conc_DataArray.time.to_numpy()).size <= 1 and "depth" in Conc_DataArray.dims:
                     Conc_DataArray_selected = Conc_DataArray.isel(depth = selected_depth)
+                elif (Conc_DataArray.time.to_numpy()).size <= 1 and "depth" not in Conc_DataArray.dims:
+                    Conc_DataArray_selected = Conc_DataArray
                     
                 fig, ax = plt.subplots(figsize = (15,15)) # Change here size of figure
                 shp.plot(ax = ax, color = "black")
@@ -3415,28 +3427,35 @@ class ChemicalDrift(OceanDrift):
             print("shp was not added over the figures")
             for timestep in range(0, (Conc_DataArray.time.to_numpy()).size):
                 print("creating image n° ", str(timestep+1), " out of ", str((Conc_DataArray.time.to_numpy()).size))
-                if (Conc_DataArray.time.to_numpy()).size > 1:
+                if (Conc_DataArray.time.to_numpy()).size > 1 and "depth" in Conc_DataArray.dims:
                     Conc_DataArray_selected = Conc_DataArray.isel(time = timestep, depth = selected_depth)
-                else:
+                elif (Conc_DataArray.time.to_numpy()).size > 1 and "depth" not in Conc_DataArray.dims:
+                    Conc_DataArray_selected = Conc_DataArray.isel(time = timestep)
+                elif (Conc_DataArray.time.to_numpy()).size <= 1 and "depth" in Conc_DataArray.dims:
                     Conc_DataArray_selected = Conc_DataArray.isel(depth = selected_depth)
+                elif (Conc_DataArray.time.to_numpy()).size <= 1 and "depth" not in Conc_DataArray.dims:
+                    Conc_DataArray_selected = Conc_DataArray
                 
-                fig =Conc_DataArray_selected.plot(vmin = vmin, vmax = vmax, 
+                if (Conc_DataArray.time.to_numpy()).size > 1:
+                    plt_title = (title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:10] + " " +"(" +unit_measure +")")
+                else:
+                    plt_title = (title_caption + "  (" +unit_measure +")")
+
+                
+                fig = Conc_DataArray_selected.plot(vmin = vmin, vmax = vmax, 
                                                   robust = True, 
                                                   cmap=selected_colormap, 
                                                   levels = levels_colormap,
                                                   figsize = (20,15),
                                                   add_colorbar=False) # colorbar is added ex-post
-                if (Conc_DataArray.time.to_numpy()).size > 1:
-                    plt.title(title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:10] + " " +"(" +unit_measure +")", pad=20, fontsize = 30)
-                else:
-                    plt.title(title_caption + "  (" +unit_measure +")", pad=20, fontsize = 30)
-
+                plt.title(plt_title, pad=20, fontsize = 30)
                 plt.ylabel("Latitude", fontsize = 30)
                 plt.xlabel("Longitude", fontsize = 30)
                 plt.xlim(long_min, long_max)
                 plt.ylim(lat_min, lat_max)
-                plt.tick_params(labelsize=18)
-                plt.colorbar(fig).set_label(label=colorbar_title,size=22)
+                plt.tick_params(labelsize=25)
+                plt.colorbar(fig).set_label(label=colorbar_title,size=25)
+
                 fig.figure.savefig(file_out_path + file_out_sub_folder+str(f"{timestep:03d}")+fig_format)
                 plt.close()
                 
