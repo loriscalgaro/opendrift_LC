@@ -3197,7 +3197,9 @@ class ChemicalDrift(OceanDrift):
 
     def mask_netcdf_map (self,
                          shp_mask_file,
-                         DataArray,
+                         file_path,
+                         file_name,
+                         DataArray = None,
                          shp_epsg = "epsg:4326",
                          invert_shp = False,
                          drop_data = False,
@@ -3210,20 +3212,28 @@ class ChemicalDrift(OceanDrift):
             Used for xarray DataArray with regular lat/lon coordinates. 
             "write_netcdf_chemical_density_map" output must be regridded to regular lat/lon coordinates with "regrid_conc" function
     
-        shp_mask_file:       string, full path to mask shapefile 
-        DataArray:           xarray DataArray to be masked
+        shp_mask_file:       string, full path to mask shapefile
+        DataArray:           xarray DataArray to be masked loaded with rioxarray.open_rasterio(DataArray)
                                  *latitude/longitude, lat/lon, y/x are accepted as coordinates
         shp_epsg:            string, reference system of shp file (e.g. "epsg:4326")
         invert_shp:          boolean, select if values inside (False) or outside (True) shp are masked
         drop_data:           boolean, select if spatial extent of DataArray is mantained (False) or reduced to the extent of shp (True)
         save_masked_file:    boolean,select if DataArray_masked is saved (True) or returned (False)
+        file_path:           string, path of the file to be masked. Must end with /
+        file_name:           string, name of the DataArray to be masked (.nc)
         file_output_path:    string, path of the file to be saved. Must end with /
         file_output_name:    string, name of the DataArray_masked output file (.nc)
         '''
         import geopandas as gpd
-        import rasterio
+        import rioxarray
         from shapely.geometry import mapping
         import os as os
+        
+        if DataArray is None and file_path is not None and file_name is not None:
+            print("Loading DataArray from disk")
+            DataArray = rioxarray.open_rasterio(file_path + file_name)
+        else:
+            raise ValueError("DataArray or file_path/file_name not specified")
     
         shp_mask = gpd.read_file(shp_mask_file, crs=shp_epsg)
     
