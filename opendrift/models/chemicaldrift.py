@@ -2633,9 +2633,9 @@ class ChemicalDrift(OceanDrift):
         elif scrubber_type=="AFP_metals_total":
             Emission_factors = 1e6 # g to ug
         elif scrubber_type=="N_sewage": # Nitrogen from sewage
-            Emission_factors = 1e9  # 1kg = 1e9 ug: N_sewage is expressed as kg
+            Emission_factors = 1e6  # 1kg = 1e9 ug: N_sewage is expressed as g
         elif scrubber_type=="N_foodwaste": # Nitrogen from foodwaste
-            Emission_factors = 1e9  # 1kg = 1e9 ug: N_sewage is expressed as kg
+            Emission_factors = 1e6  # 1kg = 1e9 ug: N_sewage is expressed as g
         elif scrubber_type == "N_NOx":  # Nitrogen from engine's NOx emissions
             Emission_factors = 1e9 * (14.0067 / 46.005)  # 1kg = 1e9 ug: NOx is expressed in kg, then tranformed to kg of nitrogen # MW of NOx: 46.005 g/mol # https://www.epa.gov/air-emissions-inventories/how-are-oxides-nitrogen-nox-defined-nei
         elif scrubber_type == "NOx":  # Nitrogen from engine's NOx emissions
@@ -3181,7 +3181,9 @@ class ChemicalDrift(OceanDrift):
         DC_Conc_array_wat.attrs['lon_resol'] = str(np.around(abs(lon[0]-lon[1]), decimals = 8)) + " degrees E"
         DC_Conc_array_wat.attrs['lat_resol'] = str(np.around(abs(lat[0]-lat[1]), decimals = 8)) + " degrees N"
         if "specie" in DC_Conc_array_wat.dims:
-            DC_Conc_array_wat = DC_Conc_array_wat.drop_vars("specie") # drop "specie" coordinate since only water elements were selected
+            if len(DC_Conc_array_wat.specie) == 1:
+                specie = float(np.array(DC_Conc_array_wat.specie)[0])
+                DC_Conc_array_wat = DC_Conc_array_wat.sel(specie = specie) # drop "specie" coordinate since only water elements were selected
 
         DC_Conc_array_sed.name = "concentration_avg_sediments"
         DC_Conc_array_sed.attrs['standard_name'] = "sediment_concentration"
@@ -3195,7 +3197,10 @@ class ChemicalDrift(OceanDrift):
         DC_Conc_array_sed.attrs['lon_resol'] = str(np.around(abs(lon[0]-lon[1]), decimals = 8)) + " degrees E"
         DC_Conc_array_sed.attrs['lat_resol'] = str(np.around(abs(lat[0]-lat[1]), decimals = 8)) + " degrees N"
         if "specie" in DC_Conc_array_sed.dims:
-            DC_Conc_array_sed = DC_Conc_array_sed.drop_vars("specie") # drop "specie" coordinate since only sed elements were selected
+            if len(DC_Conc_array_sed.specie) == 1:
+                specie = float(np.array(DC_Conc_array_sed.specie)[0])
+                DC_Conc_array_sed = DC_Conc_array_sed.sel(specie = specie) # drop "specie" coordinate since only sed elements were selected
+        
 
         # Conc_time = datetime.now().strftime("%Y%m%d-%H%M%S")
         # wat_file = File_Path_out + Conc_time + "_water_conc_" + (Chemical_name or "") + "_" + (Origin_marker_name or "") + ".nc"
@@ -3210,8 +3215,8 @@ class ChemicalDrift(OceanDrift):
 
     def mask_netcdf_map (self,
                          shp_mask_file,
-                         file_path,
-                         file_name,
+                         file_path = None,
+                         file_name=None,
                          DataArray = None,
                          shp_epsg = "epsg:4326",
                          invert_shp = False,
@@ -3242,11 +3247,12 @@ class ChemicalDrift(OceanDrift):
         from shapely.geometry import mapping
         import os as os
         
-        if DataArray is None and file_path is not None and file_name is not None:
-            print("Loading DataArray from disk")
-            DataArray = rioxarray.open_rasterio(file_path + file_name)
-        else:
-            raise ValueError("DataArray or file_path/file_name not specified")
+        if DataArray is None:
+            if file_path is not None and file_name is not None:
+                print("Loading DataArray from disk")
+                DataArray = rioxarray.open_rasterio(file_path + file_name)
+            else:
+                raise ValueError("DataArray or file_path/file_name not specified")
     
         shp_mask = gpd.read_file(shp_mask_file, crs=shp_epsg)
     
@@ -3449,7 +3455,7 @@ class ChemicalDrift(OceanDrift):
                 ax.set_ylabel("Latitude", fontsize = y_label_font_size) # Change here size of ax labels
                 ax.tick_params(labelsize=x_ticks_font_size) # Change here size of ax ticks
                 if (Conc_DataArray.time.to_numpy()).size > 1:
-                    ax.set_title(title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:10] + " " +"(" +unit_measure +")", pad=20, fontsize = title_font_size)
+                    ax.set_title(title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:19] + " " +"(" +unit_measure +")", pad=20, fontsize = title_font_size)
                 else:
                     ax.set_title(title_caption + "  (" +unit_measure +")", pad=20, fontsize = title_font_size)
                 # from https://stackoverflow.com/questions/18195758/set-matplotlib-colorbar-size-to-match-graph
@@ -3476,7 +3482,7 @@ class ChemicalDrift(OceanDrift):
                     Conc_DataArray_selected = Conc_DataArray
                 
                 if (Conc_DataArray.time.to_numpy()).size > 1:
-                    plt_title = (title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:10] + " " +"(" +unit_measure +")")
+                    plt_title = (title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:19] + " " +"(" +unit_measure +")")
                 else:
                     plt_title = (title_caption + "  (" +unit_measure +")")
 
