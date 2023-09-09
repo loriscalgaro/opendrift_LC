@@ -3343,8 +3343,8 @@ class ChemicalDrift(OceanDrift):
                                 *latitude, degrees N
                                 *longitude, degrees E
                                 *time, datetime64[ns]
-        time_start:          datetime64[ns], start time of gif
-        time_end:            datetime64[ns],  end time of gif.
+        time_start:          datetime64[ns], start time of figures
+        time_end:            datetime64[ns],  end time of figures.
         long_min:            float64, min longitude of figure
         long_max:            float64, max longitude of figure
         lat_min:             float64, min latitude of figure
@@ -3547,6 +3547,9 @@ class ChemicalDrift(OceanDrift):
                                  upper_limit,
                                  lower_limit,
                                  name_dataset,
+                                 long_min, long_max,
+                                 lat_min, lat_max,
+                                 time_start, time_end,
                                  range_max = None,
                                  range_min = None,
                                  n_bins = 100,
@@ -3564,6 +3567,12 @@ class ChemicalDrift(OceanDrift):
         upper_limit:    float32, limit under which datapoints in DataArray wll be ignored by seed_from_NETCDF
         lower_limit:    float32, limit over which datapoints in DataArray wll be ignored by seed_from_NETCDF
         name_dataset:   string, name of data to be reported in the title of figures
+        time_start:          datetime64[ns], start time of dataset considered
+        time_end:            datetime64[ns],  end time of dataset considered
+        long_min:            float64, min longitude of dataset considered
+        long_max:            float64, max longitude of dataset considered
+        lat_min:             float64, min latitude of dataset considered
+        lat_max:             float64, max latitude of dataset considered
         range_max:      float32, max value shown in the figure on data frequency for the whole dataset
         range_min:      float32, min value shown in the figure on data frequency for the whole dataset
         n_bins:         int, number of bins used for histograms
@@ -3575,7 +3584,18 @@ class ChemicalDrift(OceanDrift):
         import numpy as np
         
         DS = xr.open_dataset(file_folder + file_name)
-        DS_ma = DS[variable_name].to_masked_array() # Remove 0 and NA from dataArray, then change to np.array
+        if "lat" in DS.dims:
+            DS = DS.rename({'lat': 'latitude','lon': 'longitude'})
+        if "x" in DS.dims:
+            DS = DS.rename({'y': 'latitude','x': 'longitude'})           
+        
+        DS = DS[variable_name]
+        DS = DS.where((DS.longitude > long_min) & (DS.longitude < long_max) &
+                                        (DS.latitude > lat_min) & (DS.latitude < lat_max) &
+                                        (DS.time >= time_start) &
+                                        (DS.time <= time_end), drop=True)
+        
+        DS_ma = DS.to_masked_array() # Remove 0 and NA from dataArray, then change to np.array
         emissions = DS_ma[DS_ma>0]
         selected =np.all((emissions<upper_limit,emissions>lower_limit),axis=0)
         print ("##START "+ name_dataset + " ##")
