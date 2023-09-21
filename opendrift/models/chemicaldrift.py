@@ -3467,7 +3467,7 @@ class ChemicalDrift(OceanDrift):
                 cax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%0.2e'))
                 plt.colorbar(ax2, cax=cax)
                 
-                fig.savefig(file_out_path + file_out_sub_folder+str(f"{timestep:03d}")+fig_format)
+                fig.savefig(file_out_path + file_out_sub_folder+str(f"{timestep:03d}")+"_"+file_out_sub_folder[:-1]+fig_format)
         else:
             print("shp was not added over the figures")
             for timestep in range(0, (Conc_DataArray.time.to_numpy()).size):
@@ -3505,7 +3505,7 @@ class ChemicalDrift(OceanDrift):
                 cax.tick_params(labelsize=cbar_ticks_font_size)
                 cax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%0.2e'))
 
-                fig.figure.savefig(file_out_path + file_out_sub_folder+str(f"{timestep:03d}")+fig_format)
+                fig.figure.savefig(file_out_path + file_out_sub_folder+str(f"{timestep:03d}")+"_"+file_out_sub_folder[:-1]+fig_format)
                 plt.close()
                 
     def plot_emission_data_frequency(self, emissions, title, n_bins = 100, zoom_max = 100, zoom_min = 0):
