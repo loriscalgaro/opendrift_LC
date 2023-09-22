@@ -3355,7 +3355,7 @@ class ChemicalDrift(OceanDrift):
         file_out_sub_folder: string, subforlder of file_out_path, must end with /
         shp_file_path:       string, full path and name of shp file
         title_caption:       string, first part of figure title before date and unit_measure
-        unit_measure:        string, (ug/m3) or (ug/kg d.w)
+        unit_measure:        string, (ug/m3) or (ug/kg d.w), between parenthesis
         levels_colormap:     list of float64, levels used for colorbar (e.g., [0., 1., 15.])
         selected_colormap:   e.g. plt.cm.Blues
         simmetrical_cmap:    boolean,select if cmap is simmetrical to 0 (True) or not (False)
@@ -3377,7 +3377,7 @@ class ChemicalDrift(OceanDrift):
             import geopandas as gpd
 
         aspect = 15
-        pad_fraction = 1e-5
+        # pad_fraction = 1e-1
         file_output_path = file_out_path + file_out_sub_folder
         
         title_font_size = labels_font_sizes[0]
@@ -3440,7 +3440,7 @@ class ChemicalDrift(OceanDrift):
                     Conc_DataArray_selected = Conc_DataArray
                     
                 fig, ax = plt.subplots(figsize = (20,15)) # Change here size of figure
-                shp.plot(ax = ax, color = shp_color)
+                shp.plot(ax = ax, color = shp_color, zorder = 10)
                 ax2 = Conc_DataArray_selected.plot.pcolormesh(ax = ax, 
                                                         x = 'longitude', 
                                                         y = 'latitude', 
@@ -3448,26 +3448,29 @@ class ChemicalDrift(OceanDrift):
                                                         robust = True, 
                                                         vmin = vmin, vmax = vmax,
                                                         levels = levels_colormap,
-                                                        add_colorbar=False) # colorbar is added ex-post
+                                                        add_colorbar=False,
+                                                        zorder = 0) # colorbar is added ex-post
                 ax.set_xlim(long_min, long_max)
                 ax.set_ylim(lat_min, lat_max)
-                ax.set_xlabel("Longitude", fontsize = x_label_font_size) # Change here size of ax labels
-                ax.set_ylabel("Latitude", fontsize = y_label_font_size) # Change here size of ax labels
+                ax.set_xlabel("Longitude", fontsize = x_label_font_size, labelpad = 30) # Change here size of ax labels
+                ax.set_ylabel("Latitude", fontsize = y_label_font_size, labelpad = 30) # Change here size of ax labels
                 ax.tick_params(labelsize=x_ticks_font_size) # Change here size of ax ticks
                 if (Conc_DataArray.time.to_numpy()).size > 1:
-                    ax.set_title(title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:19] + " " +"(" +unit_measure +")", pad=20, fontsize = title_font_size)
+                    ax.set_title(title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:10] + " " +unit_measure +")", pad=20, fontsize = title_font_size, weight = "bold")
                 else:
-                    ax.set_title(title_caption + "  (" +unit_measure +")", pad=20, fontsize = title_font_size)
+                    ax.set_title(title_caption + " " +unit_measure, pad=30, fontsize = title_font_size, weight = "bold")
                 # from https://stackoverflow.com/questions/18195758/set-matplotlib-colorbar-size-to-match-graph
                 divider = make_axes_locatable(ax)
                 width = axes_size.AxesY(ax, aspect=1./aspect)
-                pad_cb = axes_size.Fraction(pad_fraction, width)
-                cax = divider.append_axes("right", size=width, pad=pad_cb)
-                cax.tick_params(labelsize=cbar_label_font_size)
+                # pad_cb = axes_size.Fraction(pad_fraction, width)
+                # cax = divider.append_axes("right", size="3%", pad=pad_cb)
+                cax = divider.append_axes("right", size=width, pad=0.0)
                 cax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%0.2e'))
+                cax.tick_params(labelsize=cbar_label_font_size)
                 plt.colorbar(ax2, cax=cax)
                 
                 fig.savefig(file_out_path + file_out_sub_folder+str(f"{timestep:03d}")+"_"+file_out_sub_folder[:-1]+fig_format)
+                plt.close()
         else:
             print("shp was not added over the figures")
             for timestep in range(0, (Conc_DataArray.time.to_numpy()).size):
@@ -3482,9 +3485,9 @@ class ChemicalDrift(OceanDrift):
                     Conc_DataArray_selected = Conc_DataArray
                 
                 if (Conc_DataArray.time.to_numpy()).size > 1:
-                    plt_title = (title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:19] + " " +"(" +unit_measure +")")
+                    plt_title = (title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:19] + " " + unit_measure)
                 else:
-                    plt_title = (title_caption + "  (" +unit_measure +")")
+                    plt_title = (title_caption + " " +unit_measure)
 
                 
                 fig = Conc_DataArray_selected.plot(vmin = vmin, vmax = vmax, 
@@ -3493,9 +3496,9 @@ class ChemicalDrift(OceanDrift):
                                                   levels = levels_colormap,
                                                   figsize = (20,15),
                                                   add_colorbar=False) # colorbar is added ex-post
-                plt.title(plt_title, pad=20, fontsize = title_font_size)
-                plt.ylabel("Latitude", fontsize = x_label_font_size)
-                plt.xlabel("Longitude", fontsize = y_label_font_size)
+                plt.title(plt_title, pad=30, fontsize = title_font_size, weight = "bold")
+                plt.ylabel("Latitude", fontsize = x_label_font_size, labelpad=30.)
+                plt.xlabel("Longitude", fontsize = y_label_font_size, labelpad=30.)
                 plt.xlim(long_min, long_max)
                 plt.ylim(lat_min, lat_max)
                 plt.tick_params(labelsize=x_ticks_font_size)
