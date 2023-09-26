@@ -3599,10 +3599,14 @@ class ChemicalDrift(OceanDrift):
             DS = DS.rename({'y': 'latitude','x': 'longitude'})           
         
         DS = DS[variable_name]
-        DS = DS.where((DS.longitude > long_min) & (DS.longitude < long_max) &
-                                        (DS.latitude > lat_min) & (DS.latitude < lat_max) &
-                                        (DS.time >= time_start) &
-                                        (DS.time <= time_end), drop=True)
+        if "time" in DS.dims:
+            DS = DS.where((DS.longitude > long_min) & (DS.longitude < long_max) &
+                                            (DS.latitude > lat_min) & (DS.latitude < lat_max) &
+                                            (DS.time >= time_start) &
+                                            (DS.time <= time_end), drop=True)
+        else: 
+            DS = DS.where((DS.longitude > long_min) & (DS.longitude < long_max) &
+                                            (DS.latitude > lat_min) & (DS.latitude < lat_max), drop=True)
         
         DS_ma = DS.to_masked_array() # Remove 0 and NA from dataArray, then change to np.array
         emissions = DS_ma[DS_ma>0]
