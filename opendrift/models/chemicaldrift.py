@@ -3462,7 +3462,7 @@ class ChemicalDrift(OceanDrift):
                 ax.set_ylabel("Latitude", fontsize = y_label_font_size, labelpad = 30) # Change here size of ax labels
                 ax.tick_params(labelsize=x_ticks_font_size) # Change here size of ax ticks
                 if (Conc_DataArray.time.to_numpy()).size > 1:
-                    ax.set_title(title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:10] + " " +unit_measure +")", pad=20, fontsize = title_font_size, weight = "bold")
+                    ax.set_title(title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:10] + " " +unit_measure, pad=20, fontsize = title_font_size, weight = "bold")
                 else:
                     ax.set_title(title_caption + " " +unit_measure, pad=30, fontsize = title_font_size, weight = "bold")
                 # from https://stackoverflow.com/questions/18195758/set-matplotlib-colorbar-size-to-match-graph
