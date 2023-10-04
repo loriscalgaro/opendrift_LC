@@ -3350,7 +3350,8 @@ class ChemicalDrift(OceanDrift):
                       add_shp_to_figure = False,
                       variable_name = None,
                       labels_font_sizes = [30,30,30,25,25,25,25],
-                      shp_color = "black"):
+                      shp_color = "black",
+                      date_str_lenght = 10):
         '''
         Create a series of .jpg or .png for each timestep of a concentration map
         from REGRIDDED "calculate_water_sediment_conc" function output
@@ -3382,6 +3383,7 @@ class ChemicalDrift(OceanDrift):
         labels_font_sizes:   list of int, [title_font_size, x_label_font_size, y_label_font_size, x_ticks_font_size
                                            y_ticks_font_size, cbar_label_font_size, cbar_ticks_font_size]
         shp_color:           string, color of shapefile when plotted
+        date_str_lenght:     int, number date string charcters kept in title [10 for YYYY-MM-DD, 19 for hour shown] 
         '''
 
         import numpy as np
@@ -3472,7 +3474,7 @@ class ChemicalDrift(OceanDrift):
                 ax.set_ylabel("Latitude", fontsize = y_label_font_size, labelpad = 30) # Change here size of ax labels
                 ax.tick_params(labelsize=x_ticks_font_size) # Change here size of ax ticks
                 if (Conc_DataArray.time.to_numpy()).size > 1:
-                    ax.set_title(title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:10] + " " +unit_measure, pad=20, fontsize = title_font_size, weight = "bold")
+                    ax.set_title(title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:date_str_lenght] + " " +unit_measure, pad=20, fontsize = title_font_size, weight = "bold")
                 else:
                     ax.set_title(title_caption + " " +unit_measure, pad=30, fontsize = title_font_size, weight = "bold")
                 # from https://stackoverflow.com/questions/18195758/set-matplotlib-colorbar-size-to-match-graph
@@ -3501,7 +3503,7 @@ class ChemicalDrift(OceanDrift):
                     Conc_DataArray_selected = Conc_DataArray
                 
                 if (Conc_DataArray.time.to_numpy()).size > 1:
-                    plt_title = (title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:19] + " " + unit_measure)
+                    plt_title = (title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:date_str_lenght] + " " + unit_measure)
                 else:
                     plt_title = (title_caption + " " +unit_measure)
 
