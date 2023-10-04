@@ -2802,13 +2802,16 @@ class ChemicalDrift(OceanDrift):
         # fix for different encoding of single time step emissions
             try:
                 t = np.datetime64(str(np.array(NETCDF_data.time.data)))
+                t = np.array(t, dtype='datetime64[s]') # time truncaded to [s] to avoid datetime.utcfromtimestamp only integers error
             except:
                 t = np.datetime64(str(np.array(NETCDF_data.time[0])))
+                t = np.array(t, dtype='datetime64[s]')
             
             la = NETCDF_data.latitude[sel[0]].data
             lo = NETCDF_data.longitude[sel[1]].data
         elif time_check > 1:
             t = NETCDF_data.time[sel[0]].data
+            t = np.array(t, dtype='datetime64[s]')
             la = NETCDF_data.latitude[sel[1]].data
             lo = NETCDF_data.longitude[sel[2]].data
         print("Seeding " + str(la.size) + " datapoints")
@@ -2863,13 +2866,13 @@ class ChemicalDrift(OceanDrift):
                 mass_element_ug=mass_element_ug,
                 data_point=mass_ug,
                 n_elements=number_of_elements)
-            
+
             if t.size == 1:
                 time = datetime.utcfromtimestamp(
                     (np.array(t - np.datetime64('1970-01-01T00:00:00'))) / np.timedelta64(1, 's'))
             elif t.size > 1:
                 time = datetime.utcfromtimestamp(
-                    (t[i] - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's'))
+                    (np.array(t[i] - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's')))
                 
             # specie to be added to seed parameters for sediments and water
             if mode == 'sed_conc':
