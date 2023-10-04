@@ -3081,7 +3081,8 @@ class ChemicalDrift(OceanDrift):
                                       Origin_marker_name,
                                       Transfer_setup = "organics",
                                       Concentration_file = None,
-                                      shift_time = False):
+                                      Shift_time = False,
+                                      Conc_SPM = True):
         """
         Add dissolved, DOC, and SPM concentration arrays to obtain total water concentration and save the resulting xarray as netCDF file 
         Save sediment concentration DataArray as netDCF file
@@ -3122,11 +3123,17 @@ class ChemicalDrift(OceanDrift):
                 DOC_conc = Concentration_file.sel(specie = 1)
                 DOC_conc = DOC_conc.concentration_avg
                 # print("DOC was considered for partitioning of chemical")
-                DC_Conc_array_wat = Dissolved_conc + SPM_conc + DOC_conc
-                # DC_Conc_array_wat = Dissolved_conc + DOC_conc
-            else: 
-                DC_Conc_array_wat = Dissolved_conc + SPM_conc
-                # DC_Conc_array_wat = Dissolved_conc
+                if Conc_SPM == True:
+                    DC_Conc_array_wat = Dissolved_conc + SPM_conc + DOC_conc
+                else:
+                    DC_Conc_array_wat = Dissolved_conc + DOC_conc
+                    print("SPM was not considered for water concentration")
+            else:
+                if Conc_SPM == True:
+                    DC_Conc_array_wat = Dissolved_conc + SPM_conc
+                else:
+                    DC_Conc_array_wat = Dissolved_conc
+                    print("SPM was not considered for water concentration")
         
         elif Transfer_setup == "metals":
             Dissolved_conc = Concentration_file.sel(specie = 0)
@@ -3135,8 +3142,11 @@ class ChemicalDrift(OceanDrift):
             SPM_conc = SPM_conc.concentration_avg
             SPM_conc_sr = Concentration_file.sel(specie = 2)
             SPM_conc_sr = SPM_conc_sr.concentration_avg
-            DC_Conc_array_wat = Dissolved_conc + SPM_conc + SPM_conc_sr
-            # DC_Conc_array_wat = Dissolved_conc
+            if Conc_SPM == True:
+                DC_Conc_array_wat = Dissolved_conc + SPM_conc + SPM_conc_sr
+            else:
+                DC_Conc_array_wat = Dissolved_conc
+                print("SPM was not considered for water concentration")
 
         print("Running sediment concentration", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
         DC_Conc_array_sed = Concentration_file.concentration_avg[:,3,:,:,:]
@@ -3167,13 +3177,13 @@ class ChemicalDrift(OceanDrift):
                                                       lon_coord = lon, 
                                                       lat_coord = lat, 
                                                       time_coord = time_avg,
-                                                      shift_time = shift_time)
+                                                      shift_time = Shift_time)
 
         DC_Conc_array_sed = self.correct_conc_coordinates(DC_Conc_array = DC_Conc_array_sed, 
                                                       lon_coord = lon, 
                                                       lat_coord = lat, 
                                                       time_coord = time_avg,
-                                                      shift_time = shift_time)
+                                                      shift_time = Shift_time)
 
         DC_Conc_array_wat.name = "concentration_avg_water"
         DC_Conc_array_wat.attrs['standard_name'] = "water_concentration"
