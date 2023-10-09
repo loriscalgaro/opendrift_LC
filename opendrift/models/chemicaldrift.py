@@ -3438,6 +3438,8 @@ class ChemicalDrift(OceanDrift):
         if 'time' in Conc_DataArray.dims:
             Conc_DataArray = Conc_DataArray.where(((Conc_DataArray.time >= time_start) &
                                            (Conc_DataArray.time <= time_end)), drop=True)
+            if Conc_DataArray.time.size == 0:
+                raise ValueError("Conc_DataArray.time is out of time_start/end interval")
         elif time_start is not None:
             Conc_DataArray['time'] = time_start
         else:
