@@ -3400,6 +3400,7 @@ class ChemicalDrift(OceanDrift):
         aspect = 15
         # pad_fraction = 1e-1
         file_output_path = file_out_path + file_out_sub_folder
+        print("Figure saved to: ", file_output_path)
         
         title_font_size = labels_font_sizes[0]
         x_label_font_size = labels_font_sizes[1]
@@ -3462,7 +3463,7 @@ class ChemicalDrift(OceanDrift):
                 elif (Conc_DataArray.time.to_numpy()).size <= 1 and "depth" not in Conc_DataArray.dims:
                     Conc_DataArray_selected = Conc_DataArray
                     
-                fig, ax = plt.subplots(figsize = (20,15)) # Change here size of figure
+                fig, ax = plt.subplots(figsize = (23,15)) # Change here size of figure
                 shp.plot(ax = ax, color = shp_color, zorder = 10)
                 ax2 = Conc_DataArray_selected.plot.pcolormesh(ax = ax, 
                                                         x = 'longitude', 
@@ -3517,7 +3518,7 @@ class ChemicalDrift(OceanDrift):
                                                   robust = True, 
                                                   cmap=selected_colormap, 
                                                   levels = levels_colormap,
-                                                  figsize = (20,15),
+                                                  figsize = (23,15),
                                                   add_colorbar=False) # colorbar is added ex-post
                 plt.title(plt_title, pad=30, fontsize = title_font_size, weight = "bold")
                 plt.ylabel("Latitude", fontsize = x_label_font_size, labelpad=30.)
