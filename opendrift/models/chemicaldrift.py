@@ -2292,6 +2292,21 @@ class ChemicalDrift(OceanDrift):
         compute a particle concentration map from particle positions
         Use user defined projection (density_proj=<proj4_string>)
         or create a lon/lat grid (density_proj=None)
+            Arguments:
+                pixelsize_m:   float32, lenght of gridcells in m
+                z_array:       list of float32, depth levels at which concentration will be calculated
+                               Values must be negative and ordered from the lowest depth (e.g. [-50., -10., -5.])
+                               In the .nc file "depth" value will indicate the start of the vertical slice
+                               i.e. "depth = 0" indicates slice from 0 to 5 m, and "depth = 50" indicates
+                               slice from 50m to bathimietry 
+                density_proj:  string, <proj4_string
+                llcrnrlon:     float32, min longitude of grid
+                llcrnrlat:     float32, min latitude of grid
+                urcrnrlon:     float32, max longitude of grid
+                urcrnrlat:     float32, max latitude of grid
+                weight:        float32,
+                origin_marker: int, only elements with this value of "origin_marker" will be considered                             
+
         '''
         lon = self.get_property('lon')[0]
         lat = self.get_property('lat')[0]
@@ -3014,6 +3029,7 @@ class ChemicalDrift(OceanDrift):
         for t, s, d in np.ndindex(ds.sizes['avg_time'], ds.sizes['specie'], ds.sizes['depth']):
             # select the data for the current avg_time, specie, and depth
             points = ds.concentration_avg[t,s,d,:,:].values.reshape(-1)
+            # points = ds.topo[t,s,d,:,:].values.reshape(-1)
 
             if first:
                 # Store the weights for the interpolation
@@ -3028,6 +3044,7 @@ class ChemicalDrift(OceanDrift):
         # create a new xarray dataarray with the regridded data
         regridded_concentration_avg = xr.DataArray(regridded_concentration_avg_data, coords=[ds['avg_time'], ds['specie'], ds['depth'], new_lat_coords, new_lon_coords], dims=['avg_time', 'specie', 'depth', 'y', 'x'])
         regridded_concentration_avg.name = "concentration_avg"
+        # regridded_concentration_avg.name = "topo"
         # change negative concentration values to 0
         regridded_concentration_avg_nan = regridded_concentration_avg.copy()
         regridded_concentration_avg_nan = xr.where(regridded_concentration_avg_nan < 0, 0, regridded_concentration_avg_nan)
