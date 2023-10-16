@@ -25,6 +25,7 @@ import numpy as np
 import logging; logger = logging.getLogger(__name__)
 
 from opendrift.models.oceandrift import OceanDrift, Lagrangian3DArray
+from opendrift.config import CONFIG_LEVEL_ESSENTIAL, CONFIG_LEVEL_BASIC, CONFIG_LEVEL_ADVANCED
 import pyproj
 from datetime import datetime
 
@@ -130,211 +131,208 @@ class ChemicalDrift(OceanDrift):
         self._add_config({
             'chemical:transfer_setup': {'type': 'enum',
                 'enum': ['Sandnesfj_Al','metals', '137Cs_rev', 'custom', 'organics'], 'default': 'custom',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             'chemical:dynamic_partitioning': {'type': 'bool', 'default': True,
-                'level': self.CONFIG_LEVEL_BASIC, 'description': 'Toggle dynamic partitioning'},
+                'level': CONFIG_LEVEL_BASIC, 'description': 'Toggle dynamic partitioning'},
             'chemical:slowly_fraction': {'type': 'bool', 'default': False,
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:irreversible_fraction': {'type': 'bool', 'default': False,
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:dissolved_diameter': {'type': 'float', 'default': 0,
                 'min': 0, 'max': 100e-6, 'units': 'm',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:particle_diameter': {'type': 'float', 'default': 5e-6,
                 'min': 0, 'max': 100e-6, 'units': 'm',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
-			'chemical:doc_particle_diameter': {'type': 'float', 'default': 5e-6,
-			    'min': 0, 'max': 100e-6, 'units': 'm',
-			    'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': 'Diameter of DOM aggregates for marine water'}, # https://doi.org/10.1038/246170a0
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             'chemical:particle_concentration_half_depth': {'type': 'float', 'default': 20,
                 'min': 0, 'max': 100, 'units': 'm',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:doc_concentration_half_depth': {'type': 'float', 'default': 1000, # TODO: check better
                 'min': 0, 'max': 1000, 'units': 'm',                                     # Vertical conc drops more slowly slower than for SPM
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},                # example: 10.3389/fmars.2017.00436. lower limit around 40 umol/L
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},                # example: 10.3389/fmars.2017.00436. lower limit around 40 umol/L
             'chemical:particle_diameter_uncertainty': {'type': 'float', 'default': 1e-7,
                 'min': 0, 'max': 100e-6, 'units': 'm',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             'seed:LMM_fraction': {'type': 'float','default': .1,
                 'min': 0, 'max': 1, 'units': '',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             'seed:particle_fraction': {'type': 'float','default': 0.9,
                 'min': 0, 'max': 1, 'units': '',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             # Species
             'chemical:species:LMM': {'type': 'bool', 'default': True,
-                'level': self.CONFIG_LEVEL_BASIC, 'description': 'Toggle LMM species'},
+                'level': CONFIG_LEVEL_BASIC, 'description': 'Toggle LMM species'},
             'chemical:species:LMMcation': {'type': 'bool', 'default': False,
-                'level': self.CONFIG_LEVEL_BASIC, 'description': ''},
+                'level': CONFIG_LEVEL_BASIC, 'description': ''},
             'chemical:species:LMManion': {'type': 'bool', 'default': False,
-                'level': self.CONFIG_LEVEL_BASIC, 'description': ''},
+                'level': CONFIG_LEVEL_BASIC, 'description': ''},
             'chemical:species:Colloid': {'type': 'bool', 'default': False,
-                'level': self.CONFIG_LEVEL_BASIC, 'description': ''},
+                'level': CONFIG_LEVEL_BASIC, 'description': ''},
             'chemical:species:Humic_colloid': {'type': 'bool', 'default': False,
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:species:Polymer': {'type': 'bool', 'default': False,
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:species:Particle_reversible': {'type': 'bool', 'default': True,
-                'level': self.CONFIG_LEVEL_BASIC, 'description': ''},
+                'level': CONFIG_LEVEL_BASIC, 'description': ''},
             'chemical:species:Particle_slowly_reversible': {'type': 'bool', 'default': False,
-                'level': self.CONFIG_LEVEL_BASIC, 'description': ''},
+                'level': CONFIG_LEVEL_BASIC, 'description': ''},
             'chemical:species:Particle_irreversible': {'type': 'bool', 'default': False,
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:species:Sediment_reversible': {'type': 'bool', 'default': True,
-                'level': self.CONFIG_LEVEL_BASIC, 'description': ''},
+                'level': CONFIG_LEVEL_BASIC, 'description': ''},
             'chemical:species:Sediment_slowly_reversible': {'type': 'bool', 'default': False,
-                'level': self.CONFIG_LEVEL_BASIC, 'description': ''},
+                'level': CONFIG_LEVEL_BASIC, 'description': ''},
             'chemical:species:Sediment_irreversible': {'type': 'bool', 'default': False,
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             # Transformations
             'chemical:transformations:Kd': {'type': 'float', 'default': 2.0,
                 'min': 0, 'max': 1e9, 'units': 'm3/kg',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             'chemical:transformations:S0': {'type': 'float', 'default': 0.0,
                 'min': 0, 'max': 100, 'units': 'PSU',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': 'parameter controlling salinity dependency of Kd for metals'},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'parameter controlling salinity dependency of Kd for metals'},
             'chemical:transformations:Dc': {'type': 'float', 'default': 1.16e-5,                # Simonsen 2019
                 'min': 0, 'max': 1e6, 'units': '',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:transformations:slow_coeff': {'type': 'float', 'default': 0, #1.2e-7,         # Simonsen 2019
                 'min': 0, 'max': 1e6, 'units': '',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:transformations:volatilization': {'type': 'bool', 'default': False,
                 'description': 'Chemical is evaporated.',
-                'level': self.CONFIG_LEVEL_BASIC},
+                'level': CONFIG_LEVEL_BASIC},
             'chemical:transformations:degradation': {'type': 'bool', 'default': False,
                 'description': 'Chemical mass is degraded.',
-                'level': self.CONFIG_LEVEL_BASIC},
+                'level': CONFIG_LEVEL_BASIC},
             'chemical:transformations:degradation_mode': {'type': 'enum',
                 'enum': ['OverallRateConstants'], 'default': 'OverallRateConstants',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             # sorption/desorption
             'chemical:transformations:dissociation': {'type': 'enum',
                 'enum': ['nondiss','acid', 'base', 'amphoter'], 'default': 'nondiss',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             'chemical:transformations:LogKOW': {'type': 'float', 'default': 3.361,          # Naphthalene
                 'min': -3, 'max': 10, 'units': 'Log L/Kg',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             'chemical:transformations:TrefKOW': {'type': 'float', 'default': 25.,           # Naphthalene
                 'min': -3, 'max': 30, 'units': 'C',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             'chemical:transformations:DeltaH_KOC_Sed': {'type': 'float', 'default': -21036., # Naphthalene
                 'min': -100000., 'max': 100000., 'units': 'J/mol',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             'chemical:transformations:DeltaH_KOC_DOM': {'type': 'float', 'default': -25900., # Naphthalene
                 'min': -100000., 'max': 100000., 'units': 'J/mol',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             'chemical:transformations:Setchenow': {'type': 'float', 'default': 0.2503,      # Naphthalene
                 'min': 0, 'max': 1, 'units': 'L/mol',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             'chemical:transformations:pKa_acid': {'type': 'float', 'default': -1,
                 'min': -1, 'max': 14, 'units': '',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:transformations:pKa_base': {'type': 'float', 'default': -1,
                 'min': -1, 'max': 14, 'units': '',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:transformations:KOC_DOM': {'type': 'float', 'default': -1,
                 'min': -1, 'max': 10000000000, 'units': 'L/KgOC',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:transformations:KOC_sed': {'type': 'float', 'default': -1,
                 'min': -1, 'max': 10000000000, 'units': 'L/KgOC',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:transformations:fOC_SPM': {'type': 'float', 'default': 0.05,
                 'min': 0.01, 'max': 0.1, 'units': 'gOC/g',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:transformations:fOC_sed': {'type': 'float', 'default': 0.05,
                 'min': 0.01, 'max': 0.1, 'units': 'gOC/g',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:transformations:aggregation_rate': {'type': 'float', 'default': 0,
                 'min': 0, 'max': 1, 'units': 's-1',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             # Degradation in water column
             'chemical:transformations:t12_W_tot': {'type': 'float', 'default': 224.08,      # Naphthalene
                 'min': 1, 'max': None, 'units': 'hours',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': 'half life in water, total'},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'half life in water, total'},
             'chemical:transformations:Tref_kWt': {'type': 'float', 'default': 25.,          # Naphthalene
                 'min': -3, 'max': 30, 'units': 'C',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             'chemical:transformations:DeltaH_kWt': {'type': 'float', 'default': 50000.,     # generic
                 'min': -100000., 'max': 100000., 'units': 'J/mol',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             # Degradation in sediment layer
             'chemical:transformations:t12_S_tot': {'type': 'float', 'default': 5012.4,      # Naphthalene
                 'min': 1, 'max': None, 'units': 'hours',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': 'half life in sediments, total'},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'half life in sediments, total'},
             'chemical:transformations:Tref_kSt': {'type': 'float', 'default': 25.,          # Naphthalene
                 'min': -3, 'max': 30, 'units': 'C',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             'chemical:transformations:DeltaH_kSt': {'type': 'float', 'default': 50000.,     # generic
                 'min': -100000., 'max': 100000., 'units': 'J/mol',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             # Volatilization
             'chemical:transformations:MolWt': {'type': 'float', 'default': 128.1705,         # Naphthalene
                 'min': 50, 'max': 1000, 'units': 'amu',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': 'molecular weight'},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'molecular weight'},
             'chemical:transformations:Henry': {'type': 'float', 'default': 4.551e-4,        # Napththalene
                 'min': None, 'max': None, 'units': 'atm m3 mol-1',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': 'Henry constant'},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Henry constant'},
             # vapour pressure
             'chemical:transformations:Vpress': {'type': 'float', 'default': 11.2,           # Naphthalene
                 'min': None, 'max': None, 'units': 'Pa',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': 'Vapour pressure'},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Vapour pressure'},
             'chemical:transformations:Tref_Vpress': {'type': 'float', 'default': 25.,        # Naphthalene
                 'min': None, 'max': None, 'units': 'C',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': 'Vapour pressure ref temp'},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Vapour pressure ref temp'},
             'chemical:transformations:DeltaH_Vpress': {'type': 'float', 'default': 55925.,   # Naphthalene
                 'min': -100000., 'max': 115000., 'units': 'J/mol',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': 'Enthalpy of volatilization'},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Enthalpy of volatilization'},
             # solubility
             'chemical:transformations:Solub': {'type': 'float', 'default': 31.4,            # Naphthalene
                 'min': None, 'max': None, 'units': 'g/m3',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': 'Solubility'},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Solubility'},
             'chemical:transformations:Tref_Solub': {'type': 'float', 'default': 25.,         # Naphthalene
                 'min': None, 'max': None, 'units': 'C',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': 'Solubility ref temp'},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Solubility ref temp'},
             'chemical:transformations:DeltaH_Solub': {'type': 'float', 'default': 25300.,    # Naphthalene
                 'min': -100000., 'max': 100000., 'units': 'J/mol',
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': 'Enthalpy of solubilization'},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Enthalpy of solubilization'},
             # Sedimentation/Resuspension
             'chemical:sediment:mixing_depth': {'type': 'float', 'default': 0.03,
                 'min': 0, 'max': 100, 'units': 'm',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:density': {'type': 'float', 'default': 2600,
                 'min': 0, 'max': 10000, 'units': 'kg/m3',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:effective_fraction': {'type': 'float', 'default': 0.9,
                 'min': 0, 'max': 1, 'units': '',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:corr_factor': {'type': 'float', 'default': 0.1,
                 'min': 0, 'max': 10, 'units': '',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:porosity': {'type': 'float', 'default': 0.6,
                 'min': 0, 'max': 1, 'units': '',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:layer_thickness': {'type': 'float', 'default': 1,
                 'min': 0, 'max': 100, 'units': 'm',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:desorption_depth': {'type': 'float', 'default': 1,
                 'min': 0, 'max': 100, 'units': 'm',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:desorption_depth_uncert': {'type': 'float', 'default': .5,
                 'min': 0, 'max': 100, 'units': 'm',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:resuspension_depth': {'type': 'float', 'default': 1,
                 'min': 0, 'max': 100, 'units': 'm',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:resuspension_depth_uncert': {'type': 'float', 'default': .5,
                 'min': 0, 'max': 100, 'units': 'm',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:resuspension_critvel': {'type': 'float', 'default': .01,
                 'min': 0, 'max': 1, 'units': 'm/s',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:burial_rate': {'type': 'float', 'default': .00003,   # MacKay
                 'min': 0, 'max': 10, 'units': 'm/year',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:buried_leaking_rate': {'type': 'float', 'default': 0,
                 'min': 0, 'max': 10, 'units': 's-1',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': 'rate of resuspension of buried sediments'},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             #
             'chemical:compound': {'type': 'enum',
                 'enum': ['Naphthalene','Phenanthrene','Fluoranthene',
@@ -345,9 +343,9 @@ class ChemicalDrift(OceanDrift):
                          'C2-Phenanthrene','Benzo-b-fluoranthene','Chrysene',
                          'C3-Dibenzothiophene','C3-Phenanthrene',
                          'Benzo-k-fluoranthene','Benzo-ghi-perylene','Indeno-123cd-pyrene',
-                         'Copper','Cadmium','Chromium','Lead','Vanadium','Zinc','Nickel','Nitrogen', 'Alkalinity', None],
+                         'Copper','Cadmium','Chromium','Lead','Vanadium','Zinc','Nickel',None],
                 'default': None,
-                'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             })
 
 
@@ -467,11 +465,11 @@ class ChemicalDrift(OceanDrift):
 
 
         if 'specie' in kwargs:
-            # print('num_elements', num_elements)
-            # try:
-            #     print('len specie:',len(kwargs['specie']))
-            # except:
-            #     print('specie:',kwargs['specie'])
+            print('num_elements', num_elements)
+            try:
+                print('len specie:',len(kwargs['specie']))
+            except:
+                print('specie:',kwargs['specie'])
 
             init_specie = np.ones(num_elements,dtype=int)
             init_specie[:] = kwargs['specie']
@@ -575,34 +573,34 @@ class ChemicalDrift(OceanDrift):
         KOC_sed_diss_base = 10**(pKa_acid**(0.65*((KOW/(KOW+1))**0.14))) # KOC for ionized form of base species (L/kg_OC) # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
         # Updated values of KOC to calculate correction factor
         KOC_sed_updated = np.empty_like(pH_sed)
-        KOC_sedcorr = np.empty_like(pH_sed)
+        KOC_sedcorr= np.empty_like(pH_sed)
 
+        for i in (range(len(pH_sed))):
+            if diss=='acid':
 
-        if diss == 'acid':
-            Phi_n_sed = 1/(1+10**(pH_sed-pKa_acid))
-            Phi_diss_sed = 1-Phi_n_sed
-            KOC_sed_updated = (KOC_sed_n*Phi_n_sed)+(Phi_diss_sed*KOC_sed_diss_acid)
+                Phi_n_sed    = 1/(1 + 10**(pH_sed[i]-pKa_acid))
+                Phi_diss_sed = 1-Phi_n_sed
+                KOC_sed_updated[i] = (KOC_sed_n * Phi_n_sed) + (Phi_diss_sed * KOC_sed_diss_acid)
+                KOC_sedcorr[i] = KOC_sed_updated[i]/KOC_sed_initial
 
-            KOC_sedcorr = KOC_sed_updated/KOC_sed_initial
+            elif diss=='base':
 
-        elif diss == 'base':
-            Phi_n_sed = 1/(1+10**(pH_sed-pKa_base))
-            Phi_diss_sed = 1-Phi_n_sed
-            KOC_sed_updated = (KOC_sed_n*Phi_n_sed) + (Phi_diss_sed*KOC_sed_diss_acid)
+                Phi_n_sed    = 1/(1 + 10**(pH_sed[i]-pKa_base))
+                Phi_diss_sed = 1-Phi_n_sed
+                KOC_sed_updated[i] = (KOC_sed_n * Phi_n_sed) + (Phi_diss_sed * KOC_sed_diss_acid)
+                KOC_sedcorr[i] = KOC_sed_updated[i]/KOC_sed_initial
 
-            KOC_sedcorr = KOC_sed_updated/KOC_sed_initial
+            elif diss=='amphoter':
 
-        elif diss == 'amphoter':
-            Phi_n_sed = 1/(1+10**(pH_sed-pKa_acid)+10**(pKa_base))
-            Phi_anion_sed = Phi_n_sed*10**(pH_sed-pKa_acid)
-            Phi_cation_sed = Phi_n_sed*10**(pKa_base-pH_sed)
-            KOC_sed_updated = (KOC_sed_n*Phi_n_sed)+(Phi_anion_sed*KOC_sed_diss_acid) + (Phi_cation_sed*KOC_sed_diss_base)
+                Phi_n_sed      = 1/(1 + 10**(pH_sed[i]-pKa_acid) + 10**(pKa_base))
+                Phi_anion_sed  = Phi_n_sed * 10**(pH_sed[i]-pKa_acid)
+                Phi_cation_sed = Phi_n_sed * 10**(pKa_base-pH_sed[i])
 
-            KOC_sedcorr = KOC_sed_updated/KOC_sed_initial
+                KOC_sed_updated[i] = (KOC_sed_n * Phi_n_sed) + (Phi_anion_sed * KOC_sed_diss_acid) + (Phi_cation_sed * KOC_sed_diss_base)
+                KOC_sedcorr[i]=KOC_sed_updated[i]/KOC_sed_initial
 
-        elif diss == 'undiss':
-            for i in (range(len(pH_sed))):
-                KOC_sedcorr[i] = 1
+            elif diss=='undiss':
+                KOC_sedcorr[i]=1
 
         return KOC_sedcorr
 
@@ -616,32 +614,35 @@ class ChemicalDrift(OceanDrift):
 
         KOC_SPM_updated = np.empty_like(pH_water_SPM)
         KOC_SPMcorr = np.empty_like(pH_water_SPM)
-        
-        if diss == 'acid':
-            Phi_n_SPM = 1 / (1 + 10 ** (pH_water_SPM - pKa_acid))
-            Phi_diss_SPM = 1 - Phi_n_SPM
-            KOC_SPM_updated = (KOC_sed_n * Phi_n_SPM) + (Phi_diss_SPM * KOC_sed_diss_acid)
 
-            KOC_SPMcorr = KOC_SPM_updated / KOC_SPM_initial
+        for i in (range(len(pH_water_SPM))):
+            if diss=='acid':
 
-        elif diss == 'base':
-            Phi_n_SPM = 1 / (1 + 10 ** (pH_water_SPM - pKa_base))
-            Phi_diss_SPM = 1 - Phi_n_SPM
-            KOC_SPM_updated = (KOC_sed_n * Phi_n_SPM) + (Phi_diss_SPM * KOC_sed_diss_acid)
+                Phi_n_SPM    = 1/(1 + 10**(pH_water_SPM[i]-pKa_acid))
+                Phi_diss_SPM = 1-Phi_n_SPM
+                KOC_SPM_updated[i] = (KOC_sed_n * Phi_n_SPM) + (Phi_diss_SPM * KOC_sed_diss_acid)
 
-            KOC_SPMcorr = KOC_SPM_updated / KOC_SPM_initial
+                KOC_SPMcorr[i]=KOC_SPM_updated[i]/KOC_SPM_initial
 
-        elif diss == 'amphoter':
-            Phi_n_SPM = 1 / (1 + 10 ** (pH_water_SPM - pKa_acid) + 10 ** (pKa_base))
-            Phi_anion_SPM = Phi_n_SPM * 10 ** (pH_water_SPM - pKa_acid)
-            Phi_cation_SPM = Phi_n_SPM * 10 ** (pKa_base - pH_water_SPM)
-            KOC_SPM_updated = (KOC_sed_n * Phi_n_SPM) + (Phi_anion_SPM * KOC_sed_diss_acid) + (Phi_cation_SPM * KOC_sed_diss_base)
+            elif diss=='base':
 
-            KOC_SPMcorr = KOC_SPM_updated / KOC_SPM_initial
+                Phi_n_SPM    = 1/(1 + 10**(pH_water_SPM[i]-pKa_base))
+                Phi_diss_SPM = 1-Phi_n_SPM
+                KOC_SPM_updated[i] = (KOC_sed_n * Phi_n_SPM) + (Phi_diss_SPM * KOC_sed_diss_acid)
 
-        elif diss == 'undiss':
-            for i in (range(len(pH_water_SPM))):
-                KOC_SPMcorr[i] = 1
+                KOC_SPMcorr[i]=KOC_SPM_updated[i]/KOC_SPM_initial
+
+            elif diss=='amphoter':
+
+                Phi_n_SPM      = 1/(1 + 10**(pH_water_SPM[i]-pKa_acid) + 10**(pKa_base))
+                Phi_anion_SPM  = Phi_n_SPM * 10**(pH_water_SPM[i]-pKa_acid)
+                Phi_cation_SPM = Phi_n_SPM * 10**(pKa_base-pH_water_SPM[i])
+                KOC_SPM_updated[i] = (KOC_sed_n * Phi_n_SPM) + (Phi_anion_SPM * KOC_sed_diss_acid) + (Phi_cation_SPM * KOC_sed_diss_base)
+
+                KOC_SPMcorr[i]=KOC_SPM_updated[i]/KOC_SPM_initial
+
+            elif diss=='undiss':
+                KOC_SPMcorr[i]=1
 
         return KOC_SPMcorr
 
@@ -654,33 +655,33 @@ class ChemicalDrift(OceanDrift):
         KOC_DOM_updated = np.empty_like(pH_water_DOM)
         KOC_DOMcorr = np.empty_like(pH_water_DOM)
 
-        if diss == 'acid':
+        for i in (range(len(pH_water_DOM))):
+            if diss=='acid':
 
-            Phi_n_DOM = 1 / (1 + 10 ** (pH_water_DOM - pKa_acid))
-            Phi_diss_DOM = 1 - Phi_n_DOM
-            KOC_DOM_updated = (0.08 * ((Phi_n_DOM * (KOC_DOM_n)) + ((1 - Phi_diss_DOM) * 10 ** (np.log10(
-                KOW) - 3.5)))) / 0.526  # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
+                Phi_n_DOM    = 1/(1 + 10**(pH_water_DOM[i]-pKa_acid))
+                Phi_diss_DOM    = 1-Phi_n_DOM
+                KOC_DOM_updated[i] = (0.08 * ((Phi_n_DOM*(KOC_DOM_n)) + ((1 - Phi_diss_DOM)*10**(np.log10(KOW)-3.5))))/0.526 # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
 
-            KOC_DOMcorr = KOC_DOM_updated / KOC_DOM_initial
+                KOC_DOMcorr[i]=KOC_DOM_updated[i]/KOC_DOM_initial
 
-        elif diss == 'base':
+            elif diss=='base':
 
-            Phi_n_DOM = 1 / (1 + 10 ** (pH_water_DOM - pKa_base))
-            Phi_diss_DOM = 1 - Phi_n_DOM
-            KOC_DOM_updated = (0.08 * ((Phi_n_DOM * (KOC_DOM_n)) + ((1 - Phi_diss_DOM) * 10 ** (np.log10(KOW) - 3.5)))) / 0.526  # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
+                Phi_n_DOM    = 1/(1 + 10**(pH_water_DOM[i]-pKa_base))
+                Phi_diss_DOM    = 1-Phi_n_DOM
+                KOC_DOM_updated[i] = (0.08 * ((Phi_n_DOM*(KOC_DOM_n)) + ((1 - Phi_diss_DOM)*10**(np.log10(KOW)-3.5))))/0.526 # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
 
-            KOC_DOMcorr = KOC_DOM_updated / KOC_DOM_initial
+                KOC_DOMcorr[i]=KOC_DOM_updated[i]/KOC_DOM_initial
 
-        elif diss == 'amphoter':
+            elif diss=='amphoter':
 
-            Phi_n_DOM = 1 / (1 + 10 ** (pH_water_DOM - pKa_acid) + 10 ** (pKa_base))
-            Phi_diss_DOM = 1 - Phi_n_DOM
-            KOC_DOM_updated = (0.08 * ((Phi_n_DOM * (KOC_DOM_n)) + ((1 - Phi_diss_DOM) * 10 ** (np.log10(KOW) - 3.5)))) / 0.526  # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
-            KOC_DOMcorr = KOC_DOM_updated / KOC_DOM_initial
+                Phi_n_DOM      = 1/(1 + 10**(pH_water_DOM[i]-pKa_acid) + 10**(pKa_base))
+                Phi_diss_DOM   = 1-Phi_n_DOM
+                KOC_DOM_updated[i] = (0.08 * ((Phi_n_DOM*(KOC_DOM_n)) + ((1 - Phi_diss_DOM)*10**(np.log10(KOW)-3.5))))/0.526 # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
+                KOC_DOMcorr[i]=KOC_DOM_updated[i]/KOC_DOM_initial
 
-        elif diss == 'undiss':
-            for i in (range(len(pH_water_DOM))):
-                KOC_DOMcorr[i] = 1
+            elif diss=='undiss':
+                    KOC_DOMcorr[i]=1
+
         return KOC_DOMcorr
 
 
@@ -1241,14 +1242,16 @@ class ChemicalDrift(OceanDrift):
                 pKa_acid   = self.get_config('chemical:transformations:pKa_acid')
                 if pKa_acid < 0:
                     raise ValueError("pKa_acid must be positive")
-
+                    # print("pKa_acid must be positive")
+                    # UserWarning(("pKa_acid must be positive"))
                 else:
                     pass
 
                 pKa_base   = self.get_config('chemical:transformations:pKa_base')
                 if pKa_base < 0:
                     raise ValueError("pKa_base must be positive")
-
+                    # print("pKa_base must be positive")
+                    # UserWarning(("pKa_base must be positive"))
                 else:
                     pass
 
@@ -1524,7 +1527,6 @@ class ChemicalDrift(OceanDrift):
 
 
         dia_part=self.get_config('chemical:particle_diameter')
-        dia_DOM_part = self.get_config('chemical:doc_particle_diameter')
         dia_diss=self.get_config('chemical:dissolved_diameter')
 
 
@@ -1533,7 +1535,7 @@ class ChemicalDrift(OceanDrift):
 
         # TODO Choose a proper diameter for aggregated particles
         if self.get_config('chemical:species:Humic_colloid'):
-            self.elements.diameter[(sp_out==self.num_prev) & (sp_in==self.num_humcol)] = dia_DOM_part
+            self.elements.diameter[(sp_out==self.num_prev) & (sp_in==self.num_humcol)] = dia_part/2
 
         logger.debug('Updated particle diameter for %s elements' % len(self.elements.diameter[(sp_out==self.num_prev) & (sp_in!=self.num_prev)]))
 
@@ -1657,7 +1659,7 @@ class ChemicalDrift(OceanDrift):
 
     def degradation(self):
         '''degradation.'''
-        
+
         if self.get_config('chemical:transformations:degradation') is True:
             if self.get_config('chemical:transformations:degradation_mode')=='OverallRateConstants':
                 # TODO: Rearrange code. Calculations here are for overall degradation including
@@ -1703,7 +1705,7 @@ class ChemicalDrift(OceanDrift):
 
             self.elements.mass_degraded = self.elements.mass_degraded + degraded_now
             self.elements.mass = self.elements.mass - degraded_now
-            self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100, 
+            self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100,
                                      reason='removed')
 
             #to_deactivate = self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100
@@ -1726,7 +1728,7 @@ class ChemicalDrift(OceanDrift):
             MolWt=self.get_config('chemical:transformations:MolWt')
             wind=5                  # (m/s) (to read from atmosferic forcing)
             mixedlayerdepth=50      # m     (to read from ocean forcing)
-            
+            Undiss_n=1              # 1 for PAHs
 
             Henry=self.get_config('chemical:transformations:Henry') # (atm m3/mol)
 
@@ -1740,24 +1742,7 @@ class ChemicalDrift(OceanDrift):
 
             R=8.206e-05 #(atm m3)/(mol K)
 
-            diss = self.get_config('chemical:transformations:dissociation')
-
-            pKa_acid = self.get_config('chemical:transformations:pKa_acid')
-            if pKa_acid < 0 and diss != 'nondiss':
-                raise ValueError("pKa_acid must be positive")
-            else:
-                pass
-
-            pKa_base = self.get_config('chemical:transformations:pKa_base')
-            if pKa_base < 0 and diss != 'nondiss':
-                raise ValueError("pKa_base must be positive")
-            else:
-                pass
-
-            if diss == 'amphoter' and abs(pKa_acid - pKa_base) < 2:
-                raise ValueError("pKa_base and pKa_acid must differ of at least two units")
-            else:
-                pass
+            mixedlayerdepth = self.environment.ocean_mixed_layer_thickness
 
             # mask of dissolved elements within mixed layer
             W =     (self.elements.specie == self.num_lmm) \
@@ -1765,7 +1750,6 @@ class ChemicalDrift(OceanDrift):
                     # does volatilization apply only to num_lmm?
                     # check
 
-            mixedlayerdepth = self.environment.ocean_mixed_layer_thickness
             mixedlayerdepth = mixedlayerdepth[W]
 
             T=self.environment.sea_water_temperature[W]
@@ -1784,21 +1768,8 @@ class ChemicalDrift(OceanDrift):
             # Calculate mass transfer coefficient water side
             # Schwarzenbach et al., 2016 Eq.(19-20)
 
-            pH_water = self.environment.sea_water_ph_reported_on_total_scale[W]
+            MTCw = ((9e-4)+(7.2e-6*wind**3)) * (MolWtCO2/MolWt)**0.25 / Undiss_n
 
-            if diss == 'nondiss':
-                Undiss_n = 1  # 1 for PAHs
-            elif diss == 'acid':
-                # Only undissociated chemicals volatilize
-                Undiss_n = 1 / (1 + 10 ** (pH_water - pKa_acid))
-            elif diss == 'base':
-                # Dissociation in water
-                Undiss_n = 1 / (1 + 10 ** (pH_water - pKa_base))
-            elif diss == 'amphoter':
-                # Only undissociated chemicals volatilize # This approach ignores the zwitterionic fraction. 10.1002/etc.115
-                Undiss_n = 1 / (1 + 10 ** (pH_water - pKa_acid) + 10 ** (pKa_base))
-
-            MTCw = (((9e-4) + (7.2e-6 * wind ** 3)) * (MolWtCO2 / MolWt) ** 0.25) * Undiss_n
             # Calculate mass transfer coefficient air side
             # Schwarzenbach et al., 2016 Eq.(19-17)(19-18)(19-19)
 
@@ -1848,7 +1819,7 @@ class ChemicalDrift(OceanDrift):
 
             self.elements.mass_volatilized = self.elements.mass_volatilized + volatilized_now
             self.elements.mass = self.elements.mass - volatilized_now
-            self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100, 
+            self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100,
                                      reason='removed')
 
             #to_deactivate = self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100
@@ -2091,7 +2062,7 @@ class ChemicalDrift(OceanDrift):
         sed_L       = self.get_config('chemical:sediment:mixing_depth')
         sed_dens    = self.get_config('chemical:sediment:density')
         sed_poro    = self.get_config('chemical:sediment:porosity')
-        pixel_sed_mass = (pixelsize_m**2 *sed_L)*(1-sed_poro)*sed_dens      # mass in kg dry weight
+        pixel_sed_mass = (pixelsize_m**2 *sed_L)*(1-sed_poro)*sed_dens      # mass in kg
 
         # TODO this should be multiplied for the fraction og grid cell are that is not on land
 
@@ -2220,7 +2191,7 @@ class ChemicalDrift(OceanDrift):
             nc.variables['concentration'].long_name = self.get_config('chemical:compound') +' concentration ' + '\n' + 'specie '+ \
                                                             ' '.join(['{}:{}'.format(isp,sp) for isp,sp in enumerate(self.name_species)])
             nc.variables['concentration'].grid_mapping = 'projection_lonlat'
-            nc.variables['concentration'].units = mass_unit+'/m3'+' (sed '+mass_unit+'/Kg d.w.)'
+            nc.variables['concentration'].units = mass_unit+'/m3'+' (sed '+mass_unit+'/Kg)'
 
 
         # Chemical concentration, horizontally smoothed
@@ -2292,21 +2263,6 @@ class ChemicalDrift(OceanDrift):
         compute a particle concentration map from particle positions
         Use user defined projection (density_proj=<proj4_string>)
         or create a lon/lat grid (density_proj=None)
-            Arguments:
-                pixelsize_m:   float32, lenght of gridcells in m
-                z_array:       list of float32, depth levels at which concentration will be calculated
-                               Values must be negative and ordered from the lowest depth (e.g. [-50., -10., -5.])
-                               In the .nc file "depth" value will indicate the start of the vertical slice
-                               i.e. "depth = 0" indicates slice from 0 to 5 m, and "depth = 50" indicates
-                               slice from 50m to bathimietry 
-                density_proj:  string, <proj4_string
-                llcrnrlon:     float32, min longitude of grid
-                llcrnrlat:     float32, min latitude of grid
-                urcrnrlon:     float32, max longitude of grid
-                urcrnrlat:     float32, max latitude of grid
-                weight:        float32,
-                origin_marker: int, only elements with this value of "origin_marker" will be considered                             
-
         '''
         lon = self.get_property('lon')[0]
         lat = self.get_property('lat')[0]
@@ -2477,9 +2433,6 @@ class ChemicalDrift(OceanDrift):
             "Nitrite":                  [760.,     680.],
             "Ammonium":                 [730.,     30.],
             "Sulphur":                  [2200000., 446000.],
-            "Nitrogen":                 [1400.,    0.0],
-            #
-            "Alkalinity":               [142.39,   0.0], # H+ ions concentration form pH
             }
 
         emission_factors_closed_loop = {
@@ -2520,9 +2473,6 @@ class ChemicalDrift(OceanDrift):
             "Nitrite":                  [55760.,    55000.],
             "Ammonium":                 [0.,        0.],
             "Sulphur":                  [12280000., 10104000.],
-            "Nitrogen":                 [42030.,    0.0],
-            #
-            "Alkalinity":               [29.07, 0.0], # H+ ions concentration form pH
             }
 
         emission_factors_grey_water = {
@@ -2538,27 +2488,26 @@ class ChemicalDrift(OceanDrift):
             "Selenium":                 [16.1,    10.64],
             "Zinc":                     [517.,    112.],
             #
-            "Nitrogen":                 [28900.,  0.0],
+            "Nitrogen":                  [28900., 0.0],
          }
 
         emission_factors_bilge_water = {
             #                           mean    +/-95%
             #                           ug/L    ug/L
             "Arsenic":                  [35.9,    33.2],
-            "Cadmium":                  [0.32,    0.07],
-            "Chromium":                 [16.3,    15.4],
-            "Copper":                   [49.7,    22.9],
-            "Lead":                     [3.0,     1.24],
-            "Nickel":                   [71.1,    11.8],
-            "Selenium":                 [2.95,    1.01],
-            "Vanadium":                 [76.5,    22.4],
-            "Zinc":                     [949.,    660.],
+            "Cadmium":                  [0.32,   0.07],
+            "Chromium":                 [16.3,   15.4],
+            "Copper":                   [49.7,   22.9],
+            "Lead":                     [3.0,    1.24],
+            "Nickel":                   [71.1,   11.8],
+            "Selenium":                 [2.95,     1.01],
+            "Vanadium":                 [76.5,   22.4],
+            "Zinc":                     [949.,   660.],
             #
-            "Nitrate":                  [110980.,   100000.],
-            "Nitrite":                  [55760.,    55000.],
-            "Ammonium":                 [0.,        0.],
+            "Nitrate":                  [110980.,  100000.],
+            "Nitrite":                  [55760.,   55000.],
+            "Ammonium":                 [0.,     0.],
             "Sulphur":                  [12280000., 10104000.],
-            "Nitrogen": 				[42047.,    39335.],
             #
             "Naphthalene":              [50.6,   34.3],
             "Phenanthrene":             [3.67,   2.51],
@@ -2573,10 +2522,10 @@ class ChemicalDrift(OceanDrift):
             "Anthracene":               [0.22,   0.14],
             "Pyrene":                   [1.23,   1.33],
             "Chrysene":                 [0.17,   0.25],
-            "Benzo-b-fluoranthene":     [0.09,   0.13],
-            "Benzo-k-fluoranthene":     [0.03,   0.00],
-            "Indeno-123-cd-pyrene":     [0.05,   0.06],
-            "Benzo-ghi-perylene":       [0.13,   0.16],
+            "Benzo(b)fluoranthene":     [0.09,   0.13],
+            "Benzo(k)fluoranthene":     [0.03,   0.00],
+            "Indeno(1,2,3-cd)pyrene":   [0.05,   0.06],
+            "Benzo(ghi)perylene":       [0.13,   0.16],
          }
 
         emission_factors_sewage_water = {
@@ -2594,18 +2543,6 @@ class ChemicalDrift(OceanDrift):
             #
             "Nitrogen":                  [430.,  0.],
          }
-        
-        emission_factors_NOx = {
-            #                           mean    +/-95%
-            #                           ug/L    ug/L
-            "Alkalinity": [(1.0080/46.005), 0.0], # H+ ions from NOx, MW H+/MW NOx, from kg_NOx to kg_H+
-        }
-
-        emission_factors_SOx = {
-            #                           mean    +/-95%
-            #                           ug/L    ug/L
-            "Alkalinity": [(1.0080/64.066)* 2, 0.0], # H+ ions from SOx, MW H+/MW SOx, from kg_SOx to kg_H+
-        }
 
         emission_factors_AFP = {
             # Copper = 63.546 g/mol
@@ -2654,17 +2591,9 @@ class ChemicalDrift(OceanDrift):
         elif scrubber_type=="AFP_metals_total":
             Emission_factors = 1e6 # g to ug
         elif scrubber_type=="N_sewage": # Nitrogen from sewage
-            Emission_factors = 1e6  # 1kg = 1e9 ug: N_sewage is expressed as g
+            Emission_factors = 1e9  # 1kg = 1e9 ug: N_sewage is expressed as kg
         elif scrubber_type=="N_foodwaste": # Nitrogen from foodwaste
-            Emission_factors = 1e6  # 1kg = 1e9 ug: N_sewage is expressed as g
-        elif scrubber_type == "N_NOx":  # Nitrogen from engine's NOx emissions
-            Emission_factors = 1e9 * (14.0067 / 46.005)  # 1kg = 1e9 ug: NOx is expressed in kg, then tranformed to kg of nitrogen # MW of NOx: 46.005 g/mol # https://www.epa.gov/air-emissions-inventories/how-are-oxides-nitrogen-nox-defined-nei
-        elif scrubber_type == "NOx":  # Nitrogen from engine's NOx emissions
-            Emission_factors = 1e9 *emission_factors_NOx.get(chemical_compound)[0]
-        elif scrubber_type == "SOx":  # Nitrogen from engine's NOx emissions
-            Emission_factors = 1e9 *emission_factors_SOx.get(chemical_compound)[0]
-        elif scrubber_type == "emission_kg":  # Generic emission expresses as kg
-        	Emission_factors = 1e9
+            Emission_factors = 1e9  # 1kg = 1e9 ug: N_sewage is expressed as kg
         elif scrubber_type=="SILAM_metals":
             Emission_factors = 1e9  #+ 1kg = 1e9 ug: Lead and Cadmium depositions given in kg
         elif scrubber_type=="SILAM_metals_from_ash":
@@ -2675,14 +2604,14 @@ class ChemicalDrift(OceanDrift):
 
     def seed_from_DataArray(self, steam, lowerbound=0, higherbound=np.inf, radius=0, scrubber_type="open_loop", chemical_compound="Copper", mass_element_ug=100e3, number_of_elements=None, **kwargs):
             """Seed elements based on a dataarray with STEAM emission data
-    
+
             Arguments:
                 steam: dataarray with steam emission data, with coordinates
                     * latitude   (latitude) float32
                     * longitude  (longitude) float32
                     * time       (time) datetime64[ns]
-                
-                
+
+
                 radius:      scalar, unit: meters
                 lowerbound:  scalar, elements with lower values are discarded
             """
@@ -2738,1009 +2667,6 @@ class ChemicalDrift(OceanDrift):
     ''' Alias of seed_from_DataArray method for backward compatibility
     '''
 
-    @staticmethod
-    def _get_number_of_elements(
-            g_mode,
-            mass_element_ug=None,
-            data_point=None,
-            n_elements=None):
-
-        if g_mode == "mass" and mass_element_ug is not None and data_point is not None:
-            return int(np.ceil(np.array(data_point / mass_element_ug)))
-        elif g_mode == "fixed" and n_elements is not None and n_elements > 0.:
-            return n_elements
-        else:
-            raise ValueError("Incorrect combination of mode and input - undefined inputs")
-
-
-    @staticmethod
-    def _get_z(mode, number, depth=None, sed_mix_depth=None):
-        if mode == "water_conc" and depth is not None:
-            return -1 * np.random.uniform(0.0001, depth - 0.0001, number)
-        elif mode == "sed_conc" and depth is not None and sed_mix_depth is not None:
-            return  -1 * np.random.uniform(depth + 0.0001, depth + sed_mix_depth - 0.0001, number)
-        elif mode == "emission":
-            return -1 * np.random.uniform(0.0001, 1 - 0.0001, number)
-        else:
-            raise ValueError("Incorrect mode or depth")
-
-    def seed_from_NETCDF(
-            self,
-            NETCDF_data,
-            Bathimetry_data,
-            Bathimetry_seed_data,
-            mode='water_conc',
-            lon_resol=0.05,
-            lat_resol=0.05,
-            lowerbound=0,
-            higherbound=np.inf,
-            radius=0,
-            mass_element_ug=100e3,
-            number_of_elements=None,
-            origin_marker=1,
-            gen_mode="mass",
-            
-    ):
-        """Seed elements based on a dataarray with water/sediment concentration or direct emissions to water
-
-            Arguments:
-                NETCDF_data:        dataarray with concentration or emission data, with coordinates
-                    * latitude      (latitude) float32
-                    * longitude     (longitude) float32
-                    * time          (time) datetime64[ns]
-                Bathimetry_data:    dataarray with bathimetry data, MUST have the same grid of NETCDF_data and no time dimension
-                    * latitude      (latitude) float32
-                    * longitude     (longitude) float32
-                Bathimetry_seed_data:    dataarray with bathimetry data, MUST be the same used for running the simulation and no time dimension
-                    * latitude      (latitude) float32
-                    * longitude     (longitude) float32
-                mode:               "water_conc" (seed from concentration in water colum, in ug/L), "sed_conc" (seed from sediment concentration, in ug/kg d.w.), "emission" (seed from direct discharge to water, in kg)
-                radius:             scalar, unit: meters, elements will be created in a circular area around coordinates
-                lowerbound:         scalar, elements with lower values are discarded
-                higherbound:        scalar, elements with higher values are discarded
-                number_of_elements: scalar, number of elements created for each gridpoint
-                mass_element_ug:    scalar, maximum mass of elements if number_of_elements is not specificed
-                lon_resol:          scalar, longitude resolution of the NETCDF dataset
-                lat_resol:          scalar, latitude resolution of the NETCDF dataset
-                gen_mode:           "mass" (elements generated from mass), "fixed" (fixed number of elements for each data point)
-            """
-
-        # mass_element_ug=1e3     # 1e3 - 1 element is 1mg chemical
-        # mass_element_ug=100e3   # 100e3 - 1 element is 100mg chemical
-        # mass_element_ug=1e6     # 1e6 - 1 element is 1g chemical
-        # mass_element_ug=1e9     # 1e9 - 1 element is 1kg chemical
-                
-        sel = np.where((NETCDF_data > lowerbound) & (NETCDF_data < higherbound))
-        time_check = (NETCDF_data.time).size
-                
-        if (time_check) == 1:
-        # fix for different encoding of single time step emissions
-            try:
-                t = np.datetime64(str(np.array(NETCDF_data.time.data)))
-                t = np.array(t, dtype='datetime64[s]') # time truncaded to [s] to avoid datetime.utcfromtimestamp only integers error
-            except:
-                t = np.datetime64(str(np.array(NETCDF_data.time[0])))
-                t = np.array(t, dtype='datetime64[s]')
-            
-            la = NETCDF_data.latitude[sel[0]].data
-            lo = NETCDF_data.longitude[sel[1]].data
-        elif time_check > 1:
-            t = NETCDF_data.time[sel[0]].data
-            t = np.array(t, dtype='datetime64[s]')
-            la = NETCDF_data.latitude[sel[1]].data
-            lo = NETCDF_data.longitude[sel[2]].data
-        print("Seeding " + str(la.size) + " datapoints")
-               
-        lon_array = lo + lon_resol / 2  # find center of pixel for volume of water / sediments
-        lat_array = la + lat_resol / 2  # find center of pixel for volume of water / sediments
-        
-        data = np.array(NETCDF_data.data)
-        sed_mixing_depth = np.array(self.get_config('chemical:sediment:mixing_depth')) # m
-
-        if mode == 'sed_conc':
-            # Compute mass of dry sediment in each pixel grid cell
-            sed_mixing_depth = np.array(self.get_config('chemical:sediment:mixing_depth')) # m
-            sed_density      = np.array(self.get_config('chemical:sediment:density')) # density of sediment particles, in kg/m3 d.w.
-            sed_porosity     = np.array(self.get_config('chemical:sediment:porosity') ) # fraction of sediment volume made of water, adimentional (m3/m3)
-            self.init_species()
-            self.init_transfer_rates()
-
-        lat_grid_m = np.array([6.371e6 * lat_resol * (2 * np.pi) / 360])
-        
-        if mode == 'emission':
-            Bathimetry_seed = None
-
-        for i in range(0, max(t.size, lo.size, la.size)):
-            lon_grid_m = None
-            Bathimetry_conc = None
-
-            if mode != 'emission':
-                lon_grid_m =  np.array([(6.371e6 * (np.cos(2 * (np.pi) * la[i] / 360)) * lon_resol * (2 * np.pi) / 360)])  # 6.371e6: radius of Earth in m
-                Bathimetry_conc = np.array([(Bathimetry_data.sel(latitude=la[i],longitude=lo[i],method='nearest'))]) # m
-                # depth of seeding must be the same as the one considered for resuspention process
-                Bathimetry_seed = np.array([(Bathimetry_seed_data.sel(latitude=lat_array[i],longitude=lon_array[i],method='nearest'))]) # m
-
-            if mode == 'water_conc':
-                pixel_volume = Bathimetry_conc * lon_grid_m * lat_grid_m
-                # concentration is ug/L, volume is m: m3 * 1e3 = L
-                mass_ug = (data[sel][i] * (pixel_volume * 1e3))
-
-            elif mode == 'sed_conc':
-                # sed_conc_ug_kg is ug/kg d.w. (dry weight)
-                pixel_volume =  sed_mixing_depth * (lon_grid_m * lat_grid_m) # m3
-                pixel_sed_mass = (pixel_volume)*(1-sed_porosity)*sed_density # kg
-                mass_ug = data[sel][i]*pixel_sed_mass
-              
-            elif mode == 'emission':
-                mass_ug = data[sel][i]*1e9 # emissions is kg, 1 kg = 1e9 ug
-            else:
-                raise ValueError("Incorrect mode")
-
-            number = self._get_number_of_elements(
-                g_mode=gen_mode,
-                mass_element_ug=mass_element_ug,
-                data_point=mass_ug,
-                n_elements=number_of_elements)
-
-            if t.size == 1:
-                time = datetime.utcfromtimestamp(
-                    (np.array(t - np.datetime64('1970-01-01T00:00:00'))) / np.timedelta64(1, 's'))
-            elif t.size > 1:
-                time = datetime.utcfromtimestamp(
-                    (np.array(t[i] - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's')))
-                
-            # specie to be added to seed parameters for sediments and water
-            if mode == 'sed_conc':
-                specie_elements = 3 # 'num_srev' # Name of specie for sediment elements
-                moving_emement = False # sediment particles will not move
-            else:
-                specie_elements = 0 # 'num_lmm' # Name of specie for dissolved elements
-                moving_emement = True # dissolved particles will move
-
-            if gen_mode == 'fixed':
-                mass_element_seed_ug = mass_ug / number
-            elif gen_mode == 'mass':
-                mass_element_seed_ug = mass_element_ug
-
-            if mass_element_seed_ug > 0:
-                z = self._get_z(mode = mode,
-                                number = number, 
-                                depth = Bathimetry_seed, # depth must be the same as the one considered for resuspention process
-                                sed_mix_depth = sed_mixing_depth)
-
-                for k in range(len(z)):
-
-                    self.seed_elements(
-                        lon=lon_array[i],
-                        lat=lat_array[i],
-                        radius=radius,
-                        number=1,
-                        time=time,
-                        mass=mass_element_seed_ug,
-                        mass_degraded=0,
-                        mass_volatilized=0,
-                        specie = specie_elements,
-                        moving = moving_emement,
-                        z=z[k],
-                        origin_marker=origin_marker)
-                    
-    
-                    if gen_mode != "fixed":
-                        mass_residual = (mass_ug) - (number * mass_element_seed_ug)
-    
-                        if mass_residual > 0:
-                            z = self._get_z(mode = mode,
-                                            number = 1, 
-                                            depth = Bathimetry_conc, 
-                                            sed_mix_depth = sed_mixing_depth)
-    
-                            self.seed_elements(
-                                lon=lon_array[i],
-                                lat=lat_array[i],
-                                radius=radius,
-                                number=1,
-                                time=time,
-                                mass=mass_residual,
-                                mass_degraded=0,
-                                mass_volatilized=0,
-                                specie = specie_elements,
-                                moving = moving_emement,
-                                z=z,
-                                origin_marker=origin_marker)
-
-    def interp_weights(self, xyz, uvw):
-        """
-        Calculate interpolation weights within regrid_conc function
-        # https://stackoverflow.com/questions/20915502/speedup-scipy-griddata-for-multiple-interpolations-between-two-irregular-grids
-        """
-        import scipy.spatial as sp
-
-        tri = sp.Delaunay(xyz)
-        simplex = tri.find_simplex(uvw)
-        vertices = np.take(tri.simplices, simplex, axis=0)
-        temp = np.take(tri.transform, simplex, axis=0)
-        d=2                                               ## CHECK
-        delta = uvw - temp[:, d]
-        bary = np.einsum('njk,nk->nj', temp[:, :d, :], delta)
-        return vertices, np.hstack((bary, 1 - bary.sum(axis=1, keepdims=True)))
-
-    def interpolate_regrid(self, values, vtx, wts):
-        """
-        Interpolate the value of each concentration gridpoint within regrid_conc function
-        """
-        return np.einsum('nj,nj->n', np.take(values, vtx), wts)
-
-    def regrid_conc(self, filename, filename_regridded, latmin, latmax, latstep, lonmin, lonmax, lonstep, concfile = None):
-        """
-        Regrid "write_netcdf_chemical_density_map" output to regular latlon grid.
-            filename:               string, path or filename of "write_netcdf_chemical_density_map" output file to be regridded
-            filename_regridded:     string, path or filename of regridded output
-            latmin:                 float 32, min latitude of new grid
-            latmax:                 float 32, max latitude of new grid
-            latstep:                float 32, latitude resolution of new grid, in degrees
-            lonmin:                 float 32, min longitude of new grid
-            lonmax:                 float 32, max longitude of new grid
-            lonstep:                float 32 longitude resolution of new grid, in degrees
-            concfile:               xarray Dataset of "write_netcdf_chemical_density_map" output file to be regridded
-        """
-        import numpy as np
-        import xarray as xr
-        from datetime import datetime as dt
-        
-        if ((concfile is None) and (filename is not None)):
-            print("Loading concentration file from filename")
-            ds = xr.open_dataset(filename)
-        else:
-            ds = concfile
-
-        ds.load()
-        start=dt.now()
-
-        if (latmin < min(ds['lat'].values.flatten()) or latmax > max(ds['lat'].values.flatten())\
-        or lonmin < min(ds['lon'].values.flatten()) or lonmax > max(ds['lon'].values.flatten())):
-            print("latmin is not in range, lower than: ", min(ds['lat'].values.flatten()), (latmin < min(ds['lat'].values.flatten())*latmin))
-            print("latmax is not in range, higher than: ",max(ds['lat'].values.flatten()), (latmax > max(ds['lat'].values.flatten())*latmax))
-            print("lonmin is not in range: lower than:", min(ds['lon'].values.flatten()), (lonmin < min(ds['lon'].values.flatten())*lonmin))
-            print("lonmax is not in range, higher than: ",max(ds['lon'].values.flatten()), (lonmax > max(ds['lon'].values.flatten())*lonmax))
-
-            raise ValueError("Regrid coordinates out of bonds from input file range")
-        else:
-            pass
-
-        new_lat_coords = np.arange(latmin,latmax,latstep)
-        new_lon_coords = np.arange(lonmin,lonmax,lonstep)
-
-        # define new grid of latitude and longitude
-        new_lat, new_lon = np.meshgrid(new_lat_coords, new_lon_coords)
-
-        # create an empty array to store the regridded data
-        regridded_concentration_avg_data = np.zeros((ds.sizes['avg_time'], ds.sizes['specie'], ds.sizes['depth'], new_lat.shape[1], new_lon.shape[0]))
-
-        # create 2D array of (y*x,) coordinates from the 2D (y,x) lat-lon grid
-        lon_2d = ds['lon'].values.flatten()
-        lat_2d = ds['lat'].values.flatten()
-        lonlat_2d = np.column_stack((lat_2d, lon_2d))
-
-        # create 2D array of the new coordinates
-        lonlat_2d_new=np.column_stack((new_lat.flatten(),new_lon.flatten()))
-
-        first=True
-        # loop over every value of avg_time, specie, and depth
-        for t, s, d in np.ndindex(ds.sizes['avg_time'], ds.sizes['specie'], ds.sizes['depth']):
-            # select the data for the current avg_time, specie, and depth
-            points = ds.concentration_avg[t,s,d,:,:].values.reshape(-1)
-            # points = ds.topo[t,s,d,:,:].values.reshape(-1)
-
-            if first:
-                # Store the weights for the interpolation
-                vtx, wts = self.interp_weights(lonlat_2d, lonlat_2d_new)
-                first=False
-            
-            # interpolate the concentration data onto the new grid using griddata
-            new_concentration_2d = self.interpolate_regrid(points, vtx, wts)
-            # store the interpolated data in the regridded_concentration_avg_data array
-            regridded_concentration_avg_data[t, s, d] = np.transpose(np.reshape(new_concentration_2d,(len(new_lon_coords),len(new_lat_coords))))
-
-        # create a new xarray dataarray with the regridded data
-        regridded_concentration_avg = xr.DataArray(regridded_concentration_avg_data, coords=[ds['avg_time'], ds['specie'], ds['depth'], new_lat_coords, new_lon_coords], dims=['avg_time', 'specie', 'depth', 'y', 'x'])
-        regridded_concentration_avg.name = "concentration_avg"
-        # regridded_concentration_avg.name = "topo"
-        # change negative concentration values to 0
-        regridded_concentration_avg_nan = regridded_concentration_avg.copy()
-        regridded_concentration_avg_nan = xr.where(regridded_concentration_avg_nan < 0, 0, regridded_concentration_avg_nan)
-
-        print("Time elapsed (hr:min:sec): ", dt.now()-start)
-
-        print("Saving to netcdf")
-        regridded_concentration_avg_nan.to_netcdf(filename_regridded)
-        print("Time elapsed (hr:min:sec): ", dt.now()-start)
-
-    def correct_conc_coordinates(self, DC_Conc_array, lon_coord, lat_coord, time_coord, shift_time=False):
-        """
-        Add longitude, latitude, and time coordinates to water and sediments concentration xarray DataArray
-        
-        DC_Conc_array:     xarray DataArray for water or sediment concetration from sum of "species"
-                           from "write_netcdf_chemical_density_map" output
-        lon_coord:         np array of float64, with longitude of "write_netcdf_chemical_density_map" output
-        lat_coord:         np array of float64, with latitude of "write_netcdf_chemical_density_map" output
-        time_coord:        np array of datetime64[ns] with avg_time of "write_netcdf_chemical_density_map" output
-        shift_time:        boolean, if True shifts back time of 1 timestep so that the timestamp corresponds to 
-                           the beginning of the first simulation timestep, not to the next one 
-
-        """
-        # Add latitude and longitude to the concentration dataset
-        DC_Conc_array["y"] = ("y", lat_coord)
-        DC_Conc_array["x"] = ("x", lon_coord)
-        DC_Conc_array=DC_Conc_array.rename({'x': 'longitude','y': 'latitude'})
-        # Add attributes to latitude and longitude so that "remapcon" function from cdo can interpolate results
-        DC_Conc_array['latitude'] = DC_Conc_array['latitude'].assign_attrs(standard_name='latitude')
-        DC_Conc_array['latitude'] = DC_Conc_array['latitude'].assign_attrs(long_name='latitude')
-        DC_Conc_array['latitude'] = DC_Conc_array['latitude'].assign_attrs(units='degrees_north')
-        DC_Conc_array['latitude'] = DC_Conc_array['latitude'].assign_attrs(axis='Y')
-
-        DC_Conc_array['longitude'] = DC_Conc_array['longitude'].assign_attrs(standard_name='longitude')
-        DC_Conc_array['longitude'] = DC_Conc_array['longitude'].assign_attrs(long_name='longitude')
-        DC_Conc_array['longitude'] = DC_Conc_array['longitude'].assign_attrs(units='degrees_east')
-        DC_Conc_array['longitude'] = DC_Conc_array['longitude'].assign_attrs(axis='X')
-        
-        if shift_time == True:
-            # Shifts back time 1 timestep so that the timestamp corresponds to the beginning of the first simulation timestep, not the next one
-            time_correction = time_coord[1] - time_coord[0]
-            time_corrected = np.array(time_coord - time_correction)
-            DC_Conc_array["avg_time"] = ("avg_time", time_corrected)
-        
-        DC_Conc_array_corrected=DC_Conc_array.rename({'avg_time': 'time'})
-        
-        return DC_Conc_array_corrected
-    
-    def calculate_water_sediment_conc(self,
-                                      File_Path,
-                                      File_Name,
-                                      File_Path_out,
-                                      Chemical_name,
-                                      Origin_marker_name,
-                                      Transfer_setup = "organics",
-                                      Concentration_file = None,
-                                      Shift_time = False,
-                                      Conc_SPM = True):
-        """
-        Add dissolved, DOC, and SPM concentration arrays to obtain total water concentration and save the resulting xarray as netCDF file 
-        Save sediment concentration DataArray as netDCF file
-        Results can be used as inputs by "seed_from_NETCDF" function
-
-        Concentration_file:    "write_netcdf_chemical_density_map" output if already loaded (original or after regrid_conc)
-        File_Path:             string, path of "write_netcdf_chemical_density_map" output
-        File_Name:             string, name of "write_netcdf_chemical_density_map" output
-        File_Path_out:         string, path where created concentration files will be saved, must end with "/"
-        Chemical_name:         string, name of modelled chemical
-        Transfer_setup:        string, transfer_setup used for the simulation, "organics" or "metals"
-        Origin_marker_name:    string, name of source indicated by "origin_marker" parameter
-        shift_time:            boolean, if True shifts back time of 1 timestep so that the timestamp corresponds to 
-                               the beginning of the first simulation timestep, not to the next one
-
-        """
-        from datetime import datetime
-        import xarray as xr
-
-        if ((Concentration_file is None) and (File_Path and File_Name is not None)):
-            print("Loading Concentration_file from File_Path")
-            Concentration_file = xr.open_dataset(File_Path + File_Name)
-        else:
-            if "concentration_avg" in Concentration_file.data_vars:
-                print("input is write_netcdf_chemical_density_map file")
-            else:
-                raise ValueError("Incorrect file or file/path not specified")
-
-        # Sum DataArray for specie 0, 1, and 2 (dissolved, DOC, and SPM) to obtain total water concentration
-        print("Running sum of water concentration", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
-        
-        # Topography = Concentration_file.topo
-        time_avg = np.array(Concentration_file.avg_time)
-
-        if Transfer_setup == "organics":        
-            Dissolved_conc = Concentration_file.sel(specie = 0)
-            Dissolved_conc = Dissolved_conc.concentration_avg
-            SPM_conc = Concentration_file.sel(specie = 2)
-            SPM_conc = SPM_conc.concentration_avg
-            if 1 in Concentration_file.specie:
-                DOC_conc = Concentration_file.sel(specie = 1)
-                DOC_conc = DOC_conc.concentration_avg
-                # print("DOC was considered for partitioning of chemical")
-                if Conc_SPM == True:
-                    DC_Conc_array_wat = Dissolved_conc + SPM_conc + DOC_conc
-                else:
-                    DC_Conc_array_wat = Dissolved_conc + DOC_conc
-                    print("SPM was not considered for water concentration")
-            else:
-                if Conc_SPM == True:
-                    DC_Conc_array_wat = Dissolved_conc + SPM_conc
-                else:
-                    DC_Conc_array_wat = Dissolved_conc
-                    print("SPM was not considered for water concentration")
-        
-        elif Transfer_setup == "metals":
-            Dissolved_conc = Concentration_file.sel(specie = 0)
-            Dissolved_conc = Dissolved_conc.concentration_avg
-            SPM_conc = Concentration_file.sel(specie = 1)
-            SPM_conc = SPM_conc.concentration_avg
-            SPM_conc_sr = Concentration_file.sel(specie = 2)
-            SPM_conc_sr = SPM_conc_sr.concentration_avg
-            if Conc_SPM == True:
-                DC_Conc_array_wat = Dissolved_conc + SPM_conc + SPM_conc_sr
-            else:
-                DC_Conc_array_wat = Dissolved_conc
-                print("SPM was not considered for water concentration")
-
-        print("Running sediment concentration", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
-        
-        
-        DC_Conc_array_sed = Concentration_file.sel(specie = 3)
-        DC_Conc_array_sed = DC_Conc_array_sed.concentration_avg
-        
-        if "depth"in DC_Conc_array_sed.dims:
-            print("depth ")
-            DC_Conc_array_sed = DC_Conc_array_sed.sum(dim="depth")
-            # Add landmask to sed_conc map removed with sum over depth
-            # TO DO
-         
- 
-        
-
-        print("Changing coordinates", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
-
-        if "lat" in Concentration_file.data_vars:
-            lat = np.array(Concentration_file.lat[:,1])
-            print("lat data_var used")
-        elif "y" in Concentration_file.dims:
-            lat = np.array(Concentration_file.y)
-            print("y dimention from regridded file used")
-        else:
-            raise ValueError("Incorrect dimention lat/y")
-
-        if "lon" in Concentration_file.data_vars:
-            lon = np.array(Concentration_file.lon[1,:])
-            print("lon data_var used")
-        elif ("lon" not in Concentration_file.dims) and ("y" in Concentration_file.dims):
-            lon = np.array(Concentration_file.x)
-            print("x dimention from regridded file used")
-        else:
-            raise ValueError("Incorrect dimention lon/x")
-
-        
-
-        # Topography = Topography.self.correct_conc_coordinates(DC_Conc_array = Topography, 
-        #                                               lon_coord = lon, 
-        #                                               lat_coord = lat, 
-        #                                               time_coord = time_avg[0],
-        #                                               shift_time = Shift_time)
-
-        DC_Conc_array_wat = self.correct_conc_coordinates(DC_Conc_array = DC_Conc_array_wat, 
-                                                      lon_coord = lon, 
-                                                      lat_coord = lat, 
-                                                      time_coord = time_avg,
-                                                      shift_time = Shift_time)
-
-        DC_Conc_array_sed = self.correct_conc_coordinates(DC_Conc_array = DC_Conc_array_sed, 
-                                                      lon_coord = lon, 
-                                                      lat_coord = lat, 
-                                                      time_coord = time_avg,
-                                                      shift_time = Shift_time)
-
-        DC_Conc_array_wat.name = "concentration_avg_water"
-        DC_Conc_array_wat.attrs['standard_name'] = "water_concentration"
-        DC_Conc_array_wat.attrs['long_name'] = (Chemical_name or "") + " time averaged water concentration"
-        DC_Conc_array_wat.attrs['units'] = 'ug/m3'
-        if "projection" in Concentration_file.data_vars:
-            DC_Conc_array_wat.attrs['grid_mapping'] = str(Concentration_file.projection.proj4)
-        else:
-            DC_Conc_array_wat.attrs['grid_mapping'] = "projection_lonlat_EPSG_4326_WGS_84"
-
-        DC_Conc_array_wat.attrs['lon_resol'] = str(np.around(abs(lon[0]-lon[1]), decimals = 8)) + " degrees E"
-        DC_Conc_array_wat.attrs['lat_resol'] = str(np.around(abs(lat[0]-lat[1]), decimals = 8)) + " degrees N"
-        if "specie" in DC_Conc_array_wat.dims:
-            if len(DC_Conc_array_wat.specie) == 1:
-                specie = float(np.array(DC_Conc_array_wat.specie)[0])
-                DC_Conc_array_wat = DC_Conc_array_wat.sel(specie = specie) # drop "specie" coordinate since only water elements were selected
-
-        DC_Conc_array_sed.name = "concentration_avg_sediments"
-        DC_Conc_array_sed.attrs['standard_name'] = "sediment_concentration"
-        DC_Conc_array_sed.attrs['long_name'] = ((Chemical_name or "") + " time averaged sediment concentration")
-        DC_Conc_array_sed.attrs['units'] = 'ug/Kg d.w.'
-        if "projection" in Concentration_file.data_vars:
-            DC_Conc_array_sed.attrs['grid_mapping'] = str(Concentration_file.projection.proj4)
-        else:
-            DC_Conc_array_sed.attrs['grid_mapping'] = "projection_lonlat_EPSG_4326_WGS_84"
-
-        DC_Conc_array_sed.attrs['lon_resol'] = str(np.around(abs(lon[0]-lon[1]), decimals = 8)) + " degrees E"
-        DC_Conc_array_sed.attrs['lat_resol'] = str(np.around(abs(lat[0]-lat[1]), decimals = 8)) + " degrees N"
-        if "specie" in DC_Conc_array_sed.dims:
-            if len(DC_Conc_array_sed.specie) == 1:
-                specie = float(np.array(DC_Conc_array_sed.specie)[0])
-                DC_Conc_array_sed = DC_Conc_array_sed.sel(specie = specie) # drop "specie" coordinate since only sed elements were selected
-
-        # Conc_time = datetime.now().strftime("%Y%m%d-%H%M%S")
-        # wat_file = File_Path_out + Conc_time + "_water_conc_" + (Chemical_name or "") + "_" + (Origin_marker_name or "") + ".nc"
-        # sed_file = File_Path_out + Conc_time + "_sediments_conc_" + (Chemical_name or "") + "_" + (Origin_marker_name or "")+ ".nc"
-        wat_file = File_Path_out + "water_conc_" + (Chemical_name or "") + "_" + (Origin_marker_name or "") + ".nc"
-        sed_file = File_Path_out + "sediments_conc_" + (Chemical_name or "") + "_" + (Origin_marker_name or "")+ ".nc"
-        
-        print("Saving water concentration file", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
-        DC_Conc_array_wat.to_netcdf(wat_file)
-        print("Saving sediment concentration file", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
-        DC_Conc_array_sed.to_netcdf(sed_file)
-
-        
-
-    def mask_netcdf_map (self,
-                         shp_mask_file,
-                         file_path = None,
-                         file_name=None,
-                         DataArray = None,
-                         shp_epsg = "epsg:4326",
-                         invert_shp = False,
-                         drop_data = False,
-                         save_masked_file = False,
-                         file_output_path = None,
-                         file_output_name = None
-                         ):
-        '''
-        Mask xarray DataArray using shapefile, return a masked xarray DataArray
-            Used for xarray DataArray with regular lat/lon coordinates. 
-            "write_netcdf_chemical_density_map" output must be regridded to regular lat/lon coordinates with "regrid_conc" function
-    
-        shp_mask_file:       string, full path to mask shapefile
-        DataArray:           xarray DataArray to be masked loaded with rioxarray.open_rasterio(DataArray)
-                                 *latitude/longitude, lat/lon, y/x are accepted as coordinates
-        shp_epsg:            string, reference system of shp file (e.g. "epsg:4326")
-        invert_shp:          boolean, select if values inside (False) or outside (True) shp are masked
-        drop_data:           boolean, select if spatial extent of DataArray is mantained (False) or reduced to the extent of shp (True)
-        save_masked_file:    boolean,select if DataArray_masked is saved (True) or returned (False)
-        file_path:           string, path of the file to be masked. Must end with /
-        file_name:           string, name of the DataArray to be masked (.nc)
-        file_output_path:    string, path of the file to be saved. Must end with /
-        file_output_name:    string, name of the DataArray_masked output file (.nc)
-        '''
-        import geopandas as gpd
-        import rioxarray
-        from shapely.geometry import mapping
-        import os as os
-        
-        if DataArray is None:
-            if file_path is not None and file_name is not None:
-                print("Loading DataArray from disk")
-                DataArray = rioxarray.open_rasterio(file_path + file_name)
-            else:
-                raise ValueError("DataArray or file_path/file_name not specified")
-    
-        shp_mask = gpd.read_file(shp_mask_file, crs=shp_epsg)
-    
-        if ("latitude" in DataArray.dims) and ("longitude" in DataArray.dims):
-            DataArray = DataArray.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude", inplace=True)
-            print("latitude/longitude dimentions used")
-        elif ("lat" in DataArray.dims) and ("lon" in DataArray.dims):
-            DataArray = DataArray.rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=True)
-            print("lat/lon dimentions used")
-        elif ("x" in DataArray.dims) and ("y" in DataArray.dims):
-            DataArray = DataArray.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=True)
-            print("x/y dimentions used")
-        else:
-            raise ValueError("Unspecified lat/lon dimentions in DataArray")
-    
-        DataArray = DataArray.rio.write_crs(shp_epsg, inplace=True)
-        DataArray_masked = DataArray.rio.clip(shp_mask.geometry.apply(mapping), shp_mask.crs, drop=drop_data, invert = invert_shp)
-    
-        if save_masked_file == True:
-            if not os.path.exists(file_output_path):
-                os.makedirs(file_output_path)
-                print("file_output_path did not exist and was created")
-            else:
-                pass
-            print("Saving DataArray_masked file")
-            
-            if 'grid_mapping' in DataArray_masked.attrs:
-                del DataArray_masked.attrs['grid_mapping'] # delete grid_mapping attribute to avoid "ValueError in safe_setitem" from xarray
-            else:
-                pass
-            
-            DataArray_masked.to_netcdf(file_output_path + file_output_name)
-    
-        else:
-            return DataArray_masked
-        
-    @staticmethod
-    def _simmetrical_colormap(cmap):
-        '''
-        Take a colormap and create a new one, as the concatenation of itself by a symmetrical fold around 0
-        from https://stackoverflow.com/questions/28439251/symmetric-colormap-matplotlib
-
-        cmap:     matplotlib colormap that will be returned symmetrical with respect to 0
-        '''
-        import numpy as np
-        import matplotlib.colors as mcolors
-
-        new_cmap_name = "sym_" + cmap.name
-        # Define the roughness of the colormap, default is 128 
-        n= 128 
-        # get the list of color from colormap
-        colors_r = cmap(np.linspace(0, 1, n))    # take the standard colormap # 'right-part'
-        colors_l = colors_r[::-1]                # take the first list of color and flip the order # "left-part"
-
-        # combine them and build a new colormap
-        colors = np.vstack((colors_l, colors_r))
-        new_cmap = mcolors.LinearSegmentedColormap.from_list(new_cmap_name, colors)
-
-        return new_cmap
-
-    def create_images(self,
-                      Conc_Dataset,
-                      time_start, 
-                      time_end,
-                      long_min, long_max,
-                      lat_min, lat_max,
-                      file_out_path,
-                      file_out_sub_folder,
-                      shp_file_path,
-                      title_caption,
-                      unit_measure,
-                      vmin = None, 
-                      vmax = None,
-                      selected_colormap = None,
-                      levels_colormap = None,
-                      simmetrical_cmap = False,
-                      selected_depth = 0,
-                      fig_format = ".jpg",
-                      add_shp_to_figure = False,
-                      variable_name = None,
-                      labels_font_sizes = [30,30,30,25,25,25,25],
-                      shp_color = "black",
-                      date_str_lenght = 10):
-        '''
-        Create a series of .jpg or .png for each timestep of a concentration map
-        from REGRIDDED "calculate_water_sediment_conc" function output
-        
-        Conc_Dataset:        xarray dataset of concentration after calculate_water_sediment_conc
-                                *latitude, degrees N
-                                *longitude, degrees E
-                                *time, datetime64[ns]
-        time_start:          datetime64[ns], start time of figures
-        time_end:            datetime64[ns],  end time of figures.
-        long_min:            float64, min longitude of figure
-        long_max:            float64, max longitude of figure
-        lat_min:             float64, min latitude of figure
-        lat_max:             float64, max latitude of figure
-        vmin:                float64, min value of concentration in the figure, specify to keep colorscale constant
-        vmax:                float64, max value of concentration in the figure, specify to keep colorscale constant
-        file_out_path:       string, main output path of figure produced, must end with /
-        file_out_sub_folder: string, subforlder of file_out_path, must end with /
-        shp_file_path:       string, full path and name of shp file
-        title_caption:       string, first part of figure title before date and unit_measure
-        unit_measure:        string, (ug/m3) or (ug/kg d.w), between parenthesis
-        levels_colormap:     list of float64, levels used for colorbar (e.g., [0., 1., 15.])
-        selected_colormap:   e.g. plt.cm.Blues
-        simmetrical_cmap:    boolean,select if cmap is simmetrical to 0 (True) or not (False)
-        selected_depth:      int, depth selected if present. If no depth was selected when creating conc map, use 0
-        fig_format:          string, format of produced images (e.g.,".jpg", ".png"),
-        add_shp_to_figure:   boolean,select if shp is added to the figure (True) or not (False)
-        variable_name:       string, name of Conc_Datasetdata variable to plot if not concentration_avg_water/sediments
-        labels_font_sizes:   list of int, [title_font_size, x_label_font_size, y_label_font_size, x_ticks_font_size
-                                           y_ticks_font_size, cbar_label_font_size, cbar_ticks_font_size]
-        shp_color:           string, color of shapefile when plotted
-        date_str_lenght:     int, number date string charcters kept in title [10 for YYYY-MM-DD, 19 for hour shown] 
-        '''
-
-        import numpy as np
-        import matplotlib.pyplot as plt
-        import matplotlib.ticker as ticker
-        import os as os
-        from mpl_toolkits.axes_grid1 import make_axes_locatable, axes_size
-        if add_shp_to_figure:
-            import geopandas as gpd
-
-        aspect = 15
-        # pad_fraction = 1e-1
-        file_output_path = file_out_path + file_out_sub_folder
-        print("Figure saved to: ", file_output_path)
-        
-        title_font_size = labels_font_sizes[0]
-        x_label_font_size = labels_font_sizes[1]
-        y_label_font_size = labels_font_sizes[2]
-        x_ticks_font_size = labels_font_sizes[3]
-        # y_ticks_font_size = labels_font_sizes[4]
-        cbar_label_font_size = labels_font_sizes[5]
-        cbar_ticks_font_size = labels_font_sizes[6]
-
-        if simmetrical_cmap == True:
-            if selected_colormap == None:
-                selected_colormap = plt.colormaps["viridis"]
-            selected_colormap = self._simmetrical_colormap(cmap = selected_colormap)
-
-        if not os.path.exists(file_output_path):
-            os.makedirs(file_output_path)
-            print("file_output_path did not exist and was created")
-        else:
-            pass
-
-        if add_shp_to_figure:
-            shp = gpd.read_file(shp_file_path)
-
-        if "concentration_avg_water" in Conc_Dataset.keys():
-            Conc_DataArray = Conc_Dataset.concentration_avg_water
-            colorbar_title = "concentration_avg_water"
-        elif "concentration_avg_sediments" in Conc_Dataset.keys():
-            Conc_DataArray = Conc_Dataset.concentration_avg_sediments
-            colorbar_title = "concentration_avg_sediments"
-        elif variable_name is not None:
-            Conc_DataArray = Conc_Dataset[variable_name]
-            colorbar_title = variable_name
-        else:
-            raise ValueError("specified variable_name is not present in Conc_Dataset")
-            
-        if 'time' in Conc_DataArray.dims:
-            Conc_DataArray = Conc_DataArray.where(((Conc_DataArray.time >= time_start) &
-                                           (Conc_DataArray.time <= time_end)), drop=True)
-            if Conc_DataArray.time.size == 0:
-                raise ValueError("Conc_DataArray.time is out of time_start/end interval")
-        elif time_start is not None:
-            Conc_DataArray['time'] = time_start
-        else:
-            raise ValueError("Conc_DataArray.time is missing, time_start must be specified")
-        
-        attribute_list = list(Conc_DataArray.attrs)
-        for attr in attribute_list:
-            del Conc_DataArray.attrs[attr]
-
-        if add_shp_to_figure == True:
-            print("shp was added over the figures")
-            for timestep in range(0, (Conc_DataArray.time.to_numpy()).size):
-                print("creating image n° ", str(timestep+1), " out of ", str((Conc_DataArray.time.to_numpy()).size))
-                if (Conc_DataArray.time.to_numpy()).size > 1 and "depth" in Conc_DataArray.dims:
-                    Conc_DataArray_selected = Conc_DataArray.isel(time = timestep, depth = selected_depth)
-                elif (Conc_DataArray.time.to_numpy()).size > 1 and "depth" not in Conc_DataArray.dims:
-                    Conc_DataArray_selected = Conc_DataArray.isel(time = timestep)
-                elif (Conc_DataArray.time.to_numpy()).size <= 1 and "depth" in Conc_DataArray.dims:
-                    Conc_DataArray_selected = Conc_DataArray.isel(depth = selected_depth)
-                elif (Conc_DataArray.time.to_numpy()).size <= 1 and "depth" not in Conc_DataArray.dims:
-                    Conc_DataArray_selected = Conc_DataArray
-                    
-                fig, ax = plt.subplots(figsize = (23,15)) # Change here size of figure
-                shp.plot(ax = ax, color = shp_color, zorder = 10)
-                ax2 = Conc_DataArray_selected.plot.pcolormesh(ax = ax, 
-                                                        x = 'longitude', 
-                                                        y = 'latitude', 
-                                                        cmap=selected_colormap,
-                                                        robust = True, 
-                                                        vmin = vmin, vmax = vmax,
-                                                        levels = levels_colormap,
-                                                        add_colorbar=False,
-                                                        zorder = 0) # colorbar is added ex-post
-                ax.set_xlim(long_min, long_max)
-                ax.set_ylim(lat_min, lat_max)
-                ax.set_xlabel("Longitude", fontsize = x_label_font_size, labelpad = 30) # Change here size of ax labels
-                ax.set_ylabel("Latitude", fontsize = y_label_font_size, labelpad = 30) # Change here size of ax labels
-                ax.tick_params(labelsize=x_ticks_font_size) # Change here size of ax ticks
-                if (Conc_DataArray.time.to_numpy()).size > 1:
-                    ax.set_title(title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:date_str_lenght] + " " +unit_measure, pad=20, fontsize = title_font_size, weight = "bold")
-                else:
-                    ax.set_title(title_caption + " " +unit_measure, pad=30, fontsize = title_font_size, weight = "bold")
-                # from https://stackoverflow.com/questions/18195758/set-matplotlib-colorbar-size-to-match-graph
-                divider = make_axes_locatable(ax)
-                width = axes_size.AxesY(ax, aspect=1./aspect)
-                # pad_cb = axes_size.Fraction(pad_fraction, width)
-                # cax = divider.append_axes("right", size="3%", pad=pad_cb)
-                cax = divider.append_axes("right", size=width, pad=0.0)
-                cax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%0.2e'))
-                cax.tick_params(labelsize=cbar_label_font_size)
-                plt.colorbar(ax2, cax=cax)
-                
-                fig.savefig(file_out_path + file_out_sub_folder+str(f"{timestep:03d}")+"_"+file_out_sub_folder[:-1]+fig_format)
-                plt.close()
-        else:
-            print("shp was not added over the figures")
-            for timestep in range(0, (Conc_DataArray.time.to_numpy()).size):
-                print("creating image n° ", str(timestep+1), " out of ", str((Conc_DataArray.time.to_numpy()).size))
-                if (Conc_DataArray.time.to_numpy()).size > 1 and "depth" in Conc_DataArray.dims:
-                    Conc_DataArray_selected = Conc_DataArray.isel(time = timestep, depth = selected_depth)
-                elif (Conc_DataArray.time.to_numpy()).size > 1 and "depth" not in Conc_DataArray.dims:
-                    Conc_DataArray_selected = Conc_DataArray.isel(time = timestep)
-                elif (Conc_DataArray.time.to_numpy()).size <= 1 and "depth" in Conc_DataArray.dims:
-                    Conc_DataArray_selected = Conc_DataArray.isel(depth = selected_depth)
-                elif (Conc_DataArray.time.to_numpy()).size <= 1 and "depth" not in Conc_DataArray.dims:
-                    Conc_DataArray_selected = Conc_DataArray
-                
-                if (Conc_DataArray.time.to_numpy()).size > 1:
-                    plt_title = (title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:date_str_lenght] + " " + unit_measure)
-                else:
-                    plt_title = (title_caption + " " +unit_measure)
-
-                
-                fig = Conc_DataArray_selected.plot(vmin = vmin, vmax = vmax, 
-                                                  robust = True, 
-                                                  cmap=selected_colormap, 
-                                                  levels = levels_colormap,
-                                                  figsize = (23,15),
-                                                  add_colorbar=False) # colorbar is added ex-post
-                plt.title(plt_title, pad=30, fontsize = title_font_size, weight = "bold")
-                plt.ylabel("Latitude", fontsize = x_label_font_size, labelpad=30.)
-                plt.xlabel("Longitude", fontsize = y_label_font_size, labelpad=30.)
-                plt.xlim(long_min, long_max)
-                plt.ylim(lat_min, lat_max)
-                plt.tick_params(labelsize=x_ticks_font_size)
-                colorbar = plt.colorbar(fig)
-                colorbar.set_label(label=colorbar_title,size=cbar_label_font_size)
-                cax=colorbar.ax
-                cax.tick_params(labelsize=cbar_ticks_font_size)
-                cax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%0.2e'))
-
-                fig.figure.savefig(file_out_path + file_out_sub_folder+str(f"{timestep:03d}")+"_"+file_out_sub_folder[:-1]+fig_format)
-                plt.close()
-                
-    def plot_emission_data_frequency(self, emissions, title, n_bins = 100, zoom_max = 100, zoom_min = 0):
-         '''
-         Plot distribuion of emissions dataset values, mass, and cumulative mass
-
-         emissions:  masked array of float32 with selected data points to plot
-         title:      string, title of main plot 
-         n_bins:     int, number of bins to group datapoints 
-         zoom_max:   int, % of dataset lenght where the zoomed area stops
-         zoom_min:   int, % of dataset lenght where the zoomed area starts
-         '''
-         import matplotlib.pyplot as plt
-         import numpy as np
-         
-         values,base=np.histogram(emissions,n_bins)
-         cumulative = np.cumsum(values*base[0:-1])
-         fig,(ax1,ax2)=plt.subplots(nrows=2, ncols=1)
-         fig.tight_layout(pad=1.5)
-         ax1.plot(base[:-1], 100*values*base[0:-1]/max(values*base[0:-1]), c='red')
-         ax1.plot(base[:-1], 100*cumulative/cumulative[-1], c='blue')
-         ax1.plot(base[:-1], 100*values/max(values), c='black')
-         ax1.set_title(title)
-         ax1.set_ylabel("Frequency (%)")
-         ax1.legend(['Mass','Cumulative mass','Data points'])
-         ax2.plot(base[zoom_min:zoom_max], 100*values[zoom_min:zoom_max]*base[zoom_min:zoom_max]/max(values*base[0:-1]), c='red')
-         ax2.plot(base[zoom_min:zoom_max], 100*cumulative[zoom_min:zoom_max]/cumulative[-1], c='blue')
-         ax2.plot(base[zoom_min:zoom_max], 100*values[zoom_min:zoom_max]/max(values), c='black')
-         ax2.set_title("Zoom from " + str(zoom_min) +" to "+str(zoom_max)+"% of dataset")
-         ax2.set_ylabel("Frequency (%)")
-         ax2.set_xlabel("Value")
-         plt.show()
-                
-    def summary_created_elements(self,
-                                 file_folder,
-                                 file_name,
-                                 variable_name,
-                                 emiss_factor,
-                                 upper_limit,
-                                 lower_limit,
-                                 name_dataset,
-                                 long_min, long_max,
-                                 lat_min, lat_max,
-                                 time_start, time_end,
-                                 range_max = None,
-                                 range_min = None,
-                                 n_bins = 100,
-                                 zoom_max=100,
-                                 zoom_min=0
-                                 ):
-        '''
-        Calculate the maxium number of elements in a simulation created by seed_from_NETCDF from xarray DataArray.
-        Produce histographs with frequency of datapoints values within the specified limits
-        ----------
-        file_folder:    string, path to file, must end with /
-        file_name:      string, name of file, must end with .nc
-        variable_name:  string, name of xarray DataArray variable
-        emiss_factor:   float32, conversion factor between data and mass expressed as ug (e.g. ug/L, ug/kg), 1e9 if DataArray is in Kg
-        upper_limit:    float32, limit under which datapoints in DataArray wll be ignored by seed_from_NETCDF
-        lower_limit:    float32, limit over which datapoints in DataArray wll be ignored by seed_from_NETCDF
-        name_dataset:   string, name of data to be reported in the title of figures
-        time_start:          datetime64[ns], start time of dataset considered
-        time_end:            datetime64[ns],  end time of dataset considered
-        long_min:            float64, min longitude of dataset considered
-        long_max:            float64, max longitude of dataset considered
-        lat_min:             float64, min latitude of dataset considered
-        lat_max:             float64, max latitude of dataset considered
-        range_max:      float32, max value shown in the figure on data frequency for the whole dataset
-        range_min:      float32, min value shown in the figure on data frequency for the whole dataset
-        n_bins:         int, number of bins used for histograms
-        zoom_max:       int, % of dataset lenght where the zoomed area stops
-        zoom_min:       int, % of dataset lenght where the zoomed area starts
-        '''
-        import xarray as xr
-        import matplotlib.pyplot as plt
-        import numpy as np
-        
-        DS = xr.open_dataset(file_folder + file_name)
-        if "lat" in DS.dims:
-            DS = DS.rename({'lat': 'latitude','lon': 'longitude'})
-        if "x" in DS.dims:
-            DS = DS.rename({'y': 'latitude','x': 'longitude'})           
-        
-        DS = DS[variable_name]
-        if "time" in DS.dims:
-            DS = DS.where((DS.longitude > long_min) & (DS.longitude < long_max) &
-                                            (DS.latitude > lat_min) & (DS.latitude < lat_max) &
-                                            (DS.time >= time_start) &
-                                            (DS.time <= time_end), drop=True)
-        else: 
-            DS = DS.where((DS.longitude > long_min) & (DS.longitude < long_max) &
-                                            (DS.latitude > lat_min) & (DS.latitude < lat_max), drop=True)
-        
-        DS_ma = DS.to_masked_array() # Remove 0 and NA from dataArray, then change to np.array
-        emissions = DS_ma[DS_ma>0]
-        selected =np.all((emissions<upper_limit,emissions>lower_limit),axis=0)
-        print ("##START "+ name_dataset + " ##")
-    
-        DS_max = emissions.max() 
-        DS_min = emissions.min() 
-        print("DS_max: ", DS_max)
-        print("DS_min: ", DS_min, "\n")
-        print("number of data-points without limits: ", (len(emissions)))
-        print("upper limit: ", upper_limit)
-        print("lower limit: ", lower_limit, "\n")
-        
-        emissions_sum = np.sum(emissions)
-        total_mass = (emissions_sum* emiss_factor)/1e9 # (L*ug/L)/10^9 -> Kg
-        selected_mass = (sum((emissions[selected])* emiss_factor))/1e9
-        
-        print("number of data-points selected within the limits: ", len(emissions[selected]), "\n")
-        print('total mass of chemical: ', total_mass, ' kg')
-        print('selected mass of chemical: ', selected_mass, ' kg')
-        print('% of total mass selected: ', (selected_mass/total_mass)*100, " %")
-        
-        
-        # See number and percentage of elements over upper limit
-        print("n° of data-points over upper limit: ", np.count_nonzero(emissions > upper_limit))
-        print("% of data-points over upper limit: ", 
-              (np.count_nonzero(emissions > upper_limit)/np.prod(emissions.shape))*100, " %")
-        print('mass of chemical over upper limit: ',
-              (sum((emissions[emissions > upper_limit])* emiss_factor))/1e9, ' kg')  # e.g. (L*ug/L)/10^9 -> Kg
-        print("% of total volume or mass of the elements over upper limit:", 
-              (np.sum(emissions[emissions > upper_limit])/emissions_sum)*100, " %", "\n")
-    
-        # See number and percentage of elements under lower limit
-        print("n° of data-points under lower limit: ", np.count_nonzero(emissions < lower_limit))
-        print("% of data-points under lower limit: ", 
-              (np.count_nonzero(emissions < lower_limit)/np.prod(emissions.shape))*100, " %")
-        print('mass of chemical under limit: ',
-        (sum((emissions[emissions < lower_limit])* emiss_factor))/1e9, ' kg') # e.g. (L*ug/L)/10^9 -> Kg
-        print("% of total volume or mass of the elements under lower limit: ", 
-              ((np.sum(emissions[emissions < lower_limit]))/(emissions_sum))*100, "%", "\n")
-    
-        print("% of total volume or mass of elements under lower limit considering also upper limit")
-        print(((np.sum(emissions[emissions < lower_limit]))/(np.sum(emissions[emissions < upper_limit])))*100, "\n")
-    
-        # Plot histograms for frequency of values
-    
-        self.plot_emission_data_frequency(emissions= emissions,
-                            title = "Complete dataset",
-                            n_bins = n_bins, 
-                            zoom_max = zoom_max, 
-                            zoom_min = zoom_min)
-    
-        self.plot_emission_data_frequency(emissions= emissions[selected],
-                            title = "Selected dataset between lower and upper limit",
-                            n_bins = n_bins, 
-                            zoom_max = zoom_max, 
-                            zoom_min = zoom_min)
-    
-        if range_max is not None and range_min is not None:
-            zoom_max = (range_max/DS_max)*100
-            zoom_min = (range_min/DS_max)*100
-            
-            self.plot_emission_data_frequency(emissions= emissions[selected],
-                                              title = "Selected dataset between range_min and range_max",
-                                              n_bins = n_bins, 
-                                              zoom_max = zoom_max, 
-                                              zoom_min = zoom_min)
-    
-        plt.hist(x=emissions, bins=n_bins, range=(0,lower_limit)) 
-        plt.title("Datapoints between 0 and lower limit for "+ name_dataset)
-        plt.xlabel("Value")
-        plt.ylabel("Frequency")
-        plt.show()
-        print ("##END##")
-        
-
     def init_chemical_compound(self, chemical_compound = None):
         ''' Chemical parameters for a selection of PAHs:
             Naphthalene, Phenanthrene, Fluorene,
@@ -3765,8 +2691,6 @@ class ChemicalDrift(OceanDrift):
             self.set_config('chemical:transformations:dissociation','nondiss')
             self.set_config('chemical:transformations:LogKOW',3.361)
             self.set_config('chemical:transformations:TrefKOW',25)
-            self.set_config('chemical:transformations:KOC_sed',959)
-            self.set_config('chemical:transformations:KOC_DOM',1798)
             self.set_config('chemical:transformations:DeltaH_KOC_Sed',-21036)
             self.set_config('chemical:transformations:DeltaH_KOC_DOM',-25900)                 ### Phenanthrene value
             self.set_config('chemical:transformations:Setchenow', 0.2503)
@@ -3798,8 +2722,6 @@ class ChemicalDrift(OceanDrift):
             self.set_config('chemical:transformations:dissociation','nondiss')
             self.set_config('chemical:transformations:LogKOW',4.505)
             self.set_config('chemical:transformations:TrefKOW',25)
-            self.set_config('chemical:transformations:KOC_sed',25936)
-            self.set_config('chemical:transformations:KOC_DOM',39355)
             self.set_config('chemical:transformations:DeltaH_KOC_Sed',-24900)
             self.set_config('chemical:transformations:DeltaH_KOC_DOM',-25900)
             self.set_config('chemical:transformations:Setchenow', 0.3026)
@@ -3831,8 +2753,6 @@ class ChemicalDrift(OceanDrift):
             self.set_config('chemical:transformations:dissociation','nondiss')
             self.set_config('chemical:transformations:LogKOW',5.089)
             self.set_config('chemical:transformations:TrefKOW',25)
-            self.set_config('chemical:transformations:KOC_sed',170850)
-            self.set_config('chemical:transformations:KOC_DOM',53700)
             self.set_config('chemical:transformations:DeltaH_KOC_Sed',-47413)
             self.set_config('chemical:transformations:DeltaH_KOC_DOM',-27900)
             self.set_config('chemical:transformations:Setchenow', 0.2885)
@@ -3863,9 +2783,7 @@ class ChemicalDrift(OceanDrift):
             self.set_config('chemical:transfer_setup','organics')
             self.set_config('chemical:transformations:dissociation','nondiss')
             self.set_config('chemical:transformations:LogKOW',5.724)
-            self.set_config('chemical:transformations:TrefKOW',20)
-            self.set_config('chemical:transformations:KOC_sed',732824)
-            self.set_config('chemical:transformations:KOC_DOM',309029)
+            self.set_config('chemical:transformations:TrefKOW',25)
             self.set_config('chemical:transformations:DeltaH_KOC_Sed', -38000)                ### Pyrene value
             self.set_config('chemical:transformations:DeltaH_KOC_DOM', -25400)                ### Pyrene value
             self.set_config('chemical:transformations:Setchenow', 0.3605)
@@ -3897,8 +2815,6 @@ class ChemicalDrift(OceanDrift):
             self.set_config('chemical:transformations:dissociation','nondiss')
             self.set_config('chemical:transformations:LogKOW', 6.124)
             self.set_config('chemical:transformations:TrefKOW',25)
-            self.set_config('chemical:transformations:KOC_sed',1658700)
-            self.set_config('chemical:transformations:KOC_DOM',172499)
             self.set_config('chemical:transformations:DeltaH_KOC_Sed', -43700)                ### mean value 16 PAHs
             self.set_config('chemical:transformations:DeltaH_KOC_DOM', -31280)
             self.set_config('chemical:transformations:Setchenow', 0.171)
@@ -3929,9 +2845,7 @@ class ChemicalDrift(OceanDrift):
             self.set_config('chemical:transfer_setup','organics')
             self.set_config('chemical:transformations:dissociation','nondiss')
             self.set_config('chemical:transformations:LogKOW', 6.618)
-            self.set_config('chemical:transformations:TrefKOW',20)
-            self.set_config('chemical:transformations:KOC_sed',5991009)
-            self.set_config('chemical:transformations:KOC_DOM',4120975)
+            self.set_config('chemical:transformations:TrefKOW',25)
             self.set_config('chemical:transformations:DeltaH_KOC_Sed', -43700)                ### mean value 16 PAHs
             self.set_config('chemical:transformations:DeltaH_KOC_DOM', -30900)
             self.set_config('chemical:transformations:Setchenow', 0.338)
@@ -4012,16 +2926,6 @@ class ChemicalDrift(OceanDrift):
 #
 # Merlin Expo Kd values are mean values from Allison and Allison 2005
 # https://cfpub.epa.gov/si/si_public_record_report.cfm?dirEntryId=135783
-
-        elif self.get_config('chemical:compound') == "Nitrogen":
-            self.set_config('chemical:transfer_setup', 'metals')
-            self.set_config('chemical:transformations:Kd', 0.)  # Nitrogen does not interact with particulate matter or sediments
-            self.set_config('chemical:transformations:S0', 17.0)#
-            
-        elif self.get_config('chemical:compound') == "Alkalinity":
-            self.set_config('chemical:transfer_setup', 'metals')
-            self.set_config('chemical:transformations:Kd', 0.)  # Alkalinity does not interact with particulate matter or sediments
-            self.set_config('chemical:transformations:S0', 17.0)  #
 
     def plot_mass(self,
                   legend=['dissolved','SPM','sediment'],
