@@ -3134,6 +3134,9 @@ class ChemicalDrift(OceanDrift):
         # Sum DataArray for specie 0, 1, and 2 (dissolved, DOC, and SPM) to obtain total water concentration
         print("Running sum of water concentration", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
         
+        # Topography = Concentration_file.topo
+        time_avg = np.array(Concentration_file.avg_time)
+
         if Transfer_setup == "organics":        
             Dissolved_conc = Concentration_file.sel(specie = 0)
             Dissolved_conc = Dissolved_conc.concentration_avg
@@ -3169,7 +3172,19 @@ class ChemicalDrift(OceanDrift):
                 print("SPM was not considered for water concentration")
 
         print("Running sediment concentration", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
-        DC_Conc_array_sed = Concentration_file.concentration_avg[:,3,:,:,:]
+        
+        
+        DC_Conc_array_sed = Concentration_file.sel(specie = 3)
+        DC_Conc_array_sed = DC_Conc_array_sed.concentration_avg
+        
+        if "depth"in DC_Conc_array_sed.dims:
+            print("depth ")
+            DC_Conc_array_sed = DC_Conc_array_sed.sum(dim="depth")
+            # Add landmask to sed_conc map removed with sum over depth
+            # TO DO
+         
+ 
+        
 
         print("Changing coordinates", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
 
@@ -3191,7 +3206,13 @@ class ChemicalDrift(OceanDrift):
         else:
             raise ValueError("Incorrect dimention lon/x")
 
-        time_avg = np.array(Concentration_file.avg_time)
+        
+
+        # Topography = Topography.self.correct_conc_coordinates(DC_Conc_array = Topography, 
+        #                                               lon_coord = lon, 
+        #                                               lat_coord = lat, 
+        #                                               time_coord = time_avg[0],
+        #                                               shift_time = Shift_time)
 
         DC_Conc_array_wat = self.correct_conc_coordinates(DC_Conc_array = DC_Conc_array_wat, 
                                                       lon_coord = lon, 
@@ -3236,18 +3257,19 @@ class ChemicalDrift(OceanDrift):
             if len(DC_Conc_array_sed.specie) == 1:
                 specie = float(np.array(DC_Conc_array_sed.specie)[0])
                 DC_Conc_array_sed = DC_Conc_array_sed.sel(specie = specie) # drop "specie" coordinate since only sed elements were selected
-        
 
         # Conc_time = datetime.now().strftime("%Y%m%d-%H%M%S")
         # wat_file = File_Path_out + Conc_time + "_water_conc_" + (Chemical_name or "") + "_" + (Origin_marker_name or "") + ".nc"
         # sed_file = File_Path_out + Conc_time + "_sediments_conc_" + (Chemical_name or "") + "_" + (Origin_marker_name or "")+ ".nc"
         wat_file = File_Path_out + "water_conc_" + (Chemical_name or "") + "_" + (Origin_marker_name or "") + ".nc"
         sed_file = File_Path_out + "sediments_conc_" + (Chemical_name or "") + "_" + (Origin_marker_name or "")+ ".nc"
-
+        
         print("Saving water concentration file", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
         DC_Conc_array_wat.to_netcdf(wat_file)
         print("Saving sediment concentration file", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
         DC_Conc_array_sed.to_netcdf(sed_file)
+
+        
 
     def mask_netcdf_map (self,
                          shp_mask_file,
