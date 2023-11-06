@@ -2999,10 +2999,14 @@ class ChemicalDrift(OceanDrift):
 
         if (latmin < min(ds['lat'].values.flatten()) or latmax > max(ds['lat'].values.flatten())\
         or lonmin < min(ds['lon'].values.flatten()) or lonmax > max(ds['lon'].values.flatten())):
-            print("latmin is not in range, lower than: ", min(ds['lat'].values.flatten()), (latmin < min(ds['lat'].values.flatten())*latmin))
-            print("latmax is not in range, higher than: ",max(ds['lat'].values.flatten()), (latmax > max(ds['lat'].values.flatten())*latmax))
-            print("lonmin is not in range: lower than:", min(ds['lon'].values.flatten()), (lonmin < min(ds['lon'].values.flatten())*lonmin))
-            print("lonmax is not in range, higher than: ",max(ds['lon'].values.flatten()), (lonmax > max(ds['lon'].values.flatten())*lonmax))
+            if latmin < min(ds['lat'].values.flatten()):
+                print("latmin (", latmin, ") is not in range, should not be lower than: ", min(ds['lat'].values.flatten()))
+            if latmax > max(ds['lat'].values.flatten()):
+                print("latmax (", latmax, ") is not in range, should not be higher than: ",max(ds['lat'].values.flatten()))
+            if lonmin < min(ds['lon'].values.flatten()):
+                print("lonmin (", lonmin, ") is not in range: should not be lower than:", min(ds['lon'].values.flatten()))
+            if lonmax > max(ds['lon'].values.flatten()):
+                print("lonmax (", lonmax, ") is not in range, should not be higher than: ",max(ds['lon'].values.flatten()))
 
             raise ValueError("Regrid coordinates out of bonds from input file range")
         else:
