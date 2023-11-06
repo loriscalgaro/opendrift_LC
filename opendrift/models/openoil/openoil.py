@@ -51,6 +51,10 @@ The droplet diameter may be given explicitly when seeding, e.g.:
 
 
     o = OpenOil()
+    o.set_config('environment:constant:x_wind', 0)
+    o.set_config('environment:constant:y_wind', 0)
+    o.set_config('environment:constant:x_sea_water_velocity', 0)
+    o.set_config('environment:constant:y_sea_water_velocity', 0)
     o.seed_elements(4, 60, number=100, time=datetime.now(), diameter=1e-5)
 
 In this case, the diameter will not change during the simulation, which is useful e.g. for sensitivity tests. The same diameter will be used for all elements for this example, but an array of the same length as the number of elements may also be provided.
@@ -1458,10 +1462,11 @@ class OpenOil(OceanDrift):
         Sets the oil type by specifying the name, the first match will be chosen. See the `ADIOS database <https://adios.orr.noaa.gov/oils>`_ for a list. OpenDrift provides a small set of extra oils.
         """
 
-        self.set_config('seed:oil_type', oiltype)
-        oiltype = adios.oil_name_alias.get(oiltype, oiltype)
-        logger.info(f'setting oil_type to: {oiltype}')
+        if self.get_config('seed:oil_type') != oiltype:
+            self.__set_seed_config__('seed:oil_type', oiltype)
+            logger.info(f'setting oil_type to: {oiltype}')
 
+        oiltype = adios.oil_name_alias.get(oiltype, oiltype)
         self.oil_name = oiltype
 
         if self.oil_weathering_model == 'noaa':
@@ -1565,8 +1570,6 @@ class OpenOil(OceanDrift):
             kwargs['lat'] = args[1]
             args = {}
 
-        self.store_oil_seed_metadata(**kwargs)
-
         if 'number' not in kwargs:
             number = self.get_config('seed:number')
         else:
@@ -1640,7 +1643,8 @@ class OpenOil(OceanDrift):
             del kwargs['oiltype']
 
         if 'oil_type' in kwargs:
-            self.set_config('seed:oil_type', kwargs['oil_type'])
+            if self.get_config('seed:oil_type') != kwargs['oil_type']:
+                self.__set_seed_config__('seed:oil_type', kwargs['oil_type'])
             del kwargs['oil_type']
         else:
             logger.info('Oil type not specified, using default: ' +
@@ -1675,6 +1679,8 @@ class OpenOil(OceanDrift):
             duration_hours = 1.  # For instantaneous spill, we use 1h
         kwargs['mass_oil'] = (m3_per_hour * duration_hours / num_elements *
                               kwargs['density'])
+
+        self.store_oil_seed_metadata(**kwargs)
 
         super(OpenOil, self).seed_elements(*args, **kwargs)
 
