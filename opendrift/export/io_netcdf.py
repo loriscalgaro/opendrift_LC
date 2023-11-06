@@ -7,6 +7,7 @@ from shutil import move
 
 import numpy as np
 from netCDF4 import Dataset, num2date, date2num
+from opendrift.models.basemodel import Mode
 
 # Module with functions to export/import trajectory data to/from netCDF file
 # Strives to be compliant with netCDF CF-convention on trajectories
@@ -38,7 +39,7 @@ def init(self, filename):
     self.outfile.model_url = 'https://github.com/OpenDrift/opendrift'
     self.outfile.opendrift_class = self.__class__.__name__
     self.outfile.opendrift_module = self.__class__.__module__
-    self.outfile.readers = str(self.readers.keys())
+    self.outfile.readers = str(self.env.readers.keys())
     self.outfile.time_coverage_start = str(self.start_time)
     self.outfile.time_step_calculation = str(self.time_step)
     self.outfile.time_step_output = str(self.time_step_output)
@@ -260,6 +261,8 @@ def import_file_xarray(self, filename, chunks, elements=None):
         self.lonmax = np.float32(self.ds.lon.maxval)
         self.latmax = np.float32(self.ds.lat.maxval)
 
+    self.mode = Mode.Result
+
 def import_file(self, filename, times=None, elements=None, load_history=True):
     """Create OpenDrift object from imported file.
      times: indices of time steps to be imported, must be contineous range.
@@ -352,6 +355,7 @@ def import_file(self, filename, times=None, elements=None, load_history=True):
 
     # Import and apply config settings
     attributes = infile.ncattrs()
+    self.mode = Mode.Config  # To allow setting config
     for attr in attributes:
         if attr.startswith('config_'):
             value = infile.getncattr(attr)
@@ -362,13 +366,16 @@ def import_file(self, filename, times=None, elements=None, load_history=True):
                 value = False
             if value == 'None':
                 value = None
+            self.set_config(conf_key, value)
             try:
                 self.set_config(conf_key, value)
                 logger.debug('Setting imported config: %s -> %s' %
                              (conf_key, value))
-            except:
+            except Exception as e:
+                logger.warning(e)
                 logger.warning('Could not set config: %s -> %s' %
                                 (conf_key, value))
+    self.mode = Mode.Result
 
     # Import time steps from metadata
     def timedelta_from_string(timestring):
