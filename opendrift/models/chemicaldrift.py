@@ -3279,7 +3279,7 @@ class ChemicalDrift(OceanDrift):
     def mask_netcdf_map (self,
                          shp_mask_file,
                          file_path = None,
-                         file_name=None,
+                         file_name = None,
                          DataArray = None,
                          shp_epsg = "epsg:4326",
                          invert_shp = False,
@@ -3347,8 +3347,24 @@ class ChemicalDrift(OceanDrift):
             else:
                 pass
             
-            DataArray_masked.to_netcdf(file_output_path + file_output_name)
-    
+            try:
+                DataArray_masked.to_netcdf(file_output_path + file_output_name)
+            except:
+                # Remove "_FillValue" = np.nan from data_vars and coordinates attributes 
+                # Change "_FillValue" to -9999, to avoid "ValueError: cannot convert float NaN to integer"
+                for var_name, var in DataArray_masked.variables.items():
+                    if "_FillValue" in var.attrs:
+                        del var.attrs["_FillValue"]
+                        var.attrs["_FillValue"] = -9999
+                        print("Changed _FillValue of ", var_name, "from NaN to -9999")
+                        
+                for coord_name, coord in DataArray_masked.coords.items():
+                    if "_FillValue" in coord.attrs:
+                        del coord.attrs["_FillValue"]
+                        coord.attrs["_FillValue"] = -9999
+                        print("Changed _FillValue of ", coord_name, "from NaN to -9999")
+                        
+                DataArray_masked.to_netcdf(file_output_path + file_output_name)
         else:
             return DataArray_masked
         
