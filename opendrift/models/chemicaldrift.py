@@ -3398,7 +3398,8 @@ class ChemicalDrift(OceanDrift):
                       variable_name = None,
                       labels_font_sizes = [30,30,30,25,25,25,25],
                       shp_color = "black",
-                      date_str_lenght = 10):
+                      date_str_lenght = 10,
+                      len_fig = 23, high_fig =15):
         '''
         Create a series of .jpg or .png for each timestep of a concentration map
         from REGRIDDED "calculate_water_sediment_conc" function output
@@ -3429,6 +3430,8 @@ class ChemicalDrift(OceanDrift):
         variable_name:       string, name of Conc_Datasetdata variable to plot if not concentration_avg_water/sediments
         labels_font_sizes:   list of int, [title_font_size, x_label_font_size, y_label_font_size, x_ticks_font_size
                                            y_ticks_font_size, cbar_label_font_size, cbar_ticks_font_size]
+        len_fig:             int, lenght of the figure (inches)
+        high_fig:            int, height of the figure (inches)
         shp_color:           string, color of shapefile when plotted
         date_str_lenght:     int, number date string charcters kept in title [10 for YYYY-MM-DD, 19 for hour shown] 
         '''
@@ -3507,7 +3510,7 @@ class ChemicalDrift(OceanDrift):
                 elif (Conc_DataArray.time.to_numpy()).size <= 1 and "depth" not in Conc_DataArray.dims:
                     Conc_DataArray_selected = Conc_DataArray
                     
-                fig, ax = plt.subplots(figsize = (23,15)) # Change here size of figure
+                fig, ax = plt.subplots(figsize = (len_fig,high_fig)) # Change here size of figure
                 shp.plot(ax = ax, color = shp_color, zorder = 10)
                 ax2 = Conc_DataArray_selected.plot.pcolormesh(ax = ax, 
                                                         x = 'longitude', 
@@ -3562,7 +3565,7 @@ class ChemicalDrift(OceanDrift):
                                                   robust = True, 
                                                   cmap=selected_colormap, 
                                                   levels = levels_colormap,
-                                                  figsize = (23,15),
+                                                  figsize = (len_fig,high_fig),
                                                   add_colorbar=False) # colorbar is added ex-post
                 plt.title(plt_title, pad=30, fontsize = title_font_size, weight = "bold")
                 plt.ylabel("Latitude", fontsize = x_label_font_size, labelpad=30.)
