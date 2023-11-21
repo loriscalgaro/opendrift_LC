@@ -3543,9 +3543,10 @@ class ChemicalDrift(OceanDrift):
                 ax.set_ylabel("Latitude", fontsize = y_label_font_size, labelpad = 30) # Change here size of ax labels
                 ax.tick_params(labelsize=x_ticks_font_size) # Change here size of ax ticks
                 if (Conc_DataArray.time.to_numpy()).size > 1:
-                    ax.set_title(title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:date_str_lenght] + " " +unit_measure, pad=20, fontsize = title_font_size, weight = "bold")
+                    ax.set_title(title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:date_str_lenght] +\
+                                 " " +unit_measure, pad=20, fontsize = title_font_size, weight = "bold", wrap= True)
                 else:
-                    ax.set_title(title_caption + " " +unit_measure, pad=30, fontsize = title_font_size, weight = "bold")
+                    ax.set_title(title_caption + " " +unit_measure, pad=30, fontsize = title_font_size, weight = "bold", wrap= True)
                 # from https://stackoverflow.com/questions/18195758/set-matplotlib-colorbar-size-to-match-graph
                 divider = make_axes_locatable(ax)
                 width = axes_size.AxesY(ax, aspect=1./aspect)
@@ -3583,7 +3584,7 @@ class ChemicalDrift(OceanDrift):
                                                   levels = levels_colormap,
                                                   figsize = (len_fig,high_fig),
                                                   add_colorbar=False) # colorbar is added ex-post
-                plt.title(plt_title, pad=30, fontsize = title_font_size, weight = "bold")
+                plt.title(plt_title, pad=30, fontsize = title_font_size, weight = "bold", wrap= True)
                 plt.ylabel("Latitude", fontsize = x_label_font_size, labelpad=30.)
                 plt.xlabel("Longitude", fontsize = y_label_font_size, labelpad=30.)
                 plt.xlim(long_min, long_max)
