@@ -1958,6 +1958,11 @@ class ChemicalDrift(OceanDrift):
         '''Write netCDF file with map of Chemical species densities and concentrations'''
 
         from netCDF4 import Dataset, date2num #, stringtochar
+        import opendrift
+        
+        if self.mode != opendrift.models.basemodel.Mode.Config:
+            self.mode = opendrift.models.basemodel.Mode.Config
+            print("Changed self.mode to Config")
 
         if landmask_shapefile is not None:
             if 'shape' in self.env.readers.keys():
@@ -1979,6 +1984,10 @@ class ChemicalDrift(OceanDrift):
             print('A reader for ''sea_floor_depth_below_sea_level'' must be specified')
             import sys
             sys.exit()
+            
+        if self.mode != opendrift.models.basemodel.Mode.Result:
+            self.mode = opendrift.models.basemodel.Mode.Result
+            print("Changed self.mode to Result")
 
         # Temporary workaround if self.nspecies and self.name_species are not defined
         # TODO Make sure that these are saved when the simulation data is saved to the ncdf file
