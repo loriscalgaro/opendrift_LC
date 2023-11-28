@@ -3350,6 +3350,11 @@ class ChemicalDrift(OceanDrift):
             try:
                 DataArray_masked.to_netcdf(file_output_path + file_output_name)
             except:
+                
+                # Change DataArray_masked to dataset if xarray.core.dataarray.DataArray
+                if str(type(DataArray_masked)) == "<class 'xarray.core.dataarray.DataArray'>":
+                    DataArray_masked = DataArray_masked.to_dataset()
+                    print("Changed DataArray_masked from DataArray to DataSet")
                 # Remove "_FillValue" = np.nan from data_vars and coordinates attributes 
                 # Change "_FillValue" to -9999, to avoid "ValueError: cannot convert float NaN to integer"
                 for var_name, var in DataArray_masked.variables.items():
