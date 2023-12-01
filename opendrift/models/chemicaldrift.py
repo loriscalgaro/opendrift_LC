@@ -3147,10 +3147,9 @@ class ChemicalDrift(OceanDrift):
 
         # Sum DataArray for specie 0, 1, and 2 (dissolved, DOC, and SPM) to obtain total water concentration
         print("Running sum of water concentration", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
-        
-        # Topography = Concentration_file.topo
-        time_avg = np.array(Concentration_file.avg_time)
 
+        time_avg = np.array(Concentration_file.avg_time)
+        
         if Transfer_setup == "organics":        
             Dissolved_conc = Concentration_file.sel(specie = 0)
             Dissolved_conc = Dissolved_conc.concentration_avg
@@ -3187,18 +3186,18 @@ class ChemicalDrift(OceanDrift):
 
         print("Running sediment concentration", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
         
-        
         DC_Conc_array_sed = Concentration_file.sel(specie = 3)
-        DC_Conc_array_sed = DC_Conc_array_sed.concentration_avg
+        if "depth" not in DC_Conc_array_sed.dims:
+            print("depth not included in DC_Conc_array_sed")
+            DC_Conc_array_sed = DC_Conc_array_sed.concentration_avg
         
-        if "depth"in DC_Conc_array_sed.dims:
-            print("depth ")
-            DC_Conc_array_sed = DC_Conc_array_sed.sum(dim="depth")
-            # Add landmask to sed_conc map removed with sum over depth
-            # TO DO
-         
- 
-        
+        elif "depth" in DC_Conc_array_sed.dims:
+            print("depth included in DC_Conc_array_sed")
+            # Mask to keep landmask when saving sediment concentration
+            mask = np.isnan(Concentration_file.concentration_avg)
+            DC_Conc_array_sed = Concentration_file.concentration_avg[:,-1,:,:,:].sum(dim='depth')
+            # Add mask to DC_Conc_array_sed
+            DC_Conc_array_sed = xr.where(mask[:,0,-1,:,:],np.nan,DC_Conc_array_sed)        
 
         print("Changing coordinates", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
 
@@ -3221,13 +3220,6 @@ class ChemicalDrift(OceanDrift):
             raise ValueError("Incorrect dimention lon/x")
 
         
-
-        # Topography = Topography.self.correct_conc_coordinates(DC_Conc_array = Topography, 
-        #                                               lon_coord = lon, 
-        #                                               lat_coord = lat, 
-        #                                               time_coord = time_avg[0],
-        #                                               shift_time = Shift_time)
-
         DC_Conc_array_wat = self.correct_conc_coordinates(DC_Conc_array = DC_Conc_array_wat, 
                                                       lon_coord = lon, 
                                                       lat_coord = lat, 
