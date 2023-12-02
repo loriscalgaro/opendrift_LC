@@ -2893,11 +2893,11 @@ class ChemicalDrift(OceanDrift):
                 n_elements=number_of_elements)
 
             if t.size == 1:
-                time = datetime.utcfromtimestamp(
-                    (np.array(t - np.datetime64('1970-01-01T00:00:00'))) / np.timedelta64(1, 's'))
+                time = datetime.utcfromtimestamp(int(
+                    (np.array(t - np.datetime64('1970-01-01T00:00:00'))) / np.timedelta64(1, 's')))
             elif t.size > 1:
-                time = datetime.utcfromtimestamp(
-                    (np.array(t[i] - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's')))
+                time = datetime.utcfromtimestamp(int(
+                    (np.array(t[i] - np.datetime64('1970-01-01T00:00:00'))) / np.timedelta64(1, 's')))
                 
             # specie to be added to seed parameters for sediments and water
             if mode == 'sed_conc':
