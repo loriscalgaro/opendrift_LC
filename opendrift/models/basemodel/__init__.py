@@ -577,7 +577,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             self.metadata_dict = OrderedDict()
         self.metadata_dict[key] = value
 
-    @require_mode(mode=Mode.Config)
+    @require_mode(mode=[Mode.Config, Mode.Result])
     def add_reader(self, readers, variables=None, first=False):
         self.env.add_reader(readers, variables, first)
 
@@ -1616,6 +1616,9 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         if D == 0:
             logger.debug('Horizontal diffusivity is 0, no random walk.')
             return
+        if self.num_elements_active() == 0:
+            logger.debug('No active elements, skipping horizontal diffusivity.')
+            return
         dt = np.abs(self.time_step.total_seconds())
         x_vel = self.elements.moving * np.sqrt(2 * D / dt) * np.random.normal(
             scale=1, size=self.num_elements_active())
@@ -2510,6 +2513,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                   vmin=None,
                   vmax=None,
                   drifter=None,
+                  shapefiles=None,
                   skip=None,
                   scale=None,
                   color=False,
@@ -2689,6 +2693,13 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                     drifter_line[drnum].set_data(dr['x'][0:i], dr['y'][0:i])
                     ret.append(drifter_line[drnum])
                     ret.append(drifter_pos[drnum])
+
+            if shapefiles is not None:
+                import geopandas as gpd
+                for sf in shapefiles:
+                    shdf = gpd.read_file(sf)
+                    shdf = shdf.to_crs("EPSG:4326")
+                    ax.add_geometries(shdf.geometry, gcrs, edgecolor='g', linewidth=2, facecolor='none')
 
             if show_elements is True:
                 if compare is not None:
