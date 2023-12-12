@@ -1958,6 +1958,11 @@ class ChemicalDrift(OceanDrift):
         '''Write netCDF file with map of Chemical species densities and concentrations'''
 
         from netCDF4 import Dataset, date2num #, stringtochar
+        import opendrift
+        
+        if self.mode != opendrift.models.basemodel.Mode.Config:
+            self.mode = opendrift.models.basemodel.Mode.Config
+            print("Changed self.mode to Config")
 
         if landmask_shapefile is not None:
             if 'shape' in self.env.readers.keys():
@@ -1979,6 +1984,10 @@ class ChemicalDrift(OceanDrift):
             print('A reader for ''sea_floor_depth_below_sea_level'' must be specified')
             import sys
             sys.exit()
+            
+        if self.mode != opendrift.models.basemodel.Mode.Result:
+            self.mode = opendrift.models.basemodel.Mode.Result
+            print("Changed self.mode to Result")
 
         # Temporary workaround if self.nspecies and self.name_species are not defined
         # TODO Make sure that these are saved when the simulation data is saved to the ncdf file
@@ -2884,11 +2893,11 @@ class ChemicalDrift(OceanDrift):
                 n_elements=number_of_elements)
 
             if t.size == 1:
-                time = datetime.utcfromtimestamp(
-                    (np.array(t - np.datetime64('1970-01-01T00:00:00'))) / np.timedelta64(1, 's'))
+                time = datetime.utcfromtimestamp(int(
+                    (np.array(t - np.datetime64('1970-01-01T00:00:00'))) / np.timedelta64(1, 's')))
             elif t.size > 1:
-                time = datetime.utcfromtimestamp(
-                    (np.array(t[i] - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's')))
+                time = datetime.utcfromtimestamp(int(
+                    (np.array(t[i] - np.datetime64('1970-01-01T00:00:00'))) / np.timedelta64(1, 's')))
                 
             # specie to be added to seed parameters for sediments and water
             if mode == 'sed_conc':
@@ -3138,10 +3147,9 @@ class ChemicalDrift(OceanDrift):
 
         # Sum DataArray for specie 0, 1, and 2 (dissolved, DOC, and SPM) to obtain total water concentration
         print("Running sum of water concentration", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
-        
-        # Topography = Concentration_file.topo
-        time_avg = np.array(Concentration_file.avg_time)
 
+        time_avg = np.array(Concentration_file.avg_time)
+        
         if Transfer_setup == "organics":        
             Dissolved_conc = Concentration_file.sel(specie = 0)
             Dissolved_conc = Dissolved_conc.concentration_avg
@@ -3178,18 +3186,18 @@ class ChemicalDrift(OceanDrift):
 
         print("Running sediment concentration", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
         
-        
         DC_Conc_array_sed = Concentration_file.sel(specie = 3)
-        DC_Conc_array_sed = DC_Conc_array_sed.concentration_avg
+        if "depth" not in DC_Conc_array_sed.dims:
+            print("depth not included in DC_Conc_array_sed")
+            DC_Conc_array_sed = DC_Conc_array_sed.concentration_avg
         
-        if "depth"in DC_Conc_array_sed.dims:
-            print("depth ")
-            DC_Conc_array_sed = DC_Conc_array_sed.sum(dim="depth")
-            # Add landmask to sed_conc map removed with sum over depth
-            # TO DO
-         
- 
-        
+        elif "depth" in DC_Conc_array_sed.dims:
+            print("depth included in DC_Conc_array_sed")
+            # Mask to keep landmask when saving sediment concentration
+            mask = np.isnan(Concentration_file.concentration_avg)
+            DC_Conc_array_sed = Concentration_file.concentration_avg[:,-1,:,:,:].sum(dim='depth')
+            # Add mask to DC_Conc_array_sed
+            DC_Conc_array_sed = xr.where(mask[:,0,-1,:,:],np.nan,DC_Conc_array_sed)        
 
         print("Changing coordinates", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
 
@@ -3212,13 +3220,6 @@ class ChemicalDrift(OceanDrift):
             raise ValueError("Incorrect dimention lon/x")
 
         
-
-        # Topography = Topography.self.correct_conc_coordinates(DC_Conc_array = Topography, 
-        #                                               lon_coord = lon, 
-        #                                               lat_coord = lat, 
-        #                                               time_coord = time_avg[0],
-        #                                               shift_time = Shift_time)
-
         DC_Conc_array_wat = self.correct_conc_coordinates(DC_Conc_array = DC_Conc_array_wat, 
                                                       lon_coord = lon, 
                                                       lat_coord = lat, 
@@ -3350,6 +3351,11 @@ class ChemicalDrift(OceanDrift):
             try:
                 DataArray_masked.to_netcdf(file_output_path + file_output_name)
             except:
+                
+                # Change DataArray_masked to dataset if xarray.core.dataarray.DataArray
+                if str(type(DataArray_masked)) == "<class 'xarray.core.dataarray.DataArray'>":
+                    DataArray_masked = DataArray_masked.to_dataset()
+                    print("Changed DataArray_masked from DataArray to DataSet")
                 # Remove "_FillValue" = np.nan from data_vars and coordinates attributes 
                 # Change "_FillValue" to -9999, to avoid "ValueError: cannot convert float NaN to integer"
                 for var_name, var in DataArray_masked.variables.items():
@@ -3543,9 +3549,10 @@ class ChemicalDrift(OceanDrift):
                 ax.set_ylabel("Latitude", fontsize = y_label_font_size, labelpad = 30) # Change here size of ax labels
                 ax.tick_params(labelsize=x_ticks_font_size) # Change here size of ax ticks
                 if (Conc_DataArray.time.to_numpy()).size > 1:
-                    ax.set_title(title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:date_str_lenght] + " " +unit_measure, pad=20, fontsize = title_font_size, weight = "bold")
+                    ax.set_title(title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:date_str_lenght] +\
+                                 " " +unit_measure, pad=20, fontsize = title_font_size, weight = "bold", wrap= True)
                 else:
-                    ax.set_title(title_caption + " " +unit_measure, pad=30, fontsize = title_font_size, weight = "bold")
+                    ax.set_title(title_caption + " " +unit_measure, pad=30, fontsize = title_font_size, weight = "bold", wrap= True)
                 # from https://stackoverflow.com/questions/18195758/set-matplotlib-colorbar-size-to-match-graph
                 divider = make_axes_locatable(ax)
                 width = axes_size.AxesY(ax, aspect=1./aspect)
@@ -3583,7 +3590,7 @@ class ChemicalDrift(OceanDrift):
                                                   levels = levels_colormap,
                                                   figsize = (len_fig,high_fig),
                                                   add_colorbar=False) # colorbar is added ex-post
-                plt.title(plt_title, pad=30, fontsize = title_font_size, weight = "bold")
+                plt.title(plt_title, pad=30, fontsize = title_font_size, weight = "bold", wrap= True)
                 plt.ylabel("Latitude", fontsize = x_label_font_size, labelpad=30.)
                 plt.xlabel("Longitude", fontsize = y_label_font_size, labelpad=30.)
                 plt.xlim(long_min, long_max)
