@@ -90,6 +90,9 @@ logger = logging.getLogger(__name__)
 from opendrift.models.oceandrift import OceanDrift, Lagrangian3DArray
 from . import noaa_oil_weathering as noaa
 from . import adios
+from adios_db.computation.physical_properties import KinematicViscosity, Density
+from adios_db.computation import gnome_oil
+
 from opendrift.models.physics_methods import oil_wave_entrainment_rate_li2017
 from opendrift.config import CONFIG_LEVEL_ESSENTIAL, CONFIG_LEVEL_BASIC, CONFIG_LEVEL_ADVANCED
 
@@ -665,14 +668,13 @@ class OpenOil(OceanDrift):
         #########################################################
         self.timer_start(
             'main loop:updating elements:oil weathering:updating viscosities')
-        oil_viscosity = self.oiltype.kvis_at_temp(
-            self.environment.sea_water_temperature)
+        oil_viscosity = self.KinematicViscosity.at_temp(
+                self.environment.sea_water_temperature)
         self.timer_end(
             'main loop:updating elements:oil weathering:updating viscosities')
         self.timer_start(
             'main loop:updating elements:oil weathering:updating densities')
-        oil_density = self.oiltype.density_at_temp(
-            self.environment.sea_water_temperature)
+        oil_density = self.Density.at_temp(self.environment.sea_water_temperature)
         self.timer_end(
             'main loop:updating elements:oil weathering:updating densities')
 
@@ -1499,11 +1501,11 @@ class OpenOil(OceanDrift):
         Sets the oil type by specifing a JSON dict. The format should be the same as the ADIOS database. See the `ADIOS database <https://adios.orr.noaa.gov/oils>`_ for a list.
         """
         if self.oil_weathering_model == 'noaa':
-            o = { 'data': { 'attributes' : json } }
-            o['data']['_id'] = o['data']['attributes']['oil_id']
-            o['data']['attributes']['metadata']['location'] = 'NORWAY'
+            #o = { 'data': { 'attributes' : json } }
+            #o['data']['_id'] = o['data']['attributes']['oil_id']
+            #o['data']['attributes']['metadata']['location'] = 'Norway'
 
-            self.oiltype = adios.oil.OpendriftOil(o)
+            self.oiltype = adios.oil.OpendriftOil(json)
             self.oil_name = self.oiltype.name
             if not self.oiltype.valid():
                 logger.error(
@@ -1518,7 +1520,7 @@ class OpenOil(OceanDrift):
         Sets the oil type by specifing a JSON file. The format should be the same as the ADIOS database. See the `ADIOS database <https://adios.orr.noaa.gov/oils>`_ for a list.
 
         >>> o = OpenOil()
-        >>> o.set_oiltype_from_file('opendrift/models/openoil/adios/extra_oils/AD03128.json')
+        >>> o.set_oiltype_from_file('opendrift/models/openoil/adios/extra_oils/AD04001.json')
         """
         if self.oil_weathering_model == 'noaa':
             import json
@@ -1652,8 +1654,10 @@ class OpenOil(OceanDrift):
         self.set_oiltype(self.get_config('seed:oil_type'))
 
         if self.oil_weathering_model == 'noaa':
-            oil_density = self.oiltype.density_at_temp(285)
-            oil_viscosity = self.oiltype.kvis_at_temp(285)
+            self.Density = Density(self.oiltype.oil)
+            self.KinematicViscosity = KinematicViscosity(self.oiltype.oil)
+            oil_density = self.Density.at_temp(285)
+            oil_viscosity = self.KinematicViscosity.at_temp(285)
             logger.info(
                 'Using density %s and viscosity %s of oiltype %s' %
                 (oil_density, oil_viscosity, self.get_config('seed:oil_type')))

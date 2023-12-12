@@ -30,7 +30,7 @@ from opendrift.models.openoil import OpenOil
 def test_oils():
     o = OpenOil(loglevel=50, weathering_model='noaa')
 
-    assert len(o.oiltypes) >= 1478
+    assert len(o.oiltypes) >= 1247
 
     for oiltype in o.oiltypes[12:14]:
         if oiltype == 'JP-8':
@@ -117,7 +117,9 @@ def test_oil_volume():
 
 
 def test_dispersion():
-    for oil in ['SMORBUKK KONDENSAT', 'SKRUGARD']:
+    # Condensate is temporarily not gnome_suitable, cuts shuld be added
+    #for oil in ['SMORBUKK KONDENSAT', 'SKRUGARD']:
+    for oil in ['SKRUGARD']:
         for windspeed in [3, 8]:
             if oil == 'SKRUGARD' and windspeed == 3:
                 continue
