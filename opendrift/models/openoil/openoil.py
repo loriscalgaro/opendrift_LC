@@ -116,7 +116,7 @@ class Oil(Lagrangian3DArray):
                 'dtype': np.float32,
                 'units': 'm2/s',
                 'seed': False,  # Taken from NOAA database
-                'description': 'Kinematic viscosity of oil',
+                'description': 'Kinematic viscosity of oil (emulsion)',
                 'default': 0.005
             }),
         (
@@ -704,11 +704,13 @@ class OpenOil(OceanDrift):
         kv1 = np.sqrt(oil_viscosity) * visc_curvfit_param
         kv1[kv1 < 1] = 1
         kv1[kv1 > 10] = 10
+        # NB: neglecting dispersed and biodegraded in calculation of fraction_evaporated
         self.elements.fraction_evaporated = self.elements.mass_evaporated / (
             self.elements.mass_oil + self.elements.mass_evaporated)
+
         self.elements.viscosity = (
-            oil_viscosity * np.exp(kv1 * self.elements.fraction_evaporated) *
-            (1 + (fw_d_fref / (1.187 - fw_d_fref)))**2.49)
+            oil_viscosity * np.exp(kv1 * self.elements.fraction_evaporated) * 
+                (1 + (fw_d_fref / (1.187 - fw_d_fref)))**2.49)
 
         if self.get_config('processes:evaporation') is True:
             self.timer_start(
@@ -813,13 +815,11 @@ class OpenOil(OceanDrift):
         emul_constant = self.oiltype.bullwinkle
 
         # Emulsify...
-        fraction_evaporated = self.elements.mass_evaporated / (
-            self.elements.mass_evaporated + self.elements.mass_oil)
         # f ((le_age >= emul_time && emul_time >= 0.) || frac_evap[i] >= emul_C && emul_C > 0.)
 
         start_emulsion = np.where((
             (self.elements.age_seconds >= emul_time) & (emul_time >= 0))
-                                  | ((fraction_evaporated >= emul_constant)
+                                  | ((self.elements.fraction_evaporated >= emul_constant)
                                      & (emul_constant > 0)))[0]
         if len(start_emulsion) == 0:
             logger.debug('        Emulsification not yet started')
@@ -1275,7 +1275,7 @@ class OpenOil(OceanDrift):
     def plot_oil_budget(self,
                         filename=None,
                         ax=None,
-                        show_density_viscosity=True,
+                        show_watercontent_and_viscosity=True,
                         show_wind_and_current=True):
 
         if self.time_step.days < 0:  # Backwards simulation
@@ -1305,7 +1305,7 @@ class OpenOil(OceanDrift):
         if ax is None:
             # Left axis showing oil mass
             nrows = 1
-            if show_density_viscosity is True:
+            if show_watercontent_and_viscosity is True:
                 nrows = nrows + 1
             if show_wind_and_current is True:
                 nrows = nrows + 1
@@ -1317,8 +1317,8 @@ class OpenOil(OceanDrift):
                 ax1 = axs
             elif nrows >= 2:
                 ax1 = axs[0]
-                if show_density_viscosity is True:
-                    self.plot_oil_density_and_viscosity(ax=axs[1], show=False)
+                if show_watercontent_and_viscosity is True:
+                    self.plot_oil_watercontent_and_viscosity(ax=axs[1], show=False)
                 if show_wind_and_current is True:
                     self.plot_environment(ax=axs[nrows - 1], show=False)
         else:
@@ -1397,12 +1397,12 @@ class OpenOil(OceanDrift):
                    self.start_time.strftime('%Y-%m-%d %H:%M'),
                    self.time.strftime('%Y-%m-%d %H:%M')))
         # Shrink current axis's height by 10% on the bottom
-        box = ax1.get_position()
-        ax1.set_position(
-            [box.x0, box.y0 + box.height * 0.1, box.width, box.height * 0.9])
-        ax2.set_position(
-            [box.x0, box.y0 + box.height * 0.1, box.width, box.height * 0.9])
-        ax1.legend(bbox_to_anchor=(0., -0.10, 1., -0.03),
+        #box = ax1.get_position()
+        #ax1.set_position(
+        #    [box.x0, box.y0 + box.height * 0.15, box.width, box.height * 0.85])
+        #ax2.set_position(
+        #    [box.x0, box.y0 + box.height * 0.5, box.width, box.height * 0.6])
+        ax1.legend(bbox_to_anchor=(0., -0.1, 1., -0.04),
                    loc=1,
                    ncol=6,
                    mode="expand",
@@ -1434,7 +1434,7 @@ class OpenOil(OceanDrift):
         cumulative_fraction_entrained = np.sum(z, 1) / z.shape[1]
         return cumulative_fraction_entrained
 
-    def plot_oil_density_and_viscosity(self, ax=None, show=True):
+    def plot_oil_watercontent_and_viscosity(self, ax=None, show=True):
         if ax is None:
             fig, ax = plt.subplots()
         import matplotlib.dates as mdates
@@ -1447,35 +1447,37 @@ class OpenOil(OceanDrift):
         dyn_viscosity_std = dyn_viscosity.std(axis=0)
         density = self.history['density'].mean(axis=0)
         density_std = self.history['density'].std(axis=0)
+        watercontent = self.history['water_fraction'].mean(axis=0)*100
+        watercontent_std = self.history['water_fraction'].std(axis=0)*100
 
         ax.plot(time,
                 dyn_viscosity_mean,
                 'g',
                 lw=2,
-                label='Dynamical viscosity')
+                label='Emulsion viscosity')
         ax.fill_between(time,
                         dyn_viscosity_mean - dyn_viscosity_std,
                         dyn_viscosity_mean + dyn_viscosity_std,
                         color='g',
                         alpha=0.5)
         ax.set_ylim([0, max(dyn_viscosity_mean + dyn_viscosity_std)])
-        ax.set_ylabel(r'Dynamical viscosity  [cPoise] / [mPas]', color='g')
+        ax.set_ylabel(r'Emulsion viscosity  [cPoise] / [mPas]', color='g')
         ax.tick_params(axis='y', colors='g')
 
         axb = ax.twinx()
-        axb.plot(time, density, 'b', lw=2, label='Density')
+        axb.plot(time, watercontent, 'b', lw=2, label='Water content')
         axb.fill_between(time,
-                         density - density_std,
-                         density + density_std,
-                         color='b',
-                         alpha=0.5)
+                         watercontent - watercontent_std,
+                         watercontent + watercontent_std,
+                         color='b', alpha=0.5)
         ax.set_xlim([0, time.max()])
         ax.set_xlabel('Time [hours]')
-        axb.set_ylabel(r'Density  [kg/m3]', color='b')
+        axb.set_ylim([0, 100])
+        axb.set_ylabel(r'Water content  [%]', color='b')
         axb.tick_params(axis='y', colors='b')
 
         ax.legend(loc='upper left')
-        axb.legend(loc='lower right')
+        axb.legend(loc='upper center')
         if show is True:
             plt.show()
 
