@@ -2765,11 +2765,18 @@ class ChemicalDrift(OceanDrift):
 
 
     @staticmethod
-    def _get_z(mode, number, depth=None, sed_mix_depth=None):
-        if mode == "water_conc" and depth is not None:
-            return -1 * np.random.uniform(0.0001, depth - 0.0001, number)
-        elif mode == "sed_conc" and depth is not None and sed_mix_depth is not None:
-            return  -1 * np.random.uniform(depth + 0.0001, depth + sed_mix_depth - 0.0001, number)
+    def _get_z(mode, number, NETCDF_data_dim_names, depth_seed=None, sed_mix_depth=None, 
+               depth_min = None, depth_max = None):
+        if mode == "water_conc" and depth_seed is not None:
+            if "depth" in NETCDF_data_dim_names:
+                if depth_min is not None and depth_max is not None:
+                    return -1 * np.random.uniform(depth_min, depth_max, number)
+                else:
+                    raise ValueError("depth_min or depth_max is None when depth dimention of NETCDF_data is specified")
+            else:
+                return -1 * np.random.uniform(0.0001, depth_seed - 0.0001, number)
+        elif mode == "sed_conc" and depth_seed is not None and sed_mix_depth is not None:
+            return  -1 * np.random.uniform(depth_seed + 0.0001, depth_seed + sed_mix_depth - 0.0001, number)
         elif mode == "emission":
             return -1 * np.random.uniform(0.0001, 1 - 0.0001, number)
         else:
@@ -2790,6 +2797,7 @@ class ChemicalDrift(OceanDrift):
             number_of_elements=None,
             origin_marker=1,
             gen_mode="mass",
+            last_depth_until_bathimetry = True
     ):
         """Seed elements based on a dataarray with water/sediment concentration or direct emissions to water
 
@@ -2798,21 +2806,24 @@ class ChemicalDrift(OceanDrift):
                     * latitude      (latitude) float32
                     * longitude     (longitude) float32
                     * time          (time) datetime64[ns]
-                Bathimetry_data:    dataarray with bathimetry data, MUST have the same grid of NETCDF_data and no time dimension
+                Bathimetry_data:    dataarray with bathimetry data, MUST have the same grid of NETCDF_data, no time dimension, and positive values
                     * latitude      (latitude) float32
                     * longitude     (longitude) float32
-                Bathimetry_seed_data:    dataarray with bathimetry data, MUST be the same used for running the simulation and no time dimension
+                Bathimetry_seed_data:    dataarray with bathimetry data, MUST be the same used for running the simulation, no time dimension, and positive values
                     * latitude      (latitude) float32
                     * longitude     (longitude) float32
                 mode:               "water_conc" (seed from concentration in water colum, in ug/L), "sed_conc" (seed from sediment concentration, in ug/kg d.w.), "emission" (seed from direct discharge to water, in kg)
                 radius:             scalar, unit: meters, elements will be created in a circular area around coordinates
                 lowerbound:         scalar, elements with lower values are discarded
                 higherbound:        scalar, elements with higher values are discarded
-                number_of_elements: scalar, number of elements created for each gridpoint
+                number_of_elements: scalar, number of elements created for each vertical layer at each gridpoint
                 mass_element_ug:    scalar, maximum mass of elements if number_of_elements is not specificed
                 lon_resol:          scalar, longitude resolution of the NETCDF dataset
                 lat_resol:          scalar, latitude resolution of the NETCDF dataset
                 gen_mode:           "mass" (elements generated from mass), "fixed" (fixed number of elements for each data point)
+                last_depth_until_bathimetry: boolean, when depth is specified in NETCDF_data using "water_conc" mode
+                                            the water column below the highest depth value is considered the same as the last 
+                                            available layer (True) or is consedered without chemical (False)
             """
 
         # mass_element_ug=1e3     # 1e3 - 1 element is 1mg chemical
@@ -2822,6 +2833,16 @@ class ChemicalDrift(OceanDrift):
 
         sel = np.where((NETCDF_data > lowerbound) & (NETCDF_data < higherbound))
         time_check = (NETCDF_data.time).size
+        NETCDF_data_dim_names = list(NETCDF_data.dims)
+        la_name_index = NETCDF_data_dim_names.index("latitude")
+        lo_name_index = NETCDF_data_dim_names.index("longitude")
+        time_name_index = NETCDF_data_dim_names.index("time")
+        depth_min = None
+        depth_max = None
+
+        if "depth" in NETCDF_data.dims:
+            depth_name_index = NETCDF_data_dim_names.index("depth")
+            all_depth_values = np.sort(np.absolute(np.unique(np.array(NETCDF_data.depth)))) # Change depth to positive values
 
         if (time_check) == 1:
         # fix for different encoding of single time step emissions
@@ -2832,13 +2853,33 @@ class ChemicalDrift(OceanDrift):
                 t = np.datetime64(str(np.array(NETCDF_data.time[0])))
                 t = np.array(t, dtype='datetime64[s]')
 
-            la = NETCDF_data.latitude[sel[0]].data
-            lo = NETCDF_data.longitude[sel[1]].data
+            if "depth" in NETCDF_data.dims:
+                # la = NETCDF_data.latitude[sel[0]].data
+                la = NETCDF_data.latitude[sel[la_name_index]].data
+                # lo = NETCDF_data.longitude[sel[1]].data
+                lo = NETCDF_data.longitude[sel[lo_name_index]].data
+                depth = np.absolute(NETCDF_data.depth[sel[depth_name_index]].data) # Change depth to positive values to calculate pixel volume
+            else:
+                # la = NETCDF_data.latitude[sel[0]].data
+                la = NETCDF_data.latitude[sel[la_name_index]].data
+                # lo = NETCDF_data.longitude[sel[1]].data
+                lo = NETCDF_data.longitude[sel[lo_name_index]].data
+
         elif time_check > 1:
-            t = NETCDF_data.time[sel[0]].data
+            # t = NETCDF_data.time[sel[0]].data
+            t = NETCDF_data.time[sel[time_name_index]].data
             t = np.array(t, dtype='datetime64[s]')
-            la = NETCDF_data.latitude[sel[1]].data
-            lo = NETCDF_data.longitude[sel[2]].data
+            if "depth" in NETCDF_data.dims:
+                # la = NETCDF_data.latitude[sel[1]].data
+                la = NETCDF_data.latitude[sel[la_name_index]].data
+                # lo = NETCDF_data.longitude[sel[2]].data
+                lo = NETCDF_data.longitude[sel[lo_name_index]].data
+                depth = NETCDF_data.depth[sel[depth_name_index]].data
+            else:
+                # la = NETCDF_data.latitude[sel[1]].data
+                la = NETCDF_data.latitude[sel[la_name_index]].data
+                # lo = NETCDF_data.longitude[sel[2]].data
+                lo = NETCDF_data.longitude[sel[lo_name_index]].data
         print("Seeding " + str(la.size) + " datapoints")
 
         lon_array = lo + lon_resol / 2  # find center of pixel for volume of water / sediments
@@ -2861,17 +2902,61 @@ class ChemicalDrift(OceanDrift):
             Bathimetry_seed = None
 
         for i in range(0, max(t.size, lo.size, la.size)):
+            # print(i)
             lon_grid_m = None
-            Bathimetry_conc = None
+            depth_min = None
+            depth_max = None
 
             if mode != 'emission':
                 lon_grid_m =  np.array([(6.371e6 * (np.cos(2 * (np.pi) * la[i] / 360)) * lon_resol * (2 * np.pi) / 360)])  # 6.371e6: radius of Earth in m
-                Bathimetry_conc = np.array([(Bathimetry_data.sel(latitude=la[i],longitude=lo[i],method='nearest'))]) # m
-                # depth of seeding must be the same as the one considered for resuspention process
-                Bathimetry_seed = np.array([(Bathimetry_seed_data.sel(latitude=lat_array[i],longitude=lon_array[i],method='nearest'))]) # m
+                if "depth" in NETCDF_data.dims:
+                    # depth start from 0 at surface layer, with positive values at higher depths
+                    depth_datapoint = np.absolute(depth[i])
+                    # depth_datapoint_index = list(all_depth_values).index(depth_datapoint)
+                    Bathimetry_datapoint = np.array([(Bathimetry_data.sel(latitude=la[i],longitude=lo[i],method='nearest'))]) # m
+                    # depth of seeding must be the same as the one considered for resuspention process
+                    Bathimetry_seed = np.array([(Bathimetry_seed_data.sel(latitude=lat_array[i],longitude=lon_array[i],method='nearest'))]) # m
+                    # array of depth values available for lat/lon position
+                    depth_datapoint_np = np.sort(np.absolute(np.array(NETCDF_data.sel(latitude=la[i],longitude=lo[i],method='nearest')['depth']))) # depth is changed to positive values to calculate pixel volume
+                    depth_datapoint_np_index = list(depth_datapoint_np).index(depth_datapoint)
+
+                    if 0 in all_depth_values:
+                        # use of ChemicalDrift output, where depth represents top of vertical layer
+                        depth_min = depth_datapoint
+                        # check if depth value of datapiont is the last avalable for lat/lon 
+                        if depth_datapoint == depth_datapoint_np[-1]:
+                            depth_max = Bathimetry_datapoint
+                        else:
+                            depth_max = min(depth_datapoint_np[depth_datapoint_np_index + 1], Bathimetry_datapoint)
+
+                        depth_layer_high = depth_max - depth_min
+                        if depth_layer_high < 0:
+                            Error_depth = "datapoint at lon: " + str(lo[i])[0:8] +\
+                            " & lat: " + str(la[i])[0:8]+ " & depth: " + str(depth_datapoint)[0:8]+\
+                            " is at depth higher than bathimetry (" + str(Bathimetry_datapoint)[1:8] + ")"
+                            raise ValueError(Error_depth)
+                    else:
+                        # use of standard convention where depth represents bottom of vertical layer
+                        if depth_datapoint_np_index > 0:
+                            # datapoint is below the surface layer
+                            depth_min = (depth_datapoint_np[depth_datapoint_np_index - 1])
+                        else:
+                            # datapoint is within the surface layer
+                            depth_min = 0
+
+                        # check if datapoint is the last depth available for lat/lon position
+                        if depth_datapoint_np_index == len(depth_datapoint_np)-1 and last_depth_until_bathimetry is True:
+                            depth_max = max(depth_datapoint, Bathimetry_datapoint)
+                        else:
+                            depth_max = depth_datapoint
+
+                else:
+                    depth_layer_high = np.array([(Bathimetry_data.sel(latitude=la[i],longitude=lo[i],method='nearest'))]) # m
+                    # depth of seeding must be the same as the one considered for resuspention process
+                    Bathimetry_seed = np.array([(Bathimetry_seed_data.sel(latitude=lat_array[i],longitude=lon_array[i],method='nearest'))]) # m
 
             if mode == 'water_conc':
-                pixel_volume = Bathimetry_conc * lon_grid_m * lat_grid_m
+                pixel_volume = depth_layer_high * lon_grid_m * lat_grid_m
                 # concentration is ug/L, volume is m: m3 * 1e3 = L
                 mass_ug = (data[sel][i] * (pixel_volume * 1e3))
 
@@ -2914,8 +2999,11 @@ class ChemicalDrift(OceanDrift):
 
             if mass_element_seed_ug > 0:
                 z = self._get_z(mode = mode,
-                                number = number, 
-                                depth = Bathimetry_seed, # depth must be the same as the one considered for resuspention process
+                                number = number,
+                                NETCDF_data_dim_names = NETCDF_data_dim_names,
+                                depth_min = depth_min,
+                                depth_max = depth_max,
+                                depth_seed = Bathimetry_seed, # depth must be the same as the one considered for resuspention process
                                 sed_mix_depth = sed_mixing_depth)
 
                 for k in range(len(z)):
@@ -2939,8 +3027,11 @@ class ChemicalDrift(OceanDrift):
 
                         if mass_residual > 0:
                             z = self._get_z(mode = mode,
-                                            number = 1, 
-                                            depth = Bathimetry_conc, 
+                                            number = 1,
+                                            NETCDF_data_dim_names = NETCDF_data_dim_names,
+                                            depth_min = depth_min,
+                                            depth_max = depth_max,
+                                            depth_seed = Bathimetry_seed, # depth must be the same as the one considered for resuspention process
                                             sed_mix_depth = sed_mixing_depth)
 
                             self.seed_elements(
