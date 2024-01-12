@@ -2765,11 +2765,18 @@ class ChemicalDrift(OceanDrift):
 
 
     @staticmethod
-    def _get_z(mode, number, depth=None, sed_mix_depth=None):
-        if mode == "water_conc" and depth is not None:
-            return -1 * np.random.uniform(0.0001, depth - 0.0001, number)
-        elif mode == "sed_conc" and depth is not None and sed_mix_depth is not None:
-            return  -1 * np.random.uniform(depth + 0.0001, depth + sed_mix_depth - 0.0001, number)
+    def _get_z(mode, number, NETCDF_data_dim_names, depth_seed=None, sed_mix_depth=None, 
+               depth_min = None, depth_max = None):
+        if mode == "water_conc" and depth_seed is not None:
+            if "depth" in NETCDF_data_dim_names:
+                if depth_min is not None and depth_max is not None:
+                    return -1 * np.random.uniform(depth_min, depth_max, number)
+                else:
+                    raise ValueError("depth_min or depth_max is None when depth dimention of NETCDF_data is specified")
+            else:
+                return -1 * np.random.uniform(0.0001, depth_seed - 0.0001, number)
+        elif mode == "sed_conc" and depth_seed is not None and sed_mix_depth is not None:
+            return  -1 * np.random.uniform(depth_seed + 0.0001, depth_seed + sed_mix_depth - 0.0001, number)
         elif mode == "emission":
             return -1 * np.random.uniform(0.0001, 1 - 0.0001, number)
         else:
@@ -2790,7 +2797,7 @@ class ChemicalDrift(OceanDrift):
             number_of_elements=None,
             origin_marker=1,
             gen_mode="mass",
-            
+            last_depth_until_bathimetry = True
     ):
         """Seed elements based on a dataarray with water/sediment concentration or direct emissions to water
 
@@ -2799,31 +2806,44 @@ class ChemicalDrift(OceanDrift):
                     * latitude      (latitude) float32
                     * longitude     (longitude) float32
                     * time          (time) datetime64[ns]
-                Bathimetry_data:    dataarray with bathimetry data, MUST have the same grid of NETCDF_data and no time dimension
+                Bathimetry_data:    dataarray with bathimetry data, MUST have the same grid of NETCDF_data, no time dimension, and positive values
                     * latitude      (latitude) float32
                     * longitude     (longitude) float32
-                Bathimetry_seed_data:    dataarray with bathimetry data, MUST be the same used for running the simulation and no time dimension
+                Bathimetry_seed_data:    dataarray with bathimetry data, MUST be the same used for running the simulation, no time dimension, and positive values
                     * latitude      (latitude) float32
                     * longitude     (longitude) float32
                 mode:               "water_conc" (seed from concentration in water colum, in ug/L), "sed_conc" (seed from sediment concentration, in ug/kg d.w.), "emission" (seed from direct discharge to water, in kg)
                 radius:             scalar, unit: meters, elements will be created in a circular area around coordinates
                 lowerbound:         scalar, elements with lower values are discarded
                 higherbound:        scalar, elements with higher values are discarded
-                number_of_elements: scalar, number of elements created for each gridpoint
+                number_of_elements: scalar, number of elements created for each vertical layer at each gridpoint
                 mass_element_ug:    scalar, maximum mass of elements if number_of_elements is not specificed
                 lon_resol:          scalar, longitude resolution of the NETCDF dataset
                 lat_resol:          scalar, latitude resolution of the NETCDF dataset
                 gen_mode:           "mass" (elements generated from mass), "fixed" (fixed number of elements for each data point)
+                last_depth_until_bathimetry: boolean, when depth is specified in NETCDF_data using "water_conc" mode
+                                            the water column below the highest depth value is considered the same as the last 
+                                            available layer (True) or is consedered without chemical (False)
             """
 
         # mass_element_ug=1e3     # 1e3 - 1 element is 1mg chemical
         # mass_element_ug=100e3   # 100e3 - 1 element is 100mg chemical
         # mass_element_ug=1e6     # 1e6 - 1 element is 1g chemical
         # mass_element_ug=1e9     # 1e9 - 1 element is 1kg chemical
-                
+
         sel = np.where((NETCDF_data > lowerbound) & (NETCDF_data < higherbound))
         time_check = (NETCDF_data.time).size
-                
+        NETCDF_data_dim_names = list(NETCDF_data.dims)
+        la_name_index = NETCDF_data_dim_names.index("latitude")
+        lo_name_index = NETCDF_data_dim_names.index("longitude")
+        time_name_index = NETCDF_data_dim_names.index("time")
+        depth_min = None
+        depth_max = None
+
+        if "depth" in NETCDF_data.dims:
+            depth_name_index = NETCDF_data_dim_names.index("depth")
+            all_depth_values = np.sort(np.absolute(np.unique(np.array(NETCDF_data.depth)))) # Change depth to positive values
+
         if (time_check) == 1:
         # fix for different encoding of single time step emissions
             try:
@@ -2832,19 +2852,39 @@ class ChemicalDrift(OceanDrift):
             except:
                 t = np.datetime64(str(np.array(NETCDF_data.time[0])))
                 t = np.array(t, dtype='datetime64[s]')
-            
-            la = NETCDF_data.latitude[sel[0]].data
-            lo = NETCDF_data.longitude[sel[1]].data
+
+            if "depth" in NETCDF_data.dims:
+                # la = NETCDF_data.latitude[sel[0]].data
+                la = NETCDF_data.latitude[sel[la_name_index]].data
+                # lo = NETCDF_data.longitude[sel[1]].data
+                lo = NETCDF_data.longitude[sel[lo_name_index]].data
+                depth = np.absolute(NETCDF_data.depth[sel[depth_name_index]].data) # Change depth to positive values to calculate pixel volume
+            else:
+                # la = NETCDF_data.latitude[sel[0]].data
+                la = NETCDF_data.latitude[sel[la_name_index]].data
+                # lo = NETCDF_data.longitude[sel[1]].data
+                lo = NETCDF_data.longitude[sel[lo_name_index]].data
+
         elif time_check > 1:
-            t = NETCDF_data.time[sel[0]].data
+            # t = NETCDF_data.time[sel[0]].data
+            t = NETCDF_data.time[sel[time_name_index]].data
             t = np.array(t, dtype='datetime64[s]')
-            la = NETCDF_data.latitude[sel[1]].data
-            lo = NETCDF_data.longitude[sel[2]].data
+            if "depth" in NETCDF_data.dims:
+                # la = NETCDF_data.latitude[sel[1]].data
+                la = NETCDF_data.latitude[sel[la_name_index]].data
+                # lo = NETCDF_data.longitude[sel[2]].data
+                lo = NETCDF_data.longitude[sel[lo_name_index]].data
+                depth = NETCDF_data.depth[sel[depth_name_index]].data
+            else:
+                # la = NETCDF_data.latitude[sel[1]].data
+                la = NETCDF_data.latitude[sel[la_name_index]].data
+                # lo = NETCDF_data.longitude[sel[2]].data
+                lo = NETCDF_data.longitude[sel[lo_name_index]].data
         print("Seeding " + str(la.size) + " datapoints")
-               
+
         lon_array = lo + lon_resol / 2  # find center of pixel for volume of water / sediments
         lat_array = la + lat_resol / 2  # find center of pixel for volume of water / sediments
-        
+
         data = np.array(NETCDF_data.data)
         sed_mixing_depth = np.array(self.get_config('chemical:sediment:mixing_depth')) # m
 
@@ -2857,22 +2897,66 @@ class ChemicalDrift(OceanDrift):
             self.init_transfer_rates()
 
         lat_grid_m = np.array([6.371e6 * lat_resol * (2 * np.pi) / 360])
-        
+
         if mode == 'emission':
             Bathimetry_seed = None
 
         for i in range(0, max(t.size, lo.size, la.size)):
+            # print(i)
             lon_grid_m = None
-            Bathimetry_conc = None
+            depth_min = None
+            depth_max = None
 
             if mode != 'emission':
                 lon_grid_m =  np.array([(6.371e6 * (np.cos(2 * (np.pi) * la[i] / 360)) * lon_resol * (2 * np.pi) / 360)])  # 6.371e6: radius of Earth in m
-                Bathimetry_conc = np.array([(Bathimetry_data.sel(latitude=la[i],longitude=lo[i],method='nearest'))]) # m
-                # depth of seeding must be the same as the one considered for resuspention process
-                Bathimetry_seed = np.array([(Bathimetry_seed_data.sel(latitude=lat_array[i],longitude=lon_array[i],method='nearest'))]) # m
+                if "depth" in NETCDF_data.dims:
+                    # depth start from 0 at surface layer, with positive values at higher depths
+                    depth_datapoint = np.absolute(depth[i])
+                    # depth_datapoint_index = list(all_depth_values).index(depth_datapoint)
+                    Bathimetry_datapoint = np.array([(Bathimetry_data.sel(latitude=la[i],longitude=lo[i],method='nearest'))]) # m
+                    # depth of seeding must be the same as the one considered for resuspention process
+                    Bathimetry_seed = np.array([(Bathimetry_seed_data.sel(latitude=lat_array[i],longitude=lon_array[i],method='nearest'))]) # m
+                    # array of depth values available for lat/lon position
+                    depth_datapoint_np = np.sort(np.absolute(np.array(NETCDF_data.sel(latitude=la[i],longitude=lo[i],method='nearest')['depth']))) # depth is changed to positive values to calculate pixel volume
+                    depth_datapoint_np_index = list(depth_datapoint_np).index(depth_datapoint)
+
+                    if 0 in all_depth_values:
+                        # use of ChemicalDrift output, where depth represents top of vertical layer
+                        depth_min = depth_datapoint
+                        # check if depth value of datapiont is the last avalable for lat/lon 
+                        if depth_datapoint == depth_datapoint_np[-1]:
+                            depth_max = Bathimetry_datapoint
+                        else:
+                            depth_max = min(depth_datapoint_np[depth_datapoint_np_index + 1], Bathimetry_datapoint)
+
+                        depth_layer_high = depth_max - depth_min
+                        if depth_layer_high < 0:
+                            Error_depth = "datapoint at lon: " + str(lo[i])[0:8] +\
+                            " & lat: " + str(la[i])[0:8]+ " & depth: " + str(depth_datapoint)[0:8]+\
+                            " is at depth higher than bathimetry (" + str(Bathimetry_datapoint)[1:8] + ")"
+                            raise ValueError(Error_depth)
+                    else:
+                        # use of standard convention where depth represents bottom of vertical layer
+                        if depth_datapoint_np_index > 0:
+                            # datapoint is below the surface layer
+                            depth_min = (depth_datapoint_np[depth_datapoint_np_index - 1])
+                        else:
+                            # datapoint is within the surface layer
+                            depth_min = 0
+
+                        # check if datapoint is the last depth available for lat/lon position
+                        if depth_datapoint_np_index == len(depth_datapoint_np)-1 and last_depth_until_bathimetry is True:
+                            depth_max = max(depth_datapoint, Bathimetry_datapoint)
+                        else:
+                            depth_max = depth_datapoint
+
+                else:
+                    depth_layer_high = np.array([(Bathimetry_data.sel(latitude=la[i],longitude=lo[i],method='nearest'))]) # m
+                    # depth of seeding must be the same as the one considered for resuspention process
+                    Bathimetry_seed = np.array([(Bathimetry_seed_data.sel(latitude=lat_array[i],longitude=lon_array[i],method='nearest'))]) # m
 
             if mode == 'water_conc':
-                pixel_volume = Bathimetry_conc * lon_grid_m * lat_grid_m
+                pixel_volume = depth_layer_high * lon_grid_m * lat_grid_m
                 # concentration is ug/L, volume is m: m3 * 1e3 = L
                 mass_ug = (data[sel][i] * (pixel_volume * 1e3))
 
@@ -2881,7 +2965,7 @@ class ChemicalDrift(OceanDrift):
                 pixel_volume =  sed_mixing_depth * (lon_grid_m * lat_grid_m) # m3
                 pixel_sed_mass = (pixel_volume)*(1-sed_porosity)*sed_density # kg
                 mass_ug = data[sel][i]*pixel_sed_mass
-              
+
             elif mode == 'emission':
                 mass_ug = data[sel][i]*1e9 # emissions is kg, 1 kg = 1e9 ug
             else:
@@ -2899,7 +2983,7 @@ class ChemicalDrift(OceanDrift):
             elif t.size > 1:
                 time = datetime.utcfromtimestamp(int(
                     (np.array(t[i] - np.datetime64('1970-01-01T00:00:00'))) / np.timedelta64(1, 's')))
-                
+
             # specie to be added to seed parameters for sediments and water
             if mode == 'sed_conc':
                 specie_elements = 3 # 'num_srev' # Name of specie for sediment elements
@@ -2915,8 +2999,11 @@ class ChemicalDrift(OceanDrift):
 
             if mass_element_seed_ug > 0:
                 z = self._get_z(mode = mode,
-                                number = number, 
-                                depth = Bathimetry_seed, # depth must be the same as the one considered for resuspention process
+                                number = number,
+                                NETCDF_data_dim_names = NETCDF_data_dim_names,
+                                depth_min = depth_min,
+                                depth_max = depth_max,
+                                depth_seed = Bathimetry_seed, # depth must be the same as the one considered for resuspention process
                                 sed_mix_depth = sed_mixing_depth)
 
                 for k in range(len(z)):
@@ -2934,17 +3021,19 @@ class ChemicalDrift(OceanDrift):
                         moving = moving_emement,
                         z=z[k],
                         origin_marker=origin_marker)
-                    
-    
+
                     if gen_mode != "fixed":
                         mass_residual = (mass_ug) - (number * mass_element_seed_ug)
-    
+
                         if mass_residual > 0:
                             z = self._get_z(mode = mode,
-                                            number = 1, 
-                                            depth = Bathimetry_conc, 
+                                            number = 1,
+                                            NETCDF_data_dim_names = NETCDF_data_dim_names,
+                                            depth_min = depth_min,
+                                            depth_max = depth_max,
+                                            depth_seed = Bathimetry_seed, # depth must be the same as the one considered for resuspention process
                                             sed_mix_depth = sed_mixing_depth)
-    
+
                             self.seed_elements(
                                 lon=lon_array[i],
                                 lat=lat_array[i],
@@ -2983,7 +3072,7 @@ class ChemicalDrift(OceanDrift):
 
     def regrid_conc(self, filename, filename_regridded, latmin, latmax, latstep, lonmin, lonmax, lonstep, concfile = None):
         """
-        Regrid "write_netcdf_chemical_density_map" output to regular latlon grid.
+        Regrid "write_netcdf_chemical_density_map" output (concentration and topography) to regular latlon grid
             filename:               string, path or filename of "write_netcdf_chemical_density_map" output file to be regridded
             filename_regridded:     string, path or filename of regridded output
             latmin:                 float 32, min latitude of new grid
@@ -2997,7 +3086,7 @@ class ChemicalDrift(OceanDrift):
         import numpy as np
         import xarray as xr
         from datetime import datetime as dt
-        
+
         if ((concfile is None) and (filename is not None)):
             print("Loading concentration file from filename")
             ds = xr.open_dataset(filename)
@@ -3028,8 +3117,9 @@ class ChemicalDrift(OceanDrift):
         # define new grid of latitude and longitude
         new_lat, new_lon = np.meshgrid(new_lat_coords, new_lon_coords)
 
-        # create an empty array to store the regridded data
+        # create an empty arrays to store the regridded data
         regridded_concentration_avg_data = np.zeros((ds.sizes['avg_time'], ds.sizes['specie'], ds.sizes['depth'], new_lat.shape[1], new_lon.shape[0]))
+        regridded_topo_data = np.zeros((new_lat.shape[1], new_lon.shape[0]))
 
         # create 2D array of (y*x,) coordinates from the 2D (y,x) lat-lon grid
         lon_2d = ds['lon'].values.flatten()
@@ -3043,14 +3133,13 @@ class ChemicalDrift(OceanDrift):
         # loop over every value of avg_time, specie, and depth
         for t, s, d in np.ndindex(ds.sizes['avg_time'], ds.sizes['specie'], ds.sizes['depth']):
             # select the data for the current avg_time, specie, and depth
-            points = ds.concentration_avg[t,s,d,:,:].values.reshape(-1)
-            # points = ds.topo[t,s,d,:,:].values.reshape(-1)
+            points = ds.concentration_avg[t,s,d,:,:].values.reshape(-1)        
 
             if first:
                 # Store the weights for the interpolation
                 vtx, wts = self.interp_weights(lonlat_2d, lonlat_2d_new)
                 first=False
-            
+
             # interpolate the concentration data onto the new grid using griddata
             new_concentration_2d = self.interpolate_regrid(points, vtx, wts)
             # store the interpolated data in the regridded_concentration_avg_data array
@@ -3059,15 +3148,37 @@ class ChemicalDrift(OceanDrift):
         # create a new xarray dataarray with the regridded data
         regridded_concentration_avg = xr.DataArray(regridded_concentration_avg_data, coords=[ds['avg_time'], ds['specie'], ds['depth'], new_lat_coords, new_lon_coords], dims=['avg_time', 'specie', 'depth', 'y', 'x'])
         regridded_concentration_avg.name = "concentration_avg"
-        # regridded_concentration_avg.name = "topo"
+
+        # regrid topography
+        points = ds.topo[:,:].values.reshape(-1)
+
+        # interpolate the concentration data onto the new grid using griddata
+        new_topo_2d = self.interpolate_regrid(points, vtx, wts)
+        # store the interpolated data in the regridded_topo array
+        regridded_topo_data = np.transpose(np.reshape(new_topo_2d,(len(new_lon_coords),len(new_lat_coords))))
+
+        # create a new xarray dataarray with the topography regridded data
+        regridded_topo = xr.DataArray(regridded_topo_data, coords=[new_lat_coords, new_lon_coords], dims=['y', 'x'])
+        regridded_topo.name = "topo"
+
         # change negative concentration values to 0
         regridded_concentration_avg_nan = regridded_concentration_avg.copy()
         regridded_concentration_avg_nan = xr.where(regridded_concentration_avg_nan < 0, 0, regridded_concentration_avg_nan)
 
+        regridded_topo_nan = regridded_topo.copy()
+        regridded_topo_nan = xr.where(regridded_topo_nan < 0, np.nan, regridded_topo_nan)
+
         print("Time elapsed (hr:min:sec): ", dt.now()-start)
 
         print("Saving to netcdf")
-        regridded_concentration_avg_nan.to_netcdf(filename_regridded)
+        # save regridded concentration and topography data
+        regridded_concentration_avg_dataset = xr.Dataset({
+            'concentration_avg':regridded_concentration_avg_nan,
+            'topo':regridded_topo_nan
+            })
+
+        regridded_concentration_avg_dataset.to_netcdf(filename_regridded)
+
         print("Time elapsed (hr:min:sec): ", dt.now()-start)
 
     def correct_conc_coordinates(self, DC_Conc_array, lon_coord, lat_coord, time_coord, shift_time=False):
@@ -3081,7 +3192,6 @@ class ChemicalDrift(OceanDrift):
         time_coord:        np array of datetime64[ns] with avg_time of "write_netcdf_chemical_density_map" output
         shift_time:        boolean, if True shifts back time of 1 timestep so that the timestamp corresponds to 
                            the beginning of the first simulation timestep, not to the next one 
-
         """
         # Add latitude and longitude to the concentration dataset
         DC_Conc_array["y"] = ("y", lat_coord)
@@ -3097,17 +3207,21 @@ class ChemicalDrift(OceanDrift):
         DC_Conc_array['longitude'] = DC_Conc_array['longitude'].assign_attrs(long_name='longitude')
         DC_Conc_array['longitude'] = DC_Conc_array['longitude'].assign_attrs(units='degrees_east')
         DC_Conc_array['longitude'] = DC_Conc_array['longitude'].assign_attrs(axis='X')
-        
-        if shift_time == True:
+
+        if ("avg_time" in DC_Conc_array.dims) and shift_time == True:
             # Shifts back time 1 timestep so that the timestamp corresponds to the beginning of the first simulation timestep, not the next one
             time_correction = time_coord[1] - time_coord[0]
             time_corrected = np.array(time_coord - time_correction)
             DC_Conc_array["avg_time"] = ("avg_time", time_corrected)
-        
-        DC_Conc_array_corrected=DC_Conc_array.rename({'avg_time': 'time'})
-        
+            print("Shifted avg_time back of one timestep")
+
+        if ("avg_time" in DC_Conc_array.dims):
+            DC_Conc_array_corrected=DC_Conc_array.rename({'avg_time': 'time'})
+        else:
+            DC_Conc_array_corrected=DC_Conc_array
+
         return DC_Conc_array_corrected
-    
+
     def calculate_water_sediment_conc(self,
                                       File_Path,
                                       File_Name,
@@ -3132,7 +3246,6 @@ class ChemicalDrift(OceanDrift):
         Origin_marker_name:    string, name of source indicated by "origin_marker" parameter
         shift_time:            boolean, if True shifts back time of 1 timestep so that the timestamp corresponds to 
                                the beginning of the first simulation timestep, not to the next one
-
         """
         from datetime import datetime
         import xarray as xr
@@ -3150,8 +3263,9 @@ class ChemicalDrift(OceanDrift):
         print("Running sum of water concentration", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
 
         time_avg = np.array(Concentration_file.avg_time)
-        
-        if Transfer_setup == "organics":        
+        topo = Concentration_file.topo
+
+        if Transfer_setup == "organics":
             Dissolved_conc = Concentration_file.sel(specie = 0)
             Dissolved_conc = Dissolved_conc.concentration_avg
             SPM_conc = Concentration_file.sel(specie = 2)
@@ -3161,17 +3275,17 @@ class ChemicalDrift(OceanDrift):
                 DOC_conc = DOC_conc.concentration_avg
                 # print("DOC was considered for partitioning of chemical")
                 if Conc_SPM == True:
-                    DC_Conc_array_wat = Dissolved_conc + SPM_conc + DOC_conc
+                    DA_Conc_array_wat = Dissolved_conc + SPM_conc + DOC_conc
                 else:
-                    DC_Conc_array_wat = Dissolved_conc + DOC_conc
+                    DA_Conc_array_wat = Dissolved_conc + DOC_conc
                     print("SPM was not considered for water concentration")
             else:
                 if Conc_SPM == True:
-                    DC_Conc_array_wat = Dissolved_conc + SPM_conc
+                    DA_Conc_array_wat = Dissolved_conc + SPM_conc
                 else:
-                    DC_Conc_array_wat = Dissolved_conc
+                    DA_Conc_array_wat = Dissolved_conc
                     print("SPM was not considered for water concentration")
-        
+
         elif Transfer_setup == "metals":
             Dissolved_conc = Concentration_file.sel(specie = 0)
             Dissolved_conc = Dissolved_conc.concentration_avg
@@ -3180,25 +3294,25 @@ class ChemicalDrift(OceanDrift):
             SPM_conc_sr = Concentration_file.sel(specie = 2)
             SPM_conc_sr = SPM_conc_sr.concentration_avg
             if Conc_SPM == True:
-                DC_Conc_array_wat = Dissolved_conc + SPM_conc + SPM_conc_sr
+                DA_Conc_array_wat = Dissolved_conc + SPM_conc + SPM_conc_sr
             else:
-                DC_Conc_array_wat = Dissolved_conc
+                DA_Conc_array_wat = Dissolved_conc
                 print("SPM was not considered for water concentration")
 
         print("Running sediment concentration", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
         
-        DC_Conc_array_sed = Concentration_file.sel(specie = 3)
-        if "depth" not in DC_Conc_array_sed.dims:
-            print("depth not included in DC_Conc_array_sed")
-            DC_Conc_array_sed = DC_Conc_array_sed.concentration_avg
-        
-        elif "depth" in DC_Conc_array_sed.dims:
-            print("depth included in DC_Conc_array_sed")
+        DA_Conc_array_sed = Concentration_file.sel(specie = 3)
+        if "depth" not in DA_Conc_array_sed.dims:
+            print("depth not included in DA_Conc_array_sed")
+            DA_Conc_array_sed = DA_Conc_array_sed.concentration_avg
+
+        elif "depth" in DA_Conc_array_sed.dims:
+            print("depth included in DA_Conc_array_sed")
             # Mask to keep landmask when saving sediment concentration
             mask = np.isnan(Concentration_file.concentration_avg)
-            DC_Conc_array_sed = Concentration_file.concentration_avg[:,-1,:,:,:].sum(dim='depth')
-            # Add mask to DC_Conc_array_sed
-            DC_Conc_array_sed = xr.where(mask[:,0,-1,:,:],np.nan,DC_Conc_array_sed)        
+            DA_Conc_array_sed = Concentration_file.concentration_avg[:,-1,:,:,:].sum(dim='depth')
+            # Add mask to DA_Conc_array_sed
+            DA_Conc_array_sed = xr.where(mask[:,0,-1,:,:],np.nan, DA_Conc_array_sed)    
 
         print("Changing coordinates", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
 
@@ -3220,50 +3334,65 @@ class ChemicalDrift(OceanDrift):
         else:
             raise ValueError("Incorrect dimention lon/x")
 
+        DA_Conc_array_wat = self.correct_conc_coordinates(DC_Conc_array = DA_Conc_array_wat,
+                                                      lon_coord = lon,
+                                                      lat_coord = lat,
+                                                      time_coord = time_avg,
+                                                      shift_time = Shift_time)
+
+        DA_Conc_array_sed = self.correct_conc_coordinates(DC_Conc_array = DA_Conc_array_sed,
+                                                      lon_coord = lon,
+                                                      lat_coord = lat,
+                                                      time_coord = time_avg,
+                                                      shift_time = Shift_time)
         
-        DC_Conc_array_wat = self.correct_conc_coordinates(DC_Conc_array = DC_Conc_array_wat, 
-                                                      lon_coord = lon, 
-                                                      lat_coord = lat, 
+        DC_topo = self.correct_conc_coordinates(DC_Conc_array = topo,
+                                                      lon_coord = lon,
+                                                      lat_coord = lat,
                                                       time_coord = time_avg,
                                                       shift_time = Shift_time)
 
-        DC_Conc_array_sed = self.correct_conc_coordinates(DC_Conc_array = DC_Conc_array_sed, 
-                                                      lon_coord = lon, 
-                                                      lat_coord = lat, 
-                                                      time_coord = time_avg,
-                                                      shift_time = Shift_time)
-
-        DC_Conc_array_wat.name = "concentration_avg_water"
-        DC_Conc_array_wat.attrs['standard_name'] = "water_concentration"
-        DC_Conc_array_wat.attrs['long_name'] = (Chemical_name or "") + " time averaged water concentration"
-        DC_Conc_array_wat.attrs['units'] = 'ug/m3'
+        DA_Conc_array_wat.name = "concentration_avg_water"
+        DA_Conc_array_wat.attrs['standard_name'] = "water_concentration"
+        DA_Conc_array_wat.attrs['long_name'] = (Chemical_name or "") + " time averaged water concentration"
+        DA_Conc_array_wat.attrs['units'] = 'ug/m3'
         if "projection" in Concentration_file.data_vars:
-            DC_Conc_array_wat.attrs['grid_mapping'] = str(Concentration_file.projection.proj4)
+            DA_Conc_array_wat.attrs['grid_mapping'] = str(Concentration_file.projection.proj4)
         else:
-            DC_Conc_array_wat.attrs['grid_mapping'] = "projection_lonlat_EPSG_4326_WGS_84"
+            DA_Conc_array_wat.attrs['grid_mapping'] = "projection_lonlat_EPSG_4326_WGS_84"
 
-        DC_Conc_array_wat.attrs['lon_resol'] = str(np.around(abs(lon[0]-lon[1]), decimals = 8)) + " degrees E"
-        DC_Conc_array_wat.attrs['lat_resol'] = str(np.around(abs(lat[0]-lat[1]), decimals = 8)) + " degrees N"
-        if "specie" in DC_Conc_array_wat.dims:
-            if len(DC_Conc_array_wat.specie) == 1:
-                specie = float(np.array(DC_Conc_array_wat.specie)[0])
-                DC_Conc_array_wat = DC_Conc_array_wat.sel(specie = specie) # drop "specie" coordinate since only water elements were selected
+        DA_Conc_array_wat.attrs['lon_resol'] = str(np.around(abs(lon[0]-lon[1]), decimals = 8)) + " degrees E"
+        DA_Conc_array_wat.attrs['lat_resol'] = str(np.around(abs(lat[0]-lat[1]), decimals = 8)) + " degrees N"
+        if "specie" in DA_Conc_array_wat.dims:
+            if len(DA_Conc_array_wat.specie) == 1:
+                specie = float(np.array(DA_Conc_array_wat.specie)[0])
+                DA_Conc_array_wat = DA_Conc_array_wat.sel(specie = specie) # drop "specie" coordinate since only water elements were selected
+        # add topography to water concentration dataset 
+        DS_Conc_array_wat = xr.Dataset({
+            'concentration_avg_water':DA_Conc_array_wat,
+            'topo':DC_topo
+            })
 
-        DC_Conc_array_sed.name = "concentration_avg_sediments"
-        DC_Conc_array_sed.attrs['standard_name'] = "sediment_concentration"
-        DC_Conc_array_sed.attrs['long_name'] = ((Chemical_name or "") + " time averaged sediment concentration")
-        DC_Conc_array_sed.attrs['units'] = 'ug/Kg d.w.'
+        DA_Conc_array_sed.name = "concentration_avg_sediments"
+        DA_Conc_array_sed.attrs['standard_name'] = "sediment_concentration"
+        DA_Conc_array_sed.attrs['long_name'] = ((Chemical_name or "") + " time averaged sediment concentration")
+        DA_Conc_array_sed.attrs['units'] = 'ug/Kg d.w.'
         if "projection" in Concentration_file.data_vars:
-            DC_Conc_array_sed.attrs['grid_mapping'] = str(Concentration_file.projection.proj4)
+            DA_Conc_array_sed.attrs['grid_mapping'] = str(Concentration_file.projection.proj4)
         else:
-            DC_Conc_array_sed.attrs['grid_mapping'] = "projection_lonlat_EPSG_4326_WGS_84"
+            DA_Conc_array_sed.attrs['grid_mapping'] = "projection_lonlat_EPSG_4326_WGS_84"
 
-        DC_Conc_array_sed.attrs['lon_resol'] = str(np.around(abs(lon[0]-lon[1]), decimals = 8)) + " degrees E"
-        DC_Conc_array_sed.attrs['lat_resol'] = str(np.around(abs(lat[0]-lat[1]), decimals = 8)) + " degrees N"
-        if "specie" in DC_Conc_array_sed.dims:
-            if len(DC_Conc_array_sed.specie) == 1:
-                specie = float(np.array(DC_Conc_array_sed.specie)[0])
-                DC_Conc_array_sed = DC_Conc_array_sed.sel(specie = specie) # drop "specie" coordinate since only sed elements were selected
+        DA_Conc_array_sed.attrs['lon_resol'] = str(np.around(abs(lon[0]-lon[1]), decimals = 8)) + " degrees E"
+        DA_Conc_array_sed.attrs['lat_resol'] = str(np.around(abs(lat[0]-lat[1]), decimals = 8)) + " degrees N"
+        if "specie" in DA_Conc_array_sed.dims:
+            if len(DA_Conc_array_sed.specie) == 1:
+                specie = float(np.array(DA_Conc_array_sed.specie)[0])
+                DA_Conc_array_sed = DA_Conc_array_sed.sel(specie = specie) # drop "specie" coordinate since only sed elements were selected
+        # add topography to sed concentration dataset
+        DS_Conc_array_sed = xr.Dataset({
+            'concentration_avg_sediments':DA_Conc_array_sed,
+            'topo':DC_topo
+            })
 
         # Conc_time = datetime.now().strftime("%Y%m%d-%H%M%S")
         # wat_file = File_Path_out + Conc_time + "_water_conc_" + (Chemical_name or "") + "_" + (Origin_marker_name or "") + ".nc"
@@ -3271,12 +3400,10 @@ class ChemicalDrift(OceanDrift):
         wat_file = File_Path_out + "water_conc_" + (Chemical_name or "") + "_" + (Origin_marker_name or "") + ".nc"
         sed_file = File_Path_out + "sediments_conc_" + (Chemical_name or "") + "_" + (Origin_marker_name or "")+ ".nc"
         
-        print("Saving water concentration file", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
-        DC_Conc_array_wat.to_netcdf(wat_file)
+        print("Saving water concentration file", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))  
+        DS_Conc_array_wat.to_netcdf(wat_file)
         print("Saving sediment concentration file", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
-        DC_Conc_array_sed.to_netcdf(sed_file)
-
-        
+        DS_Conc_array_sed.to_netcdf(sed_file)
 
     def mask_netcdf_map (self,
                          shp_mask_file,
@@ -3311,16 +3438,16 @@ class ChemicalDrift(OceanDrift):
         import rioxarray
         from shapely.geometry import mapping
         import os as os
-        
+
         if DataArray is None:
             if file_path is not None and file_name is not None:
                 print("Loading DataArray from disk")
                 DataArray = rioxarray.open_rasterio(file_path + file_name)
             else:
                 raise ValueError("DataArray or file_path/file_name not specified")
-    
+
         shp_mask = gpd.read_file(shp_mask_file, crs=shp_epsg)
-    
+
         if ("latitude" in DataArray.dims) and ("longitude" in DataArray.dims):
             DataArray = DataArray.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude", inplace=True)
             print("latitude/longitude dimentions used")
@@ -3332,10 +3459,10 @@ class ChemicalDrift(OceanDrift):
             print("x/y dimentions used")
         else:
             raise ValueError("Unspecified lat/lon dimentions in DataArray")
-    
+
         DataArray = DataArray.rio.write_crs(shp_epsg, inplace=True)
         DataArray_masked = DataArray.rio.clip(shp_mask.geometry.apply(mapping), shp_mask.crs, drop=drop_data, invert = invert_shp)
-    
+
         if save_masked_file == True:
             if not os.path.exists(file_output_path):
                 os.makedirs(file_output_path)
@@ -3343,16 +3470,16 @@ class ChemicalDrift(OceanDrift):
             else:
                 pass
             print("Saving DataArray_masked file")
-            
+
             if 'grid_mapping' in DataArray_masked.attrs:
                 del DataArray_masked.attrs['grid_mapping'] # delete grid_mapping attribute to avoid "ValueError in safe_setitem" from xarray
             else:
                 pass
-            
+
             try:
                 DataArray_masked.to_netcdf(file_output_path + file_output_name)
             except:
-                
+
                 # Change DataArray_masked to dataset if xarray.core.dataarray.DataArray
                 if str(type(DataArray_masked)) == "<class 'xarray.core.dataarray.DataArray'>":
                     DataArray_masked = DataArray_masked.to_dataset()
@@ -3364,17 +3491,17 @@ class ChemicalDrift(OceanDrift):
                         del var.attrs["_FillValue"]
                         var.attrs["_FillValue"] = -9999
                         print("Changed _FillValue of ", var_name, "from NaN to -9999")
-                        
+
                 for coord_name, coord in DataArray_masked.coords.items():
                     if "_FillValue" in coord.attrs:
                         del coord.attrs["_FillValue"]
                         coord.attrs["_FillValue"] = -9999
                         print("Changed _FillValue of ", coord_name, "from NaN to -9999")
-                        
+
                 DataArray_masked.to_netcdf(file_output_path + file_output_name)
         else:
             return DataArray_masked
-        
+
     @staticmethod
     def _simmetrical_colormap(cmap):
         '''
@@ -3505,7 +3632,7 @@ class ChemicalDrift(OceanDrift):
             colorbar_title = variable_name
         else:
             raise ValueError("specified variable_name is not present in Conc_Dataset")
-            
+
         if 'time' in Conc_DataArray.dims:
             Conc_DataArray = Conc_DataArray.where(((Conc_DataArray.time >= time_start) &
                                            (Conc_DataArray.time <= time_end)), drop=True)
@@ -3515,7 +3642,7 @@ class ChemicalDrift(OceanDrift):
             Conc_DataArray['time'] = time_start
         else:
             raise ValueError("Conc_DataArray.time is missing, time_start must be specified")
-        
+
         attribute_list = list(Conc_DataArray.attrs)
         for attr in attribute_list:
             del Conc_DataArray.attrs[attr]
@@ -3532,7 +3659,7 @@ class ChemicalDrift(OceanDrift):
                     Conc_DataArray_selected = Conc_DataArray.isel(depth = selected_depth)
                 elif (Conc_DataArray.time.to_numpy()).size <= 1 and "depth" not in Conc_DataArray.dims:
                     Conc_DataArray_selected = Conc_DataArray
-                    
+
                 fig, ax = plt.subplots(figsize = (len_fig,high_fig)) # Change here size of figure
                 shp.plot(ax = ax, color = shp_color, zorder = 10)
                 ax2 = Conc_DataArray_selected.plot.pcolormesh(ax = ax, 
@@ -3563,7 +3690,7 @@ class ChemicalDrift(OceanDrift):
                 cax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%0.2e'))
                 cax.tick_params(labelsize=cbar_label_font_size)
                 plt.colorbar(ax2, cax=cax)
-                
+
                 fig.savefig(file_out_path + file_out_sub_folder+str(f"{timestep:03d}")+"_"+file_out_sub_folder[:-1]+fig_format)
                 plt.close()
         else:
@@ -3578,13 +3705,12 @@ class ChemicalDrift(OceanDrift):
                     Conc_DataArray_selected = Conc_DataArray.isel(depth = selected_depth)
                 elif (Conc_DataArray.time.to_numpy()).size <= 1 and "depth" not in Conc_DataArray.dims:
                     Conc_DataArray_selected = Conc_DataArray
-                
+
                 if (Conc_DataArray.time.to_numpy()).size > 1:
                     plt_title = (title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:date_str_lenght] + " " + unit_measure)
                 else:
                     plt_title = (title_caption + " " +unit_measure)
 
-                
                 fig = Conc_DataArray_selected.plot(vmin = vmin, vmax = vmax, 
                                                   robust = True, 
                                                   cmap=selected_colormap, 
@@ -3618,7 +3744,7 @@ class ChemicalDrift(OceanDrift):
          '''
          import matplotlib.pyplot as plt
          import numpy as np
-         
+
          values,base=np.histogram(emissions,n_bins)
          cumulative = np.cumsum(values*base[0:-1])
          fig,(ax1,ax2)=plt.subplots(nrows=2, ncols=1)
@@ -3636,7 +3762,7 @@ class ChemicalDrift(OceanDrift):
          ax2.set_ylabel("Frequency (%)")
          ax2.set_xlabel("Value")
          plt.show()
-                
+
     def summary_created_elements(self,
                                  file_folder,
                                  file_name,
@@ -3680,13 +3806,13 @@ class ChemicalDrift(OceanDrift):
         import xarray as xr
         import matplotlib.pyplot as plt
         import numpy as np
-        
+
         DS = xr.open_dataset(file_folder + file_name)
         if "lat" in DS.dims:
             DS = DS.rename({'lat': 'latitude','lon': 'longitude'})
         if "x" in DS.dims:
             DS = DS.rename({'y': 'latitude','x': 'longitude'})           
-        
+
         DS = DS[variable_name]
         if "time" in DS.dims:
             DS = DS.where((DS.longitude > long_min) & (DS.longitude < long_max) &
@@ -3696,12 +3822,12 @@ class ChemicalDrift(OceanDrift):
         else: 
             DS = DS.where((DS.longitude > long_min) & (DS.longitude < long_max) &
                                             (DS.latitude > lat_min) & (DS.latitude < lat_max), drop=True)
-        
+
         DS_ma = DS.to_masked_array() # Remove 0 and NA from dataArray, then change to np.array
         emissions = DS_ma[DS_ma>0]
         selected =np.all((emissions<upper_limit,emissions>lower_limit),axis=0)
         print ("##START "+ name_dataset + " ##")
-    
+
         DS_max = emissions.max() 
         DS_min = emissions.min() 
         print("DS_max: ", DS_max)
@@ -3709,17 +3835,16 @@ class ChemicalDrift(OceanDrift):
         print("number of data-points without limits: ", (len(emissions)))
         print("upper limit: ", upper_limit)
         print("lower limit: ", lower_limit, "\n")
-        
+
         emissions_sum = np.sum(emissions)
         total_mass = (emissions_sum* emiss_factor)/1e9 # (L*ug/L)/10^9 -> Kg
         selected_mass = (sum((emissions[selected])* emiss_factor))/1e9
-        
+
         print("number of data-points selected within the limits: ", len(emissions[selected]), "\n")
         print('total mass of chemical: ', total_mass, ' kg')
         print('selected mass of chemical: ', selected_mass, ' kg')
         print('% of total mass selected: ', (selected_mass/total_mass)*100, " %")
-        
-        
+
         # See number and percentage of elements over upper limit
         print("n° of data-points over upper limit: ", np.count_nonzero(emissions > upper_limit))
         print("% of data-points over upper limit: ", 
@@ -3728,7 +3853,7 @@ class ChemicalDrift(OceanDrift):
               (sum((emissions[emissions > upper_limit])* emiss_factor))/1e9, ' kg')  # e.g. (L*ug/L)/10^9 -> Kg
         print("% of total volume or mass of the elements over upper limit:", 
               (np.sum(emissions[emissions > upper_limit])/emissions_sum)*100, " %", "\n")
-    
+
         # See number and percentage of elements under lower limit
         print("n° of data-points under lower limit: ", np.count_nonzero(emissions < lower_limit))
         print("% of data-points under lower limit: ", 
@@ -3737,41 +3862,40 @@ class ChemicalDrift(OceanDrift):
         (sum((emissions[emissions < lower_limit])* emiss_factor))/1e9, ' kg') # e.g. (L*ug/L)/10^9 -> Kg
         print("% of total volume or mass of the elements under lower limit: ", 
               ((np.sum(emissions[emissions < lower_limit]))/(emissions_sum))*100, "%", "\n")
-    
+
         print("% of total volume or mass of elements under lower limit considering also upper limit")
         print(((np.sum(emissions[emissions < lower_limit]))/(np.sum(emissions[emissions < upper_limit])))*100, "\n")
-    
+
         # Plot histograms for frequency of values
-    
+
         self.plot_emission_data_frequency(emissions= emissions,
                             title = "Complete dataset",
                             n_bins = n_bins, 
                             zoom_max = zoom_max, 
                             zoom_min = zoom_min)
-    
+
         self.plot_emission_data_frequency(emissions= emissions[selected],
                             title = "Selected dataset between lower and upper limit",
                             n_bins = n_bins, 
                             zoom_max = zoom_max, 
                             zoom_min = zoom_min)
-    
+
         if range_max is not None and range_min is not None:
             zoom_max = (range_max/DS_max)*100
             zoom_min = (range_min/DS_max)*100
-            
+
             self.plot_emission_data_frequency(emissions= emissions[selected],
                                               title = "Selected dataset between range_min and range_max",
                                               n_bins = n_bins, 
                                               zoom_max = zoom_max, 
                                               zoom_min = zoom_min)
-    
+
         plt.hist(x=emissions, bins=n_bins, range=(0,lower_limit)) 
         plt.title("Datapoints between 0 and lower limit for "+ name_dataset)
         plt.xlabel("Value")
         plt.ylabel("Frequency")
         plt.show()
         print ("##END##")
-        
 
     def init_chemical_compound(self, chemical_compound = None):
         ''' Chemical parameters for a selection of PAHs:
