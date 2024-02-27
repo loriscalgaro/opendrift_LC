@@ -1705,7 +1705,7 @@ class ChemicalDrift(OceanDrift):
             self.elements.mass_degraded = self.elements.mass_degraded + degraded_now
             self.elements.mass = self.elements.mass - degraded_now
             self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100,
-                                     reason='removed')
+                                     reason='degraded')
 
             #to_deactivate = self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100
             #vol_morethan_degr = self.elements.mass_degraded >= self.elements.mass_volatilized
@@ -1850,7 +1850,7 @@ class ChemicalDrift(OceanDrift):
             self.elements.mass_volatilized = self.elements.mass_volatilized + volatilized_now
             self.elements.mass = self.elements.mass - volatilized_now
             self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100,
-                                     reason='removed')
+                                     reason='volatilized')
 
             #to_deactivate = self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100
             #vol_morethan_degr = self.elements.mass_degraded >= self.elements.mass_volatilized
