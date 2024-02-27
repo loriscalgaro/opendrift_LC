@@ -1705,7 +1705,7 @@ class ChemicalDrift(OceanDrift):
             self.elements.mass_degraded = self.elements.mass_degraded + degraded_now
             self.elements.mass = self.elements.mass - degraded_now
             self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100,
-                                     reason='removed')
+                                     reason='degraded')
 
             #to_deactivate = self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100
             #vol_morethan_degr = self.elements.mass_degraded >= self.elements.mass_volatilized
@@ -1850,7 +1850,7 @@ class ChemicalDrift(OceanDrift):
             self.elements.mass_volatilized = self.elements.mass_volatilized + volatilized_now
             self.elements.mass = self.elements.mass - volatilized_now
             self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100,
-                                     reason='removed')
+                                     reason='volatilized')
 
             #to_deactivate = self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100
             #vol_morethan_degr = self.elements.mass_degraded >= self.elements.mass_volatilized
@@ -2880,10 +2880,26 @@ class ChemicalDrift(OceanDrift):
                 la = NETCDF_data.latitude[sel[la_name_index]].data
                 # lo = NETCDF_data.longitude[sel[2]].data
                 lo = NETCDF_data.longitude[sel[lo_name_index]].data
+
         print("Seeding " + str(la.size) + " datapoints")
 
         lon_array = lo + lon_resol / 2  # find center of pixel for volume of water / sediments
         lat_array = la + lat_resol / 2  # find center of pixel for volume of water / sediments
+
+        # Check bathimetry for inconsistent data 
+        if mode != 'emission':
+            Check_bathimetry = {"value" : [] ,"lat":[], "lon":[]}
+            for i in range(0, max(t.size, lo.size, la.size)):
+                # print(i)
+                Bathimetry_seed = np.array([(Bathimetry_seed_data.sel(latitude=lat_array[i],longitude=lon_array[i],method='nearest'))]) # m 
+                if np.isnan(Bathimetry_seed) or Bathimetry_seed <=0:
+                    Check_bathimetry["value"].append(Bathimetry_seed)
+                    Check_bathimetry["lat"].append(la[i])
+                    Check_bathimetry["lon"].append(lo[i])
+            if len(Check_bathimetry["value"]) > 0:
+                raise ValueError("Bathimetry_seed is NaN or <=0, concentration map exceeds bathimetry extent")
+            else:
+                del(Check_bathimetry)
 
         data = np.array(NETCDF_data.data)
         sed_mixing_depth = np.array(self.get_config('chemical:sediment:mixing_depth')) # m
@@ -3300,9 +3316,10 @@ class ChemicalDrift(OceanDrift):
                 print("SPM was not considered for water concentration")
 
         print("Running sediment concentration", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
-        
+
         DA_Conc_array_sed = Concentration_file.sel(specie = 3)
-        if "depth" not in DA_Conc_array_sed.dims:
+
+        if "depth" not in DA_Conc_array_sed.dims or DA_Conc_array_sed.depth.size == 1:
             print("depth not included in DA_Conc_array_sed")
             DA_Conc_array_sed = DA_Conc_array_sed.concentration_avg
 
