@@ -3327,9 +3327,10 @@ class ChemicalDrift(OceanDrift):
             print("depth included in DA_Conc_array_sed")
             # Mask to keep landmask when saving sediment concentration
             mask = np.isnan(Concentration_file.concentration_avg)
-            DA_Conc_array_sed = Concentration_file.concentration_avg[:,-1,:,:,:].sum(dim='depth')
+            # Sediments not buried are elements with specie = 3
+            DA_Conc_array_sed = Concentration_file.concentration_avg[:,3,:,:,:].sum(dim='depth')
             # Add mask to DA_Conc_array_sed
-            DA_Conc_array_sed = xr.where(mask[:,0,-1,:,:],np.nan, DA_Conc_array_sed)    
+            DA_Conc_array_sed = xr.where(mask[:,0,-1,:,:],np.nan, DA_Conc_array_sed)
 
         print("Changing coordinates", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
 
@@ -3554,6 +3555,7 @@ class ChemicalDrift(OceanDrift):
                       shp_file_path,
                       title_caption,
                       unit_measure,
+                      full_title = None,
                       vmin = None, 
                       vmax = None,
                       selected_colormap = None,
@@ -3587,6 +3589,7 @@ class ChemicalDrift(OceanDrift):
         file_out_sub_folder: string, subforlder of file_out_path, must end with /
         shp_file_path:       string, full path and name of shp file
         title_caption:       string, first part of figure title before date and unit_measure
+        full_title:          string, full title of figure. It overwrites title_caption if specified
         unit_measure:        string, (ug/m3) or (ug/kg d.w), between parenthesis
         levels_colormap:     list of float64, levels used for colorbar (e.g., [0., 1., 15.])
         selected_colormap:   e.g. plt.cm.Blues
@@ -3693,11 +3696,16 @@ class ChemicalDrift(OceanDrift):
                 ax.set_xlabel("Longitude", fontsize = x_label_font_size, labelpad = 30) # Change here size of ax labels
                 ax.set_ylabel("Latitude", fontsize = y_label_font_size, labelpad = 30) # Change here size of ax labels
                 ax.tick_params(labelsize=x_ticks_font_size) # Change here size of ax ticks
-                if (Conc_DataArray.time.to_numpy()).size > 1:
-                    ax.set_title(title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:date_str_lenght] +\
-                                 " " +unit_measure, pad=20, fontsize = title_font_size, weight = "bold", wrap= True)
+                if full_title is not None:
+                    fig_title = full_title
                 else:
-                    ax.set_title(title_caption + " " +unit_measure, pad=30, fontsize = title_font_size, weight = "bold", wrap= True)
+                    if (Conc_DataArray.time.to_numpy()).size > 1:
+                        fig_title = (title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:date_str_lenght] +\
+                                     " " +unit_measure)
+                    else:
+                        fig_title = (title_caption + " " +unit_measure)
+
+                ax.set_title(fig_title, pad=20, fontsize = title_font_size, weight = "bold", wrap= True)
                 # from https://stackoverflow.com/questions/18195758/set-matplotlib-colorbar-size-to-match-graph
                 divider = make_axes_locatable(ax)
                 width = axes_size.AxesY(ax, aspect=1./aspect)
@@ -3723,10 +3731,14 @@ class ChemicalDrift(OceanDrift):
                 elif (Conc_DataArray.time.to_numpy()).size <= 1 and "depth" not in Conc_DataArray.dims:
                     Conc_DataArray_selected = Conc_DataArray
 
-                if (Conc_DataArray.time.to_numpy()).size > 1:
-                    plt_title = (title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:date_str_lenght] + " " + unit_measure)
-                else:
-                    plt_title = (title_caption + " " +unit_measure)
+                    if full_title is not None:
+                        plt_title = full_title
+                    else:
+                        if (Conc_DataArray.time.to_numpy()).size > 1:
+                            plt_title = (title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:date_str_lenght] +\
+                                         " " +unit_measure)
+                        else:
+                            plt_title = (title_caption + " " +unit_measure)
 
                 fig = Conc_DataArray_selected.plot(vmin = vmin, vmax = vmax, 
                                                   robust = True, 
