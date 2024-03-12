@@ -3560,6 +3560,7 @@ class ChemicalDrift(OceanDrift):
                       selected_colormap = None,
                       levels_colormap = None,
                       simmetrical_cmap = False,
+                      scientific_colorbar = False,
                       selected_depth = 0,
                       fig_format = ".jpg",
                       add_shp_to_figure = False,
@@ -3593,6 +3594,7 @@ class ChemicalDrift(OceanDrift):
         levels_colormap:     list of float64, levels used for colorbar (e.g., [0., 1., 15.])
         selected_colormap:   e.g. plt.cm.Blues
         simmetrical_cmap:    boolean,select if cmap is simmetrical to 0 (True) or not (False)
+        scientific_colorbar: boolean,select if colorbar is written in scientific notation (True) or not (False)
         selected_depth:      int, depth selected if present. If no depth was selected when creating conc map, use 0
         fig_format:          string, format of produced images (e.g.,".jpg", ".png"),
         add_shp_to_figure:   boolean,select if shp is added to the figure (True) or not (False)
@@ -3617,6 +3619,14 @@ class ChemicalDrift(OceanDrift):
         # pad_fraction = 1e-1
         file_output_path = file_out_path + file_out_sub_folder
         print("Figure saved to: ", file_output_path)
+        
+        def fmt(x, pos):
+            '''
+            Define scientific notation for colorbar if scientific_colorbar is True
+            '''
+            a, b = '{:.1e}'.format(x).split('e')
+            b = int(b)
+            return r'${} \times 10^{{{}}}$'.format(a, b)
         
         title_font_size = labels_font_sizes[0]
         x_label_font_size = labels_font_sizes[1]
@@ -3708,12 +3718,17 @@ class ChemicalDrift(OceanDrift):
                 # from https://stackoverflow.com/questions/18195758/set-matplotlib-colorbar-size-to-match-graph
                 divider = make_axes_locatable(ax)
                 width = axes_size.AxesY(ax, aspect=1./aspect)
-                # pad_cb = axes_size.Fraction(pad_fraction, width)
-                # cax = divider.append_axes("right", size="3%", pad=pad_cb)
-                cax = divider.append_axes("right", size=width, pad=0.0)
-                cax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%0.2e'))
+                cax = divider.append_axes("right", size=width, pad=-2)
+
+                cax.yaxis.offsetText.set_fontsize(24)
                 cax.tick_params(labelsize=cbar_label_font_size)
-                plt.colorbar(ax2, cax=cax)
+                y_formatter = ticker.ScalarFormatter(useMathText=True)
+                cax.yaxis.set_major_formatter(y_formatter)
+
+                if scientific_colorbar is True:
+                    plt.colorbar(ax2, cax=cax, format=ticker.FuncFormatter(fmt))
+                else:
+                    plt.colorbar(ax2, cax=cax)
 
                 fig.savefig(file_out_path + file_out_sub_folder+str(f"{timestep:03d}")+"_"+file_out_sub_folder[:-1]+fig_format)
                 plt.close()
@@ -3730,14 +3745,16 @@ class ChemicalDrift(OceanDrift):
                 elif (Conc_DataArray.time.to_numpy()).size <= 1 and "depth" not in Conc_DataArray.dims:
                     Conc_DataArray_selected = Conc_DataArray
 
-                    if full_title is not None:
-                        plt_title = full_title
-                    else:
-                        if (Conc_DataArray.time.to_numpy()).size > 1:
-                            plt_title = (title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:date_str_lenght] +\
-                                         " " +unit_measure)
-                        else:
-                            plt_title = (title_caption + " " +unit_measure)
+                if (Conc_DataArray.time.to_numpy()).size > 1:
+                    plt_title = (title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:date_str_lenght] +\
+                                 " " +unit_measure)
+                else:
+                    plt_title = (title_caption + " " +unit_measure)
+
+                if full_title is not None:
+                    plt_title = full_title
+                else:
+                    pass
 
                 fig = Conc_DataArray_selected.plot(vmin = vmin, vmax = vmax, 
                                                   robust = True, 
@@ -3755,7 +3772,7 @@ class ChemicalDrift(OceanDrift):
                 colorbar.set_label(label=colorbar_title,size=cbar_label_font_size)
                 cax=colorbar.ax
                 cax.tick_params(labelsize=cbar_ticks_font_size)
-                cax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%0.2e'))
+                cax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%0.1e'))
 
                 fig.figure.savefig(file_out_path + file_out_sub_folder+str(f"{timestep:03d}")+"_"+file_out_sub_folder[:-1]+fig_format)
                 plt.close()
