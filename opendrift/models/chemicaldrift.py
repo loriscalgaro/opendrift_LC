@@ -3327,9 +3327,10 @@ class ChemicalDrift(OceanDrift):
             print("depth included in DA_Conc_array_sed")
             # Mask to keep landmask when saving sediment concentration
             mask = np.isnan(Concentration_file.concentration_avg)
-            DA_Conc_array_sed = Concentration_file.concentration_avg[:,-1,:,:,:].sum(dim='depth')
+            # Sediments not buried are elements with specie = 3
+            DA_Conc_array_sed = Concentration_file.concentration_avg[:,3,:,:,:].sum(dim='depth')
             # Add mask to DA_Conc_array_sed
-            DA_Conc_array_sed = xr.where(mask[:,0,-1,:,:],np.nan, DA_Conc_array_sed)    
+            DA_Conc_array_sed = xr.where(mask[:,0,-1,:,:],np.nan, DA_Conc_array_sed)
 
         print("Changing coordinates", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
 
