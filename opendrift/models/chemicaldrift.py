@@ -4470,7 +4470,7 @@ class ChemicalDrift(OceanDrift):
 
             # Find which elements are advected out of the domain
             if ('missing_data' in status_categories) or ('outside' in status_categories):
-                print("Calculating mass advected out of the simulation domain")
+                print("Calculating mass advected out of the simulation domain from shp")
                 if shp_file_path is not None:
                     # Calculate mass of elemements outside of shapefile at each timestep. 
                     # Cumulative advection will double count elements that are not deactivated
@@ -4523,6 +4523,7 @@ class ChemicalDrift(OceanDrift):
 
             # Get mass associated to each specie for each timestep, considering only active elements that are inside 
             # the simulation domain
+            print("Calculating timeseries from simulation")
             mass_by_specie=np.zeros((steps,5))
             for i in range(steps):
                 mass_by_specie[i]=[np.sum(mass[0][i,:]*(sp[0][i,:]==0)*(mass[1][i,:]==0)* (~adv_out[i,:]))*mass_conversion_factor,
@@ -4590,16 +4591,38 @@ class ChemicalDrift(OceanDrift):
             # Mass emitted into the system up to the end of each timestep
             mass_emitted = (mass_tot_timestep + mass_degraded + mass_volatilized)
             
+            # Mass that has been degraded (wat and sed) and volatilized of elements
+            # advected out of the system
+            mass_volatilized_adv = (np.sum((mass_v[0])* adv_out,1)*mass_conversion_factor)
+            mass_degraded_w_adv = (np.sum(mass_d_W[0]* adv_out,1)*mass_conversion_factor)
+            mass_degraded_s_adv = (np.sum(mass_d_S[0]* adv_out,1)*mass_conversion_factor)
+            # Mass removed from the system until the and of each timestep
+            mass_removed = (mass_volatilized - mass_volatilized_adv) + \
+                           (mass_degraded_w - mass_degraded_w_adv) +\
+                           (mass_degraded_s - mass_degraded_s_adv) + \
+                           (mass_adv_out_cumulative + mass_sed_buried)
+            # Contribtion of each mechanism to the elimination of the chemical in the simulation
+            perc_volatilized = ((mass_volatilized - mass_volatilized_adv)/mass_removed)*100
+            perc_degraded_w = ((mass_degraded_w - mass_degraded_w_adv)/mass_removed)*100
+            perc_degraded_s = ((mass_degraded_s - mass_degraded_s_adv)/mass_removed)*100
+            perc_adv = ((mass_adv_out_cumulative)/mass_removed)*100
+            perc_sed_buried = ((mass_sed_buried)/mass_removed)*100
+
             mass_df = pd.DataFrame({
                 'mass_wat'+ "-["+ mass_unit +"]": mass_water,
-                'mass_sed'+ "-["+ mass_unit +"]": mass_sed,
+                'mass_sed_rev'+ "-["+ mass_unit +"]": mass_sed,
                 'mass_sed_buried'+ "-["+ mass_unit +"]": mass_sed_buried,
                 'mass_current'+ "-["+ mass_unit +"]": mass_actual,
                 'mass_emitted'+ "-["+ mass_unit +"]": mass_emitted,
                 'mass_degr_tot'+ "-["+ mass_unit +"]": mass_degraded,
                 'mass_degr_wat'+ "-["+ mass_unit +"]": mass_degraded_w,
                 'mass_degr_sed'+ "-["+ mass_unit +"]": mass_degraded_s,
-                'mass_vol'+ "-["+ mass_unit +"]": mass_volatilized
+                'mass_vol'+ "-["+ mass_unit +"]": mass_volatilized,
+                'perc_vol-["%"]': perc_volatilized,
+                'perc_deg_w-["%"]': perc_degraded_w,
+                'perc_deg_s-["%"]': perc_degraded_s,
+                'perc_adv-["%"]': perc_adv,
+                'perc_sed_buried-["%"]': perc_sed_buried
                 }).astype(np.float64)
 
             mass_fin_df = pd.concat([mass_by_specie_df, mass_df], axis=1)
@@ -4613,28 +4636,34 @@ class ChemicalDrift(OceanDrift):
 
         elif load_timeseries_from_file is True and timeseries_file_path is not None:
             mass_fin_df = pd.read_csv(file_out_path + csv_file_name)
-
-            def select_df_column(col_name, dataframe = mass_fin_df):
-                return dataframe[dataframe.columns[dataframe.columns.str.contains(col_name)]]
-
-            time_steps = select_df_column(col_name = "time-")
-            mass_emitted = select_df_column(col_name = 'mass_emitted-')
-            mass_actual = select_df_column(col_name = 'mass_current-')
-            mass_water = select_df_column(col_name = 'mass_wat-')
-            mass_sed = select_df_column(col_name = 'mass_sed-')
-            mass_degraded = select_df_column(col_name = 'mass_degr_tot-')
-            mass_degraded_s = select_df_column(col_name = 'mass_degr_sed-')
-            mass_degraded_w = select_df_column(col_name = 'mass_degr_wat-')
-            mass_adv_out_cumulative = select_df_column(col_name = 'adv_out_cumul-')
-            mass_adv_out = select_df_column(col_name = 'adv_out_ts-')
-            mass_volatilized = select_df_column(col_name = 'mass_vol-')
-            mass_sed_buried = select_df_column(col_name = 'mass_sed_buried-')
-            time_conversion_factor = mass_fin_df.loc[0, ('convertion_factors-[time_mass]')]
-            mass_conversion_factor = mass_fin_df.loc[1, ('convertion_factors-[time_mass]')]
         else:
             raise ValueError("timeseries_file_path must be specified")
 
+        def select_df_column(col_name, dataframe = mass_fin_df):
+            return dataframe[dataframe.columns[dataframe.columns.str.contains(col_name)]]
+
+        time_steps = select_df_column(col_name = "time-")
+        mass_emitted = select_df_column(col_name = 'mass_emitted-')
+        mass_actual = select_df_column(col_name = 'mass_current-')
+        mass_water = select_df_column(col_name = 'mass_wat-')
+        mass_sed = select_df_column(col_name = 'mass_sed_rev-')
+        mass_degraded = select_df_column(col_name = 'mass_degr_tot-')
+        mass_degraded_s = select_df_column(col_name = 'mass_degr_sed-')
+        mass_degraded_w = select_df_column(col_name = 'mass_degr_wat-')
+        mass_adv_out_cumulative = select_df_column(col_name = 'adv_out_cumul-')
+        mass_adv_out = select_df_column(col_name = 'adv_out_ts-')
+        mass_volatilized = select_df_column(col_name = 'mass_vol-')
+        mass_sed_buried = select_df_column(col_name = 'mass_sed_buried-')
+        time_conversion_factor = mass_fin_df.loc[0, ('convertion_factors-[time_mass]')]
+        mass_conversion_factor = mass_fin_df.loc[1, ('convertion_factors-[time_mass]')]
+        perc_adv = select_df_column(col_name = 'perc_adv-')
+        perc_degraded_s = select_df_column(col_name = 'perc_deg_s-')
+        perc_degraded_w = select_df_column(col_name = 'perc_deg_w-')
+        perc_volatilized = select_df_column(col_name = 'perc_vol-')
+        perc_sed_buried = select_df_column(col_name ='perc_sed_buried-')
+
         if plot_figures is True:
+            print("Plotting figures")
             if title_fig_tserie is None and chemical_compound is not None:
                 title_fig_tserie = (chemical_compound + ' mass')
             if title_fig_mass is None and chemical_compound is not None:
@@ -4643,8 +4672,8 @@ class ChemicalDrift(OceanDrift):
             mass_dissolved = (mass_fin_df[mass_fin_df.columns[mass_fin_df.columns.str.contains("dissolved-")]])
             mass_DOC = (mass_fin_df[mass_fin_df.columns[mass_fin_df.columns.str.contains("DOC-")]])
             mass_SPM = (mass_fin_df[mass_fin_df.columns[mass_fin_df.columns.str.contains("SPM-")]])
-            mass_sed_rev = (mass_fin_df[mass_fin_df.columns[mass_fin_df.columns.str.contains("sed_rev-")]])
-            mass_sed_buried = (mass_fin_df[mass_fin_df.columns[mass_fin_df.columns.str.contains("sed_buried-")]])
+            mass_sed_rev = (mass_fin_df[mass_fin_df.columns[mass_fin_df.columns.str.contains("mass_sed_rev-")]])
+            mass_sed_buried = (mass_fin_df[mass_fin_df.columns[mass_fin_df.columns.str.contains("mass_sed_buried-")]])
 
             # Plot mass present/degraded/volatilized in the system
             xlabel = "time" + " ["+ time_unit +"]"
@@ -4691,16 +4720,26 @@ class ChemicalDrift(OceanDrift):
             mass_DOC_arr = mass_DOC.to_numpy().flatten()
             mass_SPM_arr = mass_SPM.to_numpy().flatten()
             mass_sed_rev_arr = mass_sed_rev.to_numpy().flatten()
+            mass_actual_arr = mass_actual.to_numpy().flatten()
 
-            ax7.plot(time_steps, (mass_dissolved_arr/mass_actual)*100, 'midnightblue',
-                     time_steps, (mass_DOC_arr/mass_actual)*100, 'royalblue',
-                     time_steps, (mass_SPM_arr/mass_actual)*100, 'palegreen',
-                     time_steps,(mass_sed_rev_arr/mass_actual)*100, 'orange')
+            ax7.plot(time_steps, (mass_dissolved_arr/mass_actual_arr)*100, 'midnightblue',
+                     time_steps, (mass_DOC_arr/mass_actual_arr)*100, 'royalblue',
+                     time_steps, (mass_SPM_arr/mass_actual_arr)*100, 'palegreen',
+                     time_steps,(mass_sed_rev_arr/mass_actual_arr)*100, 'orange')
             ax7.set_xlabel(xlabel)
             ax7.set_ylabel('mass distribution [%]')
             ax7.legend(['dissolved','DOC', 'SPM', 'sed'],prop={'size': 8})
 
-            ax8.axis('off')
+            ax8.plot(time_steps, perc_volatilized, 'orange',
+                     time_steps, perc_degraded_w, 'b',
+                     time_steps, perc_degraded_s, 'y',
+                     time_steps, perc_adv, 'm',
+                     time_steps, perc_sed_buried, 'saddlebrown',
+                     )
+            ax8.set_xlabel(xlabel)
+            ax8.set_ylabel('contribution to elimination [%]')
+            ax8.legend(['vol','deg_w', 'deg_s', 'adv', 'sed_burial'],prop={'size': 8})
+            
             fig1.tight_layout()
             fig1.savefig(file_out_path+"/"+sim_name+"-time_series"+".png")
 
@@ -4738,9 +4777,9 @@ class ChemicalDrift(OceanDrift):
 
             plt.savefig(file_out_path+"/"+sim_name+"-mass_specie"+".png", bbox_inches="tight", dpi=300)
             print("save figures to ", file_out_path)
-            
+
             print("mass_vol extracted")
-            print(mass_volatilized[-1].sum())
+            print(mass_volatilized.to_numpy()[-1])
             vol_active = (sum(self.elements.mass_volatilized)*mass_conversion_factor)
             vol_inactive = (sum(self.elements_deactivated.mass_volatilized)*mass_conversion_factor)
             print("mass_vol active")
@@ -4752,7 +4791,7 @@ class ChemicalDrift(OceanDrift):
             print("####")
 
             print("mass_degraded extracted")
-            print(mass_degraded[-1].sum())
+            print(mass_degraded.to_numpy()[-1])
             degraded_active = (sum(self.elements.mass_degraded)*mass_conversion_factor)
             degraded_inactive = (sum(self.elements_deactivated.mass_degraded)*mass_conversion_factor)
             print("mass_degraded active")
@@ -4776,7 +4815,7 @@ class ChemicalDrift(OceanDrift):
             print("####")
 
             print("mass emitted extracted")
-            print(mass_emitted[-1].sum())
+            print(mass_emitted.to_numpy()[-1])
             print("mass emitted check")
             print((mass_active + mass_inactive)+ (degraded_active + degraded_inactive)+ (vol_inactive + vol_active))
             print("####")
