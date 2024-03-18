@@ -1704,7 +1704,7 @@ class ChemicalDrift(OceanDrift):
 
             self.elements.mass_degraded = self.elements.mass_degraded + degraded_now
             self.elements.mass = self.elements.mass - degraded_now
-            self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100,
+            self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/500,
                                      reason='degraded')
 
             #to_deactivate = self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100
@@ -1849,7 +1849,7 @@ class ChemicalDrift(OceanDrift):
 
             self.elements.mass_volatilized = self.elements.mass_volatilized + volatilized_now
             self.elements.mass = self.elements.mass - volatilized_now
-            self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100,
+            self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/500,
                                      reason='volatilized')
 
             #to_deactivate = self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100
@@ -1857,7 +1857,6 @@ class ChemicalDrift(OceanDrift):
             #
             #self.deactivate_elements(to_deactivate +  vol_morethan_degr, reason='volatilized')
             #self.deactivate_elements(to_deactivate + ~vol_morethan_degr, reason='degraded')
-
 
         else:
             pass
@@ -1886,12 +1885,9 @@ class ChemicalDrift(OceanDrift):
             self.update_terminal_velocity()
             self.vertical_buoyancy()
 
-
         # Resuspension
         self.resuspension()
         logger.info('partitioning: {} {}'.format([sum(self.elements.specie==ii) for ii in range(self.nspecies)],self.name_species))
-
-
 
         # Horizontal advection
         self.advect_ocean_current()
@@ -1905,11 +1901,6 @@ class ChemicalDrift(OceanDrift):
                 self.time == (self.expected_end_time) or \
                 self.num_elements_active() == 0 :
             self.update_transfer_rates()
-
-
-
-
-
 
 # ################
 # POSTPROCESSING
@@ -1936,6 +1927,7 @@ class ChemicalDrift(OceanDrift):
         m_tot = m_pre + m_deg + m_vol
 
         print('Mass balance:')
+        print('mass total           :', m_tot * 1e-6,' g   ')
         print('mass preserved       :', m_pre * 1e-6,' g   ',m_pre/m_tot*100,'%')
         print('mass degraded        :', m_deg * 1e-6,' g   ',m_deg/m_tot*100,'%')
         print('     in water column :', m_deg_w * 1e-6,' g   ',m_deg_w/m_tot*100,'%')
@@ -3837,12 +3829,12 @@ class ChemicalDrift(OceanDrift):
         upper_limit:    float32, limit under which datapoints in DataArray wll be ignored by seed_from_NETCDF
         lower_limit:    float32, limit over which datapoints in DataArray wll be ignored by seed_from_NETCDF
         name_dataset:   string, name of data to be reported in the title of figures
-        time_start:          datetime64[ns], start time of dataset considered
-        time_end:            datetime64[ns],  end time of dataset considered
-        long_min:            float64, min longitude of dataset considered
-        long_max:            float64, max longitude of dataset considered
-        lat_min:             float64, min latitude of dataset considered
-        lat_max:             float64, max latitude of dataset considered
+        time_start:     datetime64[ns], start time of dataset considered
+        time_end:       datetime64[ns],  end time of dataset considered
+        long_min:       float32, min longitude of dataset considered
+        long_max:       float32, max longitude of dataset considered
+        lat_min:        float32, min latitude of dataset considered
+        lat_max:        float32, max latitude of dataset considered
         range_max:      float32, max value shown in the figure on data frequency for the whole dataset
         range_min:      float32, min value shown in the figure on data frequency for the whole dataset
         n_bins:         int, number of bins used for histograms
@@ -4315,3 +4307,476 @@ class ChemicalDrift(OceanDrift):
 
         if filename is not None:
             plt.savefig(filename, format=filename[-3:], transparent=True, bbox_inches="tight", dpi=300)
+
+    def extract_summary_timeseries(self, 
+            file_out_path,
+            sim_name,
+            chemical_compound= None,
+            mass_unit='g',
+            time_unit='hours',
+            shp_file_path = None,
+            load_timeseries_from_file = False,
+            timeseries_file_path = None, 
+            plot_figures = False,
+            title_fig_tserie = None,
+            title_fig_mass = None,
+            subplot_width = 4,
+            subplot_height = 3,
+            lon_min =None,
+            lon_max =None,
+            lat_min =None,
+            lat_max =None):
+        '''
+        Extract, plot to .png, and export to a .csv file aggregated mass of all elements at each timestep of the simulation
+        Plot directly data from a produced .cvs file.
+        Use deactivate_north_of/south_of/_east_of/_west_of parameters to define simulation domain and avoid double counting
+        advection out of the system for elements that are not deactivated when crossing the simulation border
+
+        Parameters
+        ----------
+        chemical_compound:            string, name of chemical to be included into plot titles
+        file_out_path:                string, file path where .csv and .png files will be saved. Must end with /
+        sim_name:                     string, name of simulation that will be included in .csv and .png file names
+        mass_unit:                    string, 'g','mg','ug'
+        time_unit:                    string, 'seconds', 'minutes', 'hours' , 'days'
+        shp_file_path:                string, file path of shapefile. Must end with /
+        load_timeseries_from_file:    boolean,select if timeseries are loaded from .csv (True) or not (False)
+        timeseries_file_path:         string, file path of timeseries .csv file. Must end with /
+        plot_figures:                 boolean,select if data is plotted (True) or not (False)
+        title_fig_tserie:             string, title of timeseries figure
+        title_fig_mass:               string, title of mass among dissolved/DOC/SPM/sed figure
+        subplot_width:                float32, width (inches) of each subplot in timeseries figure
+        subplot_height                float32, height (inches) of each subplot in timeseries figure
+        lon_min:                      float32, min longitude of domain to consider advection out of the simulation domain
+        lon_max:                      float32, max longitude of domain to consider advection out of the simulation domain
+        lat_min:                      float32, min latitude of domain to consider advection out of the simulation domain
+        lat_max:                      float32, max latitude of domain to consider advection out of the simulation domain
+
+        Returns a Pandas Dataframe:
+            ----
+        date_of_timestep:       calendar date of timestep as datetime.datetime object 
+        time:                   time from start of simulation expressed as time_unit
+        time_conversion_factor
+        mass_conversion_factor
+            ---
+        [considers only active elements inside the simulation domain]
+        dissolved:              mass associated to dissolved elements for each timestep
+        DOC:                    mass associated to DOC elements for each timestep
+        SPM:                    mass associated to SPM elements for each timestep
+        sed_rev:                mass associated to superficial sediments elements for each timestep
+        sed_buried:             mass associated to buried sediments elements for each timestep
+        mass_current:           mass present in the simulation at each timestep
+        mass_wat:               mass present in the water column at each timestep
+        mass_sed:               mass present in the active sediments at each timestep
+            ---
+        mass_emitted:           mass emitted into the simulation until the end of each timestep
+            ---
+        [does not consider the specie of each element at each timestep]
+        mass_degr:              mass that has been degraded up to the end of each timestep
+        mass_degr_sed:          mass that has been degraded in sediments up to the end of each timestep
+        mass_degr_wat:          mass that has been degraded in water up to the end of each timestep
+        mass_vol:               mass that has been volatilized in water up to the end of each timestep
+        mass_sed_buried:        mass that has been buried in sediments up to the end of each timestep
+            ---
+        adv_out_cumul:          mass that has been advected out up to the end of each timestep
+        adv_out_ts:             mass that has been advected at each timestep
+        --- IF deactivate_north_of/south_of/_east_of/_west_of ARE NOT USED IN SIMULATION
+            An element is considered advected out only if it is outside the domain of 
+            the ou and vo velocity fields (i.e. deactivated) AND out of the shp/ lat-lon specified.
+            Comment "adv_out = out_of_bounds & missing_var" to consider only shp/ lat-lon limits 
+            but this  will double count elements moving along the border at different timesteps.
+            If shp/lat-lon limits are not the same area covered by ou and vo velocity fields mass
+            advected may be overestimated.
+        --- IF deactivate_north_of/south_of/_east_of/_west_of ARE USED IN SIMULATION only elements 
+            deactivated with "outside" as reason will be counted
+        '''
+        import opendrift
+        import matplotlib.pyplot as plt
+        import pandas as pd
+
+        if shp_file_path is not None:
+            import geopandas as gpd
+            from shapely.geometry import Point
+
+        csv_file_name = sim_name + "_extracted_timeseries.csv"
+
+        if load_timeseries_from_file is False:
+            # Init species and transfer rates 
+            if self.mode != opendrift.models.basemodel.Mode.Config:
+                self.mode = opendrift.models.basemodel.Mode.Config
+            self.init_species()
+            self.init_transfer_rates()
+            if self.mode != opendrift.models.basemodel.Mode.Result:
+                self.mode = opendrift.models.basemodel.Mode.Result
+
+            # Define elimination processes
+            status_categories = self.status_categories
+            if 'active' in status_categories:
+                active_index = status_categories.index('active')
+            if 'removed' in status_categories:
+                removed_index = status_categories.index('removed')
+            if 'missing_data' in status_categories:
+                missing_data_index = status_categories.index('missing_data')
+            if 'degraded' in status_categories:
+                degraded_index = status_categories.index('degraded')
+            if 'volatilized' in status_categories:
+                volatilized_index = status_categories.index('volatilized')
+            if 'outside' in status_categories:
+                out_of_bounds_index = status_categories.index('outside')
+
+            # Define time and mass convertions
+            steps=self.steps_output
+
+            mass_conversion_factor=1e-6
+            if mass_unit=='g' and self.elements.variables['mass']['units']=='ug':
+                mass_conversion_factor=1e-6
+            if mass_unit=='mg' and self.elements.variables['mass']['units']=='ug':
+                mass_conversion_factor=1e-3
+            if mass_unit=='ug' and self.elements.variables['mass']['units']=='ug':
+                mass_conversion_factor=1
+            if mass_unit=='kg' and self.elements.variables['mass']['units']=='ug':
+                mass_conversion_factor=1e-9
+
+            time_conversion_factor = self.time_step_output.total_seconds() / (60*60)
+            if time_unit=='seconds':
+                time_conversion_factor = self.time_step_output.total_seconds()
+            if time_unit=='minutes':
+                time_conversion_factor = self.time_step_output.total_seconds() / 60
+            if time_unit=='hours':
+                time_conversion_factor = self.time_step_output.total_seconds() / (60*60)
+            if time_unit=='days':
+                time_conversion_factor = self.time_step_output.total_seconds() / (24*60*60)
+            print("Extracting data from simulation")
+            # Extract properties from simulation
+            lat=self.get_property('lat')
+            lon=self.get_property('lon')
+            mass=self.get_property('mass')
+            sp=self.get_property('specie')
+            mass_d = self.get_property('mass_degraded')
+            mass_d_W = self.get_property('mass_degraded_water')
+            mass_d_S = self.get_property('mass_degraded_sediment')
+            mass_v = self.get_property('mass_volatilized')
+
+            # Get mask for elements in water column and sedments for each timestep
+            in_water_column = np.any((sp[0]==self.num_lmm,
+                                    sp[0]==self.num_humcol,
+                                    sp[0]==self.num_prev),axis=0)
+            in_sediment_layer = (sp[0]==self.num_srev)
+            in_buried_sed = (sp[0]==self.num_ssrev)
+            active_elements = (mass[1]==0)
+            # inactive_elements = (mass[1]!=0)
+            # Mask that is true where mass[0] is not NaN
+            elements = ~mass[1].mask
+
+            # Find which elements are advected out of the domain
+            if ('missing_data' in status_categories) or ('outside' in status_categories):
+                print("Calculating mass advected out of the simulation domain")
+                if shp_file_path is not None:
+                    # Calculate mass of elemements outside of shapefile at each timestep. 
+                    # Cumulative advection will double count elements that are not deactivated
+                    # when they exit the domain
+                    print("shp used to define simulation domain")
+                    gdf_shapefile = gpd.read_file(shp_file_path)
+                    out_of_bounds = []
+                    for t_step in range(0, len(lon[0])):
+                        print(t_step)
+                        lon_ = lon[0][t_step]
+                        lat_ = lat[0][t_step]
+                        # Create Point objects from latitude and longitude
+                        geometry = [Point(long, latit) for long, latit in zip(lon_,  lat_)]
+                        gdf_points = gpd.GeoDataFrame(geometry=geometry, crs=gdf_shapefile.crs)
+                        # Spatial join to check if points are within the shapefile geometry
+                        # Use 'within' operation to check if points are within the shapefile
+                        joined = gpd.sjoin(gdf_points, gdf_shapefile, op='within')
+                        # Extract the indices of points that are within the shapefile
+                        indices_within = joined.index
+                        # Create a boolean array indicating whether each point is within the shapefile
+                        out_of_bounds.append([index in indices_within for index in range(len(geometry))])
+                    # Convert the list of boolean arrays to a NumPy array
+                    out_of_bounds = np.array([np.array(arr) for arr in out_of_bounds])
+                    adv_out = out_of_bounds & elements
+                elif ('outside' in status_categories):
+                # advection out of the domain is determined by the use of 
+                # deactivate_north_of/south_of/_east_of/_west_of parameters
+                    adv_out = (mass[1] == out_of_bounds_index)
+                elif any([element is None for element in [lat_min, lat_max, lon_max, lon_min]]) is False:
+                    # advection out of the domain is determined by the extent of uo/vo velocity field
+                    if ('outside' not in status_categories) and ('missing_data' in status_categories): 
+                        out_of_bounds_lat = np.any((lat[0] < lat_min,
+                                                    lat[0] > lat_max), axis=0)
+                        out_of_bounds_lon = np.any((lon[0] < lon_min,
+                                                    lon[0] > lon_max), axis=0)
+                        # out_of_bounds = (out_of_bounds_lat.astype(int) + out_of_bounds_lon.astype(int)) > 0
+                        out_of_bounds = (out_of_bounds_lat | out_of_bounds_lon)
+                        del(out_of_bounds_lat, out_of_bounds_lon)
+                        # Shift array up one line, the last timestep with the element in the domain is TRUE instead on the first
+                        # timestep with the element outside
+                        out_of_bounds = np.roll(out_of_bounds, -1, axis=0)
+                        out_of_bounds[-1] = out_of_bounds[-2]
+                        missing_var = (mass[1] == missing_data_index)
+                        adv_out = out_of_bounds & missing_var & elements
+                else:
+                    error = ("shp_file_path and lat/lon limits not specified when " +
+                             "deactivate_north_of/south_of/_east_of/_west_of parameters " +
+                            "were not used")
+                    raise ValueError(error)
+
+            # Get mass associated to each specie for each timestep, considering only active elements that are inside 
+            # the simulation domain
+            mass_by_specie=np.zeros((steps,5))
+            for i in range(steps):
+                mass_by_specie[i]=[np.sum(mass[0][i,:]*(sp[0][i,:]==0)*(mass[1][i,:]==0)* (~adv_out[i,:]))*mass_conversion_factor,
+                         np.sum(mass[0][i,:]*(sp[0][i,:]==1)*(mass[1][i,:]==0)* (~adv_out[i,:]))*mass_conversion_factor,
+                         np.sum(mass[0][i,:]*(sp[0][i,:]==2)*(mass[1][i,:]==0)* (~adv_out[i,:]))*mass_conversion_factor,
+                         np.sum(mass[0][i,:]*(sp[0][i,:]==3)*(mass[1][i,:]==0)* (~adv_out[i,:]))*mass_conversion_factor,
+                         np.sum(mass[0][i,:]*(sp[0][i,:]==4)*(mass[1][i,:]==0)* (~adv_out[i,:]))*mass_conversion_factor]
+
+            time_steps =np.array(range(0, steps))*time_conversion_factor
+            mass_by_specie_df = pd.DataFrame(mass_by_specie)
+
+            for chem_specie in range(0,5):
+                if (chem_specie not in mass_by_specie_df.columns):
+                    mass_by_specie_df[chem_specie] = np.zeros_like(time_steps)
+
+            # Insert time as new columns
+            mass_by_specie_df.insert(0,('time'+"-["+ time_unit +"]"), time_steps)
+            start_date = pd.Timestamp(self.start_time.year, 
+                                      self.start_time.month, 
+                                      self.start_time.day) 
+            time_date_serie = pd.date_range(start=start_date, periods=steps, freq=self.time_step)
+            mass_by_specie_df.insert(0,('date_of_timestep'), time_date_serie)
+            del mass_by_specie
+
+            # Change name of dataframe columns
+            Col_names_res = list(mass_by_specie_df.columns)
+            names_to_replace = ({0: "dissolved" + "-["+ mass_unit +"]",
+                                1: "DOC" + "-["+ mass_unit +"]",
+                                2: "SPM" + "-["+ mass_unit +"]",
+                                3: "sed_rev" + "-["+ mass_unit +"]",
+                                4: "sed_buried" + "-["+ mass_unit +"]"
+                                })
+            Col_names_res = [names_to_replace.get(e, e) for e in Col_names_res]
+            mass_by_specie_df.columns = Col_names_res
+
+            # Mass present in the system at each timestep considering only active elements 
+            # that are inside the simulation domain
+            mass_water = (np.sum(mass[0]*in_water_column * active_elements * (~adv_out),1)*mass_conversion_factor)
+            mass_sed = (np.sum(mass[0]*in_sediment_layer * active_elements * (~adv_out),1)*mass_conversion_factor)
+            # mass_sed_buried is outside the domain
+            mass_sed_buried = (np.sum(mass[0]*in_buried_sed,1)*mass_conversion_factor)
+            mass_actual = mass_water + mass_sed
+
+            # Mass of all elements present in simulation during each timestep
+            mass_tot_timestep = (np.sum(mass[0] * elements,1)*mass_conversion_factor)
+            # Mass that has been degraded up to the end of each timestep considering all elements
+            mass_degraded = (np.sum(mass_d[0]*elements,1)*mass_conversion_factor)
+            # Mass that has been degraded (wat and sed) and volatilized up to the end of each timestep
+            # considering considering all elements
+            mass_volatilized = (np.sum((mass_v[0])*elements,1)*mass_conversion_factor)
+            mass_degraded_w = (np.sum(mass_d_W[0]*elements,1)*mass_conversion_factor)
+            mass_degraded_s = (np.sum(mass_d_S[0]*elements,1)*mass_conversion_factor)
+            
+            # Calculate mass of  elements that are advected out of the domain
+            if ('missing_data' in status_categories) or ('outside' in status_categories):
+                # adv_out = out_of_bounds
+                # Mass advected out of the system during each time step
+                mass_adv_out = (np.sum((mass[0]*adv_out),1)*mass_conversion_factor)
+                # Mass advected out of the system from start of simulation, until that time step
+                mass_adv_out_cumulative = np.cumsum(mass_adv_out)
+            else:
+                mass_adv_out = np.zeros_like(mass_water)
+                mass_adv_out_cumulative = np.zeros_like(mass_water)
+                
+            # Mass emitted into the system up to the end of each timestep
+            mass_emitted = (mass_tot_timestep + mass_degraded + mass_volatilized)
+            
+            mass_df = pd.DataFrame({
+                'mass_wat'+ "-["+ mass_unit +"]": mass_water,
+                'mass_sed'+ "-["+ mass_unit +"]": mass_sed,
+                'mass_sed_buried'+ "-["+ mass_unit +"]": mass_sed_buried,
+                'mass_current'+ "-["+ mass_unit +"]": mass_actual,
+                'mass_emitted'+ "-["+ mass_unit +"]": mass_emitted,
+                'mass_degr_tot'+ "-["+ mass_unit +"]": mass_degraded,
+                'mass_degr_wat'+ "-["+ mass_unit +"]": mass_degraded_w,
+                'mass_degr_sed'+ "-["+ mass_unit +"]": mass_degraded_s,
+                'mass_vol'+ "-["+ mass_unit +"]": mass_volatilized
+                }).astype(np.float64)
+
+            mass_fin_df = pd.concat([mass_by_specie_df, mass_df], axis=1)
+            mass_fin_df[('adv_out_ts'+"-["+ mass_unit +"]")] =  mass_adv_out.astype(np.float64)
+            mass_fin_df[('adv_out_cumul'+"-["+ mass_unit +"]")] =  mass_adv_out_cumulative.astype(np.float64)
+            mass_fin_df[('convertion_factors-[time_mass]')] = np.zeros_like(mass_emitted)
+            mass_fin_df.loc[0, ('convertion_factors-[time_mass]')]= time_conversion_factor
+            mass_fin_df.loc[1, ('convertion_factors-[time_mass]')]= mass_conversion_factor
+            print("save .csv file to ", file_out_path + csv_file_name)
+            mass_fin_df.to_csv(file_out_path + csv_file_name)
+
+        elif load_timeseries_from_file is True and timeseries_file_path is not None:
+            mass_fin_df = pd.read_csv(file_out_path + csv_file_name)
+
+            def select_df_column(col_name, dataframe = mass_fin_df):
+                return dataframe[dataframe.columns[dataframe.columns.str.contains(col_name)]]
+
+            time_steps = select_df_column(col_name = "time-")
+            mass_emitted = select_df_column(col_name = 'mass_emitted-')
+            mass_actual = select_df_column(col_name = 'mass_current-')
+            mass_water = select_df_column(col_name = 'mass_wat-')
+            mass_sed = select_df_column(col_name = 'mass_sed-')
+            mass_degraded = select_df_column(col_name = 'mass_degr_tot-')
+            mass_degraded_s = select_df_column(col_name = 'mass_degr_sed-')
+            mass_degraded_w = select_df_column(col_name = 'mass_degr_wat-')
+            mass_adv_out_cumulative = select_df_column(col_name = 'adv_out_cumul-')
+            mass_adv_out = select_df_column(col_name = 'adv_out_ts-')
+            mass_volatilized = select_df_column(col_name = 'mass_vol-')
+            mass_sed_buried = select_df_column(col_name = 'mass_sed_buried-')
+            time_conversion_factor = mass_fin_df.loc[0, ('convertion_factors-[time_mass]')]
+            mass_conversion_factor = mass_fin_df.loc[1, ('convertion_factors-[time_mass]')]
+        else:
+            raise ValueError("timeseries_file_path must be specified")
+
+        if plot_figures is True:
+            if title_fig_tserie is None and chemical_compound is not None:
+                title_fig_tserie = (chemical_compound + ' mass')
+            if title_fig_mass is None and chemical_compound is not None:
+                title_fig_mass = (chemical_compound + ' mass')
+
+            mass_dissolved = (mass_fin_df[mass_fin_df.columns[mass_fin_df.columns.str.contains("dissolved-")]])
+            mass_DOC = (mass_fin_df[mass_fin_df.columns[mass_fin_df.columns.str.contains("DOC-")]])
+            mass_SPM = (mass_fin_df[mass_fin_df.columns[mass_fin_df.columns.str.contains("SPM-")]])
+            mass_sed_rev = (mass_fin_df[mass_fin_df.columns[mass_fin_df.columns.str.contains("sed_rev-")]])
+            mass_sed_buried = (mass_fin_df[mass_fin_df.columns[mass_fin_df.columns.str.contains("sed_buried-")]])
+
+            # Plot mass present/degraded/volatilized in the system
+            xlabel = "time" + " ["+ time_unit +"]"
+            fig_width = 2.5 * subplot_width
+            fig_height = 3.7 * subplot_height
+
+            fig1,((ax1,ax2),(ax3,ax4), (ax5, ax6), (ax7, ax8))=plt.subplots(nrows=4, ncols=2, figsize=(fig_width, fig_height))
+            fig1.suptitle(title_fig_tserie)
+
+            ax1.plot(time_steps, mass_emitted)
+            ax1.set_xlabel(xlabel)
+            ax1.set_ylabel('emitted mass'+ " ["+ mass_unit +"]")
+
+            ax2.plot(time_steps, mass_actual, 'k',
+                     time_steps, mass_water, 'b',
+                     time_steps, mass_sed, 'y')
+            ax2.set_xlabel(xlabel)
+            ax2.set_ylabel('current mass'+ " ["+ mass_unit +"]")
+            ax2.legend(['total mass','mass in sed','mass in wat'],prop={'size': 8})
+
+            ax3.plot(time_steps, mass_degraded,'k',
+                     time_steps, mass_degraded_s,'y',
+                     time_steps, mass_degraded_w,'b')
+
+            ax3.set_xlabel(xlabel)
+            ax3.set_ylabel('degraded mass'+ " ["+ mass_unit +"]")
+            ax3.legend(['degr. total','degr. in sed','degr. in wat'],prop={'size': 8})
+
+            ax4.plot(time_steps, mass_adv_out_cumulative, 'm')
+            ax4.plot(time_steps, mass_adv_out, 'lime')
+            ax4.set_xlabel(xlabel)
+            ax4.set_ylabel('advected out mass' + " ["+ mass_unit +"]")
+            ax4.legend(['adv. out cumulative','adv. out timestep'],prop={'size': 8})
+
+            ax5.plot(time_steps, mass_volatilized, 'orange')
+            ax5.set_xlabel(xlabel)
+            ax5.set_ylabel('volatilized mass' + " ["+ mass_unit +"]")
+
+            ax6.plot(time_steps, mass_sed_buried, 'purple')
+            ax6.set_xlabel(xlabel)
+            ax6.set_ylabel('buried in sed mass' + " ["+ mass_unit +"]")
+            
+            mass_dissolved_arr = mass_dissolved.to_numpy().flatten()
+            mass_DOC_arr = mass_DOC.to_numpy().flatten()
+            mass_SPM_arr = mass_SPM.to_numpy().flatten()
+            mass_sed_rev_arr = mass_sed_rev.to_numpy().flatten()
+
+            ax7.plot(time_steps, (mass_dissolved_arr/mass_actual)*100, 'midnightblue',
+                     time_steps, (mass_DOC_arr/mass_actual)*100, 'royalblue',
+                     time_steps, (mass_SPM_arr/mass_actual)*100, 'palegreen',
+                     time_steps,(mass_sed_rev_arr/mass_actual)*100, 'orange')
+            ax7.set_xlabel(xlabel)
+            ax7.set_ylabel('mass distribution [%]')
+            ax7.legend(['dissolved','DOC', 'SPM', 'sed'],prop={'size': 8})
+
+            ax8.axis('off')
+            fig1.tight_layout()
+            fig1.savefig(file_out_path+"/"+sim_name+"-time_series"+".png")
+
+            # Plot mass distribution among environmental media
+            bars=np.zeros((len(time_steps),5))
+
+            for i in range(0, len(time_steps)):
+                bars[i]=[mass_dissolved.iloc[i, 0],
+                         mass_DOC.iloc[i, 0],
+                         mass_SPM.iloc[i, 0],
+                         mass_sed_rev.iloc[i, 0],
+                         mass_sed_buried.iloc[i, 0]]
+
+            bottom=np.zeros_like(bars[:,0])
+
+            fig2, ax = plt.subplots()
+            fig2.suptitle(title_fig_mass)
+            ax.bar(np.arange((len(time_steps))),bars[:,0],width=1.25,color='midnightblue')
+            bottom=bars[:,0]
+            ax.bar(np.arange((len(time_steps))),bars[:,1],bottom=bottom,width=1.25,color='royalblue')
+            bottom=bottom+bars[:,1]
+            ax.bar(np.arange((len(time_steps))),bars[:,2],bottom=bottom,width=1.25,color='palegreen')
+            bottom=bottom+bars[:,2]
+            ax.bar(np.arange((len(time_steps))),bars[:,3],bottom=bottom,width=1.25,color='orange')
+            bottom=bottom+bars[:,3]
+            print('dissolved' + ' : ' + str(bars[-1,0]) + mass_unit +' ('+ str(100*bars[-1,0]/np.sum(bars[-1,:]))+'%)')
+            print('DOC' + ' : ' + str(bars[-1,1]) + mass_unit +' ('+ str(100*bars[-1,1]/np.sum(bars[-1,:]))+'%)')
+            print('SPM' + ' : ' + str(bars[-1,2]) + mass_unit +' ('+ str(100*bars[-1,2]/np.sum(bars[-1,:]))+'%)')
+            print('sediment' + ' : ' + str(bars[-1,3]) + mass_unit +' ('+ str(100*bars[-1,3]/np.sum(bars[-1,:]))+'%)')
+
+            ax.legend(['dissolved', 'DOC', 'SPM','sediment'])
+            ax.set_ylabel('mass (' + mass_unit + ')')
+            ax.axes.get_xaxis().set_ticklabels(np.round(ax.axes.get_xticks() * time_conversion_factor))
+            ax.set_xlabel('time (' + time_unit + ')')
+
+            plt.savefig(file_out_path+"/"+sim_name+"-mass_specie"+".png", bbox_inches="tight", dpi=300)
+            print("save figures to ", file_out_path)
+            
+            print("mass_vol extracted")
+            print(mass_volatilized[-1].sum())
+            vol_active = (sum(self.elements.mass_volatilized)*mass_conversion_factor)
+            vol_inactive = (sum(self.elements_deactivated.mass_volatilized)*mass_conversion_factor)
+            print("mass_vol active")
+            print(vol_active)
+            print("mass_vol inactive")
+            print(vol_inactive)
+            print("mass_vol active + inactive")
+            print(vol_inactive + vol_active)
+            print("####")
+
+            print("mass_degraded extracted")
+            print(mass_degraded[-1].sum())
+            degraded_active = (sum(self.elements.mass_degraded)*mass_conversion_factor)
+            degraded_inactive = (sum(self.elements_deactivated.mass_degraded)*mass_conversion_factor)
+            print("mass_degraded active")
+            print(degraded_active)
+            print("mass_degraded inactive")
+            print(degraded_inactive)
+            print("mass_degraded active + inactive")
+            print(degraded_active + degraded_inactive)
+            print("####")
+
+            print("mass_tot_ts extracted")
+            print(mass_tot_timestep[-1].sum())
+            mass_active = (sum(self.elements.mass)*mass_conversion_factor)
+            mass_inactive = (sum(self.elements_deactivated.mass)*mass_conversion_factor)
+            print("mass_tot_ts active")
+            print(mass_active)
+            print("mass_tot_ts inactive")
+            print(mass_inactive)
+            print("mass_tot_ts active + inactive")
+            print(mass_active + mass_inactive)
+            print("####")
+
+            print("mass emitted extracted")
+            print(mass_emitted[-1].sum())
+            print("mass emitted check")
+            print((mass_active + mass_inactive)+ (degraded_active + degraded_inactive)+ (vol_inactive + vol_active))
+            print("####")
