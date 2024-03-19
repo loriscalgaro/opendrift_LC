@@ -3489,7 +3489,6 @@ class ChemicalDrift(OceanDrift):
             try:
                 DataArray_masked.to_netcdf(file_output_path + file_output_name)
             except:
-
                 # Change DataArray_masked to dataset if xarray.core.dataarray.DataArray
                 if str(type(DataArray_masked)) == "<class 'xarray.core.dataarray.DataArray'>":
                     DataArray_masked = DataArray_masked.to_dataset()
@@ -3683,7 +3682,7 @@ class ChemicalDrift(OceanDrift):
                     Conc_DataArray_selected = Conc_DataArray
 
                 fig, ax = plt.subplots(figsize = (len_fig,high_fig)) # Change here size of figure
-                shp.plot(ax = ax, color = shp_color, zorder = 10)
+                shp.plot(ax = ax, color = shp_color, zorder = 10, edgecolor = 'black')
                 ax2 = Conc_DataArray_selected.plot.pcolormesh(ax = ax, 
                                                         x = 'longitude', 
                                                         y = 'latitude', 
@@ -4322,10 +4321,11 @@ class ChemicalDrift(OceanDrift):
             title_fig_mass = None,
             subplot_width = 4,
             subplot_height = 3,
-            lon_min =None,
-            lon_max =None,
-            lat_min =None,
-            lat_max =None):
+            lon_min = None,
+            lon_max = None,
+            lat_min = None,
+            lat_max = None,
+            check_mass = False):
         '''
         Extract, plot to .png, and export to a .csv file aggregated mass of all elements at each timestep of the simulation
         Plot directly data from a produced .cvs file.
@@ -4498,10 +4498,12 @@ class ChemicalDrift(OceanDrift):
                 elif ('outside' in status_categories):
                 # advection out of the domain is determined by the use of 
                 # deactivate_north_of/south_of/_east_of/_west_of parameters
+                    print("deactivate_north_of/south_of/_east_of/_west_of parameters used")
                     adv_out = (mass[1] == out_of_bounds_index)
                 elif any([element is None for element in [lat_min, lat_max, lon_max, lon_min]]) is False:
                     # advection out of the domain is determined by the extent of uo/vo velocity field
                     if ('outside' not in status_categories) and ('missing_data' in status_categories): 
+                        print("missing_data used")
                         out_of_bounds_lat = np.any((lat[0] < lat_min,
                                                     lat[0] > lat_max), axis=0)
                         out_of_bounds_lon = np.any((lon[0] < lon_min,
@@ -4618,16 +4620,20 @@ class ChemicalDrift(OceanDrift):
                 'mass_degr_wat'+ "-["+ mass_unit +"]": mass_degraded_w,
                 'mass_degr_sed'+ "-["+ mass_unit +"]": mass_degraded_s,
                 'mass_vol'+ "-["+ mass_unit +"]": mass_volatilized,
+                'adv_out_ts'+"-["+ mass_unit +"]": mass_adv_out,
+                'adv_out_cumul'+"-["+ mass_unit +"]": mass_adv_out_cumulative,
                 'perc_vol-["%"]': perc_volatilized,
                 'perc_deg_w-["%"]': perc_degraded_w,
                 'perc_deg_s-["%"]': perc_degraded_s,
                 'perc_adv-["%"]': perc_adv,
-                'perc_sed_buried-["%"]': perc_sed_buried
+                'perc_sed_buried-["%"]': perc_sed_buried,
+                'mass_removed'+ "-["+ mass_unit +"]": mass_removed,
+                'mass_vol_adv'+ "-["+ mass_unit +"]": mass_volatilized_adv,
+                'mass_degr_wat_adv'+ "-["+ mass_unit +"]": mass_degraded_w_adv,
+                'mass_degr_sed': mass_degraded_s_adv
                 }).astype(np.float64)
 
             mass_fin_df = pd.concat([mass_by_specie_df, mass_df], axis=1)
-            mass_fin_df[('adv_out_ts'+"-["+ mass_unit +"]")] =  mass_adv_out.astype(np.float64)
-            mass_fin_df[('adv_out_cumul'+"-["+ mass_unit +"]")] =  mass_adv_out_cumulative.astype(np.float64)
             mass_fin_df[('convertion_factors-[time_mass]')] = np.zeros_like(mass_emitted)
             mass_fin_df.loc[0, ('convertion_factors-[time_mass]')]= time_conversion_factor
             mass_fin_df.loc[1, ('convertion_factors-[time_mass]')]= mass_conversion_factor
@@ -4641,7 +4647,7 @@ class ChemicalDrift(OceanDrift):
 
         def select_df_column(col_name, dataframe = mass_fin_df):
             return dataframe[dataframe.columns[dataframe.columns.str.contains(col_name)]]
-
+        
         time_steps = select_df_column(col_name = "time-")
         mass_emitted = select_df_column(col_name = 'mass_emitted-')
         mass_actual = select_df_column(col_name = 'mass_current-')
@@ -4777,45 +4783,45 @@ class ChemicalDrift(OceanDrift):
 
             plt.savefig(file_out_path+"/"+sim_name+"-mass_specie"+".png", bbox_inches="tight", dpi=300)
             print("save figures to ", file_out_path)
-
-            print("mass_vol extracted")
-            print(mass_volatilized.to_numpy()[-1])
-            vol_active = (sum(self.elements.mass_volatilized)*mass_conversion_factor)
-            vol_inactive = (sum(self.elements_deactivated.mass_volatilized)*mass_conversion_factor)
-            print("mass_vol active")
-            print(vol_active)
-            print("mass_vol inactive")
-            print(vol_inactive)
-            print("mass_vol active + inactive")
-            print(vol_inactive + vol_active)
-            print("####")
-
-            print("mass_degraded extracted")
-            print(mass_degraded.to_numpy()[-1])
-            degraded_active = (sum(self.elements.mass_degraded)*mass_conversion_factor)
-            degraded_inactive = (sum(self.elements_deactivated.mass_degraded)*mass_conversion_factor)
-            print("mass_degraded active")
-            print(degraded_active)
-            print("mass_degraded inactive")
-            print(degraded_inactive)
-            print("mass_degraded active + inactive")
-            print(degraded_active + degraded_inactive)
-            print("####")
-
-            print("mass_tot_ts extracted")
-            print(mass_tot_timestep[-1].sum())
-            mass_active = (sum(self.elements.mass)*mass_conversion_factor)
-            mass_inactive = (sum(self.elements_deactivated.mass)*mass_conversion_factor)
-            print("mass_tot_ts active")
-            print(mass_active)
-            print("mass_tot_ts inactive")
-            print(mass_inactive)
-            print("mass_tot_ts active + inactive")
-            print(mass_active + mass_inactive)
-            print("####")
-
-            print("mass emitted extracted")
-            print(mass_emitted.to_numpy()[-1])
-            print("mass emitted check")
-            print((mass_active + mass_inactive)+ (degraded_active + degraded_inactive)+ (vol_inactive + vol_active))
-            print("####")
+            if check_mass is True:
+                print("mass_vol extracted")
+                print(mass_volatilized.to_numpy()[-1])
+                vol_active = (sum(self.elements.mass_volatilized)*mass_conversion_factor)
+                vol_inactive = (sum(self.elements_deactivated.mass_volatilized)*mass_conversion_factor)
+                print("mass_vol active")
+                print(vol_active)
+                print("mass_vol inactive")
+                print(vol_inactive)
+                print("mass_vol active + inactive")
+                print(vol_inactive + vol_active)
+                print("####")
+    
+                print("mass_degraded extracted")
+                print(mass_degraded.to_numpy()[-1])
+                degraded_active = (sum(self.elements.mass_degraded)*mass_conversion_factor)
+                degraded_inactive = (sum(self.elements_deactivated.mass_degraded)*mass_conversion_factor)
+                print("mass_degraded active")
+                print(degraded_active)
+                print("mass_degraded inactive")
+                print(degraded_inactive)
+                print("mass_degraded active + inactive")
+                print(degraded_active + degraded_inactive)
+                print("####")
+    
+                print("mass_tot_ts extracted")
+                print(mass_tot_timestep[-1].sum())
+                mass_active = (sum(self.elements.mass)*mass_conversion_factor)
+                mass_inactive = (sum(self.elements_deactivated.mass)*mass_conversion_factor)
+                print("mass_tot_ts active")
+                print(mass_active)
+                print("mass_tot_ts inactive")
+                print(mass_inactive)
+                print("mass_tot_ts active + inactive")
+                print(mass_active + mass_inactive)
+                print("####")
+    
+                print("mass emitted extracted")
+                print(mass_emitted.to_numpy()[-1])
+                print("mass emitted check")
+                print((mass_active + mass_inactive)+ (degraded_active + degraded_inactive)+ (vol_inactive + vol_active))
+                print("####")
