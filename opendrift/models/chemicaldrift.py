@@ -3602,6 +3602,7 @@ class ChemicalDrift(OceanDrift):
         import numpy as np
         import matplotlib.pyplot as plt
         import matplotlib.ticker as ticker
+        import matplotlib.colors as colors
         import os as os
         from mpl_toolkits.axes_grid1 import make_axes_locatable, axes_size
         if add_shp_to_figure:
@@ -3687,7 +3688,7 @@ class ChemicalDrift(OceanDrift):
                                                         x = 'longitude', 
                                                         y = 'latitude', 
                                                         cmap=selected_colormap,
-                                                        robust = True, 
+                                                        robust = True,
                                                         vmin = vmin, vmax = vmax,
                                                         levels = levels_colormap,
                                                         add_colorbar=False,
@@ -3711,7 +3712,6 @@ class ChemicalDrift(OceanDrift):
                 divider = make_axes_locatable(ax)
                 width = axes_size.AxesY(ax, aspect=1./aspect)
                 cax = divider.append_axes("right", size=width, pad=-2)
-
                 cax.yaxis.offsetText.set_fontsize(24)
                 cax.tick_params(labelsize=cbar_label_font_size)
                 y_formatter = ticker.ScalarFormatter(useMathText=True)
@@ -4408,6 +4408,14 @@ class ChemicalDrift(OceanDrift):
             self.init_transfer_rates()
             if self.mode != opendrift.models.basemodel.Mode.Result:
                 self.mode = opendrift.models.basemodel.Mode.Result
+                
+            # Check if deactivate_N/S/E/W_of where specified
+            deactivate_coords = []
+            deactivate_coords.append(self.get_configspec('deactivate_north_of'))
+            deactivate_coords.append(self.get_configspec('deactivate_south_of'))
+            deactivate_coords.append(self.get_configspec('deactivate_east_of'))
+            deactivate_coords.append(self.get_configspec('deactivate_west_of'))
+            deactivate_coords = any(bool(dic) for dic in deactivate_coords)
 
             # Define elimination processes
             status_categories = self.status_categories
@@ -4458,9 +4466,16 @@ class ChemicalDrift(OceanDrift):
             mass_v = self.get_property('mass_volatilized')
 
             # Get mask for elements in water column and sedments for each timestep
-            in_water_column = np.any((sp[0]==self.num_lmm,
-                                    sp[0]==self.num_humcol,
-                                    sp[0]==self.num_prev),axis=0)
+            in_water_column_ls = []
+            if hasattr(self, 'num_lmm'):
+                in_water_column_ls.append(self.num_lmm)
+            if hasattr(self, 'num_humcol'):
+                in_water_column_ls.append(self.num_humcol)
+            if hasattr(self, 'num_prev'):
+                in_water_column_ls.append(self.num_prev)
+
+            in_water_column = np.any([sp[0] == value for value in in_water_column_ls], axis=0)
+
             in_sediment_layer = (sp[0]==self.num_srev)
             in_buried_sed = (sp[0]==self.num_ssrev)
             active_elements = (mass[1]==0)
@@ -4470,7 +4485,7 @@ class ChemicalDrift(OceanDrift):
 
             # Find which elements are advected out of the domain
             if ('missing_data' in status_categories) or ('outside' in status_categories):
-                print("Calculating mass advected out of the simulation domain from shp")
+                print("Calculating mass advected out of the simulation")
                 if shp_file_path is not None:
                     # Calculate mass of elemements outside of shapefile at each timestep. 
                     # Cumulative advection will double count elements that are not deactivated
@@ -4495,11 +4510,15 @@ class ChemicalDrift(OceanDrift):
                     # Convert the list of boolean arrays to a NumPy array
                     out_of_bounds = np.array([np.array(arr) for arr in out_of_bounds])
                     adv_out = out_of_bounds & elements
-                elif ('outside' in status_categories):
-                # advection out of the domain is determined by the use of 
-                # deactivate_north_of/south_of/_east_of/_west_of parameters
+                elif deactivate_coords is True:
                     print("deactivate_north_of/south_of/_east_of/_west_of parameters used")
-                    adv_out = (mass[1] == out_of_bounds_index)
+                    if ('outside' in status_categories):
+                    # advection out of the domain is determined by the use of 
+                    # deactivate_north_of/south_of/_east_of/_west_of parameters
+                        adv_out = (mass[1] == out_of_bounds_index)
+                    else:
+                        adv_out = np.zeros_like(mass[0], dtype=bool)
+                        print("No elements advected out of domain")
                 elif any([element is None for element in [lat_min, lat_max, lon_max, lon_min]]) is False:
                     # advection out of the domain is determined by the extent of uo/vo velocity field
                     if ('outside' not in status_categories) and ('missing_data' in status_categories): 
