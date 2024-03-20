@@ -3543,6 +3543,7 @@ class ChemicalDrift(OceanDrift):
                       lat_min, lat_max,
                       file_out_path,
                       file_out_sub_folder,
+                      figure_file_name,
                       shp_file_path,
                       title_caption,
                       unit_measure,
@@ -3579,6 +3580,7 @@ class ChemicalDrift(OceanDrift):
         vmax:                float64, max value of concentration in the figure, specify to keep colorscale constant
         file_out_path:       string, main output path of figure produced, must end with /
         file_out_sub_folder: string, subforlder of file_out_path, must end with /
+        figure_file_name:    string, name of figure
         shp_file_path:       string, full path and name of shp file
         title_caption:       string, first part of figure title before date and unit_measure
         full_title:          string, full title of figure. It overwrites title_caption if specified
@@ -3722,7 +3724,7 @@ class ChemicalDrift(OceanDrift):
                 else:
                     plt.colorbar(ax2, cax=cax)
 
-                fig.savefig(file_out_path + file_out_sub_folder+str(f"{timestep:03d}")+"_"+file_out_sub_folder[:-1]+fig_format)
+                fig.savefig(file_out_path + file_out_sub_folder+str(f"{timestep:03d}")+"_"+figure_file_name+fig_format)
                 plt.close()
         else:
             print("shp was not added over the figures")
@@ -3766,7 +3768,7 @@ class ChemicalDrift(OceanDrift):
                 cax.tick_params(labelsize=cbar_ticks_font_size)
                 cax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%0.1e'))
 
-                fig.figure.savefig(file_out_path + file_out_sub_folder+str(f"{timestep:03d}")+"_"+file_out_sub_folder[:-1]+fig_format)
+                fig.figure.savefig(file_out_path + file_out_sub_folder+str(f"{timestep:03d}")+"_"+figure_file_name+fig_format)
                 plt.close()
                 
     def plot_emission_data_frequency(self, emissions, title, n_bins = 100, zoom_max = 100, zoom_min = 0):
