@@ -4486,63 +4486,65 @@ class ChemicalDrift(OceanDrift):
             elements = ~mass[1].mask
 
             # Find which elements are advected out of the domain
-            if ('missing_data' in status_categories) or ('outside' in status_categories):
-                print("Calculating mass advected out of the simulation")
-                if shp_file_path is not None:
-                    # Calculate mass of elemements outside of shapefile at each timestep. 
-                    # Cumulative advection will double count elements that are not deactivated
-                    # when they exit the domain
-                    print("shp used to define simulation domain")
-                    gdf_shapefile = gpd.read_file(shp_file_path)
-                    out_of_bounds = []
-                    for t_step in range(0, len(lon[0])):
-                        print(t_step)
-                        lon_ = lon[0][t_step]
-                        lat_ = lat[0][t_step]
-                        # Create Point objects from latitude and longitude
-                        geometry = [Point(long, latit) for long, latit in zip(lon_,  lat_)]
-                        gdf_points = gpd.GeoDataFrame(geometry=geometry, crs=gdf_shapefile.crs)
-                        # Spatial join to check if points are within the shapefile geometry
-                        # Use 'within' operation to check if points are within the shapefile
-                        joined = gpd.sjoin(gdf_points, gdf_shapefile, op='within')
-                        # Extract the indices of points that are within the shapefile
-                        indices_within = joined.index
-                        # Create a boolean array indicating whether each point is within the shapefile
-                        out_of_bounds.append([index in indices_within for index in range(len(geometry))])
-                    # Convert the list of boolean arrays to a NumPy array
-                    out_of_bounds = np.array([np.array(arr) for arr in out_of_bounds])
-                    adv_out = out_of_bounds & elements
-                elif deactivate_coords is True:
-                    print("deactivate_north_of/south_of/_east_of/_west_of parameters used")
-                    if ('outside' in status_categories):
-                    # advection out of the domain is determined by the use of 
-                    # deactivate_north_of/south_of/_east_of/_west_of parameters
-                        adv_out = (mass[1] == out_of_bounds_index)
-                    else:
-                        adv_out = np.zeros_like(mass[0], dtype=bool)
-                        print("No elements advected out of domain")
-                elif any([element is None for element in [lat_min, lat_max, lon_max, lon_min]]) is False:
-                    # advection out of the domain is determined by the extent of uo/vo velocity field
-                    if ('outside' not in status_categories) and ('missing_data' in status_categories): 
-                        print("missing_data used")
-                        out_of_bounds_lat = np.any((lat[0] < lat_min,
-                                                    lat[0] > lat_max), axis=0)
-                        out_of_bounds_lon = np.any((lon[0] < lon_min,
-                                                    lon[0] > lon_max), axis=0)
-                        # out_of_bounds = (out_of_bounds_lat.astype(int) + out_of_bounds_lon.astype(int)) > 0
-                        out_of_bounds = (out_of_bounds_lat | out_of_bounds_lon)
-                        del(out_of_bounds_lat, out_of_bounds_lon)
-                        # Shift array up one line, the last timestep with the element in the domain is TRUE instead on the first
-                        # timestep with the element outside
-                        out_of_bounds = np.roll(out_of_bounds, -1, axis=0)
-                        out_of_bounds[-1] = out_of_bounds[-2]
-                        missing_var = (mass[1] == missing_data_index)
-                        adv_out = out_of_bounds & missing_var & elements
+            print("Calculating mass advected out of the simulation")
+            if shp_file_path is not None:
+                # Calculate mass of elemements outside of shapefile at each timestep. 
+                # Cumulative advection will double count elements that are not deactivated
+                # when they exit the domain
+                print("shp used to define simulation domain")
+                gdf_shapefile = gpd.read_file(shp_file_path)
+                out_of_bounds = []
+                for t_step in range(0, len(lon[0])):
+                    print(t_step)
+                    lon_ = lon[0][t_step]
+                    lat_ = lat[0][t_step]
+                    # Create Point objects from latitude and longitude
+                    geometry = [Point(long, latit) for long, latit in zip(lon_,  lat_)]
+                    gdf_points = gpd.GeoDataFrame(geometry=geometry, crs=gdf_shapefile.crs)
+                    # Spatial join to check if points are within the shapefile geometry
+                    # Use 'within' operation to check if points are within the shapefile
+                    joined = gpd.sjoin(gdf_points, gdf_shapefile, op='within')
+                    # Extract the indices of points that are within the shapefile
+                    indices_within = joined.index
+                    # Create a boolean array indicating whether each point is within the shapefile
+                    out_of_bounds.append([index in indices_within for index in range(len(geometry))])
+                # Convert the list of boolean arrays to a NumPy array
+                out_of_bounds = np.array([np.array(arr) for arr in out_of_bounds])
+                adv_out = out_of_bounds & elements
+            elif deactivate_coords is True:
+                print("deactivate_north_of/south_of/_east_of/_west_of parameters used")
+                if ('outside' in status_categories):
+                # advection out of the domain is determined by the use of 
+                # deactivate_north_of/south_of/_east_of/_west_of parameters
+                    adv_out = (mass[1] == out_of_bounds_index)
                 else:
-                    error = ("shp_file_path and lat/lon limits not specified when " +
-                             "deactivate_north_of/south_of/_east_of/_west_of parameters " +
-                            "were not used")
-                    raise ValueError(error)
+                    adv_out = np.zeros_like(mass[0], dtype=bool)
+                    print("No elements advected out of domain")
+            elif any([element is None for element in [lat_min, lat_max, lon_max, lon_min]]) is False:
+                # advection out of the domain is determined by the extent of uo/vo velocity field
+                if ('outside' not in status_categories) and ('missing_data' in status_categories): 
+                    print("missing_data used")
+                    out_of_bounds_lat = np.any((lat[0] < lat_min,
+                                                lat[0] > lat_max), axis=0)
+                    out_of_bounds_lon = np.any((lon[0] < lon_min,
+                                                lon[0] > lon_max), axis=0)
+                    # out_of_bounds = (out_of_bounds_lat.astype(int) + out_of_bounds_lon.astype(int)) > 0
+                    out_of_bounds = (out_of_bounds_lat | out_of_bounds_lon)
+                    del(out_of_bounds_lat, out_of_bounds_lon)
+                    # Shift array up one line, the last timestep with the element in the domain is TRUE instead on the first
+                    # timestep with the element outside
+                    out_of_bounds = np.roll(out_of_bounds, -1, axis=0)
+                    out_of_bounds[-1] = out_of_bounds[-2]
+                    missing_var = (mass[1] == missing_data_index)
+                    adv_out = out_of_bounds & missing_var & elements
+                else:
+                    adv_out = np.zeros_like(mass[0], dtype=bool)
+                    print("No elements advected out of domain")
+            else:
+                error = ("shp_file_path and lat/lon limits not specified when " +
+                         "deactivate_north_of/south_of/_east_of/_west_of parameters " +
+                        "were not used")
+                raise ValueError(error)
 
             # Get mass associated to each specie for each timestep, considering only active elements that are inside 
             # the simulation domain
@@ -4719,7 +4721,7 @@ class ChemicalDrift(OceanDrift):
                      time_steps, mass_sed, 'y')
             ax2.set_xlabel(xlabel)
             ax2.set_ylabel('current mass'+ " ["+ mass_unit +"]")
-            ax2.legend(['total mass','mass in sed','mass in wat'],prop={'size': 8})
+            ax2.legend(['total mass','mass in wat','mass in sed'],prop={'size': 8})
 
             ax3.plot(time_steps, mass_degraded,'k',
                      time_steps, mass_degraded_s,'y',
