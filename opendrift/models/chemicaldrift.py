@@ -1705,7 +1705,7 @@ class ChemicalDrift(OceanDrift):
             self.elements.mass_degraded = self.elements.mass_degraded + degraded_now
             self.elements.mass = self.elements.mass - degraded_now
             self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/500,
-                                     reason='degraded')
+                                     reason='removed')
 
             #to_deactivate = self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100
             #vol_morethan_degr = self.elements.mass_degraded >= self.elements.mass_volatilized
@@ -1850,7 +1850,7 @@ class ChemicalDrift(OceanDrift):
             self.elements.mass_volatilized = self.elements.mass_volatilized + volatilized_now
             self.elements.mass = self.elements.mass - volatilized_now
             self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/500,
-                                     reason='volatilized')
+                                     reason='removed')
 
             #to_deactivate = self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100
             #vol_morethan_degr = self.elements.mass_degraded >= self.elements.mass_volatilized
@@ -4321,6 +4321,7 @@ class ChemicalDrift(OceanDrift):
             plot_figures = False,
             title_fig_tserie = None,
             title_fig_mass = None,
+            title_fig_deg = None,
             subplot_width = 4,
             subplot_height = 3,
             lon_min = None,
@@ -4347,6 +4348,7 @@ class ChemicalDrift(OceanDrift):
         plot_figures:                 boolean,select if data is plotted (True) or not (False)
         title_fig_tserie:             string, title of timeseries figure
         title_fig_mass:               string, title of mass among dissolved/DOC/SPM/sed figure
+        title_fig_deg:                string, title of removal mechanisms figure
         subplot_width:                float32, width (inches) of each subplot in timeseries figure
         subplot_height                float32, height (inches) of each subplot in timeseries figure
         lon_min:                      float32, min longitude of domain to consider advection out of the simulation domain
@@ -4413,10 +4415,10 @@ class ChemicalDrift(OceanDrift):
                 
             # Check if deactivate_N/S/E/W_of where specified
             deactivate_coords = []
-            deactivate_coords.append(self.get_configspec('deactivate_north_of'))
-            deactivate_coords.append(self.get_configspec('deactivate_south_of'))
-            deactivate_coords.append(self.get_configspec('deactivate_east_of'))
-            deactivate_coords.append(self.get_configspec('deactivate_west_of'))
+            deactivate_coords.append(self.get_config('drift:deactivate_north_of'))
+            deactivate_coords.append(self.get_config('drift:deactivate_south_of'))
+            deactivate_coords.append(self.get_config('drift:deactivate_east_of'))
+            deactivate_coords.append(self.get_config('drift:deactivate_west_of'))
             deactivate_coords = any(bool(dic) for dic in deactivate_coords)
 
             # Define elimination processes
@@ -4427,10 +4429,6 @@ class ChemicalDrift(OceanDrift):
                 removed_index = status_categories.index('removed')
             if 'missing_data' in status_categories:
                 missing_data_index = status_categories.index('missing_data')
-            if 'degraded' in status_categories:
-                degraded_index = status_categories.index('degraded')
-            if 'volatilized' in status_categories:
-                volatilized_index = status_categories.index('volatilized')
             if 'outside' in status_categories:
                 out_of_bounds_index = status_categories.index('outside')
 
@@ -4601,18 +4599,21 @@ class ChemicalDrift(OceanDrift):
             mass_volatilized = (np.sum((mass_v[0])*elements,1)*mass_conversion_factor)
             mass_degraded_w = (np.sum(mass_d_W[0]*elements,1)*mass_conversion_factor)
             mass_degraded_s = (np.sum(mass_d_S[0]*elements,1)*mass_conversion_factor)
-            
+
             # Calculate mass of  elements that are advected out of the domain
             if ('missing_data' in status_categories) or ('outside' in status_categories):
                 # adv_out = out_of_bounds
                 # Mass advected out of the system during each time step
                 mass_adv_out = (np.sum((mass[0]*adv_out),1)*mass_conversion_factor)
                 # Mass advected out of the system from start of simulation, until that time step
-                mass_adv_out_cumulative = np.cumsum(mass_adv_out)
+                if deactivate_coords is True:
+                    mass_adv_out_cumulative = mass_adv_out
+                else:
+                    mass_adv_out_cumulative = np.cumsum(mass_adv_out)
             else:
                 mass_adv_out = np.zeros_like(mass_water)
                 mass_adv_out_cumulative = np.zeros_like(mass_water)
-                
+
             # Mass emitted into the system up to the end of each timestep
             mass_emitted = (mass_tot_timestep + mass_degraded + mass_volatilized)
             
@@ -4697,6 +4698,8 @@ class ChemicalDrift(OceanDrift):
                 title_fig_tserie = (chemical_compound + ' mass')
             if title_fig_mass is None and chemical_compound is not None:
                 title_fig_mass = (chemical_compound + ' mass')
+            if title_fig_deg is None and chemical_compound is not None:
+                title_fig_deg = (chemical_compound + ' removal')
 
             mass_dissolved = (mass_fin_df[mass_fin_df.columns[mass_fin_df.columns.str.contains("dissolved-")]])
             mass_DOC = (mass_fin_df[mass_fin_df.columns[mass_fin_df.columns.str.contains("DOC-")]])
@@ -4805,7 +4808,38 @@ class ChemicalDrift(OceanDrift):
             ax.set_xlabel('time (' + time_unit + ')')
 
             plt.savefig(file_out_path+"/"+sim_name+"-mass_specie"+".png", bbox_inches="tight", dpi=300)
+            
+            # Plot degradatin mecanisms during simulations
+            bars_deg=np.zeros((len(time_steps),5))
+            for i in range(0, len(time_steps)):
+                bars_deg[i]=[perc_volatilized.iloc[i, 0],
+                         perc_degraded_w.iloc[i, 0],
+                         perc_degraded_s.iloc[i, 0],
+                         perc_adv.iloc[i, 0],
+                         perc_sed_buried.iloc[i, 0]]
+
+            bottom_deg=np.zeros_like(bars_deg[:,0])
+
+            fig3, ax = plt.subplots()
+            fig3.suptitle(title_fig_deg)
+            ax.bar(np.arange((len(time_steps))),bars_deg[:,0],width=1.25,color='orange')
+            bottom_deg=bars_deg[:,0]
+            ax.bar(np.arange((len(time_steps))),bars_deg[:,1],bottom=bottom_deg,width=1.25,color='b')
+            bottom_deg = bottom_deg+bars_deg[:,1]
+            ax.bar(np.arange((len(time_steps))),bars_deg[:,2],bottom=bottom_deg,width=1.25,color='y')
+            bottom_deg = bottom_deg + bars_deg[:,2]
+            ax.bar(np.arange((len(time_steps))),bars_deg[:,3],bottom=bottom_deg,width=1.25,color='royalblue')
+            bottom_deg = bottom_deg+bars_deg[:,3]
+            ax.bar(np.arange((len(time_steps))),bars_deg[:,4],bottom=bottom_deg,width=1.25,color='saddlebrown')
+            
+            ax.legend(['vol','deg_w', 'deg_s', 'adv', 'sed_burial'])
+            ax.set_ylabel('percentage (%)')
+            ax.axes.get_xaxis().set_ticklabels(np.round(ax.axes.get_xticks() * time_conversion_factor))
+            ax.set_xlabel('time (' + time_unit + ')')
+
+            plt.savefig(file_out_path+"/"+sim_name+"-degrad"+".png", bbox_inches="tight", dpi=300)
             print("save figures to ", file_out_path)
+
             if check_mass is True:
                 print("mass_vol extracted")
                 print(mass_volatilized.to_numpy()[-1])
