@@ -151,7 +151,7 @@ class ChemicalDrift(OceanDrift):
                 'min': 0, 'max': 100, 'units': 'm',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:doc_concentration_half_depth': {'type': 'float', 'default': 1000, # TODO: check better
-                'min': 0, 'max': 1000, 'units': 'm',                                     # Vertical conc drops more slowly slower than for SPM
+                'min': 0, 'max': 1200, 'units': 'm',                                     # Vertical conc drops more slowly slower than for SPM
                 'level': CONFIG_LEVEL_ADVANCED, 'description': ''},                # example: 10.3389/fmars.2017.00436. lower limit around 40 umol/L
             'chemical:particle_diameter_uncertainty': {'type': 'float', 'default': 1e-7,
                 'min': 0, 'max': 100e-6, 'units': 'm',
@@ -284,7 +284,7 @@ class ChemicalDrift(OceanDrift):
                 'min': None, 'max': None, 'units': 'C',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Vapour pressure ref temp'},
             'chemical:transformations:DeltaH_Vpress': {'type': 'float', 'default': 55925.,   # Naphthalene
-                'min': -100000., 'max': 115000., 'units': 'J/mol',
+                'min': -100000., 'max': 150000., 'units': 'J/mol',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Enthalpy of volatilization'},
             # solubility
             'chemical:transformations:Solub': {'type': 'float', 'default': 31.4,            # Naphthalene
@@ -4622,7 +4622,7 @@ class ChemicalDrift(OceanDrift):
             mass_volatilized_adv = (np.sum((mass_v[0])* adv_out,1)*mass_conversion_factor)
             mass_degraded_w_adv = (np.sum(mass_d_W[0]* adv_out,1)*mass_conversion_factor)
             mass_degraded_s_adv = (np.sum(mass_d_S[0]* adv_out,1)*mass_conversion_factor)
-            # Mass removed from the system until the and of each timestep
+            # Mass removed from the system until the end of each timestep
             mass_removed = (mass_volatilized - mass_volatilized_adv) + \
                            (mass_degraded_w - mass_degraded_w_adv) +\
                            (mass_degraded_s - mass_degraded_s_adv) + \
@@ -4654,7 +4654,7 @@ class ChemicalDrift(OceanDrift):
                 'mass_removed'+ "-["+ mass_unit +"]": mass_removed,
                 'mass_vol_adv'+ "-["+ mass_unit +"]": mass_volatilized_adv,
                 'mass_degr_wat_adv'+ "-["+ mass_unit +"]": mass_degraded_w_adv,
-                'mass_degr_sed': mass_degraded_s_adv
+                'mass_degr_sed_adv'+ "-["+ mass_unit +"]": mass_degraded_s_adv
                 }).astype(np.float64)
 
             mass_fin_df = pd.concat([mass_by_specie_df, mass_df], axis=1)
@@ -4734,11 +4734,14 @@ class ChemicalDrift(OceanDrift):
             ax3.set_ylabel('degraded mass'+ " ["+ mass_unit +"]")
             ax3.legend(['degr. total','degr. in sed','degr. in wat'],prop={'size': 8})
 
-            ax4.plot(time_steps, mass_adv_out_cumulative, 'm')
             ax4.plot(time_steps, mass_adv_out, 'lime')
+            if deactivate_coords is False:
+                ax4.plot(time_steps, mass_adv_out_cumulative, 'm')
+                ax4.legend(['adv. out cumulative','adv. out timestep'],prop={'size': 8})
+            else:
+                ax4.legend(['adv. out timestep'],prop={'size': 8})
             ax4.set_xlabel(xlabel)
             ax4.set_ylabel('advected out mass' + " ["+ mass_unit +"]")
-            ax4.legend(['adv. out cumulative','adv. out timestep'],prop={'size': 8})
 
             ax5.plot(time_steps, mass_volatilized, 'orange')
             ax5.set_xlabel(xlabel)
@@ -4882,3 +4885,127 @@ class ChemicalDrift(OceanDrift):
                 print("mass emitted check")
                 print((mass_active + mass_inactive)+ (degraded_active + degraded_inactive)+ (vol_inactive + vol_active))
                 print("####")
+                
+    def sum_summary_timeseries(ts_file_path,
+                               sim_name = None):
+
+        import pandas as pd
+        import os
+
+        # list of timeseries filenames
+        ts_file_name_ls = []
+        for filename in os.listdir(ts_file_path):
+            if filename.endswith("_extracted_timeseries.csv"):
+                ts_file_name_ls.append(filename)
+        # list of timeseries Pandas Dataframe imported
+
+        if sim_name is None:
+            sim_name = ts_file_name_ls[0][:-3]
+        csv_file_name_fin = sim_name + "_extracted_sum_timeseries.csv"
+
+        mass_fin_df_ls = []
+        for csv_file_name in ts_file_name_ls:
+            df = pd.read_csv(ts_file_path + csv_file_name).fillna(0)
+            # Correction for naming mistake. to be removed
+            if any(name == "mass_degr_sed" for name in df.columns):
+                df = df.rename(columns={"mass_degr_sed":"mass_degr_sed_adv-[g]"})
+            mass_fin_df_ls.append(df)
+
+        check_time_conv_factor = []
+        check_mass_conv_factor = []
+        for df_mass in mass_fin_df_ls:
+            check_time_conv_factor.append(df_mass.loc[0, ('convertion_factors-[time_mass]')])
+            check_mass_conv_factor.append(df_mass.loc[1, ('convertion_factors-[time_mass]')])
+
+        check_time_conversion_factor = all(element == check_time_conv_factor[0] for element in check_time_conv_factor)
+        check_mass_conversion_factor = all(element == check_mass_conv_factor[0] for element in check_mass_conv_factor)
+
+        if (check_time_conversion_factor and check_mass_conversion_factor) is False:
+            raise ValueError("time/mass_conversion_factor is not equal for all extracted timeseries")
+
+        time_conv_factor = df_mass.loc[0, ('convertion_factors-[time_mass]')]
+        mass_conv_factor = df_mass.loc[1, ('convertion_factors-[time_mass]')]
+
+        # Merge pd.Dataframes and sort by time
+        merged_df = pd.concat(mass_fin_df_ls, axis = 0)
+        merged_df.reset_index(drop = True, inplace = True)
+        merged_df["date_of_timestep"] = pd.to_datetime(merged_df["date_of_timestep"])
+        merged_df = merged_df.sort_values(by = ["date_of_timestep"])
+        # Sum rows of the same timestep
+        merged_df = pd.DataFrame(merged_df.groupby("date_of_timestep").sum())
+        merged_df.insert(0,('date_of_timestep'), merged_df.index)
+        merged_df["date_of_timestep"] = merged_df.index
+
+        # Reconstruct ["date_of_timestep"] column
+        time_start = (pd.to_datetime(merged_df["date_of_timestep"][0])).to_pydatetime()
+        time_delta_ls = []
+        for time_ind in range(1, len(merged_df["date_of_timestep"])):
+            time_delta_ls.append(merged_df["date_of_timestep"][time_ind] - time_start)
+
+        list_dates_fin = []
+        list_dates_fin.append(time_start)
+        for time_ind in time_delta_ls:
+            list_dates_fin.append((time_start) + time_ind)
+        merged_df["date_of_timestep"] = (list_dates_fin)
+
+        # Reconstruct ["time-[]"] column
+        new_time  = time_conv_factor * (range(0, len(merged_df["date_of_timestep"])))
+        time_col = [col for col in merged_df.columns if "time-[" in col]
+        merged_df.loc[:, time_col] = new_time
+        merged_df.reset_index(drop = True, inplace = True)
+        
+        def find_col_index(col_name, data_frame = merged_df):
+            return [col for col in data_frame.columns if col.startswith(col_name)]
+
+        col_index_dict = {
+            "dissolved": find_col_index(col_name = "dissolved-["),
+            "DOC": find_col_index(col_name = "DOC-["),
+            "SPM": find_col_index(col_name = "SPM-["),
+            "sed_rev": find_col_index(col_name = "sed_rev-["),
+            "sed_buried": find_col_index(col_name = "sed_buried-["),
+            "mass_wat": find_col_index(col_name = "mass_wat-["),
+            "mass_sed_rev": find_col_index(col_name = "mass_sed_rev-["),
+            "mass_sed_buried": find_col_index(col_name = "mass_sed_buried-["),
+            "mass_current": find_col_index(col_name = "mass_current-["),
+            "mass_emitted": find_col_index(col_name = "mass_emitted-["),
+            "mass_degr_tot": find_col_index(col_name = "mass_degr_tot-["),
+            "mass_degr_wat": find_col_index(col_name = "mass_degr_wat-["),
+            "mass_degr_sed": find_col_index(col_name = "mass_degr_sed-["),
+            "mass_vol": find_col_index(col_name = "mass_vol-["),
+            "adv_out_ts": find_col_index(col_name = "adv_out_ts-["),
+            "adv_out_cumul": find_col_index(col_name = "adv_out_cumul-["),
+            "perc_vol": find_col_index(col_name = "perc_vol-["),
+            "perc_deg_w": find_col_index(col_name = "perc_deg_w-["),
+            "perc_deg_s": find_col_index(col_name = "perc_deg_s-["),
+            "perc_adv": find_col_index(col_name = "perc_adv-["),
+            "perc_sed_buried": find_col_index(col_name = "perc_sed_buried-["),
+            "mass_removed": find_col_index(col_name = "mass_removed-["),
+            "mass_vol_adv": find_col_index(col_name = "mass_vol_adv-["),
+            "mass_degr_wat_adv": find_col_index(col_name = "mass_degr_wat_adv-["),
+            "mass_degr_sed_adv": find_col_index(col_name = "mass_degr_sed_adv-[")}
+
+        mass_removed = np.array(merged_df.loc[:, col_index_dict["mass_removed"]])
+        mass_volatilized = np.array(merged_df.loc[:, col_index_dict["mass_vol"]])
+        mass_volatilized_adv = np.array(merged_df.loc[:, col_index_dict["mass_vol_adv"]])
+        mass_degraded_w = np.array(merged_df.loc[:, col_index_dict["mass_degr_wat"]])
+        mass_degraded_w_adv = np.array(merged_df.loc[:, col_index_dict["mass_degr_wat_adv"]])
+        mass_degraded_s = np.array(merged_df.loc[:, col_index_dict["mass_degr_sed"]])
+        mass_degraded_s_adv = np.array(merged_df.loc[:, col_index_dict["mass_degr_sed_adv"]])
+        mass_adv_out_cumulative = np.array(merged_df.loc[:, col_index_dict["adv_out_cumul"]])
+        mass_sed_buried = np.array(merged_df.loc[:, col_index_dict["mass_sed_buried"]])
+        
+        # Contribtion of each mechanism to the elimination of the chemical in the simulation
+        perc_volatilized = ((mass_volatilized - mass_volatilized_adv)/mass_removed)*100
+        perc_degraded_w = ((mass_degraded_w - mass_degraded_w_adv)/mass_removed)*100
+        perc_degraded_s = ((mass_degraded_s - mass_degraded_s_adv)/mass_removed)*100
+        perc_adv = ((mass_adv_out_cumulative)/mass_removed)*100
+        perc_sed_buried = ((mass_sed_buried)/mass_removed)*100
+
+        merged_df[col_index_dict["perc_vol"]] = perc_volatilized 
+        merged_df[col_index_dict["perc_deg_w"]] = perc_degraded_w
+        merged_df[col_index_dict["perc_deg_s"]] = perc_degraded_s
+        merged_df[col_index_dict["perc_adv"]] = perc_adv
+        merged_df[col_index_dict["perc_sed_buried"]] = perc_sed_buried
+        
+        print("saved sum file to ", ts_file_path + csv_file_name_fin)
+        merged_df.to_csv(ts_file_path + csv_file_name_fin)
