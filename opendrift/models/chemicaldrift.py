@@ -4404,8 +4404,9 @@ class ChemicalDrift(OceanDrift):
             import geopandas as gpd
             from shapely.geometry import Point
 
-        if timeseries_file_path.endswith(".csv"):
-            csv_file_name = ""
+        if timeseries_file_path is not None:
+            if timeseries_file_path.endswith(".csv"):
+                csv_file_name = ""
         else:
             csv_file_name = sim_name + "_extracted_timeseries.csv"
 
