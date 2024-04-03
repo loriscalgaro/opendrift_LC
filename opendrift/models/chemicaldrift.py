@@ -4328,7 +4328,8 @@ class ChemicalDrift(OceanDrift):
             lon_max = None,
             lat_min = None,
             lat_max = None,
-            check_mass = False):
+            check_mass = False,
+            deactivate_coords = False):
         '''
         Extract, plot to .png, and export to a .csv file aggregated mass of all elements at each timestep of the simulation
         Plot directly data from a produced .cvs file.
@@ -4355,6 +4356,7 @@ class ChemicalDrift(OceanDrift):
         lon_max:                      float32, max longitude of domain to consider advection out of the simulation domain
         lat_min:                      float32, min latitude of domain to consider advection out of the simulation domain
         lat_max:                      float32, max latitude of domain to consider advection out of the simulation domain
+        deactivate_coords:            boolean, indicate if deactivate_north_of/south_of/_east_of/_west_of were used in simulation when plotting from .csv file
 
         Returns a Pandas Dataframe:
             ----
@@ -4389,7 +4391,7 @@ class ChemicalDrift(OceanDrift):
             the ou and vo velocity fields (i.e. deactivated) AND out of the shp/ lat-lon specified.
             Comment "adv_out = out_of_bounds & missing_var" to consider only shp/ lat-lon limits 
             but this  will double count elements moving along the border at different timesteps.
-            If shp/lat-lon limits are not the same area covered by ou and vo velocity fields mass
+            IF shp/lat-lon limits are not the same area covered by ou and vo velocity fields mass
             advected may be overestimated.
         --- IF deactivate_north_of/south_of/_east_of/_west_of ARE USED IN SIMULATION only elements 
             deactivated with "outside" as reason will be counted
@@ -4402,7 +4404,10 @@ class ChemicalDrift(OceanDrift):
             import geopandas as gpd
             from shapely.geometry import Point
 
-        csv_file_name = sim_name + "_extracted_timeseries.csv"
+        if timeseries_file_path.endswith(".csv"):
+            csv_file_name = ""
+        else:
+            csv_file_name = sim_name + "_extracted_timeseries.csv"
 
         if load_timeseries_from_file is False:
             # Init species and transfer rates 
@@ -4412,7 +4417,7 @@ class ChemicalDrift(OceanDrift):
             self.init_transfer_rates()
             if self.mode != opendrift.models.basemodel.Mode.Result:
                 self.mode = opendrift.models.basemodel.Mode.Result
-                
+
             # Check if deactivate_N/S/E/W_of where specified
             deactivate_coords = []
             deactivate_coords.append(self.get_config('drift:deactivate_north_of'))
@@ -4567,7 +4572,7 @@ class ChemicalDrift(OceanDrift):
             start_date = pd.Timestamp(self.start_time.year, 
                                       self.start_time.month, 
                                       self.start_time.day) 
-            time_date_serie = pd.date_range(start=start_date, periods=steps, freq=self.time_step)
+            time_date_serie = pd.date_range(start=start_date, periods=steps, freq=self.time_step_output)
             mass_by_specie_df.insert(0,('date_of_timestep'), time_date_serie)
             del mass_by_specie
 
@@ -4665,7 +4670,7 @@ class ChemicalDrift(OceanDrift):
             mass_fin_df.to_csv(file_out_path + csv_file_name)
 
         elif load_timeseries_from_file is True and timeseries_file_path is not None:
-            mass_fin_df = pd.read_csv(file_out_path + csv_file_name)
+            mass_fin_df = pd.read_csv(timeseries_file_path + csv_file_name)
         else:
             raise ValueError("timeseries_file_path must be specified")
 
@@ -4811,7 +4816,7 @@ class ChemicalDrift(OceanDrift):
             ax.set_xlabel('time (' + time_unit + ')')
 
             plt.savefig(file_out_path+"/"+sim_name+"-mass_specie"+".png", bbox_inches="tight", dpi=300)
-            
+
             # Plot degradatin mecanisms during simulations
             bars_deg=np.zeros((len(time_steps),5))
             for i in range(0, len(time_steps)):
@@ -4855,7 +4860,7 @@ class ChemicalDrift(OceanDrift):
                 print("mass_vol active + inactive")
                 print(vol_inactive + vol_active)
                 print("####")
-    
+
                 print("mass_degraded extracted")
                 print(mass_degraded.to_numpy()[-1])
                 degraded_active = (sum(self.elements.mass_degraded)*mass_conversion_factor)
@@ -4867,7 +4872,7 @@ class ChemicalDrift(OceanDrift):
                 print("mass_degraded active + inactive")
                 print(degraded_active + degraded_inactive)
                 print("####")
-    
+
                 print("mass_tot_ts extracted")
                 print(mass_tot_timestep[-1].sum())
                 mass_active = (sum(self.elements.mass)*mass_conversion_factor)
@@ -4879,23 +4884,39 @@ class ChemicalDrift(OceanDrift):
                 print("mass_tot_ts active + inactive")
                 print(mass_active + mass_inactive)
                 print("####")
-    
+
                 print("mass emitted extracted")
                 print(mass_emitted.to_numpy()[-1])
                 print("mass emitted check")
                 print((mass_active + mass_inactive)+ (degraded_active + degraded_inactive)+ (vol_inactive + vol_active))
                 print("####")
-                
+
     def sum_summary_timeseries(ts_file_path,
-                               sim_name = None):
+                               sim_name = None,
+                               csv_suffix = None):
+        '''
+        Sum all .csv files produced by extract_summary_timeseries with the same suffix present in a folder and return a 
+        .csv file
+
+        Parameters
+        ----------
+        timeseries_file_path:         string, folder path .csv files produced by extract_summary_timeseries. Must end with /
+        sim_name:                     string, name of simulation that will be included in sum .csv file name
+        csv_suffix:                   string, suffix of .csv file names that will be summed
+
+        Returns a Pandas Dataframe eqaul to extract_summary_timeseries
+        '''
 
         import pandas as pd
         import os
 
+        if csv_suffix is None:
+            csv_suffix = "_extracted_timeseries.csv"
+
         # list of timeseries filenames
         ts_file_name_ls = []
         for filename in os.listdir(ts_file_path):
-            if filename.endswith("_extracted_timeseries.csv"):
+            if filename.endswith(csv_suffix):
                 ts_file_name_ls.append(filename)
         # list of timeseries Pandas Dataframe imported
 
@@ -4953,7 +4974,11 @@ class ChemicalDrift(OceanDrift):
         time_col = [col for col in merged_df.columns if "time-[" in col]
         merged_df.loc[:, time_col] = new_time
         merged_df.reset_index(drop = True, inplace = True)
-        
+
+        # Correct time/mass convertion factors
+        merged_df.loc[0, ('convertion_factors-[time_mass]')] = time_conv_factor
+        merged_df.loc[1, ('convertion_factors-[time_mass]')] = mass_conv_factor
+
         def find_col_index(col_name, data_frame = merged_df):
             return [col for col in data_frame.columns if col.startswith(col_name)]
 
@@ -4993,7 +5018,7 @@ class ChemicalDrift(OceanDrift):
         mass_degraded_s_adv = np.array(merged_df.loc[:, col_index_dict["mass_degr_sed_adv"]])
         mass_adv_out_cumulative = np.array(merged_df.loc[:, col_index_dict["adv_out_cumul"]])
         mass_sed_buried = np.array(merged_df.loc[:, col_index_dict["mass_sed_buried"]])
-        
+
         # Contribtion of each mechanism to the elimination of the chemical in the simulation
         perc_volatilized = ((mass_volatilized - mass_volatilized_adv)/mass_removed)*100
         perc_degraded_w = ((mass_degraded_w - mass_degraded_w_adv)/mass_removed)*100
@@ -5001,11 +5026,11 @@ class ChemicalDrift(OceanDrift):
         perc_adv = ((mass_adv_out_cumulative)/mass_removed)*100
         perc_sed_buried = ((mass_sed_buried)/mass_removed)*100
 
-        merged_df[col_index_dict["perc_vol"]] = perc_volatilized 
+        merged_df[col_index_dict["perc_vol"]] = perc_volatilized
         merged_df[col_index_dict["perc_deg_w"]] = perc_degraded_w
         merged_df[col_index_dict["perc_deg_s"]] = perc_degraded_s
         merged_df[col_index_dict["perc_adv"]] = perc_adv
         merged_df[col_index_dict["perc_sed_buried"]] = perc_sed_buried
-        
+
         print("saved sum file to ", ts_file_path + csv_file_name_fin)
         merged_df.to_csv(ts_file_path + csv_file_name_fin)
