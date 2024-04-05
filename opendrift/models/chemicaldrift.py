@@ -4378,6 +4378,8 @@ class ChemicalDrift(OceanDrift):
             ---
         mass_emitted:           mass emitted into the simulation until the end of each timestep
             ---
+        mass_removed:           mass removed from the system until the end of each timestep
+            ---
         [does not consider the specie of each element at each timestep]
         mass_degr:              mass that has been degraded up to the end of each timestep
         mass_degr_sed:          mass that has been degraded in sediments up to the end of each timestep
@@ -4746,7 +4748,7 @@ class ChemicalDrift(OceanDrift):
                 ax4.plot(time_steps, mass_adv_out_cumulative, 'm')
                 ax4.legend(['adv. out cumulative','adv. out timestep'],prop={'size': 8})
             else:
-                ax4.legend(['adv. out timestep'],prop={'size': 8})
+                ax4.legend(['adv. out'],prop={'size': 8})
             ax4.set_xlabel(xlabel)
             ax4.set_ylabel('advected out mass' + " ["+ mass_unit +"]")
 
@@ -4892,124 +4894,70 @@ class ChemicalDrift(OceanDrift):
                 print("mass emitted check")
                 print((mass_active + mass_inactive)+ (degraded_active + degraded_inactive)+ (vol_inactive + vol_active))
                 print("####")
-
-    def sum_summary_timeseries(ts_file_path,
-                               sim_name = None,
-                               csv_suffix = None):
+                
+    @staticmethod
+    def _find_date_row(data_frame,
+                      specified_date):
         '''
-        Sum all .csv files produced by extract_summary_timeseries with the same suffix present in a folder and return a 
-        .csv file
+        Select the row of each dataframe nearest to the specified date. If the date is before the first 
+        date in the dataframe returns a row of 0
 
         Parameters
         ----------
-        timeseries_file_path:         string, folder path .csv files produced by extract_summary_timeseries. Must end with /
-        sim_name:                     string, name of simulation that will be included in sum .csv file name
-        csv_suffix:                   string, suffix of .csv file names that will be summed
+        data_frame:            pandas dataframe
+        specified_date:        Timestamp('%Y-%m-%d %H:%M:%S')
+        '''
+        import pandas as pd
 
-        Returns a Pandas Dataframe eqaul to extract_summary_timeseries
+        date_column = pd.to_datetime(data_frame['date_of_timestep'], format='%Y-%m-%d %H:%M:%S')
+        # 'date_of_timestep' column must be ordered increasingly
+        if specified_date < date_column.min():
+            date_row = pd.DataFrame([[0] * len(data_frame.columns)], columns=data_frame.columns)
+        else:
+            row_index = (date_column <= specified_date)[::-1].idxmax()
+            date_row =data_frame.loc[[row_index]]
+        return date_row
+
+    @staticmethod
+    def _correct_percentages_ts(merged_df):
+        '''
+        Recalculate percentages of chemical eliminated by each precess considered
+
+        Parameters
+        ----------
+        merged_df : pandas dataframe within sum_summary_timeseries function
+
         '''
 
-        import pandas as pd
-        import os
-
-        if csv_suffix is None:
-            csv_suffix = "_extracted_timeseries.csv"
-
-        # list of timeseries filenames
-        ts_file_name_ls = []
-        for filename in os.listdir(ts_file_path):
-            if filename.endswith(csv_suffix):
-                ts_file_name_ls.append(filename)
-        # list of timeseries Pandas Dataframe imported
-
-        if sim_name is None:
-            sim_name = ts_file_name_ls[0][:-3]
-        csv_file_name_fin = sim_name + "_extracted_sum_timeseries.csv"
-
-        mass_fin_df_ls = []
-        for csv_file_name in ts_file_name_ls:
-            df = pd.read_csv(ts_file_path + csv_file_name).fillna(0)
-            # Correction for naming mistake. to be removed
-            if any(name == "mass_degr_sed" for name in df.columns):
-                df = df.rename(columns={"mass_degr_sed":"mass_degr_sed_adv-[g]"})
-            mass_fin_df_ls.append(df)
-
-        check_time_conv_factor = []
-        check_mass_conv_factor = []
-        for df_mass in mass_fin_df_ls:
-            check_time_conv_factor.append(df_mass.loc[0, ('convertion_factors-[time_mass]')])
-            check_mass_conv_factor.append(df_mass.loc[1, ('convertion_factors-[time_mass]')])
-
-        check_time_conversion_factor = all(element == check_time_conv_factor[0] for element in check_time_conv_factor)
-        check_mass_conversion_factor = all(element == check_mass_conv_factor[0] for element in check_mass_conv_factor)
-
-        if (check_time_conversion_factor and check_mass_conversion_factor) is False:
-            raise ValueError("time/mass_conversion_factor is not equal for all extracted timeseries")
-
-        time_conv_factor = df_mass.loc[0, ('convertion_factors-[time_mass]')]
-        mass_conv_factor = df_mass.loc[1, ('convertion_factors-[time_mass]')]
-
-        # Merge pd.Dataframes and sort by time
-        merged_df = pd.concat(mass_fin_df_ls, axis = 0)
-        merged_df.reset_index(drop = True, inplace = True)
-        merged_df["date_of_timestep"] = pd.to_datetime(merged_df["date_of_timestep"])
-        merged_df = merged_df.sort_values(by = ["date_of_timestep"])
-        # Sum rows of the same timestep
-        merged_df = pd.DataFrame(merged_df.groupby("date_of_timestep").sum())
-        merged_df.insert(0,('date_of_timestep'), merged_df.index)
-        merged_df["date_of_timestep"] = merged_df.index
-
-        # Reconstruct ["date_of_timestep"] column
-        time_start = (pd.to_datetime(merged_df["date_of_timestep"][0])).to_pydatetime()
-        time_delta_ls = []
-        for time_ind in range(1, len(merged_df["date_of_timestep"])):
-            time_delta_ls.append(merged_df["date_of_timestep"][time_ind] - time_start)
-
-        list_dates_fin = []
-        list_dates_fin.append(time_start)
-        for time_ind in time_delta_ls:
-            list_dates_fin.append((time_start) + time_ind)
-        merged_df["date_of_timestep"] = (list_dates_fin)
-
-        # Reconstruct ["time-[]"] column
-        new_time  = time_conv_factor * (range(0, len(merged_df["date_of_timestep"])))
-        time_col = [col for col in merged_df.columns if "time-[" in col]
-        merged_df.loc[:, time_col] = new_time
-        merged_df.reset_index(drop = True, inplace = True)
-
-        # Correct time/mass convertion factors
-        merged_df.loc[0, ('convertion_factors-[time_mass]')] = time_conv_factor
-        merged_df.loc[1, ('convertion_factors-[time_mass]')] = mass_conv_factor
-
-        def find_col_index(col_name, data_frame = merged_df):
+        def find_col_name(col_name, data_frame = merged_df):
             return [col for col in data_frame.columns if col.startswith(col_name)]
 
         col_index_dict = {
-            "dissolved": find_col_index(col_name = "dissolved-["),
-            "DOC": find_col_index(col_name = "DOC-["),
-            "SPM": find_col_index(col_name = "SPM-["),
-            "sed_rev": find_col_index(col_name = "sed_rev-["),
-            "sed_buried": find_col_index(col_name = "sed_buried-["),
-            "mass_wat": find_col_index(col_name = "mass_wat-["),
-            "mass_sed_rev": find_col_index(col_name = "mass_sed_rev-["),
-            "mass_sed_buried": find_col_index(col_name = "mass_sed_buried-["),
-            "mass_current": find_col_index(col_name = "mass_current-["),
-            "mass_emitted": find_col_index(col_name = "mass_emitted-["),
-            "mass_degr_tot": find_col_index(col_name = "mass_degr_tot-["),
-            "mass_degr_wat": find_col_index(col_name = "mass_degr_wat-["),
-            "mass_degr_sed": find_col_index(col_name = "mass_degr_sed-["),
-            "mass_vol": find_col_index(col_name = "mass_vol-["),
-            "adv_out_ts": find_col_index(col_name = "adv_out_ts-["),
-            "adv_out_cumul": find_col_index(col_name = "adv_out_cumul-["),
-            "perc_vol": find_col_index(col_name = "perc_vol-["),
-            "perc_deg_w": find_col_index(col_name = "perc_deg_w-["),
-            "perc_deg_s": find_col_index(col_name = "perc_deg_s-["),
-            "perc_adv": find_col_index(col_name = "perc_adv-["),
-            "perc_sed_buried": find_col_index(col_name = "perc_sed_buried-["),
-            "mass_removed": find_col_index(col_name = "mass_removed-["),
-            "mass_vol_adv": find_col_index(col_name = "mass_vol_adv-["),
-            "mass_degr_wat_adv": find_col_index(col_name = "mass_degr_wat_adv-["),
-            "mass_degr_sed_adv": find_col_index(col_name = "mass_degr_sed_adv-[")}
+            "dissolved": find_col_name(col_name = "dissolved-["),
+            "DOC": find_col_name(col_name = "DOC-["),
+            "SPM": find_col_name(col_name = "SPM-["),
+            "sed_rev": find_col_name(col_name = "sed_rev-["),
+            "sed_buried": find_col_name(col_name = "sed_buried-["),
+            "mass_wat": find_col_name(col_name = "mass_wat-["),
+            "mass_sed_rev": find_col_name(col_name = "mass_sed_rev-["),
+            "mass_sed_buried": find_col_name(col_name = "mass_sed_buried-["),
+            "mass_current": find_col_name(col_name = "mass_current-["),
+            "mass_emitted": find_col_name(col_name = "mass_emitted-["),
+            "mass_degr_tot": find_col_name(col_name = "mass_degr_tot-["),
+            "mass_degr_wat": find_col_name(col_name = "mass_degr_wat-["),
+            "mass_degr_sed": find_col_name(col_name = "mass_degr_sed-["),
+            "mass_vol": find_col_name(col_name = "mass_vol-["),
+            "adv_out_ts": find_col_name(col_name = "adv_out_ts-["),
+            "adv_out_cumul": find_col_name(col_name = "adv_out_cumul-["),
+            "perc_vol": find_col_name(col_name = "perc_vol-["),
+            "perc_deg_w": find_col_name(col_name = "perc_deg_w-["),
+            "perc_deg_s": find_col_name(col_name = "perc_deg_s-["),
+            "perc_adv": find_col_name(col_name = "perc_adv-["),
+            "perc_sed_buried": find_col_name(col_name = "perc_sed_buried-["),
+            "mass_removed": find_col_name(col_name = "mass_removed-["),
+            "mass_vol_adv": find_col_name(col_name = "mass_vol_adv-["),
+            "mass_degr_wat_adv": find_col_name(col_name = "mass_degr_wat_adv-["),
+            "mass_degr_sed_adv": find_col_name(col_name = "mass_degr_sed_adv-[")}
 
         mass_removed = np.array(merged_df.loc[:, col_index_dict["mass_removed"]])
         mass_volatilized = np.array(merged_df.loc[:, col_index_dict["mass_vol"]])
@@ -5033,6 +4981,217 @@ class ChemicalDrift(OceanDrift):
         merged_df[col_index_dict["perc_deg_s"]] = perc_degraded_s
         merged_df[col_index_dict["perc_adv"]] = perc_adv
         merged_df[col_index_dict["perc_sed_buried"]] = perc_sed_buried
+        return merged_df
+    
+    @staticmethod
+    def change_datetime_format(datetime_str, new_format):
+        '''
+        Change format of datetime string to a specified format
 
+        Parameters
+        ----------
+        datetime_str: str, datetime string to be reformatted
+        new_format:  str, specified datetime format
+        '''
+        possible_formats = ["%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y/%m/%d %H", "%Y/%m/%d", 
+                            "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d %H", "%Y-%m-%d",
+                            "%d-%m-%Y %H:%M:%S", "%d-%m-%Y %H:%M", "%d-%m-%Y %H", "%d-%m-%Y",
+                            "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y %H", "%d/%m/%Y",
+                            "%m-%d-%Y %H:%M:%S", "%m-%d-%Y %H:%M", "%m-%d-%Y %H", "%m-%d%Y",
+                            "%m/%d/%Y %H:%M:%S", "%m/%d/%Y %H:%M", "%m/%d/%Y %H", "%m/%d/%Y"
+                            ]
+        for fmt in possible_formats:
+            try:
+                # Attempt to parse the datetime string
+                dt = datetime.strptime(datetime_str, fmt)
+                # If parsing is successful, format the datetime object
+                formatted_datetime = dt.strftime(new_format)
+                # Return the formatted datetime string
+                return formatted_datetime
+            except ValueError:
+                pass  # Continue to the next format if parsing fails
+        # Return None if parsing fails for all formats
+        raise ValueError("Unknown format of date_of_timestep")
+
+    def sum_summary_timeseries(self,
+                               ts_file_path,
+                               sim_name = None,
+                               csv_suffix = None,
+                               start_date = None,
+                               end_date = None,
+                               freq_time = None):
+        '''
+        Sum all .csv files produced by extract_summary_timeseries with the same suffix present in a folder and return a 
+        .csv file
+
+        Parameters
+        ----------
+        timeseries_file_path:         string, folder path .csv files produced by extract_summary_timeseries. Must end with /
+        sim_name:                     string, name of simulation that will be included in sum .csv file name
+        csv_suffix:                   string, suffix of .csv file names that will be summed
+        start_date:                   pd.Datetime, start of reconstructed timeseries when .csv have different timesteps
+                                      (e.g., ("2018-01-01 00:00:00", format = '%Y-%m-%d %H:%M:%S'))
+        end_date:                     pd.Datetime, end of reconstructed timeseries when .csv have different timesteps
+        freq_time:                    string, frequency of reconstructed timeseries when .csv have different timesteps expressed as hours (e.g., "6H")
+                                      
+                                      
+        Returns a Pandas Dataframe equal to extract_summary_timeseries
+        '''
+
+        import pandas as pd
+        from datetime import datetime
+        import os
+
+        if csv_suffix is None:
+            csv_suffix = "_extracted_timeseries.csv"
+
+        # list of timeseries filenames
+        ts_file_name_ls = []
+        for filename in os.listdir(ts_file_path):
+            if filename.endswith(csv_suffix):
+                ts_file_name_ls.append(filename)
+        # list of timeseries Pandas Dataframe imported
+
+        if sim_name is None:
+            sim_name = ts_file_name_ls[0][:-3]
+        csv_file_name_fin = sim_name + "_extracted_sum_timeseries.csv"
+
+        mass_fin_df_ls = []
+        for csv_file_name in ts_file_name_ls:
+            df = pd.read_csv(ts_file_path + csv_file_name).fillna(0)
+            # Correction for naming mistake. to be removed
+            if any(name == "mass_degr_sed" for name in df.columns):
+                df = df.rename(columns={"mass_degr_sed":"mass_degr_sed_adv-[g]"})
+            if any("Unnamed" in column_name for column_name in df.columns):
+                df = df.filter(regex='^(?!Unnamed).*$')
+            mass_fin_df_ls.append(df)
+
+        check_time_conv_factor = []
+        check_mass_conv_factor = []
+        check_time_step = []
+        for df_mass in mass_fin_df_ls:
+            check_time_conv_factor.append(df_mass.loc[0, ('convertion_factors-[time_mass]')])
+            check_mass_conv_factor.append(df_mass.loc[1, ('convertion_factors-[time_mass]')])
+            time_col_ind = int(np.where(df_mass.columns.str.contains("time-"))[0])
+            check_time_step.append(df_mass.iloc[1, time_col_ind] - df_mass.iloc[0, time_col_ind])
+
+        check_time_conversion_factor = all(element == check_time_conv_factor[0] for element in check_time_conv_factor)
+        check_mass_conversion_factor = all(element == check_mass_conv_factor[0] for element in check_mass_conv_factor)
+        check_time_step = all(element == check_time_step[0] for element in check_time_step)
+
+        if check_time_step is True:
+            if (check_time_conversion_factor and check_mass_conversion_factor) is False:
+                raise ValueError("time/mass_conversion_factor is not equal for all extracted timeseries")
+            time_conv_factor = mass_fin_df_ls[0].loc[0, ('convertion_factors-[time_mass]')]
+            mass_conv_factor = mass_fin_df_ls[0].loc[1, ('convertion_factors-[time_mass]')]
+
+            # Merge pd.Dataframes and sort by time
+            merged_df = pd.concat(mass_fin_df_ls, axis = 0)
+            merged_df.reset_index(drop = True, inplace = True)
+            merged_df["date_of_timestep"] = pd.to_datetime(merged_df["date_of_timestep"])
+            merged_df = merged_df.sort_values(by = ["date_of_timestep"])
+            # Sum rows of the same timestep
+            merged_df = pd.DataFrame(merged_df.groupby("date_of_timestep").sum())
+            merged_df.insert(0,('date_of_timestep'), merged_df.index)
+            merged_df["date_of_timestep"] = merged_df.index
+
+            # Reconstruct ["date_of_timestep"] column
+            time_start = (pd.to_datetime(merged_df["date_of_timestep"][0])).to_pydatetime()
+            time_delta_ls = []
+            for time_ind in range(1, len(merged_df["date_of_timestep"])):
+                time_delta_ls.append(merged_df["date_of_timestep"][time_ind] - time_start)
+
+            list_dates_fin = []
+            list_dates_fin.append(time_start)
+            for time_ind in time_delta_ls:
+                list_dates_fin.append((time_start) + time_ind)
+            merged_df["date_of_timestep"] = (list_dates_fin)
+
+            # Reconstruct ["time-[]"] column
+            new_time  = time_conv_factor * (range(0, len(merged_df["date_of_timestep"])))
+            time_col = [col for col in merged_df.columns if "time-[" in col]
+            merged_df.loc[:, time_col] = new_time
+            merged_df.reset_index(drop = True, inplace = True)
+
+            # Correct time/mass convertion factors
+            merged_df.loc[0, ('convertion_factors-[time_mass]')] = time_conv_factor
+            merged_df.loc[1, ('convertion_factors-[time_mass]')] = mass_conv_factor
+            # Recalculate percentages
+            merged_df_fin = self._correct_percentages_ts(merged_df)
+
+        elif ((check_time_step is False) and (start_date is not None) and\
+            (end_date is not None) and (freq_time is not None)):
+
+            mass_conv_factor = mass_fin_df_ls[0].loc[1, ('convertion_factors-[time_mass]')]
+
+            # final row for each timestep that will be concatenated
+            ts_sum_ls = []
+            time_date_serie = pd.date_range(start=start_date, end = end_date, freq=freq_time)
+
+            # Check format of ['date_of_timestep']
+            for df_mass in mass_fin_df_ls:
+                date_of_timestep_ls = []
+                for element in df_mass['date_of_timestep']:
+                    date_of_timestep_ls.append(self.change_datetime_format(datetime_str = element,
+                                               new_format = "%Y-%m-%d %H:%M:%S"))
+                df_mass['date_of_timestep'] = date_of_timestep_ls
+
+            for time_step in time_date_serie:
+                # rows for each timestep
+                mass_row_ls = []
+                for df_mass in mass_fin_df_ls:
+                    # df_mass = mass_fin_df_ls[2]
+                    date_row = self._find_date_row(data_frame=df_mass,
+                                                specified_date = pd.to_datetime(time_step))
+                    mass_row_ls.append(date_row)
+                # Concatenate the row of each df and sum
+                concat_df = pd.concat(mass_row_ls)
+                concat_df['date_of_timestep'] = 0
+                concat_df['convertion_factors-[time_mass]'] = np.nan
+                concat_df_sum = concat_df.sum(axis=0)
+                concat_df_sum = pd.DataFrame(np.array(concat_df_sum)).T
+                concat_df_sum.columns = concat_df.columns
+                concat_df_sum.loc[0, 'date_of_timestep'] = time_step
+
+                ts_sum_ls.append(concat_df_sum)
+
+            # Concatenate all timesteps
+            mass_df_fin = pd.concat(ts_sum_ls)
+            # Correct time-[] column 
+            time_col_ind = int(np.where(mass_df_fin.columns.str.contains("time-"))[0])
+            time_unit = mass_df_fin.columns[time_col_ind][6:-1]
+
+            if time_unit=='seconds':
+                time_conversion_factor_ls = [(60*60*24), (1)]
+                time_conv_factor = pd.Timedelta(freq_time).seconds
+            if time_unit=='minutes':
+                time_conversion_factor_ls = [(60*24), (60)]
+                time_conv_factor = pd.Timedelta(freq_time).seconds / (60)
+            if time_unit=='hours':
+                time_conversion_factor_ls = [(24), (60*60)]
+                time_conv_factor = pd.Timedelta(freq_time).seconds / (60*60)
+            if time_unit=='days':
+                time_conversion_factor_ls = [(1), (60*60*24)]
+                time_conv_factor = pd.Timedelta(freq_time).seconds / (60*60*24)
+
+            time_series = mass_df_fin['date_of_timestep']
+            time_series_diff = np.array(time_series) - np.array(time_series.iloc[0])
+
+            time_unit_col_ls = []
+            for time_d in time_series_diff:
+                n_days = time_d.days*time_conversion_factor_ls[0]
+                n_seconds = time_d.seconds/time_conversion_factor_ls[1]
+                time_unit_col_ls.append(n_days + n_seconds)
+
+            time_unit_col = np.array(time_unit_col_ls)
+
+            mass_df_fin.iloc[:, time_col_ind] = time_unit_col
+            # Recalculate percentages
+            merged_df_fin = self._correct_percentages_ts(mass_df_fin)
+            merged_df_fin.loc[0, ('convertion_factors-[time_mass]')] = time_conv_factor
+            merged_df_fin.loc[1, ('convertion_factors-[time_mass]')] = mass_conv_factor
+        else:
+            raise ValueError("start_date, end_date, and freq_time must be specified")
+
+        merged_df_fin.to_csv(ts_file_path + csv_file_name_fin)
         print("saved sum file to ", ts_file_path + csv_file_name_fin)
-        merged_df.to_csv(ts_file_path + csv_file_name_fin)
