@@ -3555,6 +3555,7 @@ class ChemicalDrift(OceanDrift):
                       levels_colormap = None,
                       simmetrical_cmap = False,
                       scientific_colorbar = False,
+                      colorbar_title = None,
                       selected_depth = 0,
                       fig_format = ".jpg",
                       add_shp_to_figure = False,
@@ -3588,6 +3589,7 @@ class ChemicalDrift(OceanDrift):
         unit_measure:        string, (ug/m3) or (ug/kg d.w), between parenthesis
         levels_colormap:     list of float64, levels used for colorbar (e.g., [0., 1., 15.])
         selected_colormap:   e.g. plt.cm.Blues
+        colorbar_title:      string, title of colorbar
         simmetrical_cmap:    boolean,select if cmap is simmetrical to 0 (True) or not (False)
         scientific_colorbar: boolean,select if colorbar is written in scientific notation (True) or not (False)
         selected_depth:      int, depth selected if present. If no depth was selected when creating conc map, use 0
@@ -3654,15 +3656,22 @@ class ChemicalDrift(OceanDrift):
 
         if "concentration_avg_water" in Conc_Dataset.keys():
             Conc_DataArray = Conc_Dataset.concentration_avg_water
-            colorbar_title = "concentration_avg_water"
         elif "concentration_avg_sediments" in Conc_Dataset.keys():
             Conc_DataArray = Conc_Dataset.concentration_avg_sediments
-            colorbar_title = "concentration_avg_sediments"
         elif variable_name is not None:
             Conc_DataArray = Conc_Dataset[variable_name]
-            colorbar_title = variable_name
         else:
             raise ValueError("specified variable_name is not present in Conc_Dataset")
+
+        if colorbar_title is None:
+            if "concentration_avg_water" in Conc_Dataset.keys():
+                colorbar_title = "concentration_avg_water"
+            elif "concentration_avg_sediments" in Conc_Dataset.keys():
+                colorbar_title = "concentration_avg_sediments"
+            elif variable_name is not None:
+                colorbar_title = variable_name
+            else:
+                raise ValueError("colorbar_title or variable_name are not specified")
 
         if 'time' in Conc_DataArray.dims:
             Conc_DataArray = Conc_DataArray.where(((Conc_DataArray.time >= time_start) &
@@ -3727,9 +3736,11 @@ class ChemicalDrift(OceanDrift):
                 cax.yaxis.set_major_formatter(y_formatter)
 
                 if scientific_colorbar is True:
-                    plt.colorbar(ax2, cax=cax, format=ticker.FuncFormatter(fmt))
+                    cbar = plt.colorbar(ax2, cax=cax, format=ticker.FuncFormatter(fmt), label=colorbar_title)
                 else:
-                    plt.colorbar(ax2, cax=cax)
+                    cbar = plt.colorbar(ax2, cax=cax, label=colorbar_title)
+
+                cbar.set_label(colorbar_title, fontsize=cbar_label_font_size, labelpad = 20, fontweight ="bold")
 
                 fig.savefig(file_out_path + file_out_sub_folder+str(f"{timestep:03d}")+"_"+figure_file_name+fig_format)
                 plt.close()
