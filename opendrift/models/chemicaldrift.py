@@ -3646,6 +3646,12 @@ class ChemicalDrift(OceanDrift):
         if add_shp_to_figure:
             shp = gpd.read_file(shp_file_path)
 
+        if "longitude" not in Conc_Dataset.dims:
+            if 'lat' in Conc_Dataset.dims:
+                Conc_Dataset = Conc_Dataset.rename({'lat': 'latitude','lon': 'longitude'})
+            elif 'x' in Conc_Dataset.dims:
+                Conc_Dataset = Conc_Dataset.rename({'y': 'latitude','x': 'longitude'})
+
         if "concentration_avg_water" in Conc_Dataset.keys():
             Conc_DataArray = Conc_Dataset.concentration_avg_water
             colorbar_title = "concentration_avg_water"
@@ -3687,9 +3693,9 @@ class ChemicalDrift(OceanDrift):
 
                 fig, ax = plt.subplots(figsize = (len_fig,high_fig)) # Change here size of figure
                 shp.plot(ax = ax, color = shp_color, zorder = 10, edgecolor = 'black')
-                ax2 = Conc_DataArray_selected.plot.pcolormesh(ax = ax, 
+                ax2 = Conc_DataArray_selected.plot.pcolormesh( 
                                                         x = 'longitude', 
-                                                        y = 'latitude', 
+                                                        y = 'latitude',
                                                         cmap=selected_colormap,
                                                         robust = True,
                                                         vmin = vmin, vmax = vmax,
