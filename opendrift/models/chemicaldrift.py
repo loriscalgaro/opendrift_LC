@@ -107,9 +107,18 @@ class ChemicalDrift(OceanDrift):
         'ocean_mixed_layer_thickness': {'fallback': 50},
         'active_sediment_layer_thickness': {'fallback': 0.03}, # TODO - currently not used, redundant with 'chemical:sediment:mixing_depth'
         'doc': {'fallback': 0.0},
-        # Variables for dissociation
+        # Variables for dissociation and single process degradation
         'sea_water_ph_reported_on_total_scale':{'fallback': 8.1, 'profiles': True}, # water_pH from CMENS with standard name #
-        'pH_sediment':{'fallback': 6.9, 'profiles': False}, # supplied by the user, with pH_sediment as standard name #
+        'pH_sediment':{'fallback': 6.9, 'profiles': False}, # supplied by the user, with pH_sediment as standard name
+        'mole_concentration_of_dissolved_molecular_oxygen_in_sea_water':{'fallback': 7.25, 'profiles': True}, # in g/m3 or mg/L from CMENS with standard name
+        'mole_concentration_of_dissolved_inorganic_carbon_in_sea_water':{'fallback': 104, 'profiles': True}, # in concentration of carbon in the water (Conc_C) in mol/m3, nedded as ueq/L (conversion: 22.73 ueq/mg_C, MW_C = 12.01 g/mol. # DONE
+        # From concentration of carbon in the water (Conc_C) in mol/m3: Conc_CO2 = ((Conc_C*MW_C)*1000)*22.73*1000; 
+        # from mol_C/m3, *12.01 g_C/mol = g_C/m3, *1000 = mg/m3, * 22.73 ueq/mg = ueq/m3, *1000 = ueq/L
+        # default from https://www.soest.hawaii.edu/oceanography/faculty/zeebe_files/Publications/ZeebeWolfEnclp07.pdf, 2.3 mmol/kg
+        
+        'solar_irradiance':{'fallback': 241}, # Available in W/m2, in the function it is nedded in Ly/day. TO DO Check UM of input for convertion. 1 Ly = 41868 J/m2 -> 1 Ly/day =  41868 J/m2 / 86400 s = 0.4843 W/m2  # DONE
+        'mole_concentration_of_phytoplankton_expressed_as_carbon_in_sea_water':{'fallback': 0, 'profiles': True} # in mmol_carbon/m3 for CMENS. # TO DO *1e-6 to convert into mol/L. #  Concentration of phytoplankton as “mmol/m3 of phytoplankton expressed as carbon” 
+               
         }
 
 
@@ -205,7 +214,7 @@ class ChemicalDrift(OceanDrift):
                 'description': 'Chemical mass is degraded.',
                 'level': CONFIG_LEVEL_BASIC},
             'chemical:transformations:degradation_mode': {'type': 'enum',
-                'enum': ['OverallRateConstants'], 'default': 'OverallRateConstants',
+                'enum': ['OverallRateConstants', 'SingleRateConstants'], 'default': 'OverallRateConstants',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             # sorption/desorption
             'chemical:transformations:dissociation': {'type': 'enum',
@@ -347,6 +356,84 @@ class ChemicalDrift(OceanDrift):
                          'Copper','Cadmium','Chromium','Lead','Vanadium','Zinc','Nickel','Nitrogen', 'Alkalinity', None],
                 'default': None,
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+            # Single process degradation
+            # Biodegradation
+            'chemical:transformations:k_DecayMax_water': {'type': 'float', 'default': 0.054,      # from AQUATOX Database (0.13 1/day)
+                'min': 0, 'max': None, 'units': '1/hours',
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ' max first-order rate constant for biodegradation in aerobic condition'}, 
+            'chemical:transformations:k_Anaerobic_water': {'type': 'float', 'default': 0,      # Defalt for no anaerobic biodegradation
+                'min': 0, 'max': None, 'units': '1/hours',
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ' max first-order rate constant for biodegradation in anaerobic condition '},   
+            'chemical:transformations:HalfSatO_w': {'type': 'float', 'default': 0.5,      # Half-saturation constant for oxygen, default from AQUATOX Database
+                'min': 0.01, 'max': None, 'units': 'g/m3',
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ' Half-saturation constant for oxygen, default from AQUATOX Database'},    
+            'chemical:transformations:T_Max_bio': {'type': 'float', 'default': 50,     # Default from AQUATOX Database  
+                'min': 1, 'max': None, 'units': 'C',
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ' Maximum temperature at which biodegradation process will occur, default from AQUATOX Database'},     
+             'chemical:transformations:T_Opt_bio': {'type': 'float', 'default': 24,     # Default from AQUATOX Database  
+                 'min': 1, 'max': None, 'units': 'C',
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' Optimal temperature for biodegradation, default from AQUATOX Database'},   
+
+             'chemical:transformations:T_Adp_bio': {'type': 'float', 'default': 2,     # Default from AQUATOX Database  
+                 'min': 0.1, 'max': None, 'units': 'C',
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' “adaptation” temperature below which there is no acclimation for biobegradation, default from AQUATOX Database'},
+             'chemical:transformations:Max_Accl_bio': {'type': 'float', 'default': 2,     # Default from AQUATOX Database  
+                 'min': 0.1, 'max': None, 'units': 'C',
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' Maximum acclimation allowed for biodegratation, default from AQUATOX Database'},  
+             'chemical:transformations:Dec_Accl_bio': {'type': 'float', 'default': 0.5,     # Default from AQUATOX Database  
+                 'min': 0.1, 'max': None, 'units': '',
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' Coefficient for decreasing acclimation as temperature approaches T_Adp_bio, default from AQUATOX Database'},
+             'chemical:transformations:Q10_bio': {'type': 'float', 'default': 2,     # Default from AQUATOX Database  
+                 'min': 0, 'max': None, 'units': '',
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' Slope or rate of change per 10°C temperature change for biodegradation, default from AQUATOX Database'},  
+             'chemical:transformations:pH_min_bio': {'type': 'float', 'default': 5,     # Default from AQUATOX Database  
+                 'min': 0, 'max': None, 'units': '',
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' Minimum pH below which limitation on biodegradation rate occurs, default from AQUATOX Database'},  
+             'chemical:transformations:pH_max_bio': {'type': 'float', 'default': 8.5,     # Default from AQUATOX Database  
+                 'min': 0, 'max': None, 'units': '',
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' Maximum pH over which limitation on biodegradation rate occurs, default from AQUATOX Database'}, 
+             # Hydrolysis
+             'chemical:transformations:k_Acid': {'type': 'float', 'default': 0,     # Default for no acid catalyzed hydrolysis 
+                 'min': 0, 'max': None, 'units': 'L/mol*h',
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' pseudo-first-order acid-catalysed rate constant for a given pH for hydrolysis '},
+             'chemical:transformations:k_Base': {'type': 'float', 'default': 0,     # Default for no base catalyzed hydrolysis  
+                 'min': 0, 'max': None, 'units': 'L/mol*h',
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' pseudo-first-order base-catalysed rate constant for a given pH '},  
+             'chemical:transformations:k_Hydr_Uncat': {'type': 'float', 'default': 0,     # Default for no hydrolysis  
+                 'min': 0, 'max': None, 'units': '1/hours',
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' measured first-order hydrolysis rate at pH 7  '},
+             # Photolysis
+             'chemical:transformations:k_Photo': {'type': 'float', 'default': 0,     # Default for no photolysis  
+                 'min': 0, 'max': None, 'units': '1/hours',
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' measured first-order photolysis rate  '}, 
+             'chemical:transformations:RadDistr': {'type': 'float', 'default': 1.6,     # Default from AQUATOX Database
+                 'min': 0, 'max': None, 'units': '',
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' radiance distribution function, which is the ratio of the average pathlength to the depth '}, 
+             'chemical:transformations:RadDistr0_ml': {'type': 'float', 'default': 1.6,     # Default from AQUATOX Database
+                 'min': 0, 'max': None, 'units': '',
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' standard radiance distribution function in the Mixed Layer '}, 
+             'chemical:transformations:RadDistr0_bml': {'type': 'float', 'default': 1.2,     # Default from AQUATOX Database
+                 'min': 0, 'max': None, 'units': '',
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' standard radiance distribution function below the Mixed Layer '}, 
+             'chemical:transformations:WaterExt': {'type': 'float', 'default': 0.21,     # Default from AQUATOX Database
+                 'min': 0, 'max': None, 'units': '1/m',
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' extinction coeff. of light in the water with depht due to water '}, 
+             'chemical:transformations:ExtCoeffDOM': {'type': 'float', 'default': 0.028,     # Default from AQUATOX Database
+                 'min': 0, 'max': None, 'units': '1/(m*g/m3)',
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' extinction coeff. of light in the water with depht due to DOM '}, 
+             'chemical:transformations:ExtCoeffSPM': {'type': 'float', 'default': 0.17,     # Default from AQUATOX Database
+                 'min': 0, 'max': None, 'units': '1/(m*g/m3)',
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' extinction coeff. of light in the water with depht due to SPM '}, 
+             'chemical:transformations:ExtCoeffPHY': {'type': 'float', 'default': 0.14,     # Default from AQUATOX Database
+                 'min': 0, 'max': None, 'units': '1/(m*g/m3)',
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' extinction coeff. of light in the water with depht due to phytoplankton '}, 
+             'chemical:transformations:C2PHYC': {'type': 'float', 'default': 0.44,     # Default from https://doi.org/10.1007/BF00006636
+                 'min': 0, 'max': None, 'units': 'g_Caron/g_Biomass',
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' phytoplankton carbon content '}, 
+             'chemical:transformations:AveSolar': {'type': 'float', 'default': 500,     # Default from AQUATOX Database
+                 'min': 0, 'max': None, 'units': 'Ly/day',
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' average light intensity for late spring or early summer, corresponding to time when photolytic half-life is often measured '},
+             
             })
 
 
@@ -676,6 +763,230 @@ class ChemicalDrift(OceanDrift):
                 KOC_DOMcorr[i] = 1
         return KOC_DOMcorr
 
+    def calc_DOCorr(self, HalfSatO_w, k_Anaerobic_water, k_DecayMax_water, Ox_water):
+        ''' Correction for the effects of Dissolved Ox concentration on biodegradation
+        '''   
+        DOCorr = np.empty_like(Ox_water)
+        
+        # print ("k_Anaerobic_water", k_Anaerobic_water)
+        # print("k_DecayMax_water", k_DecayMax_water)
+        
+        if k_DecayMax_water == 0:
+            # print("k_DecayMax_water is set to 0 1/h, therefore  DOCorr = 0 and no biodegradation occurs")
+            logger.debug("k_DecayMax_water is set to 0 1/h, therefore  DOCorr = 0 and no biodegradation occurs")
+            
+            for i in (range(len(Ox_water))): 
+            
+                DOCorr[i] = 0.00
+            
+        elif k_DecayMax_water > 0:
+            for i in (range(len(Ox_water))): 
+            
+                MMFact_w = (Ox_water[i])/(HalfSatO_w+Ox_water[i])
+                # print ("MMFact_w", i, MMFact_w)
+                DOCorr[i] = MMFact_w + (1-MMFact_w)*(k_Anaerobic_water/k_DecayMax_water)
+                # print("Ox_water", "_", i, "_", Ox_water[i])
+                # print("DOCorr", i, "_",  DOCorr[i])
+                
+        elif k_DecayMax_water < 0:
+            # print("k_DecayMax_water is set < 0 1/h, this is not possible") # TO DO This must become a Warning
+            logger.debug("k_DecayMax_water is set < 0 1/h, this is not possible")
+        else:
+            pass
+        
+        # print(type(DOCorr))
+        
+        if any(((ele < 0) or (ele > 1)) for ele in DOCorr): 
+            # print('DOCorr is not between 0 and 1') # TO DO This must become a Warning
+            warnings.warn('DOCorr is not between 0 and 1')
+            logger.debug("DOCorr is not between 0 and 1") 
+        else:
+            pass
+
+        # print("DOCorr", DOCorr)
+
+        return DOCorr
+    
+  
+    def calc_TCorr(self, T_Max_bio, T_Opt_bio, T_Adp_bio, Max_Accl_bio, Dec_Accl_bio, Q10_bio, TW):
+        ''' Correction for the effects of water temperature on biodegradation
+        '''  
+
+        TCorr = np.empty_like(TW)
+                
+        for i in (range(len(TW))):
+        
+            Acclimation = Max_Accl_bio*(1-np.exp(-Dec_Accl_bio*abs(TW[i]-T_Adp_bio)))
+            
+            VT = ((T_Max_bio + Acclimation) - TW[i])/((T_Max_bio + Acclimation) - (T_Opt_bio + Acclimation))
+        
+            if (VT <= 0):
+                TCorr[i] = 0
+                # print('Temperature is outside of acceptable range, therefore TCorr = 0 and no biodegradation will occur')
+                logger.debug("Temperature is outside of acceptable range, therefore TCorr = 0 and no biodegradation will occur")
+                
+            elif VT > 0:
+                WT = np.log(Q10_bio)*((T_Max_bio + Acclimation) - (T_Opt_bio + Acclimation))
+                YT = np.log(Q10_bio)*((T_Max_bio + Acclimation) - (T_Opt_bio + Acclimation) + 2)
+                XT = ((WT**2)*(1+((1 + 40/YT)**(0.5)))**2)/400
+                TCorr[i] = (VT**XT)*np.exp(XT*(1-VT))
+                
+                # print('Temperature is inside of acceptable range, therefore TCorr != 0 and biodegradation will occur')
+                logger.debug("Temperature is inside of acceptable range, therefore TCorr != 0 and biodegradation will occur")
+                
+        
+        if any(((ele < 0) or (ele > 1)) for ele in TCorr): 
+            # print('TCorr is not between 0 and 1') # TO DO This must become a Warning
+            warnings.warn('TCorr is not between 0 and 1')
+            logger.debug("TCorr is not between 0 and 1")
+        else:
+            # print('TCorr is correct between 0 and 1')
+            logger.debug("TCorr is correct between 0 and 1")
+
+        return TCorr
+    
+  
+    def calc_pHCorr(self, pH_min_bio, pH_max_bio, pH_water):
+        ''' Correction for the effects of water pH on biodegradation
+        '''
+
+        pHCorr = np.empty_like(pH_water)
+        
+        for i in (range(len(pH_water))):
+                
+            if pH_water[i] <= pH_max_bio and pH_water[i] >= pH_min_bio:
+                pHCorr[i] = 1
+                logger.debug("pH is inside optimal range")
+            
+            elif pH_water[i] < pH_min_bio:
+                  pHCorr[i] = np.exp(pH_water[i]-pH_min_bio)
+                  logger.debug("pH is below optimal range")
+                  
+            elif pH_water[i] > pH_max_bio:
+                 pHCorr[i] = np.exp(pH_max_bio - pH_water[i])
+                 logger.debug("pH is over optimal range")
+                 
+            else:
+                pass
+
+        return pHCorr
+    
+   
+    def calc_k_hydro_water(self, k_Acid, k_Base, k_Hydr_Uncat, pH_water):
+        ''' Hydrolysis rate in water
+        ''' 
+       
+        k_W_hydro = np.empty_like(pH_water)
+        
+        if (k_Acid == 0 and k_Base == 0 and k_Hydr_Uncat == 0):
+            # print("k_DecayMax_water is set to 0 1/h, therefore  DOCorr = 0 and no biodegradation occurs")
+            logger.debug("k_Acid, k_Base, k_Hydr_Uncat are set to 0 1/h, therefore no hydolysis occurs in the water")
+            
+            for i in (range(len(pH_water))): 
+                k_W_hydro[i] = 0
+        
+        else:
+            logger.debug("k_Acid or k_Base or k_Hydr_Uncat are set != 0 1/h, therefore hydolysis occurs in the water")
+            for i in (range(len(pH_water))): 
+                         
+               k_hy_Ac = k_Acid*10**(-pH_water[i])
+               k_hy_Base = k_Base*10**(pH_water[i]-14)
+               k_W_hydro[i] = k_hy_Ac + k_hy_Base + k_Hydr_Uncat
+        
+        return k_W_hydro
+    
+        
+    def calc_k_hydro_sed(self, k_Acid, k_Base, k_Hydr_Uncat, pH_sed):
+        ''' Hydrolysis rate in sediments
+        ''' 
+        k_S_hydro = np.empty_like(pH_sed)
+        
+        if (k_Acid == 0 and k_Base == 0 and k_Hydr_Uncat == 0):
+            logger.debug("k_Acid, k_Base, k_Hydr_Uncat are set to 0 1/h, therefore no hydolysis occurs in the sediments")
+            
+            for i in (range(len(pH_sed))): 
+                k_S_hydro[i] = 0
+        else:
+            logger.debug("k_Acid or k_Base or k_Hydr_Uncat are set != 0 1/h, therefore hydolysis occurs in the sediments")
+            for i in (range(len(pH_sed))): 
+                         
+               k_hy_Ac = k_Acid*10**(-pH_sed[i])
+               k_hy_Base = k_Base*10**(pH_sed[i]-14)
+               k_S_hydro[i] = k_hy_Ac + k_hy_Base + k_Hydr_Uncat
+        
+        # print("k_S_hydro", k_S_hydro)
+        return k_S_hydro
+        
+    
+    def calc_ScreeningFactor(self, RadDistr, RadDistr0_ml, RadDistr0_bml, WaterExt, ExtCoeffDOM, ExtCoeffSPM, ExtCoeffPHY, C2PHYC, concDOC, concSPM, Conc_Phyto_water, Depth, MLDepth):
+        ''' Screening Factor for photolisis attenuation with depth due to DOM, SPM, and Pythoplankton
+        ''' 
+        ConcDOM = (concDOC*12e-6 / 1.025 / 0.526 * 1e-3)* 1e-6 # ((Kg[OM]/L) from (umol[C]/Kg))* 1e-6 = g_DOM/m3
+              
+        # ConcSPM is already esxpressed in g_SPM/m3
+         
+        ConcPHYTO = (((Conc_Phyto_water*1e-6)*12.01)/C2PHYC)*1000 # mmol/m3*1e-6 = mol/L, *12.01 g_C/mol = g_C/L, / (g_Caron/g_Biomass) = g_Biomass/L, *1000 = g_BiomassPHYTO/m3
+          
+        Extinct = WaterExt + ExtCoeffDOM*ConcDOM + ExtCoeffSPM*concSPM +  ExtCoeffPHY*ConcPHYTO
+           
+
+        ScreeningFactor = np.empty_like(Depth)
+                
+        for i in (range(len(MLDepth))):
+            if Depth[i] == 0:
+                ScreeningFactor[i] = 1
+            else:
+                if Depth[i] <= MLDepth[i]:
+                    RadDistr_ratio = RadDistr/RadDistr0_ml
+                    
+                elif Depth[i] > MLDepth[i]:
+                    RadDistr_ratio = RadDistr/RadDistr0_bml
+                else:
+                    pass
+                ScreeningFactor[i] = RadDistr_ratio*((1-np.exp(-Extinct[i]*Depth[i]))/(Extinct[i]*Depth[i]))
+            
+            if math.isnan(ScreeningFactor[i]):
+                print( "ScreeningFactor for element", i, "is nan")
+                logger.debug("ScreeningFactor for element", i, "is nan")
+            else:
+                pass
+        
+        if any(((ele < 0) or (ele > 1)) for ele in ScreeningFactor): 
+            # print('ScreeningFactor is not between 0 and 1')
+            warnings.warn('ScreeningFactor is not between 0 and 1')
+            logger.debug("ScreeningFactor is not between 0 and 1")
+        else:
+            pass 
+
+        return ScreeningFactor
+      
+    def calc_LightFactor(self, AveSolar, Solar_radiation, Conc_CO2_asC, TW, Depth, MLDepth):
+        ''' Light Factor for photolisis attenuation with depth 
+        '''
+        # TW = Water temperature in °C
+        # TO DO Check here the convertion from input to Ly/day
+        
+        Solar = Solar_radiation/0.4843 # 1 Ly/day =  41868 J/m2 / 86400 s = 0.4843 W/m2
+        
+        Conc_CO2 = ((Conc_CO2_asC*12.01)*1000)*22.73*1000 # from mol_C/m3, *12.01 g_C/mol = g_C/m3, *1000 = mg/m3, * 22.73 ueq/mg = ueq/m3, *1000 = ueq/L
+
+        LightFactor = np.empty_like(MLDepth)
+        HyphoCorr = np.empty_like(MLDepth)
+        
+        for i in (range(len(MLDepth))):          
+            
+            if Depth[i] <= MLDepth[i]:
+                Solar0 = Solar[i]
+                LightFactor[i] = Solar0/AveSolar
+
+            elif Depth[i] > MLDepth[i]:
+                 HyphoCorr[i] = ((10**(-(6.57 - 0.0118*TW[i] + 0.00012*(TW[i]**2))))*Conc_CO2[i])*10**-14 # from AQUATOX
+                 Solar0 = Solar[i] * np.exp(-HyphoCorr[i]*MLDepth[i])
+                 LightFactor[i] = Solar0/AveSolar
+            else:
+                pass
+
+        return LightFactor
 
     def init_transfer_rates(self):
         ''' Initialization of background values in the transfer rates 2D array.
@@ -1678,6 +1989,205 @@ class ChemicalDrift(OceanDrift):
             #self.deactivate_elements(to_deactivate +  vol_morethan_degr, reason='volatilized')
             #self.deactivate_elements(to_deactivate + ~vol_morethan_degr, reason='degraded')
 
+        elif self.get_config('chemical:transformations:degradation_mode')=='SingleRateConstants':
+                logger.debug('Calculating single degradation rates in water')
+             
+
+                degraded_now = np.zeros(self.num_elements_active())
+                
+                # Calculations here are for overall degradation including
+                # biodegradation, photodegradation, and hydrolysys
+
+                # Define parameters for each element not from NETCDF files
+                
+                Tref_kWt = self.get_config('chemical:transformations:Tref_kWt')                
+                DH_kWt = self.get_config('chemical:transformations:DeltaH_kWt')
+                k_DecayMax_water = self.get_config('chemical:transformations:k_DecayMax_water')     
+                
+                if k_DecayMax_water == 0:
+                    logger.debug("k_DecayMax_water is set to 0 1/h, therefore  DOCorr = 0 and no biodegradation occurs")
+                else:
+                    pass
+
+                k_Anaerobic_water = self.get_config('chemical:transformations:k_Anaerobic_water')  
+                
+                if k_Anaerobic_water == 0:
+                    logger.debug("k_Anaerobic_water is set to 0 1/h, therefore no biodegradation occurs without oxigen")
+                else:
+                    pass
+                
+                
+                HalfSatO_w = self.get_config('chemical:transformations:HalfSatO_w')                
+                T_Max_bio = self.get_config('chemical:transformations:T_Max_bio')                
+                T_Opt_bio = self.get_config('chemical:transformations:T_Opt_bio')                
+                T_Adp_bio = self.get_config('chemical:transformations:T_Adp_bio')                
+                Max_Accl_bio = self.get_config('chemical:transformations:Max_Accl_bio')                
+                Dec_Accl_bio = self.get_config('chemical:transformations:Dec_Accl_bio')                
+                Q10_bio = self.get_config('chemical:transformations:Q10_bio')                
+                pH_min_bio = self.get_config('chemical:transformations:pH_min_bio')                
+                pH_max_bio = self.get_config('chemical:transformations:pH_max_bio')                
+                k_Acid = self.get_config('chemical:transformations:k_Acid')                
+                k_Base = self.get_config('chemical:transformations:k_Base')                
+                k_Hydr_Uncat = self.get_config('chemical:transformations:k_Hydr_Uncat')                
+                k_Photo = self.get_config('chemical:transformations:k_Photo') 
+                
+                if k_Photo == 0:
+                    logger.debug("k_Photo is set to 0 1/h, therefore no phodegradation occurs")
+                else:
+                    pass
+                
+                RadDistr = self.get_config('chemical:transformations:RadDistr')                
+                RadDistr0_ml = self.get_config('chemical:transformations:RadDistr0_ml')                
+                RadDistr0_bml = self.get_config('chemical:transformations:RadDistr0_bml')                
+                WaterExt = self.get_config('chemical:transformations:WaterExt')                
+                ExtCoeffDOM = self.get_config('chemical:transformations:ExtCoeffDOM')                
+                ExtCoeffSPM = self.get_config('chemical:transformations:ExtCoeffSPM')                
+                ExtCoeffPHY = self.get_config('chemical:transformations:ExtCoeffPHY')                
+                C2PHYC = self.get_config('chemical:transformations:C2PHYC')                
+                AveSolar = self.get_config('chemical:transformations:AveSolar')
+                
+                # Only "dissolved" and "DOC" elements will degrade
+                
+                # Define parameters from netCDF files
+                
+                W =   (self.elements.specie == self.num_lmm) \
+                    + (self.elements.specie == self.num_humcol)
+
+                # Temperature
+                # TW=self.environment.sea_water_temperature
+                TW=self.environment.sea_water_temperature[W]
+                TW[TW==0]=np.median(TW)
+                
+                # # Dissolved oxigen in g/m3 or mg/L                                                                                
+                Ox_water=self.environment.mole_concentration_of_dissolved_molecular_oxygen_in_sea_water[W]
+                # # Ox_water[Ox_water==0]=np.median(Ox_water)
+                
+                # # pH water                                                                                                       
+                pH_water=self.environment.sea_water_ph_reported_on_total_scale[W]
+                # # pH_water[pH_water==0]=np.median(pH_water) 
+                               
+                # # Concentration of C02 in the water column in mol_C/m3                                                            
+                Conc_CO2_asC=self.environment.mole_concentration_of_dissolved_inorganic_carbon_in_sea_water[W]
+                # # Conc_CO2_asC[Conc_CO2_asC==0]=np.median(Conc_CO2_asC)
+                
+                # # Solar radiation in W/m2                                                                                        
+                Solar_radiation=self.environment.solar_irradiance[W]
+                # # Solar_radiation[Solar_radiation==0]=np.median(Solar_radiation)
+                
+                # # Concentration of phytoplankton in the water column in mol_C/m3                                                  
+                Conc_Phyto_water=self.environment.mole_concentration_of_phytoplankton_expressed_as_carbon_in_sea_water[W]
+                # # Conc_Phyto_water[Conc_Phyto_water==0]=np.median(Conc_Phyto_water)
+                
+                
+                # Concentration of SPM g/m3
+                concSPM=self.environment.spm # (g/m3) 
+
+
+                # Apply SPM concentration profile if SPM reader has not depth coordinate
+                # SPM concentration is kept constant to surface value in the mixed layer
+                # Exponentially decreasing with depth below the mixed layers
+
+                if not self.SPM_vertical_levels_given:
+                    lowerMLD = self.elements.z < -self.environment.ocean_mixed_layer_thickness
+                    #concSPM[lowerMLD] = concSPM[lowerMLD]/2
+                    concSPM[lowerMLD] = concSPM[lowerMLD] * np.exp(
+                        -(self.elements.z[lowerMLD]+self.environment.ocean_mixed_layer_thickness[lowerMLD])
+                        *np.log(0.5)/self.get_config('chemical:particle_concentration_half_depth')
+                        )
+                concSPM=concSPM[W] # (g/m3)
+                
+                
+                # # # Concentration of DOC g/m3
+                concDOC = self.environment.doc # in (umol[C]/Kg)
+
+
+                # Apply DOC concentration profile if DOC reader has not depth coordinate
+                # DOC concentration is kept constant to surface value in the mixed layer
+                # Exponentially decreasing with depth below the mixed layers
+
+                if not self.DOC_vertical_levels_given:
+                    lowerMLD = self.elements.z < -self.environment.ocean_mixed_layer_thickness
+                    #concDOM[lowerMLD] = concDOM[lowerMLD]/2
+                    concDOC[lowerMLD] = concDOC[lowerMLD] * np.exp(
+                        -(self.elements.z[lowerMLD]+self.environment.ocean_mixed_layer_thickness[lowerMLD])
+                        *np.log(0.5)/self.get_config('chemical:doc_concentration_half_depth')
+                        )
+                concDOC=concDOC[W] # in (umol[C]/Kg)
+                
+                
+                # Mixed Layer depth in m
+                MLDepth=self.environment.ocean_mixed_layer_thickness[W] 
+                
+                
+                # MLDepth[MLDepthr==0]=np.median(MLDepth)
+                
+                # Depth of element in m
+                Depth=-self.elements.z[W]     # self.elements.z is negative                                                                                   
+                
+
+
+                # Calculating correction factors for degradation rates
+                
+                k_W_bio = k_DecayMax_water * self.calc_DOCorr(HalfSatO_w, k_Anaerobic_water, k_DecayMax_water, Ox_water)
+                k_W_bio = k_W_bio * self.calc_pHCorr(pH_min_bio, pH_max_bio, pH_water)
+                k_W_bio = k_W_bio * self.calc_TCorr(T_Max_bio, T_Opt_bio, T_Adp_bio, Max_Accl_bio, Dec_Accl_bio, Q10_bio, TW)
+                
+                k_W_photo = k_Photo * self.calc_LightFactor(AveSolar, Solar_radiation, Conc_CO2_asC, TW, Depth, MLDepth)
+                k_W_photo = k_W_photo * self.calc_ScreeningFactor(RadDistr, RadDistr0_ml, RadDistr0_bml, WaterExt, ExtCoeffDOM, ExtCoeffSPM, ExtCoeffPHY, C2PHYC, concDOC, concSPM, Conc_Phyto_water, Depth, MLDepth)
+                k_W_photo = k_W_photo * self.tempcorr("Arrhenius",DH_kWt,TW,Tref_kWt) 
+               
+                k_W_hydro = self.calc_k_hydro_water(k_Acid, k_Base, k_Hydr_Uncat, pH_water)
+                k_W_hydro = k_W_hydro * self.tempcorr("Arrhenius",DH_kWt,TW,Tref_kWt)
+                             
+                
+                k_W_tot = (k_W_bio + k_W_hydro + k_W_photo)/(60*60) # from 1/h to 1/s
+                k_W_fin = k_W_tot * self.tempcorr("Arrhenius",DH_kWt,TW,Tref_kWt)
+                
+
+
+                # degraded_now = self.elements.mass * (1-np.exp(-k_W_fin * self.time_step.seconds))
+                degraded_now[W] = self.elements.mass[W] * (1-np.exp(-k_W_fin * self.time_step.total_seconds()))
+
+                # Degradation in the sediments
+                
+                # k_S_tot = -np.log(0.5)/(self.get_config('chemical:transformations:t12_S_tot')*(60*60)) # (1/s)
+                
+                Tref_kSt = self.get_config('chemical:transformations:Tref_kSt')
+                DH_kSt = self.get_config('chemical:transformations:DeltaH_kSt')
+
+                S =   (self.elements.specie == self.num_srev) \
+                    + (self.elements.specie == self.num_ssrev)
+
+                # TS=self.environment.sea_water_temperature
+                TS=self.environment.sea_water_temperature[S]
+                TS[TS==0]=np.median(TS)
+                
+                # pH sediments
+                pH_sed=self.environment.pH_sediment[S]
+                pH_sed[pH_sed==0]=np.median(pH_sed)
+                
+                k_S_bio = self.get_config('chemical:transformations:k_DecayMax_water')/4  # From AQUATOX   k_DecayMax_water is a rate (1/h), and k_S_bio is four times slower than k_DecayMax_water           
+                k_S_hydro = self.calc_k_hydro_sed(k_Acid, k_Base, k_Hydr_Uncat, pH_sed)
+                
+                k_S_tot = (k_S_bio + k_S_hydro)/(60*60) # from 1/h to 1/s
+                k_S_fin = k_S_tot * self.tempcorr("Arrhenius",DH_kSt,TS,Tref_kSt)
+
+                # degraded_now = self.elements.mass * (1-np.exp(-k_S_fin * self.time_step.seconds))
+                degraded_now[S] = self.elements.mass[S] * (1-np.exp(-k_S_fin * self.time_step.total_seconds()))
+
+            self.elements.mass_degraded_water[W] = self.elements.mass_degraded_water[W] + degraded_now[W]
+            self.elements.mass_degraded_sediment[S] = self.elements.mass_degraded_sediment[S] + degraded_now[S]
+
+            self.elements.mass_degraded = self.elements.mass_degraded + degraded_now
+            self.elements.mass = self.elements.mass - degraded_now
+            self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100,
+                                     reason='removed')
+
+            #to_deactivate = self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100
+            #vol_morethan_degr = self.elements.mass_degraded >= self.elements.mass_volatilized
+            #
+            #self.deactivate_elements(to_deactivate +  vol_morethan_degr, reason='volatilized')
+            #self.deactivate_elements(to_deactivate + ~vol_morethan_degr, reason='degraded')
         else:
             pass
 
@@ -3558,7 +4068,7 @@ class ChemicalDrift(OceanDrift):
                                 *longitude, degrees E
                                 *time, datetime64[ns]
         time_start:           datetime64[ns], start time of figures
-        time_end:             datetime64[ns],  end time of figures.
+        time_end:             datetime64[ns], end time of figures.
         long_min:             float64, min longitude of figure
         long_max              float64, max longitude of figure
         lat_min:              float64, min latitude of figure
