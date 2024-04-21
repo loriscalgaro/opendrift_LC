@@ -3044,7 +3044,7 @@ class ChemicalDrift(OceanDrift):
 
     def regrid_conc(self, filename, filename_regridded, latmin, latmax, latstep, lonmin, lonmax, lonstep, concfile = None):
         """
-        Regrid "write_netcdf_chemical_density_map" output (concentration and topography) to regular latlon grid
+        Regrid "write_netcdf_chemical_density_map" output (concentration, topography, and density) to regular latlon grid
             filename:               string, path or filename of "write_netcdf_chemical_density_map" output file to be regridded
             filename_regridded:     string, path or filename of regridded output
             latmin:                 float 32, min latitude of new grid
@@ -3538,66 +3538,74 @@ class ChemicalDrift(OceanDrift):
                       colorbar_title = None,
                       selected_depth = 0,
                       fig_format = ".jpg",
+                      make_animation = False,
+                      animation_format = ".mp4",
+                      load_img_from_folder = False,
+                      fig_numbers = None,
                       add_shp_to_figure = False,
                       variable_name = None,
                       labels_font_sizes = [30,30,30,25,25,25,25],
                       shp_color = "black",
+                      trim_images = True,
                       date_str_lenght = 10,
                       len_fig = 23, high_fig =15):
         '''
         Create a series of .jpg or .png for each timestep of a concentration map
         from REGRIDDED "calculate_water_sediment_conc" function output
         
-        Conc_Dataset:        xarray dataset of concentration after calculate_water_sediment_conc
+        Conc_Dataset:         xarray dataset of concentration after calculate_water_sediment_conc
                                 *latitude, degrees N
                                 *longitude, degrees E
                                 *time, datetime64[ns]
-        time_start:          datetime64[ns], start time of figures
-        time_end:            datetime64[ns],  end time of figures.
-        long_min:            float64, min longitude of figure
-        long_max:            float64, max longitude of figure
-        lat_min:             float64, min latitude of figure
-        lat_max:             float64, max latitude of figure
-        vmin:                float64, min value of concentration in the figure, specify to keep colorscale constant
-        vmax:                float64, max value of concentration in the figure, specify to keep colorscale constant
-        file_out_path:       string, main output path of figure produced, must end with /
-        file_out_sub_folder: string, subforlder of file_out_path, must end with /
-        figure_file_name:    string, name of figure
-        shp_file_path:       string, full path and name of shp file
-        title_caption:       string, first part of figure title before date and unit_measure
-        full_title:          string, full title of figure. It overwrites title_caption if specified
-        unit_measure:        string, (ug/m3) or (ug/kg d.w), between parenthesis
-        levels_colormap:     list of float64, levels used for colorbar (e.g., [0., 1., 15.])
-        selected_colormap:   e.g. plt.cm.Blues
-        colorbar_title:      string, title of colorbar
-        simmetrical_cmap:    boolean,select if cmap is simmetrical to 0 (True) or not (False)
-        scientific_colorbar: boolean,select if colorbar is written in scientific notation (True) or not (False)
-        selected_depth:      int, depth selected if present. If no depth was selected when creating conc map, use 0
-        fig_format:          string, format of produced images (e.g.,".jpg", ".png"),
-        add_shp_to_figure:   boolean,select if shp is added to the figure (True) or not (False)
-        variable_name:       string, name of Conc_Datasetdata variable to plot if not concentration_avg_water/sediments
-        labels_font_sizes:   list of int, [title_font_size, x_label_font_size, y_label_font_size, x_ticks_font_size
+        time_start:           datetime64[ns], start time of figures
+        time_end:             datetime64[ns],  end time of figures.
+        long_min:             float64, min longitude of figure
+        long_max              float64, max longitude of figure
+        lat_min:              float64, min latitude of figure
+        lat_max:              float64, max latitude of figure
+        vmin:                 float64, min value of concentration in the figure, specify to keep colorscale constant
+        vmax:                 float64, max value of concentration in the figure, specify to keep colorscale constant
+        file_out_path:        string, main output path of figure produced, must end with /
+        file_out_sub_folder:  string, subforlder of file_out_path, must end with /
+        figure_file_name:     string, name of figure
+        shp_file_path:        string, full path and name of shp file
+        title_caption:        string, first part of figure title before date and unit_measure
+        full_title:           string, full title of figure. It overwrites title_caption if specified
+        unit_measure:         string, (ug/m3) or (ug/kg d.w), between parenthesis
+        levels_colormap:      list of float64, levels used for colorbar (e.g., [0., 1., 15.])
+        selected_colormap:    e.g. plt.cm.Blues
+        colorbar_title:       string, title of colorbar
+        simmetrical_cmap:     boolean,select if cmap is simmetrical to 0 (True) or not (False)
+        scientific_colorbar:  boolean,select if colorbar is written in scientific notation (True) or not (False)
+        selected_depth:       int, depth selected if present. If no depth was selected when creating conc map, use 0
+        fig_format:           string, format of produced images (e.g.,".jpg", ".png")
+        make_animation:       boolean,select if animation (.mp4 or .gif) is created (True) or not (False)
+        animation_format:     string, format of produced animation (".mp4" or .gif")
+        load_img_from_folder: boolean,select if images are created or loaded
+        fig_numbers:          tuple/list of integers (e.g., (0, 8)) with numbers in fig_name of figures to load
+        add_shp_to_figure:    boolean,select if shp is added to the figure (True) or not (False)
+        variable_name:        string, name of Conc_Datasetdata variable to plot if not concentration_avg_water/sediments
+        labels_font_sizes:    list of int, [title_font_size, x_label_font_size, y_label_font_size, x_ticks_font_size
                                            y_ticks_font_size, cbar_label_font_size, cbar_ticks_font_size]
-        len_fig:             int, lenght of the figure (inches)
-        high_fig:            int, height of the figure (inches)
-        shp_color:           string, color of shapefile when plotted
-        date_str_lenght:     int, number date string charcters kept in title [10 for YYYY-MM-DD, 19 for hour shown] 
+        len_fig:              int, lenght of the figure (inches)
+        high_fig:             int, height of the figure (inches)
+        shp_color:            string, color of shapefile when plotted
+        trim_images:          boolean,select if white borders of images is removed
+        date_str_lenght:      int, number date string charcters kept in title [10 for YYYY-MM-DD, 19 for hour shown] 
         '''
 
         import numpy as np
         import matplotlib.pyplot as plt
         import matplotlib.ticker as ticker
-        import matplotlib.colors as colors
         import os as os
         from mpl_toolkits.axes_grid1 import make_axes_locatable, axes_size
-        if add_shp_to_figure:
-            import geopandas as gpd
+        import geopandas as gpd
 
         aspect = 15
         # pad_fraction = 1e-1
         file_output_path = file_out_path + file_out_sub_folder
-        print("Figure saved to: ", file_output_path)
-        
+        print("Figures saved to: ", file_output_path)
+
         def fmt(x, pos):
             '''
             Define scientific notation for colorbar if scientific_colorbar is True
@@ -3605,14 +3613,14 @@ class ChemicalDrift(OceanDrift):
             a, b = '{:.1e}'.format(x).split('e')
             b = int(b)
             return r'${} \times 10^{{{}}}$'.format(a, b)
-        
+
         title_font_size = labels_font_sizes[0]
         x_label_font_size = labels_font_sizes[1]
         y_label_font_size = labels_font_sizes[2]
         x_ticks_font_size = labels_font_sizes[3]
         # y_ticks_font_size = labels_font_sizes[4]
         cbar_label_font_size = labels_font_sizes[5]
-        cbar_ticks_font_size = labels_font_sizes[6]
+        # cbar_ticks_font_size = labels_font_sizes[6]
 
         if simmetrical_cmap == True:
             if selected_colormap == None:
@@ -3626,7 +3634,20 @@ class ChemicalDrift(OceanDrift):
             pass
 
         if add_shp_to_figure:
+            print("shp was added over the figures")
             shp = gpd.read_file(shp_file_path)
+            cax_pad= -3
+        else:
+            print("shp was not added over the figures")
+            # Create an empty GeoDataFrame (shp) to plot 
+            from shapely.geometry import Point
+            crs = 'epsg:4326'
+            # Create an empty GeoDataFrame
+            columns = ['geometry']
+            shp =  gpd.GeoDataFrame(columns=columns, crs=crs)
+            point = Point(0, 0)
+            shp.loc[0, 'geometry'] = point
+            cax_pad= 1
 
         if "longitude" not in Conc_Dataset.dims:
             if 'lat' in Conc_Dataset.dims:
@@ -3667,8 +3688,18 @@ class ChemicalDrift(OceanDrift):
         for attr in attribute_list:
             del Conc_DataArray.attrs[attr]
 
-        if add_shp_to_figure == True:
-            print("shp was added over the figures")
+        figure_ls = []
+        figure_name_ls = []
+        if load_img_from_folder == False:
+            for timestep in range(0, (Conc_DataArray.time.to_numpy()).size):
+                figure_name_ls.append(str(f"{timestep:03d}")+"_"+figure_file_name+fig_format)
+        elif load_img_from_folder == True and fig_numbers is not None:
+            for timestep in range(fig_numbers[0], fig_numbers[1]):
+                figure_name_ls.append(str(f"{timestep:03d}")+"_"+figure_file_name+fig_format)
+        else:
+            raise ValueError("fig_numbers must be specified")
+
+        if load_img_from_folder == False:
             for timestep in range(0, (Conc_DataArray.time.to_numpy()).size):
                 print("creating image n° ", str(timestep+1), " out of ", str((Conc_DataArray.time.to_numpy()).size))
                 if (Conc_DataArray.time.to_numpy()).size > 1 and "depth" in Conc_DataArray.dims:
@@ -3709,7 +3740,7 @@ class ChemicalDrift(OceanDrift):
                 # from https://stackoverflow.com/questions/18195758/set-matplotlib-colorbar-size-to-match-graph
                 divider = make_axes_locatable(ax)
                 width = axes_size.AxesY(ax, aspect=1./aspect)
-                cax = divider.append_axes("right", size=width, pad=-2)
+                cax = divider.append_axes("right", size=width, pad = cax_pad)
                 cax.yaxis.offsetText.set_fontsize(24)
                 cax.tick_params(labelsize=cbar_label_font_size)
                 y_formatter = ticker.ScalarFormatter(useMathText=True)
@@ -3721,54 +3752,101 @@ class ChemicalDrift(OceanDrift):
                     cbar = plt.colorbar(ax2, cax=cax, label=colorbar_title)
 
                 cbar.set_label(colorbar_title, fontsize=cbar_label_font_size, labelpad = 20, fontweight ="bold")
+                figure_ls.append(fig)
+                plt.close('all')
 
-                fig.savefig(file_out_path + file_out_sub_folder+str(f"{timestep:03d}")+"_"+figure_file_name+fig_format)
-                plt.close()
+        if trim_images == True:
+            def remove_white_borders(image):
+                '''
+                Remove white borders from an image
+
+                image:     np.array of float32, rgb array of image with white = 1
+                '''
+                # Get the non-zero pixels along each axis
+                rows = np.any(image != 1, axis=1)
+                cols = np.any(image != 1, axis=0)
+                # Get the bounding box of non-zero pixels
+                rmin, rmax = np.where(rows)[0][[0, -1]]
+                cmin, cmax = np.where(cols)[0][[0, -1]]
+                # Crop the image to the bounding box
+                cropped_image = image[rmin:rmax + 1, cmin:cmax + 1]
+                return cropped_image
+
+            for img_index in range(0, len(figure_ls)):
+                fig = figure_ls[img_index]
+                # Render the figure to a pixel buffer
+                fig.canvas.draw()
+                # Get the pixel buffer as an RGB array
+                width, height = fig.canvas.get_width_height()
+                rgb = (np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape((height, width, 3))).astype(np.float32) / 255.0
+                rgb = remove_white_borders(rgb)
+                figure_ls[img_index] = rgb
         else:
-            print("shp was not added over the figures")
-            for timestep in range(0, (Conc_DataArray.time.to_numpy()).size):
-                print("creating image n° ", str(timestep+1), " out of ", str((Conc_DataArray.time.to_numpy()).size))
-                if (Conc_DataArray.time.to_numpy()).size > 1 and "depth" in Conc_DataArray.dims:
-                    Conc_DataArray_selected = Conc_DataArray.isel(time = timestep, depth = selected_depth)
-                elif (Conc_DataArray.time.to_numpy()).size > 1 and "depth" not in Conc_DataArray.dims:
-                    Conc_DataArray_selected = Conc_DataArray.isel(time = timestep)
-                elif (Conc_DataArray.time.to_numpy()).size <= 1 and "depth" in Conc_DataArray.dims:
-                    Conc_DataArray_selected = Conc_DataArray.isel(depth = selected_depth)
-                elif (Conc_DataArray.time.to_numpy()).size <= 1 and "depth" not in Conc_DataArray.dims:
-                    Conc_DataArray_selected = Conc_DataArray
+            pass
 
-                if (Conc_DataArray.time.to_numpy()).size > 1:
-                    plt_title = (title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:date_str_lenght] +\
-                                 " " +unit_measure)
+        if load_img_from_folder == False: 
+            if trim_images == True:
+                for img_index in range(0, len(figure_ls)):
+                    print("saving image n° ", img_index, " out of ",  len(figure_ls))
+                    fig_path = (file_out_path + file_out_sub_folder + figure_name_ls[img_index])
+                    fig, ax = plt.subplots(figsize = (len_fig,high_fig))
+                    ax.set_axis_off()
+                    plt.imsave(fig_path, figure_ls[img_index], cmap=selected_colormap)
+                    plt.close('all')
+            else:
+                for img_index in range(0, len(figure_ls)):
+                    print("saving image n° ", img_index, " out of ",  len(figure_ls))
+                    figure_ls[img_index].savefig(file_out_path + file_out_sub_folder + figure_name_ls[img_index])
+
+        if make_animation is True:
+            from matplotlib.animation import FuncAnimation
+
+            def update(frame):
+                # Update the image in the plot
+                ax.imshow(figure_ls[frame]) 
+                ax.set_axis_off()
+                return [ax]
+
+            if load_img_from_folder == True:
+                figure_ls = []
+                print("Loading images")
+                for fig_name in figure_name_ls:
+                    fig_path = (file_out_path + file_out_sub_folder + fig_name)
+                    image = plt.imread(fig_path)
+                    # fig, ax = plt.subplots(figsize = (len_fig,high_fig))
+                    # ax.set_axis_off()
+                    figure_ls.append(image)
+                    plt.close('all')
+                if trim_images == True:
+                    for img_index in range(0, len(figure_ls)):
+                        rgb = remove_white_borders(rgb)
+                        figure_ls[img_index] = rgb
                 else:
-                    plt_title = (title_caption + " " +unit_measure)
-
-                if full_title is not None:
-                    plt_title = full_title
+                    pass
+            elif load_img_from_folder == False:
+                if trim_images == False:
+                    for img_index in range(0, len(figure_ls)):
+                        fig = figure_ls[img_index]
+                        # Render the figure to a pixel buffer
+                        fig.canvas.draw()
+                        # Get the pixel buffer as an RGB array
+                        width, height = fig.canvas.get_width_height()
+                        rgb = (np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape((height, width, 3))).astype(np.float32) / 255.0
+                        figure_ls[img_index] = rgb
                 else:
                     pass
 
-                fig = Conc_DataArray_selected.plot(vmin = vmin, vmax = vmax, 
-                                                  robust = True, 
-                                                  cmap=selected_colormap, 
-                                                  levels = levels_colormap,
-                                                  figsize = (len_fig,high_fig),
-                                                  add_colorbar=False) # colorbar is added ex-post
-                plt.title(plt_title, pad=30, fontsize = title_font_size, weight = "bold", wrap= True)
-                plt.ylabel("Latitude", fontsize = x_label_font_size, labelpad=30.)
-                plt.xlabel("Longitude", fontsize = y_label_font_size, labelpad=30.)
-                plt.xlim(long_min, long_max)
-                plt.ylim(lat_min, lat_max)
-                plt.tick_params(labelsize=x_ticks_font_size)
-                colorbar = plt.colorbar(fig)
-                colorbar.set_label(label=colorbar_title,size=cbar_label_font_size)
-                cax=colorbar.ax
-                cax.tick_params(labelsize=cbar_ticks_font_size)
-                cax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%0.1e'))
+            fig, ax = plt.subplots(figsize = (len_fig,high_fig))
+            # Create the animation
+            print("Creating animation")
+            animation = FuncAnimation(fig, update, frames=len(figure_ls), interval=600)
+            output_video = file_out_path + file_out_sub_folder + figure_file_name + animation_format
+            print("Saving animation to ", file_out_path + file_out_sub_folder)
+            animation.save(output_video, writer='ffmpeg')
+        else:
+            pass
 
-                fig.figure.savefig(file_out_path + file_out_sub_folder+str(f"{timestep:03d}")+"_"+figure_file_name+fig_format)
-                plt.close()
-                
+
     def plot_emission_data_frequency(self, emissions, title, n_bins = 100, zoom_max = 100, zoom_min = 0):
          '''
          Plot distribuion of emissions dataset values, mass, and cumulative mass
