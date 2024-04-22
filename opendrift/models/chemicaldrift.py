@@ -657,7 +657,6 @@ class ChemicalDrift(OceanDrift):
         KOC_sed_updated = np.empty_like(pH_sed)
         KOC_sedcorr = np.empty_like(pH_sed)
 
-
         if diss == 'acid':
             Phi_n_sed = 1/(1+10**(pH_sed-pKa_acid))
             Phi_diss_sed = 1-Phi_n_sed
@@ -681,8 +680,7 @@ class ChemicalDrift(OceanDrift):
             KOC_sedcorr = KOC_sed_updated/KOC_sed_initial
 
         elif diss == 'undiss':
-            for i in (range(len(pH_sed))):
-                KOC_sedcorr[i] = 1
+            KOC_sedcorr = np.ones_like(pH_sed)
 
         return KOC_sedcorr
 
@@ -720,8 +718,7 @@ class ChemicalDrift(OceanDrift):
             KOC_SPMcorr = KOC_SPM_updated / KOC_SPM_initial
 
         elif diss == 'undiss':
-            for i in (range(len(pH_water_SPM))):
-                KOC_SPMcorr[i] = 1
+            KOC_SPMcorr = np.ones_like(pH_water_SPM)
 
         return KOC_SPMcorr
 
@@ -759,222 +756,191 @@ class ChemicalDrift(OceanDrift):
             KOC_DOMcorr = KOC_DOM_updated / KOC_DOM_initial
 
         elif diss == 'undiss':
-            for i in (range(len(pH_water_DOM))):
-                KOC_DOMcorr[i] = 1
+            KOC_DOMcorr = np.ones_like(pH_water_DOM)
         return KOC_DOMcorr
 
     def calc_DOCorr(self, HalfSatO_w, k_Anaerobic_water, k_DecayMax_water, Ox_water):
         ''' Correction for the effects of Dissolved Ox concentration on biodegradation
         '''   
         DOCorr = np.empty_like(Ox_water)
-        
-        # print ("k_Anaerobic_water", k_Anaerobic_water)
-        # print("k_DecayMax_water", k_DecayMax_water)
-        
+
         if k_DecayMax_water == 0:
-            # print("k_DecayMax_water is set to 0 1/h, therefore  DOCorr = 0 and no biodegradation occurs")
             logger.debug("k_DecayMax_water is set to 0 1/h, therefore  DOCorr = 0 and no biodegradation occurs")
-            
-            for i in (range(len(Ox_water))): 
-            
-                DOCorr[i] = 0.00
-            
+            DOCorr = np.ones_like(Ox_water)
+
         elif k_DecayMax_water > 0:
             for i in (range(len(Ox_water))): 
-            
                 MMFact_w = (Ox_water[i])/(HalfSatO_w+Ox_water[i])
-                # print ("MMFact_w", i, MMFact_w)
                 DOCorr[i] = MMFact_w + (1-MMFact_w)*(k_Anaerobic_water/k_DecayMax_water)
-                # print("Ox_water", "_", i, "_", Ox_water[i])
-                # print("DOCorr", i, "_",  DOCorr[i])
-                
+
         elif k_DecayMax_water < 0:
-            # print("k_DecayMax_water is set < 0 1/h, this is not possible") # TO DO This must become a Warning
-            logger.debug("k_DecayMax_water is set < 0 1/h, this is not possible")
+            raise ValueError("k_DecayMax_water is set < 0 1/h, this is not possible")
         else:
             pass
-        
-        # print(type(DOCorr))
-        
+
         if any(((ele < 0) or (ele > 1)) for ele in DOCorr): 
-            # print('DOCorr is not between 0 and 1') # TO DO This must become a Warning
-            warnings.warn('DOCorr is not between 0 and 1')
-            logger.debug("DOCorr is not between 0 and 1") 
+            raise ValueError('DOCorr is not between 0 and 1')
         else:
             pass
-
-        # print("DOCorr", DOCorr)
-
         return DOCorr
-    
-  
+
+
     def calc_TCorr(self, T_Max_bio, T_Opt_bio, T_Adp_bio, Max_Accl_bio, Dec_Accl_bio, Q10_bio, TW):
         ''' Correction for the effects of water temperature on biodegradation
         '''  
 
         TCorr = np.empty_like(TW)
-                
+
         for i in (range(len(TW))):
-        
+
             Acclimation = Max_Accl_bio*(1-np.exp(-Dec_Accl_bio*abs(TW[i]-T_Adp_bio)))
-            
+
             VT = ((T_Max_bio + Acclimation) - TW[i])/((T_Max_bio + Acclimation) - (T_Opt_bio + Acclimation))
-        
+
             if (VT <= 0):
                 TCorr[i] = 0
-                # print('Temperature is outside of acceptable range, therefore TCorr = 0 and no biodegradation will occur')
                 logger.debug("Temperature is outside of acceptable range, therefore TCorr = 0 and no biodegradation will occur")
-                
+
             elif VT > 0:
                 WT = np.log(Q10_bio)*((T_Max_bio + Acclimation) - (T_Opt_bio + Acclimation))
                 YT = np.log(Q10_bio)*((T_Max_bio + Acclimation) - (T_Opt_bio + Acclimation) + 2)
                 XT = ((WT**2)*(1+((1 + 40/YT)**(0.5)))**2)/400
                 TCorr[i] = (VT**XT)*np.exp(XT*(1-VT))
-                
-                # print('Temperature is inside of acceptable range, therefore TCorr != 0 and biodegradation will occur')
+
                 logger.debug("Temperature is inside of acceptable range, therefore TCorr != 0 and biodegradation will occur")
-                
-        
+
         if any(((ele < 0) or (ele > 1)) for ele in TCorr): 
-            # print('TCorr is not between 0 and 1') # TO DO This must become a Warning
-            warnings.warn('TCorr is not between 0 and 1')
-            logger.debug("TCorr is not between 0 and 1")
+            raise ValueError("TCorr is not between 0 and 1")
         else:
-            # print('TCorr is correct between 0 and 1')
             logger.debug("TCorr is correct between 0 and 1")
 
         return TCorr
-    
-  
+
+
     def calc_pHCorr(self, pH_min_bio, pH_max_bio, pH_water):
         ''' Correction for the effects of water pH on biodegradation
         '''
 
         pHCorr = np.empty_like(pH_water)
-        
+
         for i in (range(len(pH_water))):
-                
+
             if pH_water[i] <= pH_max_bio and pH_water[i] >= pH_min_bio:
                 pHCorr[i] = 1
                 logger.debug("pH is inside optimal range")
-            
+
             elif pH_water[i] < pH_min_bio:
                   pHCorr[i] = np.exp(pH_water[i]-pH_min_bio)
                   logger.debug("pH is below optimal range")
-                  
+
             elif pH_water[i] > pH_max_bio:
                  pHCorr[i] = np.exp(pH_max_bio - pH_water[i])
                  logger.debug("pH is over optimal range")
-                 
+
             else:
                 pass
 
         return pHCorr
-    
-   
+
+
     def calc_k_hydro_water(self, k_Acid, k_Base, k_Hydr_Uncat, pH_water):
         ''' Hydrolysis rate in water
         ''' 
-       
+
         k_W_hydro = np.empty_like(pH_water)
-        
+
         if (k_Acid == 0 and k_Base == 0 and k_Hydr_Uncat == 0):
             # print("k_DecayMax_water is set to 0 1/h, therefore  DOCorr = 0 and no biodegradation occurs")
             logger.debug("k_Acid, k_Base, k_Hydr_Uncat are set to 0 1/h, therefore no hydolysis occurs in the water")
-            
+
             for i in (range(len(pH_water))): 
                 k_W_hydro[i] = 0
-        
+
         else:
             logger.debug("k_Acid or k_Base or k_Hydr_Uncat are set != 0 1/h, therefore hydolysis occurs in the water")
             for i in (range(len(pH_water))): 
-                         
+
                k_hy_Ac = k_Acid*10**(-pH_water[i])
                k_hy_Base = k_Base*10**(pH_water[i]-14)
                k_W_hydro[i] = k_hy_Ac + k_hy_Base + k_Hydr_Uncat
-        
+
         return k_W_hydro
-    
-        
+
+
     def calc_k_hydro_sed(self, k_Acid, k_Base, k_Hydr_Uncat, pH_sed):
         ''' Hydrolysis rate in sediments
         ''' 
         k_S_hydro = np.empty_like(pH_sed)
-        
+
         if (k_Acid == 0 and k_Base == 0 and k_Hydr_Uncat == 0):
             logger.debug("k_Acid, k_Base, k_Hydr_Uncat are set to 0 1/h, therefore no hydolysis occurs in the sediments")
-            
+
             for i in (range(len(pH_sed))): 
                 k_S_hydro[i] = 0
         else:
             logger.debug("k_Acid or k_Base or k_Hydr_Uncat are set != 0 1/h, therefore hydolysis occurs in the sediments")
             for i in (range(len(pH_sed))): 
-                         
+
                k_hy_Ac = k_Acid*10**(-pH_sed[i])
                k_hy_Base = k_Base*10**(pH_sed[i]-14)
                k_S_hydro[i] = k_hy_Ac + k_hy_Base + k_Hydr_Uncat
-        
-        # print("k_S_hydro", k_S_hydro)
+
         return k_S_hydro
-        
-    
+
+
     def calc_ScreeningFactor(self, RadDistr, RadDistr0_ml, RadDistr0_bml, WaterExt, ExtCoeffDOM, ExtCoeffSPM, ExtCoeffPHY, C2PHYC, concDOC, concSPM, Conc_Phyto_water, Depth, MLDepth):
         ''' Screening Factor for photolisis attenuation with depth due to DOM, SPM, and Pythoplankton
         ''' 
         ConcDOM = (concDOC*12e-6 / 1.025 / 0.526 * 1e-3)* 1e-6 # ((Kg[OM]/L) from (umol[C]/Kg))* 1e-6 = g_DOM/m3
-              
+
         # ConcSPM is already esxpressed in g_SPM/m3
-         
         ConcPHYTO = (((Conc_Phyto_water*1e-6)*12.01)/C2PHYC)*1000 # mmol/m3*1e-6 = mol/L, *12.01 g_C/mol = g_C/L, / (g_Caron/g_Biomass) = g_Biomass/L, *1000 = g_BiomassPHYTO/m3
-          
+
         Extinct = WaterExt + ExtCoeffDOM*ConcDOM + ExtCoeffSPM*concSPM +  ExtCoeffPHY*ConcPHYTO
-           
 
         ScreeningFactor = np.empty_like(Depth)
-                
+
         for i in (range(len(MLDepth))):
             if Depth[i] == 0:
                 ScreeningFactor[i] = 1
             else:
                 if Depth[i] <= MLDepth[i]:
                     RadDistr_ratio = RadDistr/RadDistr0_ml
-                    
+
                 elif Depth[i] > MLDepth[i]:
                     RadDistr_ratio = RadDistr/RadDistr0_bml
                 else:
                     pass
+
                 ScreeningFactor[i] = RadDistr_ratio*((1-np.exp(-Extinct[i]*Depth[i]))/(Extinct[i]*Depth[i]))
-            
-            if math.isnan(ScreeningFactor[i]):
-                print( "ScreeningFactor for element", i, "is nan")
-                logger.debug("ScreeningFactor for element", i, "is nan")
-            else:
-                pass
-        
+
+        if np.isnan(ScreeningFactor).any():
+            raise ValueError("ScreeningFactor in NaN")
+        else:
+            pass
+
         if any(((ele < 0) or (ele > 1)) for ele in ScreeningFactor): 
-            # print('ScreeningFactor is not between 0 and 1')
-            warnings.warn('ScreeningFactor is not between 0 and 1')
-            logger.debug("ScreeningFactor is not between 0 and 1")
+            raise ValueError('ScreeningFactor is not between 0 and 1')
         else:
             pass 
 
         return ScreeningFactor
-      
+
     def calc_LightFactor(self, AveSolar, Solar_radiation, Conc_CO2_asC, TW, Depth, MLDepth):
         ''' Light Factor for photolisis attenuation with depth 
         '''
         # TW = Water temperature in °C
         # TO DO Check here the convertion from input to Ly/day
-        
+
         Solar = Solar_radiation/0.4843 # 1 Ly/day =  41868 J/m2 / 86400 s = 0.4843 W/m2
-        
+
         Conc_CO2 = ((Conc_CO2_asC*12.01)*1000)*22.73*1000 # from mol_C/m3, *12.01 g_C/mol = g_C/m3, *1000 = mg/m3, * 22.73 ueq/mg = ueq/m3, *1000 = ueq/L
 
         LightFactor = np.empty_like(MLDepth)
         HyphoCorr = np.empty_like(MLDepth)
-        
-        for i in (range(len(MLDepth))):          
-            
+
+        for i in (range(len(MLDepth))):
+
             if Depth[i] <= MLDepth[i]:
                 Solar0 = Solar[i]
                 LightFactor[i] = Solar0/AveSolar
@@ -2095,8 +2061,7 @@ class ChemicalDrift(OceanDrift):
                         *np.log(0.5)/self.get_config('chemical:particle_concentration_half_depth')
                         )
                 concSPM=concSPM[W] # (g/m3)
-                
-                
+
                 # # # Concentration of DOC g/m3
                 concDOC = self.environment.doc # in (umol[C]/Kg)
 
@@ -2113,45 +2078,38 @@ class ChemicalDrift(OceanDrift):
                         *np.log(0.5)/self.get_config('chemical:doc_concentration_half_depth')
                         )
                 concDOC=concDOC[W] # in (umol[C]/Kg)
-                
-                
+
                 # Mixed Layer depth in m
                 MLDepth=self.environment.ocean_mixed_layer_thickness[W] 
-                
-                
-                # MLDepth[MLDepthr==0]=np.median(MLDepth)
-                
-                # Depth of element in m
-                Depth=-self.elements.z[W]     # self.elements.z is negative                                                                                   
-                
 
+                # MLDepth[MLDepthr==0]=np.median(MLDepth)
+
+                # Depth of element in m
+                Depth=-self.elements.z[W]     # self.elements.z is negative
 
                 # Calculating correction factors for degradation rates
-                
+
                 k_W_bio = k_DecayMax_water * self.calc_DOCorr(HalfSatO_w, k_Anaerobic_water, k_DecayMax_water, Ox_water)
                 k_W_bio = k_W_bio * self.calc_pHCorr(pH_min_bio, pH_max_bio, pH_water)
                 k_W_bio = k_W_bio * self.calc_TCorr(T_Max_bio, T_Opt_bio, T_Adp_bio, Max_Accl_bio, Dec_Accl_bio, Q10_bio, TW)
-                
+
                 k_W_photo = k_Photo * self.calc_LightFactor(AveSolar, Solar_radiation, Conc_CO2_asC, TW, Depth, MLDepth)
                 k_W_photo = k_W_photo * self.calc_ScreeningFactor(RadDistr, RadDistr0_ml, RadDistr0_bml, WaterExt, ExtCoeffDOM, ExtCoeffSPM, ExtCoeffPHY, C2PHYC, concDOC, concSPM, Conc_Phyto_water, Depth, MLDepth)
                 k_W_photo = k_W_photo * self.tempcorr("Arrhenius",DH_kWt,TW,Tref_kWt) 
-               
+
                 k_W_hydro = self.calc_k_hydro_water(k_Acid, k_Base, k_Hydr_Uncat, pH_water)
                 k_W_hydro = k_W_hydro * self.tempcorr("Arrhenius",DH_kWt,TW,Tref_kWt)
-                             
-                
+
                 k_W_tot = (k_W_bio + k_W_hydro + k_W_photo)/(60*60) # from 1/h to 1/s
                 k_W_fin = k_W_tot * self.tempcorr("Arrhenius",DH_kWt,TW,Tref_kWt)
-                
-
 
                 # degraded_now = self.elements.mass * (1-np.exp(-k_W_fin * self.time_step.seconds))
                 degraded_now[W] = self.elements.mass[W] * (1-np.exp(-k_W_fin * self.time_step.total_seconds()))
 
                 # Degradation in the sediments
-                
+
                 # k_S_tot = -np.log(0.5)/(self.get_config('chemical:transformations:t12_S_tot')*(60*60)) # (1/s)
-                
+
                 Tref_kSt = self.get_config('chemical:transformations:Tref_kSt')
                 DH_kSt = self.get_config('chemical:transformations:DeltaH_kSt')
 
@@ -2161,33 +2119,33 @@ class ChemicalDrift(OceanDrift):
                 # TS=self.environment.sea_water_temperature
                 TS=self.environment.sea_water_temperature[S]
                 TS[TS==0]=np.median(TS)
-                
+
                 # pH sediments
                 pH_sed=self.environment.pH_sediment[S]
                 pH_sed[pH_sed==0]=np.median(pH_sed)
-                
+
                 k_S_bio = self.get_config('chemical:transformations:k_DecayMax_water')/4  # From AQUATOX   k_DecayMax_water is a rate (1/h), and k_S_bio is four times slower than k_DecayMax_water           
                 k_S_hydro = self.calc_k_hydro_sed(k_Acid, k_Base, k_Hydr_Uncat, pH_sed)
-                
+
                 k_S_tot = (k_S_bio + k_S_hydro)/(60*60) # from 1/h to 1/s
                 k_S_fin = k_S_tot * self.tempcorr("Arrhenius",DH_kSt,TS,Tref_kSt)
 
                 # degraded_now = self.elements.mass * (1-np.exp(-k_S_fin * self.time_step.seconds))
                 degraded_now[S] = self.elements.mass[S] * (1-np.exp(-k_S_fin * self.time_step.total_seconds()))
 
-            self.elements.mass_degraded_water[W] = self.elements.mass_degraded_water[W] + degraded_now[W]
-            self.elements.mass_degraded_sediment[S] = self.elements.mass_degraded_sediment[S] + degraded_now[S]
+                self.elements.mass_degraded_water[W] = self.elements.mass_degraded_water[W] + degraded_now[W]
+                self.elements.mass_degraded_sediment[S] = self.elements.mass_degraded_sediment[S] + degraded_now[S]
 
-            self.elements.mass_degraded = self.elements.mass_degraded + degraded_now
-            self.elements.mass = self.elements.mass - degraded_now
-            self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100,
-                                     reason='removed')
+                self.elements.mass_degraded = self.elements.mass_degraded + degraded_now
+                self.elements.mass = self.elements.mass - degraded_now
+                self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/500,
+                                         reason='removed')
 
-            #to_deactivate = self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100
-            #vol_morethan_degr = self.elements.mass_degraded >= self.elements.mass_volatilized
-            #
-            #self.deactivate_elements(to_deactivate +  vol_morethan_degr, reason='volatilized')
-            #self.deactivate_elements(to_deactivate + ~vol_morethan_degr, reason='degraded')
+                #to_deactivate = self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100
+                #vol_morethan_degr = self.elements.mass_degraded >= self.elements.mass_volatilized
+                #
+                #self.deactivate_elements(to_deactivate +  vol_morethan_degr, reason='volatilized')
+                #self.deactivate_elements(to_deactivate + ~vol_morethan_degr, reason='degraded')
         else:
             pass
 
@@ -4026,6 +3984,23 @@ class ChemicalDrift(OceanDrift):
 
         return new_cmap
 
+    @staticmethod
+    def remove_white_borders(image):
+        '''
+        Remove white borders from an image
+
+        image:     np.array of float32, rgb array of image with white = 1
+        '''
+        # Get the non-zero pixels along each axis
+        rows = np.any(image != 1, axis=1)
+        cols = np.any(image != 1, axis=0)
+        # Get the bounding box of non-zero pixels
+        rmin, rmax = np.where(rows)[0][[0, -1]]
+        cmin, cmax = np.where(cols)[0][[0, -1]]
+        # Crop the image to the bounding box
+        cropped_image = image[rmin:rmax + 1, cmin:cmax + 1]
+        return cropped_image
+
     def create_images(self,
                       Conc_Dataset,
                       time_start, 
@@ -4057,6 +4032,7 @@ class ChemicalDrift(OceanDrift):
                       labels_font_sizes = [30,30,30,25,25,25,25],
                       shp_color = "black",
                       trim_images = True,
+                      save_figures = True,
                       date_str_lenght = 10,
                       len_fig = 23, high_fig =15):
         '''
@@ -4101,6 +4077,7 @@ class ChemicalDrift(OceanDrift):
         high_fig:             int, height of the figure (inches)
         shp_color:            string, color of shapefile when plotted
         trim_images:          boolean,select if white borders of images is removed
+        save_figures:         boolean,select if figures are saved
         date_str_lenght:      int, number date string charcters kept in title [10 for YYYY-MM-DD, 19 for hour shown] 
         '''
 
@@ -4110,106 +4087,102 @@ class ChemicalDrift(OceanDrift):
         import os as os
         from mpl_toolkits.axes_grid1 import make_axes_locatable, axes_size
         import geopandas as gpd
+        from datetime import datetime as dt
 
-        aspect = 15
-        # pad_fraction = 1e-1
-        file_output_path = file_out_path + file_out_sub_folder
-        print("Figures saved to: ", file_output_path)
-
-        def fmt(x, pos):
-            '''
-            Define scientific notation for colorbar if scientific_colorbar is True
-            '''
-            a, b = '{:.1e}'.format(x).split('e')
-            b = int(b)
-            return r'${} \times 10^{{{}}}$'.format(a, b)
-
-        title_font_size = labels_font_sizes[0]
-        x_label_font_size = labels_font_sizes[1]
-        y_label_font_size = labels_font_sizes[2]
-        x_ticks_font_size = labels_font_sizes[3]
-        # y_ticks_font_size = labels_font_sizes[4]
-        cbar_label_font_size = labels_font_sizes[5]
-        # cbar_ticks_font_size = labels_font_sizes[6]
-
-        if simmetrical_cmap == True:
-            if selected_colormap == None:
-                selected_colormap = plt.colormaps["viridis"]
-            selected_colormap = self._simmetrical_colormap(cmap = selected_colormap)
-
-        if not os.path.exists(file_output_path):
-            os.makedirs(file_output_path)
-            print("file_output_path did not exist and was created")
-        else:
-            pass
-
-        if add_shp_to_figure:
-            print("shp was added over the figures")
-            shp = gpd.read_file(shp_file_path)
-            cax_pad= -3
-        else:
-            print("shp was not added over the figures")
-            # Create an empty GeoDataFrame (shp) to plot 
-            from shapely.geometry import Point
-            crs = 'epsg:4326'
-            # Create an empty GeoDataFrame
-            columns = ['geometry']
-            shp =  gpd.GeoDataFrame(columns=columns, crs=crs)
-            point = Point(0, 0)
-            shp.loc[0, 'geometry'] = point
-            cax_pad= 1
-
-        if "longitude" not in Conc_Dataset.dims:
-            if 'lat' in Conc_Dataset.dims:
-                Conc_Dataset = Conc_Dataset.rename({'lat': 'latitude','lon': 'longitude'})
-            elif 'x' in Conc_Dataset.dims:
-                Conc_Dataset = Conc_Dataset.rename({'y': 'latitude','x': 'longitude'})
-
-        if "concentration_avg_water" in Conc_Dataset.keys():
-            Conc_DataArray = Conc_Dataset.concentration_avg_water
-        elif "concentration_avg_sediments" in Conc_Dataset.keys():
-            Conc_DataArray = Conc_Dataset.concentration_avg_sediments
-        elif variable_name is not None:
-            Conc_DataArray = Conc_Dataset[variable_name]
-        else:
-            raise ValueError("specified variable_name is not present in Conc_Dataset")
-
-        if colorbar_title is None:
-            if "concentration_avg_water" in Conc_Dataset.keys():
-                colorbar_title = "concentration_avg_water"
-            elif "concentration_avg_sediments" in Conc_Dataset.keys():
-                colorbar_title = "concentration_avg_sediments"
-            elif variable_name is not None:
-                colorbar_title = variable_name
-            else:
-                raise ValueError("colorbar_title or variable_name are not specified")
-
-        if 'time' in Conc_DataArray.dims:
-            Conc_DataArray = Conc_DataArray.where(((Conc_DataArray.time >= time_start) &
-                                           (Conc_DataArray.time <= time_end)), drop=True)
-            if Conc_DataArray.time.size == 0:
-                raise ValueError("Conc_DataArray.time is out of time_start/end interval")
-        elif time_start is not None:
-            Conc_DataArray['time'] = time_start
-        else:
-            raise ValueError("Conc_DataArray.time is missing, time_start must be specified")
-
-        attribute_list = list(Conc_DataArray.attrs)
-        for attr in attribute_list:
-            del Conc_DataArray.attrs[attr]
-
-        figure_ls = []
-        figure_name_ls = []
         if load_img_from_folder == False:
+            start=dt.now()
+            aspect = 15
+            # pad_fraction = 1e-1
+            file_output_path = file_out_path + file_out_sub_folder
+            print("Figures saved to: ", file_output_path)
+
+            def fmt(x, pos):
+                '''
+                Define scientific notation for colorbar if scientific_colorbar is True
+                '''
+                a, b = '{:.1e}'.format(x).split('e')
+                b = int(b)
+                return r'${} \times 10^{{{}}}$'.format(a, b)
+
+            title_font_size = labels_font_sizes[0]
+            x_label_font_size = labels_font_sizes[1]
+            y_label_font_size = labels_font_sizes[2]
+            x_ticks_font_size = labels_font_sizes[3]
+            # y_ticks_font_size = labels_font_sizes[4]
+            cbar_label_font_size = labels_font_sizes[5]
+            # cbar_ticks_font_size = labels_font_sizes[6]
+
+            if simmetrical_cmap == True:
+                if selected_colormap == None:
+                    selected_colormap = plt.colormaps["viridis"]
+                selected_colormap = self._simmetrical_colormap(cmap = selected_colormap)
+
+            if not os.path.exists(file_output_path):
+                os.makedirs(file_output_path)
+                print("file_output_path did not exist and was created")
+            else:
+                pass
+
+            if add_shp_to_figure:
+                print("shp was added over the figures")
+                shp = gpd.read_file(shp_file_path)
+                cax_pad= -3
+            else:
+                print("shp was not added over the figures")
+                # Create an empty GeoDataFrame (shp) to plot 
+                from shapely.geometry import Point
+                crs = 'epsg:4326'
+                # Create an empty GeoDataFrame
+                columns = ['geometry']
+                shp =  gpd.GeoDataFrame(columns=columns, crs=crs)
+                point = Point(0, 0)
+                shp.loc[0, 'geometry'] = point
+                cax_pad= 1
+
+            if "longitude" not in Conc_Dataset.dims:
+                if 'lat' in Conc_Dataset.dims:
+                    Conc_Dataset = Conc_Dataset.rename({'lat': 'latitude','lon': 'longitude'})
+                elif 'x' in Conc_Dataset.dims:
+                    Conc_Dataset = Conc_Dataset.rename({'y': 'latitude','x': 'longitude'})
+    
+            if "concentration_avg_water" in Conc_Dataset.keys():
+                Conc_DataArray = Conc_Dataset.concentration_avg_water
+            elif "concentration_avg_sediments" in Conc_Dataset.keys():
+                Conc_DataArray = Conc_Dataset.concentration_avg_sediments
+            elif variable_name is not None:
+                Conc_DataArray = Conc_Dataset[variable_name]
+            else:
+                raise ValueError("specified variable_name is not present in Conc_Dataset")
+
+            if colorbar_title is None:
+                if "concentration_avg_water" in Conc_Dataset.keys():
+                    colorbar_title = "concentration_avg_water"
+                elif "concentration_avg_sediments" in Conc_Dataset.keys():
+                    colorbar_title = "concentration_avg_sediments"
+                elif variable_name is not None:
+                    colorbar_title = variable_name
+                else:
+                    raise ValueError("colorbar_title or variable_name are not specified")
+
+            if 'time' in Conc_DataArray.dims:
+                Conc_DataArray = Conc_DataArray.where(((Conc_DataArray.time >= time_start) &
+                                               (Conc_DataArray.time <= time_end)), drop=True)
+                if Conc_DataArray.time.size == 0:
+                    raise ValueError("Conc_DataArray.time is out of time_start/end interval")
+            elif time_start is not None:
+                Conc_DataArray['time'] = time_start
+            else:
+                raise ValueError("Conc_DataArray.time is missing, time_start must be specified")
+
+            attribute_list = list(Conc_DataArray.attrs)
+            for attr in attribute_list:
+                del Conc_DataArray.attrs[attr]
+
+            figure_ls = []
+            figure_name_ls = []
             for timestep in range(0, (Conc_DataArray.time.to_numpy()).size):
                 figure_name_ls.append(str(f"{timestep:03d}")+"_"+figure_file_name+fig_format)
-        elif load_img_from_folder == True and fig_numbers is not None:
-            for timestep in range(fig_numbers[0], fig_numbers[1]):
-                figure_name_ls.append(str(f"{timestep:03d}")+"_"+figure_file_name+fig_format)
-        else:
-            raise ValueError("fig_numbers must be specified")
 
-        if load_img_from_folder == False:
             for timestep in range(0, (Conc_DataArray.time.to_numpy()).size):
                 print("creating image n° ", str(timestep+1), " out of ", str((Conc_DataArray.time.to_numpy()).size))
                 if (Conc_DataArray.time.to_numpy()).size > 1 and "depth" in Conc_DataArray.dims:
@@ -4265,94 +4238,96 @@ class ChemicalDrift(OceanDrift):
                 figure_ls.append(fig)
                 plt.close('all')
 
-        if trim_images == True:
-            def remove_white_borders(image):
-                '''
-                Remove white borders from an image
-
-                image:     np.array of float32, rgb array of image with white = 1
-                '''
-                # Get the non-zero pixels along each axis
-                rows = np.any(image != 1, axis=1)
-                cols = np.any(image != 1, axis=0)
-                # Get the bounding box of non-zero pixels
-                rmin, rmax = np.where(rows)[0][[0, -1]]
-                cmin, cmax = np.where(cols)[0][[0, -1]]
-                # Crop the image to the bounding box
-                cropped_image = image[rmin:rmax + 1, cmin:cmax + 1]
-                return cropped_image
-
-            for img_index in range(0, len(figure_ls)):
-                fig = figure_ls[img_index]
-                # Render the figure to a pixel buffer
-                fig.canvas.draw()
-                # Get the pixel buffer as an RGB array
-                width, height = fig.canvas.get_width_height()
-                rgb = (np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape((height, width, 3))).astype(np.float32) / 255.0
-                rgb = remove_white_borders(rgb)
-                figure_ls[img_index] = rgb
-        else:
-            pass
-
-        if load_img_from_folder == False: 
             if trim_images == True:
                 for img_index in range(0, len(figure_ls)):
-                    print("saving image n° ", img_index, " out of ",  len(figure_ls))
-                    fig_path = (file_out_path + file_out_sub_folder + figure_name_ls[img_index])
-                    fig, ax = plt.subplots(figsize = (len_fig,high_fig))
-                    ax.set_axis_off()
-                    plt.imsave(fig_path, figure_ls[img_index], cmap=selected_colormap)
-                    plt.close('all')
+                    fig = figure_ls[img_index]
+                    # Render the figure to a pixel buffer
+                    fig.canvas.draw()
+                    # Get the pixel buffer as an RGB array
+                    width, height = fig.canvas.get_width_height()
+                    rgb = (np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape((height, width, 3))).astype(np.float32) / 255.0
+                    rgb = self.remove_white_borders(rgb)
+                    figure_ls[img_index] = rgb
             else:
+                pass
+            print("Time to create figures (hr:min:sec): ", dt.now()-start)
+
+            # Save figures
+            if save_figures == True:
+                start = dt.now()
+                if trim_images == True:
+                    for img_index in range(0, len(figure_ls)):
+                        print("saving image n° ", img_index, " out of ",  len(figure_ls))
+                        fig_path = (file_out_path + file_out_sub_folder + figure_name_ls[img_index])
+                        fig, ax = plt.subplots(figsize = (len_fig,high_fig))
+                        ax.set_axis_off()
+                        plt.imsave(fig_path, figure_ls[img_index], cmap=selected_colormap)
+                        plt.close('all')
+                else:
+                    for img_index in range(0, len(figure_ls)):
+                        print("saving image n° ", img_index, " out of ",  len(figure_ls))
+                        figure_ls[img_index].savefig(file_out_path + file_out_sub_folder + figure_name_ls[img_index])
+                print("Time to save figures (hr:min:sec): ", dt.now()-start)
+            else:
+                print("Figures were not saved")
+
+        elif load_img_from_folder == True and fig_numbers is not None:
+            # Create figures names
+            figure_name_ls = []
+            for timestep in range(fig_numbers[0], fig_numbers[1]):
+                figure_name_ls.append(str(f"{timestep:03d}")+"_"+figure_file_name+fig_format)
+            # Load figures
+            figure_ls = []
+            print("Loading images")
+            for fig_name in figure_name_ls:
+                fig_path = (file_out_path + file_out_sub_folder + fig_name)
+                image = plt.imread(fig_path)
+                # fig, ax = plt.subplots(figsize = (len_fig,high_fig))
+                # ax.set_axis_off()
+                figure_ls.append(image)
+                plt.close('all')
+            if trim_images == True:
                 for img_index in range(0, len(figure_ls)):
-                    print("saving image n° ", img_index, " out of ",  len(figure_ls))
-                    figure_ls[img_index].savefig(file_out_path + file_out_sub_folder + figure_name_ls[img_index])
+                    rgb = self.remove_white_borders(rgb)
+                    figure_ls[img_index] = rgb
+            else:
+                pass
+        else:
+            raise ValueError("fig_numbers must be specified")
 
         if make_animation is True:
             from matplotlib.animation import FuncAnimation
-
+            start = dt.now()
             def update(frame):
+                # frame is rgb np.array
                 # Update the image in the plot
                 ax.imshow(figure_ls[frame]) 
                 ax.set_axis_off()
                 return [ax]
 
-            if load_img_from_folder == True:
-                figure_ls = []
-                print("Loading images")
-                for fig_name in figure_name_ls:
-                    fig_path = (file_out_path + file_out_sub_folder + fig_name)
-                    image = plt.imread(fig_path)
-                    # fig, ax = plt.subplots(figsize = (len_fig,high_fig))
-                    # ax.set_axis_off()
-                    figure_ls.append(image)
-                    plt.close('all')
-                if trim_images == True:
-                    for img_index in range(0, len(figure_ls)):
-                        rgb = remove_white_borders(rgb)
-                        figure_ls[img_index] = rgb
-                else:
-                    pass
-            elif load_img_from_folder == False:
-                if trim_images == False:
-                    for img_index in range(0, len(figure_ls)):
-                        fig = figure_ls[img_index]
-                        # Render the figure to a pixel buffer
-                        fig.canvas.draw()
-                        # Get the pixel buffer as an RGB array
-                        width, height = fig.canvas.get_width_height()
-                        rgb = (np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape((height, width, 3))).astype(np.float32) / 255.0
-                        figure_ls[img_index] = rgb
-                else:
-                    pass
+            #Change figures from matplotlib-Figure to rgb np.array 
+            if load_img_from_folder == False and trim_images == False:
+                for img_index in range(0, len(figure_ls)):
+                    fig = figure_ls[img_index]
+                    # Render the figure to a pixel buffer
+                    fig.canvas.draw()
+                    # Get the pixel buffer as an RGB array
+                    width, height = fig.canvas.get_width_height()
+                    rgb = (np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape((height, width, 3))).astype(np.float32) / 255.0
+                    figure_ls[img_index] = rgb
+            else:
+                pass
 
             fig, ax = plt.subplots(figsize = (len_fig,high_fig))
             # Create the animation
             print("Creating animation")
             animation = FuncAnimation(fig, update, frames=len(figure_ls), interval=600)
             output_video = file_out_path + file_out_sub_folder + figure_file_name + animation_format
+            print("Time to create animation (hr:min:sec): ", dt.now()-start)
             print("Saving animation to ", file_out_path + file_out_sub_folder)
+            start = dt.now()
             animation.save(output_video, writer='ffmpeg')
+            print("Time to save animation (hr:min:sec): ", dt.now()-start)
         else:
             pass
 
@@ -4895,6 +4870,36 @@ class ChemicalDrift(OceanDrift):
         if filename is not None:
             plt.savefig(filename, format=filename[-3:], transparent=True, bbox_inches="tight", dpi=300)
 
+    @staticmethod
+    def change_datetime_format(datetime_str, new_format):
+        '''
+        Change format of datetime string to a specified format
+    
+        Parameters
+        ----------
+        datetime_str: str, datetime string to be reformatted
+        new_format:  str, specified datetime format
+        '''
+        possible_formats = ["%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y/%m/%d %H", "%Y/%m/%d", 
+                            "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d %H", "%Y-%m-%d",
+                            "%d-%m-%Y %H:%M:%S", "%d-%m-%Y %H:%M", "%d-%m-%Y %H", "%d-%m-%Y",
+                            "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y %H", "%d/%m/%Y",
+                            "%m-%d-%Y %H:%M:%S", "%m-%d-%Y %H:%M", "%m-%d-%Y %H", "%m-%d%Y",
+                            "%m/%d/%Y %H:%M:%S", "%m/%d/%Y %H:%M", "%m/%d/%Y %H", "%m/%d/%Y"
+                            ]
+        for fmt in possible_formats:
+            try:
+                # Attempt to parse the datetime string
+                dt = datetime.strptime(datetime_str, fmt)
+                # If parsing is successful, format the datetime object
+                formatted_datetime = dt.strftime(new_format)
+                # Return the formatted datetime string
+                return formatted_datetime
+            except ValueError:
+                pass  # Continue to the next format if parsing fails
+        # Return None if parsing fails for all formats
+        raise ValueError("Unknown format of date_of_timestep")
+
     def extract_summary_timeseries(self, 
             file_out_path,
             sim_name,
@@ -4914,6 +4919,8 @@ class ChemicalDrift(OceanDrift):
             lon_max = None,
             lat_min = None,
             lat_max = None,
+            start_date = None,
+            end_date = None,
             check_mass = False,
             deactivate_coords = False):
         '''
@@ -4943,6 +4950,9 @@ class ChemicalDrift(OceanDrift):
         lat_min:                      float32, min latitude of domain to consider advection out of the simulation domain
         lat_max:                      float32, max latitude of domain to consider advection out of the simulation domain
         deactivate_coords:            boolean, indicate if deactivate_north_of/south_of/_east_of/_west_of were used in simulation when plotting from .csv file
+        start_date:                   pd.Datetime, start of plotted timeserie
+                                      (e.g., pd.to_datetime("2018-01-01 00:00:00", format = '%Y-%m-%d %H:%M:%S'))
+        end_date:                     pd.Datetime, end of plotted timeserie
 
         Returns a Pandas Dataframe:
             ----
@@ -5210,7 +5220,7 @@ class ChemicalDrift(OceanDrift):
 
             # Mass emitted into the system up to the end of each timestep
             mass_emitted = (mass_tot_timestep + mass_degraded + mass_volatilized)
-            
+
             # Mass that has been degraded (wat and sed) and volatilized of elements
             # advected out of the system
             mass_volatilized_adv = (np.sum((mass_v[0])* adv_out,1)*mass_conversion_factor)
@@ -5260,31 +5270,82 @@ class ChemicalDrift(OceanDrift):
 
         elif load_timeseries_from_file is True and timeseries_file_path is not None:
             mass_fin_df = pd.read_csv(timeseries_file_path + csv_file_name)
+            # Specify mass_unit and time_unit from loaded dataframe
+            mass_col_ind = int(np.where(mass_fin_df.columns.str.contains("dissolved-"))[0])
+            mass_unit = mass_fin_df.columns[mass_col_ind][11:-1]
+            time_col_ind = int(np.where(mass_fin_df.columns.str.contains("time-"))[0])
+            time_unit = mass_fin_df.columns[time_col_ind][6:-1]
+            mass_fin_df = mass_fin_df.dropna(subset = ['date_of_timestep'])
+
         else:
             raise ValueError("timeseries_file_path must be specified")
 
-        def select_df_column(col_name, dataframe = mass_fin_df):
+        def select_df_column(col_name, dataframe):
+            '''
+            Select a column of mass_fin_df based on name 
+            '''
             return dataframe[dataframe.columns[dataframe.columns.str.contains(col_name)]]
-        
-        time_steps = select_df_column(col_name = "time-")
-        mass_emitted = select_df_column(col_name = 'mass_emitted-')
-        mass_actual = select_df_column(col_name = 'mass_current-')
-        mass_water = select_df_column(col_name = 'mass_wat-')
-        mass_sed = select_df_column(col_name = 'mass_sed_rev-')
-        mass_degraded = select_df_column(col_name = 'mass_degr_tot-')
-        mass_degraded_s = select_df_column(col_name = 'mass_degr_sed-')
-        mass_degraded_w = select_df_column(col_name = 'mass_degr_wat-')
-        mass_adv_out_cumulative = select_df_column(col_name = 'adv_out_cumul-')
-        mass_adv_out = select_df_column(col_name = 'adv_out_ts-')
-        mass_volatilized = select_df_column(col_name = 'mass_vol-')
-        mass_sed_buried = select_df_column(col_name = 'mass_sed_buried-')
+
         time_conversion_factor = mass_fin_df.loc[0, ('convertion_factors-[time_mass]')]
         mass_conversion_factor = mass_fin_df.loc[1, ('convertion_factors-[time_mass]')]
-        perc_adv = select_df_column(col_name = 'perc_adv-')
-        perc_degraded_s = select_df_column(col_name = 'perc_deg_s-')
-        perc_degraded_w = select_df_column(col_name = 'perc_deg_w-')
-        perc_volatilized = select_df_column(col_name = 'perc_vol-')
-        perc_sed_buried = select_df_column(col_name ='perc_sed_buried-')
+
+        def filter_dataframe(df = mass_fin_df, start_date=None, end_date=None):
+            '''
+            Filter dataframe based on start and end date
+
+            df:                     Pandas dataframe, mass_fin_df
+            start_date:                   pd.Datetime, start of plotted timeserie
+                                          (e.g., pd.to_datetime("2018-01-01 00:00:00", format = '%Y-%m-%d %H:%M:%S'))
+            end_date:                     pd.Datetime, end of plotted timeserie
+            '''
+            # Check if both start_date and end_date are None
+            if start_date is None and end_date is None:
+                return df
+
+            date_of_timestep_ls = []
+            for element in df['date_of_timestep']:
+                date_of_timestep_ls.append(self.change_datetime_format(datetime_str = element,
+                                            new_format = "%Y-%m-%d %H:%M:%S"))
+            df['date_of_timestep'] = date_of_timestep_ls
+            del date_of_timestep_ls
+
+            date_column = pd.to_datetime(df['date_of_timestep'], format='%Y-%m-%d %H:%M:%S')
+
+            # Filter based on start_date and/or end_date
+            if start_date is not None and end_date is not None:
+                filtered_df = df[( date_column >= start_date) & (date_column <= end_date)]
+            elif start_date is not None:
+                filtered_df = df[(date_column >= start_date)]
+            else:  # end_date is not None
+                filtered_df = df[(date_column <= end_date)]
+            # Correct 'time'+"-["+ time_unit +"]" column to start at new start_date
+            time_delta_filter = filtered_df['time'+"-["+ time_unit +"]"].iloc[0] - df['time'+"-["+ time_unit +"]"].iloc[0]
+            filtered_df['time'+"-["+ time_unit +"]"] = np.array(filtered_df['time'+"-["+ time_unit +"]"]) - time_delta_filter
+            return filtered_df
+
+        # Filter dataframe based on date
+        mass_fin_df = filter_dataframe(df = mass_fin_df,
+                                       start_date = start_date, end_date = end_date)
+
+        # Create timeseries to plot
+        time_steps = select_df_column(col_name = "time-", dataframe = mass_fin_df)
+        mass_emitted = select_df_column(col_name = 'mass_emitted-', dataframe = mass_fin_df)
+        mass_actual = select_df_column(col_name = 'mass_current-', dataframe = mass_fin_df)
+        mass_water = select_df_column(col_name = 'mass_wat-', dataframe = mass_fin_df)
+        mass_sed = select_df_column(col_name = 'mass_sed_rev-', dataframe = mass_fin_df)
+        mass_degraded = select_df_column(col_name = 'mass_degr_tot-', dataframe = mass_fin_df)
+        mass_degraded_s = select_df_column(col_name = 'mass_degr_sed-', dataframe = mass_fin_df)
+        mass_degraded_w = select_df_column(col_name = 'mass_degr_wat-', dataframe = mass_fin_df)
+        mass_adv_out_cumulative = select_df_column(col_name = 'adv_out_cumul-', dataframe = mass_fin_df)
+        mass_adv_out = select_df_column(col_name = 'adv_out_ts-', dataframe = mass_fin_df)
+        mass_volatilized = select_df_column(col_name = 'mass_vol-', dataframe = mass_fin_df)
+        mass_sed_buried = select_df_column(col_name = 'mass_sed_buried-', dataframe = mass_fin_df)
+
+        perc_adv = select_df_column(col_name = 'perc_adv-', dataframe = mass_fin_df)
+        perc_degraded_s = select_df_column(col_name = 'perc_deg_s-', dataframe = mass_fin_df)
+        perc_degraded_w = select_df_column(col_name = 'perc_deg_w-', dataframe = mass_fin_df)
+        perc_volatilized = select_df_column(col_name = 'perc_vol-', dataframe = mass_fin_df)
+        perc_sed_buried = select_df_column(col_name ='perc_sed_buried-', dataframe = mass_fin_df)
 
         if plot_figures is True:
             print("Plotting figures")
@@ -5569,35 +5630,6 @@ class ChemicalDrift(OceanDrift):
         merged_df = merged_df.fillna(0)
         return merged_df
 
-    @staticmethod
-    def change_datetime_format(datetime_str, new_format):
-        '''
-        Change format of datetime string to a specified format
-
-        Parameters
-        ----------
-        datetime_str: str, datetime string to be reformatted
-        new_format:  str, specified datetime format
-        '''
-        possible_formats = ["%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y/%m/%d %H", "%Y/%m/%d", 
-                            "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d %H", "%Y-%m-%d",
-                            "%d-%m-%Y %H:%M:%S", "%d-%m-%Y %H:%M", "%d-%m-%Y %H", "%d-%m-%Y",
-                            "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y %H", "%d/%m/%Y",
-                            "%m-%d-%Y %H:%M:%S", "%m-%d-%Y %H:%M", "%m-%d-%Y %H", "%m-%d%Y",
-                            "%m/%d/%Y %H:%M:%S", "%m/%d/%Y %H:%M", "%m/%d/%Y %H", "%m/%d/%Y"
-                            ]
-        for fmt in possible_formats:
-            try:
-                # Attempt to parse the datetime string
-                dt = datetime.strptime(datetime_str, fmt)
-                # If parsing is successful, format the datetime object
-                formatted_datetime = dt.strftime(new_format)
-                # Return the formatted datetime string
-                return formatted_datetime
-            except ValueError:
-                pass  # Continue to the next format if parsing fails
-        # Return None if parsing fails for all formats
-        raise ValueError("Unknown format of date_of_timestep")
 
     def sum_summary_timeseries(self,
                                ts_file_path,
@@ -5638,12 +5670,15 @@ class ChemicalDrift(OceanDrift):
         for filename in os.listdir(ts_file_path):
             if filename.endswith(csv_suffix):
                 ts_file_name_ls.append(filename)
-        # list of timeseries Pandas Dataframe imported
+
+        if len(ts_file_name_ls) == 0:
+            raise ValueError("No .csv files were loaded, check csv_suffix")
 
         if sim_name is None:
             sim_name = ts_file_name_ls[0][:-3]
         csv_file_name_fin = sim_name + "_extracted_sum_timeseries.csv"
 
+        # list of timeseries Pandas Dataframe imported
         mass_fin_df_ls = []
         for csv_file_name in ts_file_name_ls:
             df = pd.read_csv(ts_file_path + csv_file_name).fillna(0)
@@ -5756,7 +5791,7 @@ class ChemicalDrift(OceanDrift):
                 mass_emitted_delta = (filtered_df["mass_emitted"+ "-["+ mass_unit +"]"].iloc[0] -
                                       filtered_df["mass_current" + "-["+ mass_unit +"]"].iloc[0])
                 filtered_df["mass_emitted"+ "-["+ mass_unit +"]"] = np.array(filtered_df["mass_emitted"+ "-["+ mass_unit +"]"]) - mass_emitted_delta
-                
+
                 time_col_ind = int(np.where(filtered_df.columns.str.contains("time-"))[0])
                 time_unit = filtered_df.columns[time_col_ind][6:-1]
                 time_delta = (filtered_df["time"+ "-["+ time_unit +"]"].iloc[0])
@@ -5816,10 +5851,10 @@ class ChemicalDrift(OceanDrift):
                         else:
                             pass
                 else:
-                    pass        
+                    pass
 
                 # Update df in mass_fin_df_ls
-                print(df_index)
+                # print(df_index)
                 mass_fin_df_ls[df_index] = filtered_df
 
             for time_step in time_date_serie:
