@@ -4024,6 +4024,7 @@ class ChemicalDrift(OceanDrift):
                       selected_depth = 0,
                       fig_format = ".jpg",
                       make_animation = False,
+                      concat_animation = False,
                       animation_format = ".mp4",
                       load_img_from_folder = False,
                       fig_numbers = None,
@@ -4043,6 +4044,7 @@ class ChemicalDrift(OceanDrift):
                                 *latitude, degrees N
                                 *longitude, degrees E
                                 *time, datetime64[ns]
+                                *depth, meters (optional)
         time_start:           datetime64[ns], start time of figures
         time_end:             datetime64[ns], end time of figures.
         long_min:             float64, min longitude of figure
@@ -4063,9 +4065,11 @@ class ChemicalDrift(OceanDrift):
         colorbar_title:       string, title of colorbar
         simmetrical_cmap:     boolean,select if cmap is simmetrical to 0 (True) or not (False)
         scientific_colorbar:  boolean,select if colorbar is written in scientific notation (True) or not (False)
-        selected_depth:       int, depth selected if present. If no depth was selected when creating conc map, use 0
+        selected_depth:       int, index of selected depth in Conc_Dataset.depth.
+                                   If no depth was selected when creating conc map, use 0
         fig_format:           string, format of produced images (e.g.,".jpg", ".png")
         make_animation:       boolean,select if animation (.mp4 or .gif) is created (True) or not (False)
+        concat_animation:     boolean,select if animations (.mp4 or .gif) are loaded and concatenated (True) or not (False)
         animation_format:     string, format of produced animation (".mp4" or .gif")
         load_img_from_folder: boolean,select if images are created or loaded
         fig_numbers:          tuple/list of integers (e.g., (0, 8)) with numbers in fig_name of figures to load
@@ -4089,6 +4093,31 @@ class ChemicalDrift(OceanDrift):
         import geopandas as gpd
         from datetime import datetime as dt
 
+        if (save_figures is False) and (make_animation is False) and (concat_animation is False):
+            raise ValueError("No output (save_figures/make_animation/concat_animation) was selected ")
+
+        def print_progress_list(length):
+             '''
+             Create list of indexes to print progress of creating/saving images
+             
+             length:       float, lenght of figures array
+             '''
+
+             elem_print = []
+             if length < 10:
+                 for index in range(0, length):
+                     elem_print.append(index)
+                 return elem_print
+
+             interval = length // 10  # Calculate the interval
+             for i in range(1, 11):
+                 index = i * interval
+                 if index <= length:
+                     elem_print.append(index)
+                 else:
+                     break
+             return elem_print
+
         if load_img_from_folder == False:
             start=dt.now()
             aspect = 15
@@ -4103,6 +4132,7 @@ class ChemicalDrift(OceanDrift):
                 a, b = '{:.1e}'.format(x).split('e')
                 b = int(b)
                 return r'${} \times 10^{{{}}}$'.format(a, b)
+
 
             title_font_size = labels_font_sizes[0]
             x_label_font_size = labels_font_sizes[1]
@@ -4144,7 +4174,7 @@ class ChemicalDrift(OceanDrift):
                     Conc_Dataset = Conc_Dataset.rename({'lat': 'latitude','lon': 'longitude'})
                 elif 'x' in Conc_Dataset.dims:
                     Conc_Dataset = Conc_Dataset.rename({'y': 'latitude','x': 'longitude'})
-    
+
             if "concentration_avg_water" in Conc_Dataset.keys():
                 Conc_DataArray = Conc_Dataset.concentration_avg_water
             elif "concentration_avg_sediments" in Conc_Dataset.keys():
@@ -4178,13 +4208,25 @@ class ChemicalDrift(OceanDrift):
             for attr in attribute_list:
                 del Conc_DataArray.attrs[attr]
 
+            fig_numbers = []
             figure_ls = []
             figure_name_ls = []
-            for timestep in range(0, (Conc_DataArray.time.to_numpy()).size):
-                figure_name_ls.append(str(f"{timestep:03d}")+"_"+figure_file_name+fig_format)
+            figures_number = ((Conc_DataArray.time.to_numpy()).size)
+            for num in [0, figures_number]:
+                fig_numbers.append(str(f"{num:03d}"))
 
-            for timestep in range(0, (Conc_DataArray.time.to_numpy()).size):
-                print("creating image n° ", str(timestep+1), " out of ", str((Conc_DataArray.time.to_numpy()).size))
+            if figures_number >= 500:
+                print("WARNING: More than 500 figures will be created, memory may not be sufficient")
+
+            for timestep in range(0, figures_number):
+                figure_name_ls.append(str(f"{timestep:03d}")+"_"+figure_file_name+fig_format)
+            
+            list_index_print = print_progress_list(figures_number)
+
+            for timestep in range(0, figures_number):
+                if timestep in list_index_print:
+                     print("creating image n° ", str(timestep+1), " out of ", str(figures_number))
+
                 if (Conc_DataArray.time.to_numpy()).size > 1 and "depth" in Conc_DataArray.dims:
                     Conc_DataArray_selected = Conc_DataArray.isel(time = timestep, depth = selected_depth)
                 elif (Conc_DataArray.time.to_numpy()).size > 1 and "depth" not in Conc_DataArray.dims:
@@ -4240,6 +4282,8 @@ class ChemicalDrift(OceanDrift):
 
             if trim_images == True:
                 for img_index in range(0, len(figure_ls)):
+                    if img_index in list_index_print:
+                         print("trim image n° ", str(img_index+1), " out of ", str(figures_number))
                     fig = figure_ls[img_index]
                     # Render the figure to a pixel buffer
                     fig.canvas.draw()
@@ -4257,7 +4301,8 @@ class ChemicalDrift(OceanDrift):
                 start = dt.now()
                 if trim_images == True:
                     for img_index in range(0, len(figure_ls)):
-                        print("saving image n° ", img_index, " out of ",  len(figure_ls))
+                        if img_index in list_index_print:
+                             print("saving image n° ", str(img_index+1), " out of ", str(figures_number))
                         fig_path = (file_out_path + file_out_sub_folder + figure_name_ls[img_index])
                         fig, ax = plt.subplots(figsize = (len_fig,high_fig))
                         ax.set_axis_off()
@@ -4265,17 +4310,29 @@ class ChemicalDrift(OceanDrift):
                         plt.close('all')
                 else:
                     for img_index in range(0, len(figure_ls)):
-                        print("saving image n° ", img_index, " out of ",  len(figure_ls))
+                        if img_index in list_index_print:
+                             print("saving image n° ", str(img_index+1), " out of ", str(figures_number))
                         figure_ls[img_index].savefig(file_out_path + file_out_sub_folder + figure_name_ls[img_index])
                 print("Time to save figures (hr:min:sec): ", dt.now()-start)
             else:
                 print("Figures were not saved")
 
         elif load_img_from_folder == True and fig_numbers is not None:
+            figures_number = (fig_numbers[1] - fig_numbers[0]) + 1
+
+            fig_numbers = []
+            for num in [0, figures_number]:
+                fig_numbers.append(str(f"{num:03d}"))
+
+            if figures_number >= 500:
+                print("WARNING: More than 500 figures will be loaded, memory may not be sufficient")
+
+            list_index_print = print_progress_list(figures_number)
             # Create figures names
             figure_name_ls = []
-            for timestep in range(fig_numbers[0], fig_numbers[1]):
+            for timestep in range(fig_numbers[0], fig_numbers[1] +1):
                 figure_name_ls.append(str(f"{timestep:03d}")+"_"+figure_file_name+fig_format)
+
             # Load figures
             figure_ls = []
             print("Loading images")
@@ -4288,22 +4345,39 @@ class ChemicalDrift(OceanDrift):
                 plt.close('all')
             if trim_images == True:
                 for img_index in range(0, len(figure_ls)):
-                    rgb = self.remove_white_borders(rgb)
+                    if img_index in list_index_print:
+                         print("trim image n° ", str(img_index+1), " out of ", str(figures_number))
+                    rgb = self.remove_white_borders(figure_ls[img_index])
                     figure_ls[img_index] = rgb
+
+                if save_figures == True:
+                    for img_index in range(0, len(figure_ls)):
+                        if img_index in list_index_print:
+                             print("saving image n° ", str(img_index+1), " out of ", str(figures_number))
+                        fig_path = (file_out_path + file_out_sub_folder + figure_name_ls[img_index][:-4]+"_trim"+fig_format)
+                        fig, ax = plt.subplots(figsize = (len_fig,high_fig))
+                        ax.set_axis_off()
+                        plt.imsave(fig_path, figure_ls[img_index], cmap=selected_colormap)
+                        plt.close('all')
+
             else:
                 pass
         else:
             raise ValueError("fig_numbers must be specified")
 
         if make_animation is True:
+            # https://stackoverflow.com/questions/67420158/how-do-you-make-a-matplotlib-funcanimation-animation-out-of-matplotlib-image-axe
             from matplotlib.animation import FuncAnimation
             start = dt.now()
             def update(frame):
                 # frame is rgb np.array
                 # Update the image in the plot
-                ax.imshow(figure_ls[frame]) 
+                art = (figure_ls[frame]) 
+                draw_image.set_array(art)
+                # ax.imshow(figure_ls[frame]) 
                 ax.set_axis_off()
-                return [ax]
+                return [draw_image]
+                # return [ax]
 
             #Change figures from matplotlib-Figure to rgb np.array 
             if load_img_from_folder == False and trim_images == False:
@@ -4318,11 +4392,15 @@ class ChemicalDrift(OceanDrift):
             else:
                 pass
 
-            fig, ax = plt.subplots(figsize = (len_fig,high_fig))
+            fig = plt.figure(figsize = (len_fig,high_fig))
+            ax = plt.gca()
+            draw_image = ax.imshow((figure_ls[0]),animated=True)
+
             # Create the animation
             print("Creating animation")
-            animation = FuncAnimation(fig, update, frames=len(figure_ls), interval=600)
-            output_video = file_out_path + file_out_sub_folder + figure_file_name + animation_format
+            animation = FuncAnimation(fig, update, frames=len(figure_ls), interval=600, blit = True)
+            plt.show()
+            output_video = file_out_path + file_out_sub_folder + fig_numbers[0] + "_" + fig_numbers[1] + "_" + figure_file_name + animation_format
             print("Time to create animation (hr:min:sec): ", dt.now()-start)
             print("Saving animation to ", file_out_path + file_out_sub_folder)
             start = dt.now()
@@ -4330,6 +4408,24 @@ class ChemicalDrift(OceanDrift):
             print("Time to save animation (hr:min:sec): ", dt.now()-start)
         else:
             pass
+
+        if concat_animation is True:
+            from moviepy.editor import VideoFileClip, concatenate_videoclips
+            from natsort import natsorted
+
+            anim_name_ls = []
+            for anim in range(fig_numbers[0], fig_numbers[1] +1):
+                anim_name_ls.append(str(f"{anim:03d}")+"_"+figure_file_name+animation_format)
+
+            L_anim = []
+            files = natsorted(anim_name_ls)
+            for file in files:
+                    video = VideoFileClip(file_out_path + file_out_sub_folder + file)
+                    L_anim.append(video)
+
+            final_clip = concatenate_videoclips(L_anim)
+            final_clip.to_videofile(file_out_path + file_out_sub_folder + "Merged_" +
+                                    figure_file_name + animation_format, fps=12, remove_temp=False)
 
 
     def plot_emission_data_frequency(self, emissions, title, n_bins = 100, zoom_max = 100, zoom_min = 0):
