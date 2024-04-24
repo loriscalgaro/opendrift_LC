@@ -4000,6 +4000,62 @@ class ChemicalDrift(OceanDrift):
         # Crop the image to the bounding box
         cropped_image = image[rmin:rmax + 1, cmin:cmax + 1]
         return cropped_image
+    
+    @staticmethod
+    def create_animation(load_img_from_folder,
+                       trim_images,
+                       figure_ls,
+                       file_out_path,
+                       file_out_sub_folder,
+                       anim_prefix,
+                       figure_file_name,
+                       animation_format,
+                       len_fig, high_fig
+                       ):
+        '''
+        Make .mp4 or .gif animation of figures created with create_images
+        '''
+        # https://stackoverflow.com/questions/67420158/how-do-you-make-a-matplotlib-funcanimation-animation-out-of-matplotlib-image-axe
+        from matplotlib.animation import FuncAnimation
+        from datetime import datetime as dt
+        import matplotlib.pyplot as plt
+        
+        start = dt.now()
+        def update(frame):
+            # frame is rgb np.array
+            # Update the image in the plot
+            art = (figure_ls[frame]) 
+            draw_image.set_array(art)
+            ax.set_axis_off()
+            return [draw_image]
+
+        #Change figures from matplotlib-Figure to rgb np.array 
+        if load_img_from_folder == False and trim_images == False:
+            for img_index in range(0, len(figure_ls)):
+                fig = figure_ls[img_index]
+                # Render the figure to a pixel buffer
+                fig.canvas.draw()
+                # Get the pixel buffer as an RGB array
+                width, height = fig.canvas.get_width_height()
+                rgb = (np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape((height, width, 3))).astype(np.float32) / 255.0
+                figure_ls[img_index] = rgb
+        else:
+            pass
+
+        fig = plt.figure(figsize = (len_fig,high_fig))
+        ax = plt.gca()
+        draw_image = ax.imshow((figure_ls[0]),animated=True)
+
+        # Create the animation
+        print("Creating animation")
+        animation = FuncAnimation(fig, update, frames=len(figure_ls), interval=600, blit = True)
+        plt.show()
+        output_video = file_out_path + file_out_sub_folder + anim_prefix + figure_file_name + animation_format
+        print("Time to create animation (hr:min:sec): ", dt.now()-start)
+        print("Saving animation to ", file_out_path + file_out_sub_folder)
+        start = dt.now()
+        animation.save(output_video, writer='ffmpeg')
+        print("Time to save animation (hr:min:sec): ", dt.now()-start)
 
     def create_images(self,
                       Conc_Dataset,
@@ -4065,14 +4121,15 @@ class ChemicalDrift(OceanDrift):
         colorbar_title:       string, title of colorbar
         simmetrical_cmap:     boolean,select if cmap is simmetrical to 0 (True) or not (False)
         scientific_colorbar:  boolean,select if colorbar is written in scientific notation (True) or not (False)
-        selected_depth:       int, index of selected depth in Conc_Dataset.depth.
+        selected_depth:       float32, depth selected when creating map if "depth" in Conc_Dataset.dims
                                    If no depth was selected when creating conc map, use 0
         fig_format:           string, format of produced images (e.g.,".jpg", ".png")
         make_animation:       boolean,select if animation (.mp4 or .gif) is created (True) or not (False)
         concat_animation:     boolean,select if animations (.mp4 or .gif) are loaded and concatenated (True) or not (False)
         animation_format:     string, format of produced animation (".mp4" or .gif")
         load_img_from_folder: boolean,select if images are created or loaded
-        fig_numbers:          tuple/list of integers (e.g., (0, 8)) with numbers in fig_name of figures to load
+        fig_numbers:          list of lists (of int) that specifyies numbers to create fig_name of figures to load and in
+                              in prefix of animations to concatenate (e.g., [[0, 8], [9, 15]]))
         add_shp_to_figure:    boolean,select if shp is added to the figure (True) or not (False)
         variable_name:        string, name of Conc_Datasetdata variable to plot if not concentration_avg_water/sediments
         labels_font_sizes:    list of int, [title_font_size, x_label_font_size, y_label_font_size, x_ticks_font_size
@@ -4093,16 +4150,40 @@ class ChemicalDrift(OceanDrift):
         import geopandas as gpd
         from datetime import datetime as dt
 
-        if (save_figures is False) and (make_animation is False) and (concat_animation is False):
+        if all([not e for e in [save_figures, make_animation, concat_animation]]) is True:
             raise ValueError("No output (save_figures/make_animation/concat_animation) was selected ")
+
+        if load_img_from_folder == True and fig_numbers is None:
+            raise ValueError("fig_numbers must be specified when loading images or concatenating animations")
+
+        def flatten_list(matrix):
+            flat_list = []
+            for row in matrix:
+                flat_list += row
+            return flat_list
+
+        fig_num_ls = flatten_list(fig_numbers)
+        if  (all(fig_num_ls[i] <= fig_num_ls[i + 1] for i in range(len(fig_num_ls) - 1))) is False:
+            raise ValueError("fig_numbers are not ordered increasingly")
+
+        def check_nested_list(input_list):
+            '''
+            Check if fig_numbers is a nested list
+            '''
+            for element in input_list:
+                if isinstance(element, list):
+                    return True
+            return False
+
+        if concat_animation is True and ((check_nested_list(fig_numbers) is False) or (fig_numbers is None)): 
+            raise ValueError("No fig_numbers lists were specified for concat_animation")
 
         def print_progress_list(length):
              '''
              Create list of indexes to print progress of creating/saving images
-             
+
              length:       float, lenght of figures array
              '''
-
              elem_print = []
              if length < 10:
                  for index in range(0, length):
@@ -4118,7 +4199,8 @@ class ChemicalDrift(OceanDrift):
                      break
              return elem_print
 
-        if load_img_from_folder == False:
+
+        if load_img_from_folder == False and Conc_Dataset is not None:
             start=dt.now()
             aspect = 15
             # pad_fraction = 1e-1
@@ -4132,7 +4214,6 @@ class ChemicalDrift(OceanDrift):
                 a, b = '{:.1e}'.format(x).split('e')
                 b = int(b)
                 return r'${} \times 10^{{{}}}$'.format(a, b)
-
 
             title_font_size = labels_font_sizes[0]
             x_label_font_size = labels_font_sizes[1]
@@ -4208,12 +4289,17 @@ class ChemicalDrift(OceanDrift):
             for attr in attribute_list:
                 del Conc_DataArray.attrs[attr]
 
-            fig_numbers = []
+            fig_num = []
             figure_ls = []
             figure_name_ls = []
             figures_number = ((Conc_DataArray.time.to_numpy()).size)
+            if fig_numbers is not None:
+                if fig_numbers[-1][1] > figures_number:
+                    raise ValueError(f"fig_numbers selects more figures ({fig_numbers[-1][1] + 1}) that were created ({figures_number})")
+
             for num in [0, figures_number]:
-                fig_numbers.append(str(f"{num:03d}"))
+                fig_num.append(str(f"{num:03d}"))
+            anim_prefix = fig_num[0] + "_" + fig_num[1] + "_"
 
             if figures_number >= 500:
                 print("WARNING: More than 500 figures will be created, memory may not be sufficient")
@@ -4223,16 +4309,25 @@ class ChemicalDrift(OceanDrift):
             
             list_index_print = print_progress_list(figures_number)
 
+            if "depth" in Conc_DataArray.dims and selected_depth is None:
+                raise ValueError("selected_depth must be specified")
+            elif "depth" in Conc_DataArray.dims: 
+                all_depth_values = np.sort((np.unique(np.array(Conc_DataArray.depth)))) # Change depth to positive values
+                selected_depth_index = int(np.where(all_depth_values == selected_depth)[0])
+            else:
+                pass
+
+
             for timestep in range(0, figures_number):
                 if timestep in list_index_print:
                      print("creating image n° ", str(timestep+1), " out of ", str(figures_number))
 
                 if (Conc_DataArray.time.to_numpy()).size > 1 and "depth" in Conc_DataArray.dims:
-                    Conc_DataArray_selected = Conc_DataArray.isel(time = timestep, depth = selected_depth)
+                    Conc_DataArray_selected = Conc_DataArray.isel(time = timestep, depth = selected_depth_index)
                 elif (Conc_DataArray.time.to_numpy()).size > 1 and "depth" not in Conc_DataArray.dims:
                     Conc_DataArray_selected = Conc_DataArray.isel(time = timestep)
                 elif (Conc_DataArray.time.to_numpy()).size <= 1 and "depth" in Conc_DataArray.dims:
-                    Conc_DataArray_selected = Conc_DataArray.isel(depth = selected_depth)
+                    Conc_DataArray_selected = Conc_DataArray.isel(depth = selected_depth_index)
                 elif (Conc_DataArray.time.to_numpy()).size <= 1 and "depth" not in Conc_DataArray.dims:
                     Conc_DataArray_selected = Conc_DataArray
 
@@ -4316,116 +4411,148 @@ class ChemicalDrift(OceanDrift):
                 print("Time to save figures (hr:min:sec): ", dt.now()-start)
             else:
                 print("Figures were not saved")
+                
+            if make_animation is True:
+                if fig_numbers is None:
+
+                    self.create_animation(load_img_from_folder = load_img_from_folder, 
+                                       trim_images = trim_images,
+                                       figure_ls = figure_ls,
+                                       file_out_path = file_out_path,
+                                       file_out_sub_folder = file_out_sub_folder,
+                                       anim_prefix = anim_prefix,
+                                       figure_file_name = figure_file_name,
+                                       animation_format = animation_format,
+                                       len_fig = len_fig,
+                                       high_fig = high_fig
+                                       )
+                else:
+                    for num_list in fig_numbers:
+                        # Create prefix for animation name
+                        fig_num = []
+                        for num in num_list:
+                            fig_num.append(str(f"{num:03d}"))
+                        anim_prefix = fig_num[0] + "_" + fig_num[1] + "_"
+
+                        print("Creating animation ", anim_prefix)
+                        figure_ls_split = figure_ls[num_list[0]:num_list[1]]
+                        self.create_animation(load_img_from_folder = load_img_from_folder, 
+                                           trim_images = trim_images,
+                                           figure_ls = figure_ls_split,
+                                           file_out_path = file_out_path,
+                                           file_out_sub_folder = file_out_sub_folder,
+                                           anim_prefix = anim_prefix,
+                                           figure_file_name = figure_file_name,
+                                           animation_format = animation_format,
+                                           len_fig = len_fig,
+                                           high_fig = high_fig
+                                       )
+                        del figure_ls_split
 
         elif load_img_from_folder == True and fig_numbers is not None:
-            figures_number = (fig_numbers[1] - fig_numbers[0]) + 1
 
-            fig_numbers = []
-            for num in [0, figures_number]:
-                fig_numbers.append(str(f"{num:03d}"))
+            for num_list in fig_numbers:
+                # Create prefix for animation name
+                fig_num = []
+                for num in num_list:
+                    fig_num.append(str(f"{num:03d}"))
+                anim_prefix = fig_num[0] + "_" + fig_num[1] + "_"
 
-            if figures_number >= 500:
-                print("WARNING: More than 500 figures will be loaded, memory may not be sufficient")
+                # Prepare progress messages
+                figures_number = (num_list[1] - num_list[0]) + 1
+                if figures_number >= 500:
+                    print("WARNING: More than 500 figures will be loaded, memory may not be sufficient")
+                list_index_print = print_progress_list(figures_number)
 
-            list_index_print = print_progress_list(figures_number)
-            # Create figures names
-            figure_name_ls = []
-            for timestep in range(fig_numbers[0], fig_numbers[1] +1):
-                figure_name_ls.append(str(f"{timestep:03d}")+"_"+figure_file_name+fig_format)
+                # Create figures names
+                figure_name_ls = []
+                for timestep in range(num_list[0], num_list[1] +1):
+                    figure_name_ls.append(str(f"{timestep:03d}")+"_"+figure_file_name+fig_format)
 
-            # Load figures
-            figure_ls = []
-            print("Loading images")
-            for fig_name in figure_name_ls:
-                fig_path = (file_out_path + file_out_sub_folder + fig_name)
-                image = plt.imread(fig_path)
-                # fig, ax = plt.subplots(figsize = (len_fig,high_fig))
-                # ax.set_axis_off()
-                figure_ls.append(image)
-                plt.close('all')
-            if trim_images == True:
-                for img_index in range(0, len(figure_ls)):
-                    if img_index in list_index_print:
-                         print("trim image n° ", str(img_index+1), " out of ", str(figures_number))
-                    rgb = self.remove_white_borders(figure_ls[img_index])
-                    figure_ls[img_index] = rgb
-
-                if save_figures == True:
+                # Load figures
+                figure_ls = []
+                print("Loading images ", anim_prefix)
+                for fig_name in figure_name_ls:
+                    fig_path = (file_out_path + file_out_sub_folder + fig_name)
+                    image = plt.imread(fig_path)
+                    # fig, ax = plt.subplots(figsize = (len_fig,high_fig))
+                    # ax.set_axis_off()
+                    figure_ls.append(image)
+                    plt.close('all')
+                if trim_images == True:
                     for img_index in range(0, len(figure_ls)):
                         if img_index in list_index_print:
-                             print("saving image n° ", str(img_index+1), " out of ", str(figures_number))
-                        fig_path = (file_out_path + file_out_sub_folder + figure_name_ls[img_index][:-4]+"_trim"+fig_format)
-                        fig, ax = plt.subplots(figsize = (len_fig,high_fig))
-                        ax.set_axis_off()
-                        plt.imsave(fig_path, figure_ls[img_index], cmap=selected_colormap)
-                        plt.close('all')
+                             print("trim image n° ", str(img_index+1), " out of ", str(figures_number))
+                        rgb = self.remove_white_borders(figure_ls[img_index])
+                        figure_ls[img_index] = rgb
 
-            else:
-                pass
-        else:
-            raise ValueError("fig_numbers must be specified")
+                    if save_figures == True:
+                        for img_index in range(0, len(figure_ls)):
+                            if img_index in list_index_print:
+                                 print("saving image n° ", str(img_index+1), " out of ", str(figures_number))
+                            fig_path = (file_out_path + file_out_sub_folder + figure_name_ls[img_index][:-4]+"_trim"+fig_format)
+                            fig, ax = plt.subplots(figsize = (len_fig,high_fig))
+                            ax.set_axis_off()
+                            plt.imsave(fig_path, figure_ls[img_index], cmap=selected_colormap)
+                            plt.close('all')
+                    else:
+                        pass
 
-        if make_animation is True:
-            # https://stackoverflow.com/questions/67420158/how-do-you-make-a-matplotlib-funcanimation-animation-out-of-matplotlib-image-axe
-            from matplotlib.animation import FuncAnimation
-            start = dt.now()
-            def update(frame):
-                # frame is rgb np.array
-                # Update the image in the plot
-                art = (figure_ls[frame]) 
-                draw_image.set_array(art)
-                # ax.imshow(figure_ls[frame]) 
-                ax.set_axis_off()
-                return [draw_image]
-                # return [ax]
+                if make_animation is True:
+                    self.create_animation(load_img_from_folder = load_img_from_folder, 
+                                          trim_images = trim_images,
+                                          figure_ls = figure_ls,
+                                          file_out_path = file_out_path,
+                                          file_out_sub_folder = file_out_sub_folder,
+                                          anim_prefix = anim_prefix,
+                                          figure_file_name = figure_file_name,
+                                          animation_format = animation_format,
+                                          len_fig = len_fig,
+                                          high_fig = high_fig
+                                          )
 
-            #Change figures from matplotlib-Figure to rgb np.array 
-            if load_img_from_folder == False and trim_images == False:
-                for img_index in range(0, len(figure_ls)):
-                    fig = figure_ls[img_index]
-                    # Render the figure to a pixel buffer
-                    fig.canvas.draw()
-                    # Get the pixel buffer as an RGB array
-                    width, height = fig.canvas.get_width_height()
-                    rgb = (np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape((height, width, 3))).astype(np.float32) / 255.0
-                    figure_ls[img_index] = rgb
-            else:
-                pass
+                else:
+                    pass
 
-            fig = plt.figure(figsize = (len_fig,high_fig))
-            ax = plt.gca()
-            draw_image = ax.imshow((figure_ls[0]),animated=True)
-
-            # Create the animation
-            print("Creating animation")
-            animation = FuncAnimation(fig, update, frames=len(figure_ls), interval=600, blit = True)
-            plt.show()
-            output_video = file_out_path + file_out_sub_folder + fig_numbers[0] + "_" + fig_numbers[1] + "_" + figure_file_name + animation_format
-            print("Time to create animation (hr:min:sec): ", dt.now()-start)
-            print("Saving animation to ", file_out_path + file_out_sub_folder)
-            start = dt.now()
-            animation.save(output_video, writer='ffmpeg')
-            print("Time to save animation (hr:min:sec): ", dt.now()-start)
-        else:
+        elif concat_animation is True:
             pass
+        else:
+            raise ValueError("No image was set to be created/loaded, and no animation was set to be concatenated")
 
-        if concat_animation is True:
+        if concat_animation is True and fig_numbers is not None:
             from moviepy.editor import VideoFileClip, concatenate_videoclips
             from natsort import natsorted
-
+            # Prepare animation names to load
             anim_name_ls = []
-            for anim in range(fig_numbers[0], fig_numbers[1] +1):
-                anim_name_ls.append(str(f"{anim:03d}")+"_"+figure_file_name+animation_format)
+            for num_list in fig_numbers:
 
+                fig_num = []
+                for num in num_list:
+                    fig_num.append(str(f"{num:03d}"))
+                anim_prefix = fig_num[0] + "_" + fig_num[1] + "_"
+                anim_name_ls.append(anim_prefix+figure_file_name+animation_format)
+
+            # Order names and load animations
+            print("Loading animations")
             L_anim = []
             files = natsorted(anim_name_ls)
             for file in files:
                     video = VideoFileClip(file_out_path + file_out_sub_folder + file)
                     L_anim.append(video)
-
+                
             final_clip = concatenate_videoclips(L_anim)
-            final_clip.to_videofile(file_out_path + file_out_sub_folder + "Merged_" +
-                                    figure_file_name + animation_format, fps=12, remove_temp=False)
+            if animation_format == ".gif":
+                video_codec ='gif'
+            elif  animation_format == ".mp4":
+                video_codec ='libx264'
+            else:
+                raise ValueError("Unsupported animation_format")
+
+            merged_prefix = "Merged_" + (str(f"{fig_numbers[0][0]:03d}")) + "_" + (str(f"{fig_numbers[-1][1]:03d}")) + "_"
+            print("Saving concatenated animation")
+            output_video = file_out_path + file_out_sub_folder + merged_prefix + figure_file_name + animation_format
+            
+            final_clip.to_videofile(output_video, fps=12, remove_temp=False, codec = video_codec)
 
 
     def plot_emission_data_frequency(self, emissions, title, n_bins = 100, zoom_max = 100, zoom_min = 0):
