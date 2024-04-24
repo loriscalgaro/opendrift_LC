@@ -4430,7 +4430,8 @@ class ChemicalDrift(OceanDrift):
                                        figure_file_name = figure_file_name,
                                        animation_format = animation_format,
                                        len_fig = len_fig,
-                                       high_fig = high_fig
+                                       high_fig = high_fig,
+                                       low_quality = low_quality
                                        )
                 else:
                     for num_list in fig_numbers:
@@ -4451,8 +4452,9 @@ class ChemicalDrift(OceanDrift):
                                            figure_file_name = figure_file_name,
                                            animation_format = animation_format,
                                            len_fig = len_fig,
-                                           high_fig = high_fig
-                                       )
+                                           high_fig = high_fig,
+                                           low_quality = low_quality
+                                           )
                         del figure_ls_split
 
         elif load_img_from_folder == True and fig_numbers is not None:
@@ -4514,7 +4516,8 @@ class ChemicalDrift(OceanDrift):
                                           figure_file_name = figure_file_name,
                                           animation_format = animation_format,
                                           len_fig = len_fig,
-                                          high_fig = high_fig
+                                          high_fig = high_fig,
+                                          low_quality = low_quality
                                           )
 
                 else:
