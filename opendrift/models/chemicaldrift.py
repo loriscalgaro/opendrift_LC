@@ -4010,8 +4010,8 @@ class ChemicalDrift(OceanDrift):
                        anim_prefix,
                        figure_file_name,
                        animation_format,
-                       len_fig, high_fig
-                       ):
+                       len_fig, high_fig,
+                       low_quality):
         '''
         Make .mp4 or .gif animation of figures created with create_images
         '''
@@ -4041,8 +4041,12 @@ class ChemicalDrift(OceanDrift):
                 figure_ls[img_index] = rgb
         else:
             pass
+        
+        if low_quality == True:
+            fig = plt.figure()
+        else:
+            fig = plt.figure(figsize = (len_fig,high_fig))
 
-        fig = plt.figure(figsize = (len_fig,high_fig))
         ax = plt.gca()
         draw_image = ax.imshow((figure_ls[0]),animated=True)
 
@@ -4091,7 +4095,8 @@ class ChemicalDrift(OceanDrift):
                       trim_images = True,
                       save_figures = True,
                       date_str_lenght = 10,
-                      len_fig = 23, high_fig =15):
+                      len_fig = 23, high_fig =15,
+                      low_quality = False):
         '''
         Create a series of .jpg or .png for each timestep of a concentration map
         from REGRIDDED "calculate_water_sediment_conc" function output
@@ -4139,7 +4144,8 @@ class ChemicalDrift(OceanDrift):
         shp_color:            string, color of shapefile when plotted
         trim_images:          boolean,select if white borders of images is removed
         save_figures:         boolean,select if figures are saved
-        date_str_lenght:      int, number date string charcters kept in title [10 for YYYY-MM-DD, 19 for hour shown] 
+        date_str_lenght:      int, number date string charcters kept in title [10 for YYYY-MM-DD, 19 for hour shown]
+        low_quality:          boolean, select if figures are sized down for animation
         '''
 
         import numpy as np
