@@ -4095,7 +4095,7 @@ class ChemicalDrift(OceanDrift):
                       trim_images = True,
                       save_figures = True,
                       date_str_lenght = 10,
-                      len_fig = 23, high_fig =15,
+                      len_fig = 26, high_fig =15,
                       low_quality = False):
         '''
         Create a series of .jpg or .png for each timestep of a concentration map
@@ -4168,9 +4168,10 @@ class ChemicalDrift(OceanDrift):
                 flat_list += row
             return flat_list
 
-        fig_num_ls = flatten_list(fig_numbers)
-        if  (all(fig_num_ls[i] <= fig_num_ls[i + 1] for i in range(len(fig_num_ls) - 1))) is False:
-            raise ValueError("fig_numbers are not ordered increasingly")
+        if fig_numbers is not None:
+            fig_num_ls = flatten_list(fig_numbers)
+            if  (all(fig_num_ls[i] <= fig_num_ls[i + 1] for i in range(len(fig_num_ls) - 1))) is False:
+                raise ValueError("fig_numbers are not ordered increasingly")
 
         def check_nested_list(input_list):
             '''
@@ -4209,7 +4210,8 @@ class ChemicalDrift(OceanDrift):
         if load_img_from_folder == False and Conc_Dataset is not None:
             start=dt.now()
             aspect = 15
-            # pad_fraction = 1e-1
+            pad_fraction1 = -0.08
+            pad_fraction2 = 0.0384
             file_output_path = file_out_path + file_out_sub_folder
             print("Figures saved to: ", file_output_path)
 
@@ -4243,7 +4245,7 @@ class ChemicalDrift(OceanDrift):
             if add_shp_to_figure:
                 print("shp was added over the figures")
                 shp = gpd.read_file(shp_file_path)
-                cax_pad= -3
+                cax_pad= pad_fraction1 * len_fig
             else:
                 print("shp was not added over the figures")
                 # Create an empty GeoDataFrame (shp) to plot 
@@ -4254,7 +4256,7 @@ class ChemicalDrift(OceanDrift):
                 shp =  gpd.GeoDataFrame(columns=columns, crs=crs)
                 point = Point(0, 0)
                 shp.loc[0, 'geometry'] = point
-                cax_pad= 1
+                cax_pad= pad_fraction2 * len_fig
 
             if "longitude" not in Conc_Dataset.dims:
                 if 'lat' in Conc_Dataset.dims:
@@ -4337,7 +4339,7 @@ class ChemicalDrift(OceanDrift):
                 elif (Conc_DataArray.time.to_numpy()).size <= 1 and "depth" not in Conc_DataArray.dims:
                     Conc_DataArray_selected = Conc_DataArray
 
-                fig, ax = plt.subplots(figsize = (len_fig,high_fig)) # Change here size of figure
+                fig, ax = plt.subplots(figsize = (len_fig,high_fig)) # Change size of figure
                 shp.plot(ax = ax, color = shp_color, zorder = 10, edgecolor = 'black')
                 ax2 = Conc_DataArray_selected.plot.pcolormesh( 
                                                         x = 'longitude', 
@@ -4350,8 +4352,8 @@ class ChemicalDrift(OceanDrift):
                                                         zorder = 0) # colorbar is added ex-post
                 ax.set_xlim(long_min, long_max)
                 ax.set_ylim(lat_min, lat_max)
-                ax.set_xlabel("Longitude", fontsize = x_label_font_size, labelpad = 30) # Change here size of ax labels
-                ax.set_ylabel("Latitude", fontsize = y_label_font_size, labelpad = 30) # Change here size of ax labels
+                ax.set_xlabel("Longitude", fontsize = x_label_font_size, labelpad = high_fig*2) # Change here size of ax labels
+                ax.set_ylabel("Latitude", fontsize = y_label_font_size, labelpad = high_fig*2) # Change here size of ax labels
                 ax.tick_params(labelsize=x_ticks_font_size) # Change here size of ax ticks
                 if full_title is not None:
                     fig_title = full_title
@@ -4362,7 +4364,7 @@ class ChemicalDrift(OceanDrift):
                     else:
                         fig_title = (title_caption + " " +unit_measure)
 
-                ax.set_title(fig_title, pad=20, fontsize = title_font_size, weight = "bold", wrap= True)
+                ax.set_title(fig_title, pad=high_fig*1.5, fontsize = title_font_size, weight = "bold", wrap= True)
                 # from https://stackoverflow.com/questions/18195758/set-matplotlib-colorbar-size-to-match-graph
                 divider = make_axes_locatable(ax)
                 width = axes_size.AxesY(ax, aspect=1./aspect)
