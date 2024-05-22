@@ -4010,6 +4010,7 @@ class ChemicalDrift(OceanDrift):
                        anim_prefix,
                        figure_file_name,
                        animation_format,
+                       fps,
                        len_fig, high_fig,
                        low_quality):
         '''
@@ -4052,7 +4053,7 @@ class ChemicalDrift(OceanDrift):
 
         # Create the animation
         print("Creating animation")
-        animation = FuncAnimation(fig, update, frames=len(figure_ls), interval=600, blit = True)
+        animation = FuncAnimation(fig, update, frames=len(figure_ls), interval=1000/fps, blit = True)
         plt.show()
         output_video = file_out_path + file_out_sub_folder + anim_prefix + figure_file_name + animation_format
         print("Time to create animation (hr:min:sec): ", dt.now()-start)
@@ -4086,6 +4087,7 @@ class ChemicalDrift(OceanDrift):
                       make_animation = False,
                       concat_animation = False,
                       animation_format = ".mp4",
+                      fps = 8,
                       load_img_from_folder = False,
                       fig_numbers = None,
                       add_shp_to_figure = False,
@@ -4132,6 +4134,7 @@ class ChemicalDrift(OceanDrift):
         make_animation:       boolean,select if animation (.mp4 or .gif) is created (True) or not (False)
         concat_animation:     boolean,select if animations (.mp4 or .gif) are loaded and concatenated (True) or not (False)
         animation_format:     string, format of produced animation (".mp4" or .gif")
+        fps:                  integer, frames per second of animation
         load_img_from_folder: boolean,select if images are created or loaded
         fig_numbers:          list of lists (of int) that specifyies numbers to create fig_name of figures to load and in
                               in prefix of animations to concatenate (e.g., [[0, 8], [9, 15]]))
@@ -4431,6 +4434,7 @@ class ChemicalDrift(OceanDrift):
                                        anim_prefix = anim_prefix,
                                        figure_file_name = figure_file_name,
                                        animation_format = animation_format,
+                                       fps = fps,
                                        len_fig = len_fig,
                                        high_fig = high_fig,
                                        low_quality = low_quality
@@ -4453,6 +4457,7 @@ class ChemicalDrift(OceanDrift):
                                            anim_prefix = anim_prefix,
                                            figure_file_name = figure_file_name,
                                            animation_format = animation_format,
+                                           fps = fps,
                                            len_fig = len_fig,
                                            high_fig = high_fig,
                                            low_quality = low_quality
