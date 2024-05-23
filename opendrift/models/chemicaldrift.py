@@ -3934,6 +3934,10 @@ class ChemicalDrift(OceanDrift):
         DataArray = DataArray.rio.write_crs(shp_epsg, inplace=True)
         DataArray_masked = DataArray.rio.clip(shp_mask.geometry.apply(mapping), shp_mask.crs, drop=drop_data, invert = invert_shp)
 
+        if "lat" in DataArray_masked.dims:
+            DataArray_masked = DataArray_masked.rename({'lat': 'latitude','lon': 'longitude'})
+        if "x" in DataArray_masked.dims:
+            DataArray_masked = DataArray_masked.rename({'y': 'latitude','x': 'longitude'})
 
         return DataArray_masked
 
@@ -4760,7 +4764,7 @@ class ChemicalDrift(OceanDrift):
         if "lat" in DS.dims:
             DS = DS.rename({'lat': 'latitude','lon': 'longitude'})
         if "x" in DS.dims:
-            DS = DS.rename({'y': 'latitude','x': 'longitude'})           
+            DS = DS.rename({'y': 'latitude','x': 'longitude'})
 
         DS = DS[variable_name]
         if "time" in DS.dims:
