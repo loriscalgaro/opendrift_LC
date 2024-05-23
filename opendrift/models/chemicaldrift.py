@@ -3826,7 +3826,7 @@ class ChemicalDrift(OceanDrift):
             if len(DA_Conc_array_wat.specie) == 1:
                 specie = float(np.array(DA_Conc_array_wat.specie)[0])
                 DA_Conc_array_wat = DA_Conc_array_wat.sel(specie = specie) # drop "specie" coordinate since only water elements were selected
-        # add topography to water concentration dataset 
+        # Add topography to water concentration dataset 
         DS_Conc_array_wat = xr.Dataset({
             'concentration_avg_water':DA_Conc_array_wat,
             'topo':DC_topo
@@ -3847,7 +3847,7 @@ class ChemicalDrift(OceanDrift):
             if len(DA_Conc_array_sed.specie) == 1:
                 specie = float(np.array(DA_Conc_array_sed.specie)[0])
                 DA_Conc_array_sed = DA_Conc_array_sed.sel(specie = specie) # drop "specie" coordinate since only sed elements were selected
-        # add topography to sed concentration dataset
+        # Add topography to sed concentration dataset
         DS_Conc_array_sed = xr.Dataset({
             'concentration_avg_sediments':DA_Conc_array_sed,
             'topo':DC_topo
@@ -3863,6 +3863,79 @@ class ChemicalDrift(OceanDrift):
         DS_Conc_array_wat.to_netcdf(wat_file)
         print("Saving sediment concentration file", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
         DS_Conc_array_sed.to_netcdf(sed_file)
+
+    @staticmethod
+    def save_masked_DataArray(DataArray_masked,
+                              file_output_path,
+                              file_output_name):
+        import os
+
+        if not os.path.exists(file_output_path):
+            os.makedirs(file_output_path)
+            print("file_output_path did not exist and was created")
+        else:
+            pass
+        print("Saving masked file to ", file_output_path)
+
+        if 'grid_mapping' in DataArray_masked.attrs:
+            del DataArray_masked.attrs['grid_mapping'] # delete grid_mapping attribute to avoid "ValueError in safe_setitem" from xarray
+        else:
+            pass
+
+        try:
+            DataArray_masked.to_netcdf(file_output_path + file_output_name)
+        except:
+            # Change DataArray_masked to dataset if xarray.core.dataarray.DataArray
+            if str(type(DataArray_masked)) == "<class 'xarray.core.dataarray.DataArray'>":
+                DataArray_masked = DataArray_masked.to_dataset()
+                print("Changed DataArray_masked from DataArray to DataSet")
+            # Remove "_FillValue" = np.nan from data_vars and coordinates attributes 
+            # Change "_FillValue" to -9999, to avoid "ValueError: cannot convert float NaN to integer"
+            for var_name, var in DataArray_masked.variables.items():
+                if "_FillValue" in var.attrs:
+                    del var.attrs["_FillValue"]
+                    var.attrs["_FillValue"] = -9999
+                    print("Changed _FillValue of ", var_name, "from NaN to -9999")
+
+            for coord_name, coord in DataArray_masked.coords.items():
+                if "_FillValue" in coord.attrs:
+                    del coord.attrs["_FillValue"]
+                    coord.attrs["_FillValue"] = -9999
+                    print("Changed _FillValue of ", coord_name, "from NaN to -9999")
+
+            DataArray_masked.to_netcdf(file_output_path + file_output_name)
+
+
+    @staticmethod
+    def mask_DataArray(DataArray,
+                       shp_mask,
+                       shp_epsg = "epsg:4326",
+                       invert_shp = False,
+                       drop_data = False):
+        '''
+        Mask xarray DataArray using shapefile, return a masked xarray DataArray
+        See mask_netcdf_map function for details
+        '''
+
+        from shapely.geometry import mapping
+
+        if ("latitude" in DataArray.dims) and ("longitude" in DataArray.dims):
+            DataArray = DataArray.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude", inplace=True)
+            print("latitude/longitude dimentions used")
+        elif ("lat" in DataArray.dims) and ("lon" in DataArray.dims):
+            DataArray = DataArray.rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=True)
+            print("lat/lon dimentions used")
+        elif ("x" in DataArray.dims) and ("y" in DataArray.dims):
+            DataArray = DataArray.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=True)
+            print("x/y dimentions used")
+        else:
+            raise ValueError("Unspecified lat/lon dimentions in DataArray")
+
+        DataArray = DataArray.rio.write_crs(shp_epsg, inplace=True)
+        DataArray_masked = DataArray.rio.clip(shp_mask.geometry.apply(mapping), shp_mask.crs, drop=drop_data, invert = invert_shp)
+
+
+        return DataArray_masked
 
     def mask_netcdf_map (self,
                          shp_mask_file,
@@ -3895,70 +3968,107 @@ class ChemicalDrift(OceanDrift):
         '''
         import geopandas as gpd
         import rioxarray
-        from shapely.geometry import mapping
-        import os as os
-
-        if DataArray is None:
-            if file_path is not None and file_name is not None:
-                print("Loading DataArray from disk")
-                DataArray = rioxarray.open_rasterio(file_path + file_name)
-            else:
-                raise ValueError("DataArray or file_path/file_name not specified")
+        import xarray as xr
 
         shp_mask = gpd.read_file(shp_mask_file, crs=shp_epsg)
+        
+        def check_extra_dimensions(Dataset):
+            '''
+            Check if dimentions other than lat/lon/time are present.
+            If extra dimentions are present data_var will not be masked
+            '''
+            acceptable_dimensions = {'lat', 'lon', 'latitude', 'longitude', 'x', 'y', 'time'}
+            Dataset_dimensions = set(Dataset.dims)
+            
+            extra_dimensions = Dataset_dimensions - acceptable_dimensions
+            return extra_dimensions
+        
+        def merge_masked_dataset(DataArray_ls):
+            '''
+            Store masked DataArrays into a single DataSet
+            '''
+            merged_dataset = xr.Dataset({name[0]: data_array.to_dataarray() for name, data_array in DataArray_ls})
+            merged_dataset = merged_dataset.drop_vars(['variable', 'spatial_ref'])
+            # Remove dimensions without coordinates
+            for variable in merged_dataset.data_vars:
+                dims_with_coords = set([dim for dim in merged_dataset[variable].dims if dim in merged_dataset[variable].coords])
+                all_dims = set(list(merged_dataset[variable].dims))
+                uncommon_dimentions = list(all_dims.symmetric_difference(dims_with_coords))
 
-        if ("latitude" in DataArray.dims) and ("longitude" in DataArray.dims):
-            DataArray = DataArray.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude", inplace=True)
-            print("latitude/longitude dimentions used")
-        elif ("lat" in DataArray.dims) and ("lon" in DataArray.dims):
-            DataArray = DataArray.rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=True)
-            print("lat/lon dimentions used")
-        elif ("x" in DataArray.dims) and ("y" in DataArray.dims):
-            DataArray = DataArray.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=True)
-            print("x/y dimentions used")
-        else:
-            raise ValueError("Unspecified lat/lon dimentions in DataArray")
+                for uncommon_dim in uncommon_dimentions:
+                    if uncommon_dim in merged_dataset.dims:
+                        merged_dataset[variable] = merged_dataset[variable].sel({uncommon_dim: merged_dataset[uncommon_dim][0]})
 
-        DataArray = DataArray.rio.write_crs(shp_epsg, inplace=True)
-        DataArray_masked = DataArray.rio.clip(shp_mask.geometry.apply(mapping), shp_mask.crs, drop=drop_data, invert = invert_shp)
+            return(merged_dataset)
 
-        if save_masked_file == True:
-            if not os.path.exists(file_output_path):
-                os.makedirs(file_output_path)
-                print("file_output_path did not exist and was created")
+        if DataArray is not None:
+            # Mask input DataArray
+            DataArray_masked = self.mask_DataArray(DataArray = DataArray,
+                               shp_mask = shp_mask,
+                               shp_epsg = shp_epsg,
+                               invert_shp = invert_shp,
+                               drop_data = drop_data)
+            if save_masked_file is True:
+                self.save_masked_DataArray(DataArray_masked = DataArray_masked,
+                                      file_output_path = file_output_path,
+                                      file_output_name = file_output_name)
             else:
-                pass
-            print("Saving DataArray_masked file")
+                return(DataArray_masked)
 
-            if 'grid_mapping' in DataArray_masked.attrs:
-                del DataArray_masked.attrs['grid_mapping'] # delete grid_mapping attribute to avoid "ValueError in safe_setitem" from xarray
-            else:
-                pass
+        elif file_path is not None and file_name is not None:
+                print("Loading DataArray from disk")
+                DataArray = rioxarray.open_rasterio(file_path + file_name)
 
-            try:
-                DataArray_masked.to_netcdf(file_output_path + file_output_name)
-            except:
-                # Change DataArray_masked to dataset if xarray.core.dataarray.DataArray
-                if str(type(DataArray_masked)) == "<class 'xarray.core.dataarray.DataArray'>":
-                    DataArray_masked = DataArray_masked.to_dataset()
-                    print("Changed DataArray_masked from DataArray to DataSet")
-                # Remove "_FillValue" = np.nan from data_vars and coordinates attributes 
-                # Change "_FillValue" to -9999, to avoid "ValueError: cannot convert float NaN to integer"
-                for var_name, var in DataArray_masked.variables.items():
-                    if "_FillValue" in var.attrs:
-                        del var.attrs["_FillValue"]
-                        var.attrs["_FillValue"] = -9999
-                        print("Changed _FillValue of ", var_name, "from NaN to -9999")
+                if not isinstance(DataArray, list):
+                    # File to mask contains only one variable
+                    DataArray_masked = self.mask_DataArray(DataArray = DataArray,
+                                           shp_mask = shp_mask,
+                                           shp_epsg = shp_epsg,
+                                           invert_shp = invert_shp,
+                                           drop_data = drop_data)
+                    if save_masked_file is True:
+                        self.save_masked_DataArray(DataArray_masked = DataArray_masked,
+                                              file_output_path = file_output_path,
+                                              file_output_name = file_output_name)
+                    else:
+                        return(DataArray_masked)
+                else:
+                    # Masked file contains more than one variable
+                    #Store masked and not masked DataArrays
+                    DataArray_masked_ls = []
+                    DataArray_not_masked_ls = []
+                    for Dataset in DataArray:
+                        extra_dims = check_extra_dimensions(Dataset)
+                        if extra_dims:
+                            print("Extra dimensions found for ", str(Dataset.data_vars)[20:])
+                            print("Returning original DataArray")
+                            DataArray_not_masked_ls.append([list(Dataset.data_vars), Dataset])
+                        else:
+                            print("Masking ", str(Dataset.data_vars)[20:])
+                            DataArray_masked = self.mask_DataArray(DataArray = Dataset,
+                                                   shp_mask = shp_mask,
+                                                   shp_epsg = shp_epsg,
+                                                   invert_shp = invert_shp,
+                                                   drop_data = drop_data)
 
-                for coord_name, coord in DataArray_masked.coords.items():
-                    if "_FillValue" in coord.attrs:
-                        del coord.attrs["_FillValue"]
-                        coord.attrs["_FillValue"] = -9999
-                        print("Changed _FillValue of ", coord_name, "from NaN to -9999")
+                            DataArray_masked_ls.append([list(DataArray_masked.data_vars), DataArray_masked])
 
-                DataArray_masked.to_netcdf(file_output_path + file_output_name)
+                    masked_dataset = merge_masked_dataset(DataArray_masked_ls)
+                    not_masked_dataset = merge_masked_dataset(DataArray_not_masked_ls)
+
+                    if save_masked_file is True:
+                        self.save_masked_DataArray(DataArray_masked = masked_dataset,
+                                              file_output_path = file_output_path,
+                                              file_output_name = file_output_name[:-3] + "_MASKED_VARS.nc")
+                        self.save_masked_DataArray(DataArray_masked = not_masked_dataset,
+                                              file_output_path = file_output_path,
+                                              file_output_name = file_output_name[:-3] + "_NOT_MASKED_VARS.nc")
+                    else:
+                        return(masked_dataset)
+
         else:
-            return DataArray_masked
+            raise ValueError("DataArray or file_path/file_name not specified")
+
 
     @staticmethod
     def _simmetrical_colormap(cmap):
