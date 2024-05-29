@@ -3905,7 +3905,6 @@ class ChemicalDrift(OceanDrift):
 
             DataArray_masked.to_netcdf(file_output_path + file_output_name)
 
-
     @staticmethod
     def _mask_DataArray(DataArray,
                        shp_mask,
@@ -3939,24 +3938,32 @@ class ChemicalDrift(OceanDrift):
         if "x" in DataArray_masked.dims:
             DataArray_masked = DataArray_masked.rename({'y': 'latitude','x': 'longitude'})
 
+        DataArray_masked['latitude'] = DataArray_masked['latitude'].assign_attrs(standard_name='latitude')
+        DataArray_masked['latitude'] = DataArray_masked['latitude'].assign_attrs(long_name='latitude')
+        DataArray_masked['latitude'] = DataArray_masked['latitude'].assign_attrs(units='degrees_north')
+        DataArray_masked['latitude'] = DataArray_masked['latitude'].assign_attrs(axis='Y')
+
+        DataArray_masked['longitude'] = DataArray_masked['longitude'].assign_attrs(standard_name='longitude')
+        DataArray_masked['longitude'] = DataArray_masked['longitude'].assign_attrs(long_name='longitude')
+        DataArray_masked['longitude'] = DataArray_masked['longitude'].assign_attrs(units='degrees_east')
+        DataArray_masked['longitude'] = DataArray_masked['longitude'].assign_attrs(axis='X')
+
         return DataArray_masked
-
-
 
     @staticmethod
     def _check_extra_dimensions(Dataset, 
                                 permitted_dims):
         '''
-        Check if dimentions other than lat/lon/time are present.
+        Check if dimentions other than lat/lon/time/depth are present.
+        Other permitted_dims can be spedified as a list
         If extra dimentions are present data_var will not be masked
         '''
-        acceptable_dimensions = set(['lat', 'lon', 'latitude', 'longitude', 'x', 'y', 'time'] + permitted_dims)
+        acceptable_dimensions = set(['lat', 'lon', 'latitude', 'longitude', 'x', 'y',
+                                     'time', 'avg_time', 'depth', 'z'] + permitted_dims)
         Dataset_dimensions = set(Dataset.dims)
 
         extra_dimensions = Dataset_dimensions - acceptable_dimensions
         return extra_dimensions
-
-
 
     @staticmethod
     def _merge_masked_dataset(DataArray_ls):
@@ -4016,6 +4023,11 @@ class ChemicalDrift(OceanDrift):
         shp_mask = gpd.read_file(shp_mask_file, crs=shp_epsg)
 
         if DataArray is not None:
+            extra_dims = self._check_extra_dimensions(Dataset = DataArray, 
+                                                      permitted_dims = permitted_dims)
+            if extra_dims:
+                raise ValueError(f'Unpermitted dimentions {extra_dims} are present, check permitted_dims')
+
             # Mask input DataArray
             DataArray_masked = self._mask_DataArray(DataArray = DataArray,
                                shp_mask = shp_mask,
@@ -4035,6 +4047,11 @@ class ChemicalDrift(OceanDrift):
 
                 if not isinstance(DataArray, list):
                     # File to mask contains only one variable
+                    extra_dims = self._check_extra_dimensions(Dataset = DataArray, 
+                                                              permitted_dims = permitted_dims)
+                    if extra_dims:
+                        raise ValueError(f'Unpermitted dimentions {extra_dims} are present, check permitted_dims')
+
                     DataArray_masked = self._mask_DataArray(DataArray = DataArray,
                                            shp_mask = shp_mask,
                                            shp_epsg = shp_epsg,
@@ -4048,7 +4065,7 @@ class ChemicalDrift(OceanDrift):
                         return(DataArray_masked)
                 else:
                     # Masked file contains more than one variable
-                    #Store masked and not masked DataArrays
+                    # Store masked and not masked DataArrays
                     DataArray_masked_ls = []
                     DataArray_not_masked_ls = []
                     masked_dataset = None
@@ -4121,6 +4138,7 @@ class ChemicalDrift(OceanDrift):
 
         return new_cmap
 
+
     @staticmethod
     def _remove_white_borders(image):
         '''
@@ -4137,7 +4155,8 @@ class ChemicalDrift(OceanDrift):
         # Crop the image to the bounding box
         cropped_image = image[rmin:rmax + 1, cmin:cmax + 1]
         return cropped_image
-    
+
+
     @staticmethod
     def _create_animation(load_img_from_folder,
                        trim_images,
@@ -4200,14 +4219,12 @@ class ChemicalDrift(OceanDrift):
         print("Time to save animation (hr:min:sec): ", dt.now()-start)
 
 
-
     @staticmethod
     def _flatten_list(matrix):
         flat_list = []
         for row in matrix:
             flat_list += row
         return flat_list
-
 
 
     @staticmethod
@@ -4219,7 +4236,6 @@ class ChemicalDrift(OceanDrift):
             if isinstance(element, list):
                 return True
         return False
-
 
 
     @staticmethod
@@ -4243,7 +4259,6 @@ class ChemicalDrift(OceanDrift):
              else:
                  break
         return elem_print
-
 
 
     def create_images(self,
@@ -6047,8 +6062,7 @@ class ChemicalDrift(OceanDrift):
         end_date:                     pd.Datetime, end of reconstructed timeseries when .csv have different timesteps
         freq_time:                    string, frequency of reconstructed timeseries when .csv have different timesteps expressed as hours (e.g., "6H")
         mass_unit_out:                string, mass unit of uotput .csv file ('kg' 'g','mg','ug')
-                              
-                                      
+
         Returns a Pandas Dataframe equal to extract_summary_timeseries
         '''
 
@@ -6310,3 +6324,180 @@ class ChemicalDrift(OceanDrift):
 
         merged_df_fin.to_csv(ts_file_path + csv_file_name_fin)
         print("saved sum file to ", ts_file_path + csv_file_name_fin)
+
+
+    @staticmethod
+    def _check_dims_values(dims_values):
+        '''
+        Check if each dimention within DataArrays_ls has the same values for all DataArrays in the list
+
+        dims_values:        list of dict, [{dimention name:dimention values}, ...]
+        '''
+        # Get the intersection of keys from all dictionaries
+        common_keys = set.intersection(*(set(d.keys()) for d in dims_values))
+        if len(common_keys) == 0:
+            raise ValueError('No common dimentions are present in DataArray_ls')
+        else:
+            pass
+
+        for key in common_keys:
+            # Get the value associated with the key in the first dictionary
+            value = dims_values[0][key]
+            # Check if all dictionaries have the same value for this key
+            if not all(np.array_equal(d[key], value) for d in dims_values):
+                raise ValueError(f' Dimention "{key}" has different values across DataArray_ls')
+            else:
+                pass
+
+
+    @staticmethod
+    def _select_DataArray_ts(DataArray, time_step, time_name):
+        '''
+        Select the slice along "time_name" dimentions corresponding to time_step (or the one immediatly before)
+        If time_step is outside DataArray[time_name] returns a xr.zeros_like(DataArray) of one time step
+
+        DataArray:        xarray DataArray
+        time_step:        np.timedelta64, frequency of reconstructed time dimention
+        time_name:           string, name of time dimention of all DataArray present in DataArray_ls
+
+        '''
+        import xarray as xr
+
+        if time_step >= DataArray[time_name].min() and time_step <= DataArray[time_name].max():
+            selected_ts = DataArray.sel(**{time_name: time_step}, method = "pad")
+            return selected_ts
+        else:
+            ts_ref = DataArray[time_name].min()
+            return xr.zeros_like(DataArray.sel(**{time_name: ts_ref}))
+        
+        
+    def sum_DataArray_list(self,
+                           DataArray_ls,
+                           start_date = None,
+                           end_date = None,
+                           freq_time = None,
+                           time_name = "time"
+                           ):
+        '''
+        Sum a list of xarray DataArrays, with the same or different time step
+
+        DataArray_ls:        list of xarray DataArray
+        start_date:          np.datetime64, start of reconstructed time dimention
+        end_date:            np.datetime64, start of reconstructed time dimention
+        time_step:           np.timedelta64, frequency of reconstructed time dimention
+        time_name:           string, name of time dimention of all DataArray present in DataArray_ls
+        '''
+        import xarray as xr
+
+        print("Checking input DataArray dimentions")
+        ### Check if uncommon dimentions are present
+        all_dims = [set(DataArray.dims) for DataArray in DataArray_ls]
+        extra_dims = set().union(*all_dims) - set.intersection(*all_dims)
+        if extra_dims:
+            for dim in extra_dims:
+                for index, DataArray in enumerate(DataArray_ls):
+                    if dim in DataArray.dims:
+                        print(f'Extra dimention {dim} in array {index}')
+
+            raise ValueError("Uncommon dimentions are present in DataArray_ls")
+
+        all_dims = set.union(*all_dims)
+
+        ### Remove time dimention from check if all dimentions are equal
+        if not isinstance(time_name, set):
+            time_name = set(time_name.split())
+        all_dims = all_dims - time_name
+        if "time" in all_dims:
+            raise ValueError(f'time dimention has another name than "{time_name}" in at least one DataArray')
+
+        ### Check if common dimentions (except time) have the same values
+        dims_values = []
+        for DataArray in DataArray_ls:
+            # Initialize dict to store dimension values for this DataArray
+            DataArray_dims_values = {}
+            # Iterate through each dimension in all_dims
+            for dim in list(all_dims):
+                # Get the dimension values if the dimension exists in the DataArray
+                if dim in DataArray.dims:
+                    DataArray_dims_values[dim] = DataArray[dim].values
+                else:
+                    raise ValueError("Uncommon dimentions are present in DataArray_ls")
+            # Append the dimension values for this DataArray to the list
+            dims_values.append(DataArray_dims_values)
+
+        self._check_dims_values(dims_values)
+
+        ### Convert time_name to string to allow indexing
+        if not isinstance(time_name, str):
+            if isinstance(time_name, set):
+                time_name = time_name.pop()
+
+        ### Check if time dimentions have the same values
+        time_dim_values = []
+        for DataArray in DataArray_ls:
+            time_dim_values.append(DataArray[time_name].values)
+
+        time_check = time_dim_values[0]
+        if all(np.array_equal(time_dim_values[index], time_check) for index in range(1, len(time_dim_values))):
+            print("Time dimentions are all equal in DataArray_ls, set up of time_date_serie was skipped")
+            print("Running sum of DataArray_ls")
+            Final_sum = DataArray_ls[0].compute()
+
+            for index in range(1, len(DataArray_ls)):
+                DataArray = DataArray_ls[index]
+                values = DataArray.compute()
+                del DataArray
+                Final_sum += values
+                del values
+        else:
+            print("Time dimentions are not equal in DataArray_ls, set up time_date_serie")
+            ### Set up time_date_serie array from input or from DataArray_ls
+            if start_date is None:
+                start_date = np.array([DataArray[time_name].min().to_numpy() for DataArray in DataArray_ls]).min()
+                print("start_date set-up from DataArray_ls")
+
+            if end_date is None:
+                end_date = np.array([DataArray[time_name].max().to_numpy() for DataArray in DataArray_ls]).max()
+                print("end_date set-up from DataArray_ls")
+
+            if freq_time is None:
+                freq_time = []
+                for DataArray in DataArray_ls:
+                    if DataArray[time_name].size > 1:
+                        freq_time.append((DataArray[time_name][1] - DataArray[time_name][0]).to_numpy())
+                freq_time = np.array(freq_time).min()
+                print("freq_time set-up from DataArray_ls")
+
+            time_date_serie = np.arange(start_date, (end_date + freq_time), freq_time)
+
+            if start_date is not None:
+                print("start_date: ", start_date)
+            if end_date is not None:
+                print("end_date: ", end_date)
+            if freq_time is not None:
+                print("freq_time: ", float(freq_time/3.6e+12), " hours")
+
+            print("Running sum of time_steps")
+            Final_ts_sum_ls = []
+            for time_step in time_date_serie:
+                sum_tstep_ls = []
+                for DataArray in DataArray_ls:
+                    selected_ts = self._select_DataArray_ts(DataArray = DataArray,
+                                        time_step = time_step,
+                                        time_name = time_name)
+                    sum_tstep_ls.append(selected_ts)
+
+                sum_tstep = sum_tstep_ls[0].compute()
+                for ts in range(1, len (sum_tstep_ls)):
+                    # print(ts)
+                    tstep = sum_tstep_ls[ts]
+                    sum_tstep += tstep.compute()
+
+                sum_tstep.__setitem__(time_name, time_step)
+                Final_ts_sum_ls.append(sum_tstep)
+                del sum_tstep
+
+            print("Concatenating Final_ts_sum_ls")
+            Final_sum = xr.concat(Final_ts_sum_ls, dim = time_name)
+
+        return Final_sum
