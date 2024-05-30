@@ -2485,6 +2485,11 @@ class ChemicalDrift(OceanDrift):
             mass_unit='microgram'  # default unit for chemicals
 
         z = self.get_property('z')[0]
+        # Move elements above sea level below the surface (-1 mm)
+        if (z >= 0).any():
+            z_positive = np.ma.masked_invalid(z[z >= 0]).count()
+            z[z >= 0] = -0.0001
+            logger.warning(f'{z_positive} elements were above surface level and were moved to z = -0.0001')
         if not zlevels==None:
             zlevels = np.sort(zlevels)
             z_array = np.append(np.append(-10000, zlevels) , max(0,np.nanmax(z)))
@@ -6478,7 +6483,7 @@ class ChemicalDrift(OceanDrift):
             if end_date is not None:
                 print("end_date: ", end_date)
             if freq_time is not None:
-                print("freq_time: ", float(freq_time/3.6e+12), " hours")
+                print("freq_time: ", freq_time)
 
             print("Running sum of time_steps")
             Final_ts_sum_ls = []
