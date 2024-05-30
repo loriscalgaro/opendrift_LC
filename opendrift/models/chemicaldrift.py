@@ -3986,18 +3986,18 @@ class ChemicalDrift(OceanDrift):
 
         return(merged_dataset)
 
-    def mask_netcdf_map (self,
-                         shp_mask_file,
-                         file_path = None,
-                         file_name = None,
-                         DataArray = None,
-                         shp_epsg = "epsg:4326",
-                         invert_shp = False,
-                         drop_data = False,
-                         save_masked_file = False,
-                         file_output_path = None,
-                         file_output_name = None,
-                         permitted_dims = []
+    def mask_netcdf_map(self,
+                        shp_mask_file,
+                        file_path = None,
+                        file_name = None,
+                        DataArray = None,
+                        shp_epsg = "epsg:4326",
+                        invert_shp = False,
+                        drop_data = False,
+                        save_masked_file = False,
+                        file_output_path = None,
+                        file_output_name = None,
+                        permitted_dims = []
                          ):
         '''
         Mask xarray DataArray using shapefile, return a masked xarray DataArray
