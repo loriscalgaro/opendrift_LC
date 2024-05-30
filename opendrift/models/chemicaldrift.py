@@ -6369,8 +6369,8 @@ class ChemicalDrift(OceanDrift):
         else:
             ts_ref = DataArray[time_name].min()
             return xr.zeros_like(DataArray.sel(**{time_name: ts_ref}))
-        
-        
+
+
     def sum_DataArray_list(self,
                            DataArray_ls,
                            start_date = None,
@@ -6380,6 +6380,7 @@ class ChemicalDrift(OceanDrift):
                            ):
         '''
         Sum a list of xarray DataArrays, with the same or different time step
+        If start_date, end_date, or freq_time are specified time dimention is reconstructed
 
         DataArray_ls:        list of xarray DataArray
         start_date:          np.datetime64, start of reconstructed time dimention
@@ -6438,7 +6439,9 @@ class ChemicalDrift(OceanDrift):
             time_dim_values.append(DataArray[time_name].values)
 
         time_check = time_dim_values[0]
-        if all(np.array_equal(time_dim_values[index], time_check) for index in range(1, len(time_dim_values))):
+        if (all(np.array_equal(time_dim_values[index], time_check) for index in range(1, len(time_dim_values)))\
+            and start_date is None and end_date is None and freq_time is None):
+
             print("Time dimentions are all equal in DataArray_ls, set up of time_date_serie was skipped")
             print("Running sum of DataArray_ls")
             Final_sum = DataArray_ls[0].compute()
@@ -6489,9 +6492,11 @@ class ChemicalDrift(OceanDrift):
 
                 sum_tstep = sum_tstep_ls[0].compute()
                 for ts in range(1, len (sum_tstep_ls)):
-                    # print(ts)
                     tstep = sum_tstep_ls[ts]
-                    sum_tstep += tstep.compute()
+                    values = tstep.compute()
+                    del tstep
+                    sum_tstep += values.compute()
+                    del values
 
                 sum_tstep.__setitem__(time_name, time_step)
                 Final_ts_sum_ls.append(sum_tstep)
