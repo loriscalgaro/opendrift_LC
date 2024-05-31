@@ -2408,7 +2408,7 @@ class ChemicalDrift(OceanDrift):
         
         if self.mode != opendrift.models.basemodel.Mode.Config:
             self.mode = opendrift.models.basemodel.Mode.Config
-            print("Changed self.mode to Config")
+            logger.debug("Changed self.mode to Config")
 
         if landmask_shapefile is not None:
             if 'shape' in self.env.readers.keys():
@@ -2427,13 +2427,12 @@ class ChemicalDrift(OceanDrift):
             from opendrift.readers import reader_netCDF_CF_generic
             reader_sea_depth = reader_netCDF_CF_generic.Reader(reader_sea_depth)
         else:
-            print('A reader for ''sea_floor_depth_below_sea_level'' must be specified')
-            import sys
-            sys.exit()
-            
+            raise ValueError('A reader for ''sea_floor_depth_below_sea_level'' must be specified')
+
+
         if self.mode != opendrift.models.basemodel.Mode.Result:
             self.mode = opendrift.models.basemodel.Mode.Result
-            print("Changed self.mode to Result")
+            logger.debug("Changed self.mode to Result")
 
         # Temporary workaround if self.nspecies and self.name_species are not defined
         # TODO Make sure that these are saved when the simulation data is saved to the ncdf file
@@ -5332,6 +5331,9 @@ class ChemicalDrift(OceanDrift):
 
         date_of_timestep_ls = []
         for element in df['date_of_timestep']:
+            if isinstance(element, pd.Timestamp):
+                element = element.strftime('%Y-%m-%d %H:%M:%S')
+
             date_of_timestep_ls.append(self._change_datetime_format(datetime_str = element,
                                         new_format = "%Y-%m-%d %H:%M:%S"))
         df['date_of_timestep'] = date_of_timestep_ls
@@ -5736,8 +5738,7 @@ class ChemicalDrift(OceanDrift):
         mass_conversion_factor = mass_fin_df.loc[1, ('convertion_factors-[time_mass]')]
 
         # Filter dataframe based on date
-        mass_fin_df = self.filter_dataframe(self,
-                                       df = mass_fin_df,
+        mass_fin_df = self.filter_dataframe(df = mass_fin_df,
                                        time_unit = time_unit,
                                        start_date = start_date, end_date = end_date)
 
