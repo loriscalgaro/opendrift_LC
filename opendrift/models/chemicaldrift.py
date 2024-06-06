@@ -306,43 +306,43 @@ class ChemicalDrift(OceanDrift):
             # Sedimentation/Resuspension
             'chemical:sediment:mixing_depth': {'type': 'float', 'default': 0.03,
                 'min': 0, 'max': 100, 'units': 'm',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Height of sediments active layer'},
             'chemical:sediment:density': {'type': 'float', 'default': 2600,
                 'min': 0, 'max': 10000, 'units': 'kg/m3',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:effective_fraction': {'type': 'float', 'default': 0.9,
                 'min': 0, 'max': 1, 'units': '',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Fraction of effective sediments acting as sorbents (metals only)'},
             'chemical:sediment:corr_factor': {'type': 'float', 'default': 0.1,
                 'min': 0, 'max': 10, 'units': '',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Correction factor desorption, to calculate sed desorption from SPM desorption (metals only)'},
             'chemical:sediment:porosity': {'type': 'float', 'default': 0.6,
                 'min': 0, 'max': 1, 'units': '',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Fraction of sediment volume made of water, adimentional'},
             'chemical:sediment:layer_thickness': {'type': 'float', 'default': 1,
                 'min': 0, 'max': 100, 'units': 'm',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Thickness of seabed interaction layer'},
             'chemical:sediment:desorption_depth': {'type': 'float', 'default': 1,
                 'min': 0, 'max': 100, 'units': 'm',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Distance from seabed where desorbed elements are moved'},
             'chemical:sediment:desorption_depth_uncert': {'type': 'float', 'default': .5,
                 'min': 0, 'max': 100, 'units': 'm',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:resuspension_depth': {'type': 'float', 'default': 1,
                 'min': 0, 'max': 100, 'units': 'm',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Distance from seabed where resuspended elements are moved'},
             'chemical:sediment:resuspension_depth_uncert': {'type': 'float', 'default': .5,
                 'min': 0, 'max': 100, 'units': 'm',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:resuspension_critvel': {'type': 'float', 'default': .01,
                 'min': 0, 'max': 1, 'units': 'm/s',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Critiacal velocity of water to resuspend sediments'},
             'chemical:sediment:burial_rate': {'type': 'float', 'default': .00003,   # MacKay
                 'min': 0, 'max': 10, 'units': 'm/year',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Rate of sediment burial'},
             'chemical:sediment:buried_leaking_rate': {'type': 'float', 'default': 0,
                 'min': 0, 'max': 10, 'units': 's-1',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': 'rate of resuspension of buried sediments'},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Rate of resuspension of buried sediments'},
             #
             'chemical:compound': {'type': 'enum',
                 'enum': ['Naphthalene','Phenanthrene','Fluoranthene',
@@ -988,16 +988,12 @@ class ChemicalDrift(OceanDrift):
             pKa_acid   = self.get_config('chemical:transformations:pKa_acid')
             if pKa_acid < 0 and diss!='nondiss':
                 raise ValueError("pKa_acid must be positive")
-                # print("pKa_acid must be positive")
-                # UserWarning(("pKa_acid must be positive"))
             else:
                 pass
 
             pKa_base   = self.get_config('chemical:transformations:pKa_base')
             if pKa_base < 0 and diss!='nondiss':
                 raise ValueError("pKa_base must be positive")
-                # print("pKa_base must be positive")
-                # UserWarning(("pKa_base must be positive"))
             else:
                 pass
 
@@ -1957,7 +1953,7 @@ class ChemicalDrift(OceanDrift):
 
         elif self.get_config('chemical:transformations:degradation_mode')=='SingleRateConstants':
                 logger.debug('Calculating single degradation rates in water')
-             
+
 
                 degraded_now = np.zeros(self.num_elements_active())
                 
