@@ -55,10 +55,13 @@ import opendrift
 from opendrift.timer import Timeable
 from opendrift.errors import WrongMode
 from opendrift.models.physics_methods import PhysicsMethods
-from opendrift.config import Configurable, CONFIG_LEVEL_BASIC, CONFIG_LEVEL_ADVANCED
+from opendrift.config import Configurable, CONFIG_LEVEL_BASIC, CONFIG_LEVEL_ADVANCED, CONFIG_LEVEL_ESSENTIAL
+
+import roaring_landmask
+from roaring_landmask import RoaringLandmask
 
 Mode = Enum('Mode', ['Config', 'Ready', 'Run', 'Result'])
-
+rl = roaring_landmask.RoaringLandmask.new()
 
 def require_mode(mode: Union[Mode, List[Mode]], post_next_mode=False, error=None):
     if not isinstance(mode, list):
@@ -329,6 +332,15 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                 'previous means that objects will move back to the previous location '
                 'if they hit land'
             },
+            'general:coastline_approximation_precision': {
+                'type': 'float',
+                'default': None,
+                'min': 0.0001,
+                'max': 0.005,
+                'units': 'degrees',
+                'description': 'The precision of the particle position approximation to the coastline.',
+                'level': CONFIG_LEVEL_BASIC
+            },
             'general:time_step_minutes': {
                 'type': 'float',
                 'min': .01,
@@ -577,7 +589,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
 
     def store_present_positions(self, IDs=None, lons=None, lats=None):
         """Store present element positions, in case they shall be moved back"""
-        if self.get_config('general:coastline_action') == 'previous' or (
+        if self.get_config('general:coastline_action') in ['previous', 'stranding'] or (
                 'general:seafloor_action' in self._config
                 and self.get_config('general:seafloor_action') == 'previous'):
             if not hasattr(self, 'previous_lon'):
@@ -630,6 +642,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         if self.num_elements_active() == 0:
             return
         i = self.get_config('general:coastline_action')
+        coastline_approximation_precision = self.get_config('general:coastline_approximation_precision')
         if not hasattr(self, 'environment') or not hasattr(
                 self.environment, 'land_binary_mask'):
             return
@@ -645,9 +658,51 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             self.environment.land_binary_mask = en.land_binary_mask
 
         if i == 'stranding':  # Deactivate elements on land, but not in air
-            self.deactivate_elements((self.environment.land_binary_mask == 1) &
-                                     (self.elements.z <= 0),
-                                     reason='stranded')
+            on_land = np.where(self.environment.land_binary_mask == 1)[0]
+            if len(on_land) == 0:
+                logger.debug('No elements hit coastline.')
+                return
+
+            logger.debug('%s elements hit land, moving them to the coastline.' % len(on_land))
+
+            self.deactivate_elements(
+                (self.environment.land_binary_mask == 1) & (self.elements.z <= 0),
+                reason='stranded'
+            )
+            
+            if not coastline_approximation_precision:
+                return
+            
+            for on_land_id, on_land_prev_id in zip(on_land, self.elements.ID[on_land]):
+                lon = self.elements.lon[on_land_id]
+                lat = self.elements.lat[on_land_id]
+                prev_lon = self.previous_lon[on_land_prev_id - 1]
+                prev_lat = self.previous_lat[on_land_prev_id - 1]
+
+                step_degrees = float(coastline_approximation_precision)
+                
+                x_degree_diff = np.abs(prev_lon - lon)
+                x_samples = np.floor(x_degree_diff / step_degrees).astype(np.int64) if x_degree_diff > step_degrees else 1
+                x = np.linspace(prev_lon, lon, x_samples)
+
+                y_degree_diff = np.abs(prev_lat - lat)
+                y_samples = np.floor(y_degree_diff/ step_degrees).astype(np.int64) if y_degree_diff > step_degrees else 1
+                y = np.linspace(prev_lat, lat, y_samples)
+
+                xx, yy = np.meshgrid(x,y)
+                xx, yy = xx.ravel(), yy.ravel()
+
+                rl_mask = rl.contains_many(xx.ravel(), yy.ravel())
+                if np.any(rl_mask):
+                    index = np.argmax(rl_mask)
+                    new_lon = xx[index]
+                    new_lat = yy[index]
+
+                    self.elements.lon[on_land_id] = new_lon
+                    self.elements.lat[on_land_id] = new_lat
+
+            self.environment.land_binary_mask[on_land] = 0
+            
         elif i == 'previous':  # Go back to previous position (in water)
             if self.newly_seeded_IDs is not None:
                 self.deactivate_elements(
@@ -915,6 +970,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                                          time=land_reader.start_time)[0]['land_binary_mask']
         if landgrid.min() == 1 or np.isnan(landgrid.min()):
             logger.warning('No ocean pixels nearby, cannot move elements.')
+            if land.min() == 1:
+                raise ValueError('All elements seeded on land')
             return lon, lat
 
         oceangridlons = longrid[landgrid == 0]
@@ -2298,6 +2355,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                    lscale=None,
                    fast=False,
                    hide_landmask=False,
+                   xlocs = None,
+                   ylocs = None,
                    **kwargs):
         """
         Generate Figure instance on which trajectories are plotted.
@@ -2453,7 +2512,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                                                  latmax, fast, ocean_color,
                                                  land_color, lscale, globe)
 
-        gl = ax.gridlines(ccrs.PlateCarree(globe=globe), draw_labels=True)
+        gl = ax.gridlines(ccrs.PlateCarree(globe=globe), draw_labels=True, xlocs = xlocs, ylocs = ylocs)
         gl.top_labels = None
 
         fig.canvas.draw()
@@ -2537,6 +2596,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                   fast=False,
                   blit=False,
                   frames=None,
+                  xlocs = None,
+                  ylocs = None,
                   **kwargs):
         """Animate last run."""
 
@@ -2598,7 +2659,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         # Find map coordinates and plot points with empty data
         fig, ax, crs, x, y, index_of_first, index_of_last = \
             self.set_up_map(buffer=buffer, corners=corners, lscale=lscale,
-                            fast=fast, hide_landmask=hide_landmask, **kwargs)
+                            fast=fast, hide_landmask=hide_landmask, xlocs = xlocs, ylocs = ylocs, **kwargs)
 
         gcrs = ccrs.PlateCarree(globe=crs.globe)
 
@@ -3266,6 +3327,9 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
              lalpha=None,
              bgalpha=1,
              clabel=None,
+             cpad=.05,
+             caspect=30,
+             cshrink=.8,
              surface_color=None,
              submerged_color=None,
              markersize=20,
@@ -3275,6 +3339,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
              lscale=None,
              fast=False,
              hide_landmask=False,
+             xlocs = None,
+             ylocs = None,
              **kwargs):
         """Basic built-in plotting function intended for developing/debugging.
 
@@ -3351,7 +3417,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                                                       tlatmax)
 
         fig, ax, crs, x, y, index_of_first, index_of_last = \
-            self.set_up_map(buffer=buffer, corners=corners, lscale=lscale, fast=fast, hide_landmask=hide_landmask, **kwargs)
+            self.set_up_map(buffer=buffer, corners=corners, lscale=lscale, fast=fast, hide_landmask=hide_landmask, xlocs = xlocs, ylocs = ylocs, **kwargs)
 
         # x, y are longitude, latitude -> i.e. in a PlateCarree CRS
         gcrs = ccrs.PlateCarree(globe=crs.globe)
@@ -3617,9 +3683,9 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         if mappable is not None and colorbar is True:
             cb = fig.colorbar(mappable,
                               orientation='horizontal',
-                              pad=.05,
-                              aspect=30,
-                              shrink=.8,
+                              pad=cpad,
+                              aspect=caspect,
+                              shrink=cshrink,
                               drawedges=False)
             # TODO: need better control of colorbar content
             if clabel is not None:
@@ -3682,7 +3748,6 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             logger.warning(traceback.format_exc())
 
         #plt.gca().tick_params(labelsize=14)
-
         #fig.canvas.draw()
         if filename is not None:
             plt.savefig(filename)

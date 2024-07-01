@@ -306,43 +306,43 @@ class ChemicalDrift(OceanDrift):
             # Sedimentation/Resuspension
             'chemical:sediment:mixing_depth': {'type': 'float', 'default': 0.03,
                 'min': 0, 'max': 100, 'units': 'm',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Height of sediments active layer'},
             'chemical:sediment:density': {'type': 'float', 'default': 2600,
                 'min': 0, 'max': 10000, 'units': 'kg/m3',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:effective_fraction': {'type': 'float', 'default': 0.9,
                 'min': 0, 'max': 1, 'units': '',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Fraction of effective sediments acting as sorbents'},
             'chemical:sediment:corr_factor': {'type': 'float', 'default': 0.1,
                 'min': 0, 'max': 10, 'units': '',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Correction factor desorption, to calculate sed desorption from SPM desorption (metals only)'},
             'chemical:sediment:porosity': {'type': 'float', 'default': 0.6,
                 'min': 0, 'max': 1, 'units': '',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Fraction of sediment volume made of water, adimentional'},
             'chemical:sediment:layer_thickness': {'type': 'float', 'default': 1,
                 'min': 0, 'max': 100, 'units': 'm',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Thickness of seabed interaction layer'},
             'chemical:sediment:desorption_depth': {'type': 'float', 'default': 1,
                 'min': 0, 'max': 100, 'units': 'm',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Distance from seabed where desorbed elements are moved'},
             'chemical:sediment:desorption_depth_uncert': {'type': 'float', 'default': .5,
                 'min': 0, 'max': 100, 'units': 'm',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:resuspension_depth': {'type': 'float', 'default': 1,
                 'min': 0, 'max': 100, 'units': 'm',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Distance from seabed where resuspended elements are moved'},
             'chemical:sediment:resuspension_depth_uncert': {'type': 'float', 'default': .5,
                 'min': 0, 'max': 100, 'units': 'm',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:resuspension_critvel': {'type': 'float', 'default': .01,
                 'min': 0, 'max': 1, 'units': 'm/s',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Critiacal velocity of water to resuspend sediments'},
             'chemical:sediment:burial_rate': {'type': 'float', 'default': .00003,   # MacKay
                 'min': 0, 'max': 10, 'units': 'm/year',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Rate of sediment burial'},
             'chemical:sediment:buried_leaking_rate': {'type': 'float', 'default': 0,
                 'min': 0, 'max': 10, 'units': 's-1',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': 'rate of resuspension of buried sediments'},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Rate of resuspension of buried sediments'},
             #
             'chemical:compound': {'type': 'enum',
                 'enum': ['Naphthalene','Phenanthrene','Fluoranthene',
@@ -988,16 +988,12 @@ class ChemicalDrift(OceanDrift):
             pKa_acid   = self.get_config('chemical:transformations:pKa_acid')
             if pKa_acid < 0 and diss!='nondiss':
                 raise ValueError("pKa_acid must be positive")
-                # print("pKa_acid must be positive")
-                # UserWarning(("pKa_acid must be positive"))
             else:
                 pass
 
             pKa_base   = self.get_config('chemical:transformations:pKa_base')
             if pKa_base < 0 and diss!='nondiss':
                 raise ValueError("pKa_base must be positive")
-                # print("pKa_base must be positive")
-                # UserWarning(("pKa_base must be positive"))
             else:
                 pass
 
@@ -1957,7 +1953,7 @@ class ChemicalDrift(OceanDrift):
 
         elif self.get_config('chemical:transformations:degradation_mode')=='SingleRateConstants':
                 logger.debug('Calculating single degradation rates in water')
-             
+
 
                 degraded_now = np.zeros(self.num_elements_active())
                 
@@ -2408,7 +2404,7 @@ class ChemicalDrift(OceanDrift):
         
         if self.mode != opendrift.models.basemodel.Mode.Config:
             self.mode = opendrift.models.basemodel.Mode.Config
-            print("Changed self.mode to Config")
+            logger.debug("Changed self.mode to Config")
 
         if landmask_shapefile is not None:
             if 'shape' in self.env.readers.keys():
@@ -2427,13 +2423,12 @@ class ChemicalDrift(OceanDrift):
             from opendrift.readers import reader_netCDF_CF_generic
             reader_sea_depth = reader_netCDF_CF_generic.Reader(reader_sea_depth)
         else:
-            print('A reader for ''sea_floor_depth_below_sea_level'' must be specified')
-            import sys
-            sys.exit()
-            
+            raise ValueError('A reader for ''sea_floor_depth_below_sea_level'' must be specified')
+
+
         if self.mode != opendrift.models.basemodel.Mode.Result:
             self.mode = opendrift.models.basemodel.Mode.Result
-            print("Changed self.mode to Result")
+            logger.debug("Changed self.mode to Result")
 
         # Temporary workaround if self.nspecies and self.name_species are not defined
         # TODO Make sure that these are saved when the simulation data is saved to the ncdf file
@@ -2485,6 +2480,11 @@ class ChemicalDrift(OceanDrift):
             mass_unit='microgram'  # default unit for chemicals
 
         z = self.get_property('z')[0]
+        # Move elements above sea level below the surface (-1 mm)
+        if (z >= 0).any():
+            z_positive = np.ma.masked_invalid(z[z >= 0]).count()
+            z[z >= 0] = -0.0001
+            logger.warning(f'{z_positive} elements were above surface level and were moved to z = -0.0001')
         if not zlevels==None:
             zlevels = np.sort(zlevels)
             z_array = np.append(np.append(-10000, zlevels) , max(0,np.nanmax(z)))
@@ -3275,31 +3275,22 @@ class ChemicalDrift(OceanDrift):
                 t = np.array(t, dtype='datetime64[s]')
 
             if "depth" in NETCDF_data.dims:
-                # la = NETCDF_data.latitude[sel[0]].data
                 la = NETCDF_data.latitude[sel[la_name_index]].data
-                # lo = NETCDF_data.longitude[sel[1]].data
                 lo = NETCDF_data.longitude[sel[lo_name_index]].data
                 depth = np.absolute(NETCDF_data.depth[sel[depth_name_index]].data) # Change depth to positive values to calculate pixel volume
             else:
-                # la = NETCDF_data.latitude[sel[0]].data
                 la = NETCDF_data.latitude[sel[la_name_index]].data
-                # lo = NETCDF_data.longitude[sel[1]].data
                 lo = NETCDF_data.longitude[sel[lo_name_index]].data
 
         elif time_check > 1:
-            # t = NETCDF_data.time[sel[0]].data
             t = NETCDF_data.time[sel[time_name_index]].data
             t = np.array(t, dtype='datetime64[s]')
             if "depth" in NETCDF_data.dims:
-                # la = NETCDF_data.latitude[sel[1]].data
                 la = NETCDF_data.latitude[sel[la_name_index]].data
-                # lo = NETCDF_data.longitude[sel[2]].data
                 lo = NETCDF_data.longitude[sel[lo_name_index]].data
                 depth = NETCDF_data.depth[sel[depth_name_index]].data
             else:
-                # la = NETCDF_data.latitude[sel[1]].data
                 la = NETCDF_data.latitude[sel[la_name_index]].data
-                # lo = NETCDF_data.longitude[sel[2]].data
                 lo = NETCDF_data.longitude[sel[lo_name_index]].data
 
         print("Seeding " + str(la.size) + " datapoints")
@@ -3312,20 +3303,42 @@ class ChemicalDrift(OceanDrift):
 
         # Check bathimetry for inconsistent data
         if mode != 'emission':
-            Check_bathimetry = {"value" : [] ,"lat":[], "lon":[]}
+            Check_bathimetry = []
             for i in range(0, max(t.size, lo.size, la.size)):
-                # print(i)
                 Bathimetry_seed = np.array([(Bathimetry_seed_data.sel(latitude=lat_array[i],longitude=lon_array[i],method='nearest'))]) # m 
                 if np.isnan(Bathimetry_seed) or Bathimetry_seed <=0:
-                    Check_bathimetry["value"].append(Bathimetry_seed)
-                    Check_bathimetry["lat"].append(la[i])
-                    Check_bathimetry["lon"].append(lo[i])
-            if len(Check_bathimetry["value"]) > 0:
-                raise ValueError("Bathimetry_seed is NaN or <=0, concentration map exceeds bathimetry extent")
+                    Check_bathimetry.append(i)
+                    
+            if len(Check_bathimetry) > 0:
+                # Remove datapoints with inconsistent bathimetry for seeding
+
+                def remove_positions(arrays, positions):
+                    '''
+                    Remove positions specified in Check_bathimetry from each array of sel/la/lo/depth
+                    '''
+                    if len(arrays) == 1:
+                        return (np.delete(arrays[0], positions))
+                    else:
+                        return tuple(np.delete(array, positions) for array in arrays)
+
+                sel = remove_positions(sel, Check_bathimetry)
+                la = np.array(remove_positions([la], Check_bathimetry))
+                lo = np.array(remove_positions([lo], Check_bathimetry))
+                lat_array = np.array(remove_positions([lat_array ], Check_bathimetry))
+                lon_array = np.array(remove_positions([lon_array ], Check_bathimetry))
+                if "depth" in NETCDF_data.dims:
+                    depth = np.array(remove_positions([depth], Check_bathimetry))
+                if t.size == 1:
+                    pass
+                elif t.size > 1:
+                    t = np.array(remove_positions([t], Check_bathimetry))
+                logger.info(str(len(Check_bathimetry)) +  " datapoint removed due to inconsistent bathimetry")
+                del(Check_bathimetry)
             else:
                 del(Check_bathimetry)
 
         data = np.array(NETCDF_data.data)
+
         sed_mixing_depth = np.array(self.get_config('chemical:sediment:mixing_depth')) # m
 
         if mode == 'sed_conc':
@@ -3342,7 +3355,6 @@ class ChemicalDrift(OceanDrift):
             Bathimetry_seed = None
 
         for i in range(0, max(t.size, lo.size, la.size)):
-            # print(i)
             lon_grid_m = None
             depth_min = None
             depth_max = None
@@ -3438,6 +3450,7 @@ class ChemicalDrift(OceanDrift):
                 mass_element_seed_ug = mass_element_ug
 
             if mass_element_seed_ug > 0:
+                # print(i)
                 z = self._get_z(mode = mode,
                                 number = number,
                                 NETCDF_data_dim_names = NETCDF_data_dim_names,
@@ -5327,6 +5340,9 @@ class ChemicalDrift(OceanDrift):
 
         date_of_timestep_ls = []
         for element in df['date_of_timestep']:
+            if isinstance(element, pd.Timestamp):
+                element = element.strftime('%Y-%m-%d %H:%M:%S')
+
             date_of_timestep_ls.append(self._change_datetime_format(datetime_str = element,
                                         new_format = "%Y-%m-%d %H:%M:%S"))
         df['date_of_timestep'] = date_of_timestep_ls
@@ -5731,8 +5747,7 @@ class ChemicalDrift(OceanDrift):
         mass_conversion_factor = mass_fin_df.loc[1, ('convertion_factors-[time_mass]')]
 
         # Filter dataframe based on date
-        mass_fin_df = self.filter_dataframe(self,
-                                       df = mass_fin_df,
+        mass_fin_df = self.filter_dataframe(df = mass_fin_df,
                                        time_unit = time_unit,
                                        start_date = start_date, end_date = end_date)
 
@@ -6478,7 +6493,7 @@ class ChemicalDrift(OceanDrift):
             if end_date is not None:
                 print("end_date: ", end_date)
             if freq_time is not None:
-                print("freq_time: ", float(freq_time/3.6e+12), " hours")
+                print("freq_time: ", freq_time)
 
             print("Running sum of time_steps")
             Final_ts_sum_ls = []
