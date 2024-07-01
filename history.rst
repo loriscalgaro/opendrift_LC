@@ -1,6 +1,39 @@
 History
 =======
 
+2024-06-27 / Release v1.11.10
+----------------------------
+* Using now standard env variable names COPERNICUSMARINE_SERVICE_USERNAME and COPERNICUSMARINE_SERVICE_PASSWORD for reader_copernicus. Env variable COPERNICUSMARINE_CACHE_DIRECTORY can be set to empty string to disable caching.
+
+2024-06-27 / Release v1.11.9
+----------------------------
+* New feature to blend model field with point measurement (Ugo Martinez)
+* Hack in generic reader to make sure wind from ECMWF files is at 10m height
+
+* Raising now error if all elements are seeded on land
+2024-06-26 / Release v1.11.8
+----------------------------
+* Raising now error if all elements are seeded on land
+
+2024-06-25 / Release v1.11.7
+----------------------------
+* Decreased config_level of general:simulation_name to BASIC, due to wrong interpretation of config_level by Drifty
+
+2024-06-24 / Release v1.11.6
+----------------------------
+* Credentials for copernicusmarine client can now be stored in environment variables COPERNICUSMARINE_USER and COPERNICUSMARINE_PASSWORD, as alternative to .netrc file
+* Removed GRIB reader from list included in add_readers_from_list
+* Replaced two obsolete URLS for HYCOM (tds.hycom.org) with new aggregate from ncei.noaa.gov
+* Removed double quote from docstring, as giving problems for Drifty
+* Updated max water content of new oils
+* OpenDriftGUI now logs to file in addition to GUI window
+* config general:simulation_name is now ESSENTIAL, meaning that it will appear on front page of GUI
+
+2024-06-18 / Release v1.11.5
+----------------------------
+* Leeway config categori capsizing (bool) renamed to processes:capsizing
+* adios<1.2 removed from pyproject.toml, as this it not found on conda
+
 2024-06-14 / Release v1.11.4
 ----------------------------
 * Updating requirements in pyproject.toml
