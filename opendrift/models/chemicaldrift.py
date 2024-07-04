@@ -3651,6 +3651,34 @@ class ChemicalDrift(OceanDrift):
 
         print("Time elapsed (hr:min:sec): ", dt.now()-start)
 
+    @staticmethod
+    def _rename_dimentions(DataArray):
+        '''
+        Rename latitude/longitude of xarray dataarray to standard format
+        '''
+        if "latitude" in DataArray.dims:
+            pass
+        else:
+            if "lat" in DataArray.dims:
+                DataArray = DataArray.rename({'lat': 'latitude','lon': 'longitude'})
+            elif "x" in DataArray.dims:
+                DataArray = DataArray.rename({'y': 'latitude','x': 'longitude'})
+            else:
+                raise ValueError("Unknown spatial lat/lon coordinates")
+
+        DataArray['latitude'] = DataArray['latitude'].assign_attrs(standard_name='latitude')
+        DataArray['latitude'] = DataArray['latitude'].assign_attrs(long_name='latitude')
+        DataArray['latitude'] = DataArray['latitude'].assign_attrs(units='degrees_north')
+        DataArray['latitude'] = DataArray['latitude'].assign_attrs(axis='Y')
+    
+        DataArray['longitude'] = DataArray['longitude'].assign_attrs(standard_name='longitude')
+        DataArray['longitude'] = DataArray['longitude'].assign_attrs(long_name='longitude')
+        DataArray['longitude'] = DataArray['longitude'].assign_attrs(units='degrees_east')
+        DataArray['longitude'] = DataArray['longitude'].assign_attrs(axis='X')
+
+        return(DataArray)
+
+
     def correct_conc_coordinates(self, DC_Conc_array, lon_coord, lat_coord, time_coord, shift_time=False):
         """
         Add longitude, latitude, and time coordinates to water and sediments concentration xarray DataArray
@@ -3668,15 +3696,7 @@ class ChemicalDrift(OceanDrift):
         DC_Conc_array["x"] = ("x", lon_coord)
         DC_Conc_array=DC_Conc_array.rename({'x': 'longitude','y': 'latitude'})
         # Add attributes to latitude and longitude so that "remapcon" function from cdo can interpolate results
-        DC_Conc_array['latitude'] = DC_Conc_array['latitude'].assign_attrs(standard_name='latitude')
-        DC_Conc_array['latitude'] = DC_Conc_array['latitude'].assign_attrs(long_name='latitude')
-        DC_Conc_array['latitude'] = DC_Conc_array['latitude'].assign_attrs(units='degrees_north')
-        DC_Conc_array['latitude'] = DC_Conc_array['latitude'].assign_attrs(axis='Y')
-
-        DC_Conc_array['longitude'] = DC_Conc_array['longitude'].assign_attrs(standard_name='longitude')
-        DC_Conc_array['longitude'] = DC_Conc_array['longitude'].assign_attrs(long_name='longitude')
-        DC_Conc_array['longitude'] = DC_Conc_array['longitude'].assign_attrs(units='degrees_east')
-        DC_Conc_array['longitude'] = DC_Conc_array['longitude'].assign_attrs(axis='X')
+        DC_Conc_array = self._rename_dimentions(DC_Conc_array)
 
         if ("avg_time" in DC_Conc_array.dims) and shift_time == True:
             # Shifts back time 1 timestep so that the timestamp corresponds to the beginning of the first simulation timestep, not the next one
@@ -3888,7 +3908,7 @@ class ChemicalDrift(OceanDrift):
             print("file_output_path did not exist and was created")
         else:
             pass
-        print("Saving masked file to ", file_output_path)
+        print("Saving to ", file_output_path)
 
         if 'grid_mapping' in DataArray_masked.attrs:
             del DataArray_masked.attrs['grid_mapping'] # delete grid_mapping attribute to avoid "ValueError in safe_setitem" from xarray
@@ -6521,3 +6541,184 @@ class ChemicalDrift(OceanDrift):
             Final_sum = xr.concat(Final_ts_sum_ls, dim = time_name)
 
         return Final_sum
+
+
+    def vertical_depth_mean(self,
+                            Dataset,
+                            Topograpy_DA = None,
+                            time_name = "time",
+                            variable_name = None,
+                            topograpy_name = None,
+                            save_file = True,
+                            file_output_path = None,
+                            file_output_name = None
+                            ):
+        '''
+        Calculate the weighted average over "depth" for a cancentration dataarray using the bathimerty to calculate average weights.
+        Use with outputs of "calculate_water_sediment_conc" and " write_netcdf_chemical_density_map" functions
+        Depth must contain 0, and its value indicate the upper limit of the verical level
+
+        Dataset:           xarray DataSet, containing concentration (and topography) dataarray 
+            * latitude      (latitude) float32
+            * longitude     (longitude) float32
+            * time          (time) datetime64[ns]
+            * depth         (depth) float32
+            * other dims
+        Topograpy_DA : xarray DataArray, with topograpy corresponding to Dataset
+            * latitude      (latitude) float32
+            * longitude     (longitude) float32
+        time_name:          string, name of time dimention of Dataset
+        variable_name:      string, name of variable in DataSet to be averaged
+        topograpy_name:     string, name of topograpy variable in DataSetTYPE, optional
+        save_file:          boolean, select if averege file is saved are saved
+        file_output_path:    string, path of the file to be saved. Must end with /
+        file_output_name:    string, name of the average DataArray output file (.nc)
+        '''
+
+        import xarray as xr
+
+        # Specify bathimetry if not included in Dataset
+        if topograpy_name not in Dataset.data_vars:
+            if (Topograpy_DA is not None) and isinstance(Topograpy_DA, xr.DataArray):
+                Bathymetry_DA = Topograpy_DA
+            else:
+                raise ValueError("topograpy array not in Dataset and not specified")
+        else:
+            Bathymetry_DA = Dataset[topograpy_name]
+
+        if save_file is True:
+            if not ((file_output_path is not None) and (file_output_name is not None)):
+                raise ValueError("file_output_path or file_output_name not specified")
+
+        if (Bathymetry_DA >= 0).any():
+            print("Changed <= 0 to np.nan in bathimetry")
+            Bathymetry_DA = xr.where(Bathymetry_DA <= 0,
+                                     np.nan,
+                                     Bathymetry_DA)
+
+        Conc_DA = Dataset[variable_name]
+        Conc_DA = self._rename_dimentions(Conc_DA)
+        Bathymetry_DA = self._rename_dimentions(Bathymetry_DA)
+
+        # Check if ["latitude", "longitude"] have the same values
+        dims_values = []
+        for DataArray in [Conc_DA, Bathymetry_DA]:
+            # Initialize dict to store dimension values for this DataArray
+            DataArray_dims_values = {}
+            # Iterate through ["latitude", "longitude"]
+            for dim in ["latitude", "longitude"]:
+                # Get the dimension values if the dimension exists in the DataArray
+                if dim in DataArray.dims:
+                    DataArray_dims_values[dim] = DataArray[dim].values
+                else:
+                    raise ValueError("Uncommon dimentions are present in DataArray_ls")
+            # Append the dimension values for this DataArray to the list
+            dims_values.append(DataArray_dims_values)
+
+        self._check_dims_values(dims_values)
+
+        # Create array to store weights for avarage
+        if time_name in Conc_DA.dims:
+            ts_ref = Conc_DA[time_name].min()
+
+        Bathimetry_mask = ((Bathymetry_DA == 0) | np.isnan(Bathymetry_DA))
+        Landmask = (Conc_DA.sel(**{"depth": 0})).isnull()
+        # Prepare weights for avarage 
+        depth_levels = np.array(Conc_DA.depth)
+        depth_levels = depth_levels[np.argsort(-depth_levels)]
+        weights_array_ls = []
+
+        for depth_index in range(0, len(depth_levels)):
+            if time_name in Conc_DA.dims:
+                weights_array = xr.zeros_like(Conc_DA.sel(**{time_name: ts_ref, "depth": depth_levels[depth_index]}))
+            else:
+                weights_array = xr.zeros_like(Conc_DA.sel(**{"depth": depth_levels[depth_index]}))
+
+            if depth_levels[depth_index] == 0:
+                print("depth: ", depth_levels[depth_index])
+                depth_range = (abs(depth_levels[depth_index + 1]))
+                weights_array = xr.where(Bathymetry_DA <= depth_range,
+                                1, # if bathimetry is lower than the surface layer, consider only surface layer in average
+                                depth_range/Bathymetry_DA)
+                weights_array = xr.where(Bathimetry_mask,
+                                0, # if bathimetry is 0 or np.nan change weight to 0
+                                weights_array)
+                # Change landmask gridcells to weight = 0 to avoid operations with NaN during average
+                weights_array = weights_array.fillna(0)
+                weights_array['depth'] =  float(depth_levels[depth_index])
+                weights_array_ls.append(weights_array)
+
+            else:
+                if depth_index < (len(depth_levels) - 1):
+                    print("depth: ", depth_levels[depth_index])
+                    depth_range = (abs(depth_levels[depth_index + 1]) - abs(depth_levels[depth_index]))
+                    # if bathimetry is within this layer
+                    Mask_1 = (Bathymetry_DA <= abs(depth_levels[depth_index + 1])) & (Bathymetry_DA > abs(depth_levels[depth_index]))
+                    #if bathimetry is higher than this level
+                    Mask_2 = (Bathymetry_DA > abs(depth_levels[depth_index + 1]))
+
+                    weights_array = xr.where(Mask_1,
+                                            ((Bathymetry_DA - abs(depth_levels[depth_index]))/Bathymetry_DA), 
+                                            # if bathimetry is within this layer, consider partial contribution of vertical layer to bathimetry
+                                            xr.where(Mask_2,
+                                            #if bathimetry is higher than this level, consider contribution of whole vertical layer to bathimetry
+                                                    (depth_range/Bathymetry_DA), 
+                                                     0) # if bathimetry if lower than this vertical level, weight is 0
+                                            )
+                    weights_array = xr.where(Bathimetry_mask,
+                                    0, # if bathimetry is 0 or np.nan change weight to 0
+                                    weights_array)
+
+                    weights_array['depth'] =  float(depth_levels[depth_index])
+                    weights_array_ls.append(weights_array)
+
+                elif depth_index == (len(depth_levels) - 1):
+                    print("depth: ", depth_levels[depth_index])
+                    Mask_3 = (Bathymetry_DA > abs(depth_levels[depth_index]))
+                    weights_array = xr.where(Mask_3,
+                                            ((Bathymetry_DA - abs(depth_levels[depth_index]))/Bathymetry_DA), 
+                                            0)
+
+                    weights_array = xr.where(Bathimetry_mask,
+                                    0, # if bathimetry is 0 or np.nan change weight to 0
+                                    weights_array)
+
+                    weights_array['depth'] =  float(depth_levels[depth_index])
+                    weights_array_ls.append(weights_array)
+
+        # Concatenate weights_array slices and delete list of slices
+        weights_array_fin = xr.concat(weights_array_ls, dim = "depth")
+        del weights_array_ls
+
+        weights_array_check = weights_array_fin.sum(dim = "depth")
+        weights_array_check = (weights_array_check != 0) & (weights_array_check != 1)
+        if weights_array_check.sum() > 0:
+            raise ValueError("weights_array sum higher >1 or <0")
+
+        if time_name in Conc_DA.dims:
+            time_date_serie = np.array(Conc_DA[time_name])
+
+            avg_tstep_ls = []
+            for time_step in time_date_serie:
+                time_step_DA = Conc_DA.sel(**{time_name: time_step})
+                ts_weighted_avg = time_step_DA * weights_array_fin
+                # weight is already normalized to 1
+                ts_weighted_avg = ts_weighted_avg.sum(dim = "depth", skipna = True)
+                ts_weighted_avg.__setitem__(time_name, time_step)
+                avg_tstep_ls.append(ts_weighted_avg)
+
+            weighted_avg = xr.concat(avg_tstep_ls, dim = time_name)
+        else:
+            weighted_avg = Conc_DA * weights_array_fin
+            weighted_avg = weighted_avg.sum(dim = "depth", skipna = True)
+
+        # Re-apply landamsk of original data and re-name variable
+        weighted_avg = weighted_avg.where(~Landmask)
+        weighted_avg.name = variable_name
+
+        if save_file is True:
+                self._save_masked_DataArray(DataArray_masked = weighted_avg,
+                                                  file_output_path = file_output_path,
+                                                  file_output_name = file_output_name)
+        else:
+            return(weighted_avg)
