@@ -319,22 +319,18 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                                         'default': '', 'level': CONFIG_LEVEL_BASIC,
                                         'description': 'Name of simulation'},
             'general:coastline_action': {
-                'type':
-                'enum',
+                'type': 'enum',
                 'enum': ['none', 'stranding', 'previous'],
-                'default':
-                'stranding',
-                'level':
-                CONFIG_LEVEL_BASIC,
-                'description':
-                'None means that objects may also move over land. '
-                'stranding means that objects are deactivated if they hit land. '
-                'previous means that objects will move back to the previous location '
-                'if they hit land'
+                'default': 'stranding',
+                'level': CONFIG_LEVEL_BASIC,
+                'description': 'None means that objects may also move over land. '
+                    'stranding means that objects are deactivated if they hit land. '
+                    'previous means that objects will move back to the previous location '
+                    'if they hit land'
             },
             'general:coastline_approximation_precision': {
                 'type': 'float',
-                'default': None,
+                'default': 0.001,
                 'min': 0.0001,
                 'max': 0.005,
                 'units': 'degrees',
@@ -3114,7 +3110,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         if cmap is None:
             cmap = 'jet'
         if isinstance(cmap, str):
-            cmap = matplotlib.cm.get_cmap(cmap)
+            cmap = matplotlib.colormaps[cmap]
         if color is not False:
             if isinstance(color, str):
                 colorarray = self.get_property(color)[0].T
@@ -3499,7 +3495,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                         lvmax = param.max()
                     lc = LineCollection(
                         segments,
-                        #cmap=plt.get_cmap('Spectral'),
+                        #cmap=plt.colormaps['Spectral'],
                         cmap=cmap,
                         norm=plt.Normalize(lvmin, lvmax),
                         transform=gcrs)
