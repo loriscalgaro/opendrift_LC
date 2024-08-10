@@ -353,7 +353,9 @@ class ChemicalDrift(OceanDrift):
                          'C2-Phenanthrene','Benzo-b-fluoranthene','Chrysene',
                          'C3-Dibenzothiophene','C3-Phenanthrene',
                          'Benzo-k-fluoranthene','Benzo-ghi-perylene','Indeno-123cd-pyrene',
-                         'Copper','Cadmium','Chromium','Lead','Vanadium','Zinc','Nickel','Nitrogen', 'Alkalinity', None],
+                         'Copper','Cadmium','Chromium','Lead','Vanadium','Zinc','Nickel','Nitrogen', 'Alkalinity', 
+                         'Azoxystrobin','Diflufenican','Metconazole','Penconazole','Tebuconazole',
+                         'Tetraconazole',None],
                 'default': None,
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             # Single process degradation
@@ -986,13 +988,13 @@ class ChemicalDrift(OceanDrift):
 
             diss       = self.get_config('chemical:transformations:dissociation')
             pKa_acid   = self.get_config('chemical:transformations:pKa_acid')
-            if pKa_acid < 0 and diss!='nondiss':
+            if pKa_acid < 0 and diss in ['acid', 'amphoter']:
                 raise ValueError("pKa_acid must be positive")
             else:
                 pass
 
             pKa_base   = self.get_config('chemical:transformations:pKa_base')
-            if pKa_base < 0 and diss!='nondiss':
+            if pKa_base < 0 and diss in ['base', 'amphoter']:
                 raise ValueError("pKa_base must be positive")
             else:
                 pass
