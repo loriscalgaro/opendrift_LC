@@ -6579,6 +6579,13 @@ class ChemicalDrift(OceanDrift):
 
         import xarray as xr
 
+        if "depth" not in Dataset.dims:
+            raise ValueError("depth not in Dataset.dims")
+
+        if save_file is True:
+            if not ((file_output_path is not None) & (file_output_name is not None)):
+                raise ValueError("file_output_path or file_output_name not specified")
+
         # Specify bathimetry if not included in Dataset
         if topograpy_name not in Dataset.data_vars:
             if (Topograpy_DA is not None) and isinstance(Topograpy_DA, xr.DataArray):
@@ -6587,10 +6594,6 @@ class ChemicalDrift(OceanDrift):
                 raise ValueError("topograpy array not in Dataset and not specified")
         else:
             Bathymetry_DA = Dataset[topograpy_name]
-
-        if save_file is True:
-            if not ((file_output_path is not None) and (file_output_name is not None)):
-                raise ValueError("file_output_path or file_output_name not specified")
 
         if (Bathymetry_DA >= 0).any():
             print("Changed <= 0 to np.nan in bathimetry")
