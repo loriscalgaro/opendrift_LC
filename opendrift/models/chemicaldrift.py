@@ -3736,7 +3736,7 @@ class ChemicalDrift(OceanDrift):
         Chemical_name:         string, name of modelled chemical
         Transfer_setup:        string, transfer_setup used for the simulation, "organics" or "metals"
         Origin_marker_name:    string, name of source indicated by "origin_marker" parameter
-        shift_time:            boolean, if True shifts back time of 1 timestep so that the timestamp corresponds to 
+        Shift_time:            boolean, if True shifts back time of 1 timestep so that the timestamp corresponds to 
                                the beginning of the first simulation timestep, not to the next one
         """
         from datetime import datetime
