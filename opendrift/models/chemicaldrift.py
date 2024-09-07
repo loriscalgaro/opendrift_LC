@@ -2377,7 +2377,8 @@ class ChemicalDrift(OceanDrift):
                                               reader_sea_depth=None,
                                               landmask_shapefile=None,
                                               origin_marker=None,
-                                              elements_density=False):
+                                              elements_density=False,
+                                              active_status=False):
         '''Write netCDF file with map of Chemical species densities and concentrations
         Arguments:
             pixelsize_m:           float32, lenght of gridcells in m
@@ -2399,6 +2400,7 @@ class ChemicalDrift(OceanDrift):
             landmask_shapefile:    string, path of bathimethylandmask .shp file
             elements_density:      boolean, add number of elements present in each grid cell to output
             origin_marker:         int, only elements with this value of "origin_marker" will be considered
+            active_status:         boolean, only active elements will be considered
         '''
 
         from netCDF4 import Dataset, date2num #, stringtochar
@@ -2740,7 +2742,8 @@ class ChemicalDrift(OceanDrift):
     def get_chemical_density_array(self, pixelsize_m, z_array,
                                        density_proj=None, llcrnrlon=None,llcrnrlat=None,
                                        urcrnrlon=None,urcrnrlat=None,
-                                       weight=None, origin_marker=None):
+                                       weight=None, origin_marker=None,
+                                       active_status = False):
         '''
         compute a particle concentration map from particle positions
         Use user defined projection (density_proj=<proj4_string>)
@@ -2773,10 +2776,12 @@ class ChemicalDrift(OceanDrift):
         if weight is not None:
             weight_array = self.get_property(weight)[0]
 
-        status = self.get_property('status')[0]
+        
         specie = self.get_property('specie')[0]
         if origin_marker is not None:
             originmarker = self.get_property('origin_marker')[0]
+        if active_status is True:
+            status = self.get_property('status')[0]
         Nspecies = self.nspecies
         H = np.zeros((len(times),
                       Nspecies,
@@ -2789,8 +2794,14 @@ class ChemicalDrift(OceanDrift):
             for i in range(len(times)):
                 if weight is not None:
                     weights = weight_array[i,:]
-                    if origin_marker is not None:
+                    if (origin_marker is not None) & active_status is False:
                         weight_array[i,:] = weight_array[i,:] * (originmarker[i,:]==origin_marker)
+                    elif (origin_marker is not None) & active_status is True:
+                        weight_array[i,:] = weight_array[i,:] * (originmarker[i,:]==origin_marker) * (status[i,:]==0)
+                    elif (origin_marker is None) & active_status is True:
+                        weight_array[i,:] = weight_array[i,:] * (status[i,:]==0)
+                    else:
+                        pass
                 else:
                     weights = None
                 for zi in range(len(z_array)-1):
