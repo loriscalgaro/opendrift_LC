@@ -2504,7 +2504,8 @@ class ChemicalDrift(OceanDrift):
                                                 density_proj=density_proj,
                                                 llcrnrlon=llcrnrlon, llcrnrlat=llcrnrlat,
                                                 urcrnrlon=urcrnrlon, urcrnrlat=urcrnrlat,
-                                                weight='mass',origin_marker=origin_marker)
+                                                weight='mass',origin_marker=origin_marker,
+                                                active_status = active_status)
 
         # calculating center point for eacxh pixel
         lon_array = (lon_array[:-1,:-1] + lon_array[1:,1:])/2
@@ -2781,6 +2782,12 @@ class ChemicalDrift(OceanDrift):
         if origin_marker is not None:
             originmarker = self.get_property('origin_marker')[0]
         if active_status is True:
+            status_categories = self.status_categories
+            if 'active' in status_categories:
+                active_index = status_categories.index('active')
+                logger.warning(f'only active elements were considered for concentration, status: {active_index}')
+            else:
+                raise ValueError("No active elements in simulation")
             status = self.get_property('status')[0]
         Nspecies = self.nspecies
         H = np.zeros((len(times),
@@ -2794,12 +2801,12 @@ class ChemicalDrift(OceanDrift):
             for i in range(len(times)):
                 if weight is not None:
                     weights = weight_array[i,:]
-                    if (origin_marker is not None) & active_status is False:
+                    if ((origin_marker is not None) and (active_status is False)):
                         weight_array[i,:] = weight_array[i,:] * (originmarker[i,:]==origin_marker)
-                    elif (origin_marker is not None) & active_status is True:
-                        weight_array[i,:] = weight_array[i,:] * (originmarker[i,:]==origin_marker) * (status[i,:]==0)
-                    elif (origin_marker is None) & active_status is True:
-                        weight_array[i,:] = weight_array[i,:] * (status[i,:]==0)
+                    elif ((origin_marker is not None) and (active_status is True)):
+                        weight_array[i,:] = weight_array[i,:] * (originmarker[i,:]==origin_marker) * (status[i,:]==active_index)
+                    elif ((origin_marker is None) and (active_status is True)):
+                        weight_array[i,:] = weight_array[i,:] * (status[i,:]==active_index)
                     else:
                         pass
                 else:
