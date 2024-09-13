@@ -3275,9 +3275,22 @@ class ChemicalDrift(OceanDrift):
         sel = np.where((NETCDF_data > lowerbound) & (NETCDF_data < higherbound))
         time_check = (NETCDF_data.time).size
         NETCDF_data_dim_names = list(NETCDF_data.dims)
-        la_name_index = NETCDF_data_dim_names.index("latitude")
-        lo_name_index = NETCDF_data_dim_names.index("longitude")
-        time_name_index = NETCDF_data_dim_names.index("time")
+
+        if"latitude" in NETCDF_data_dim_names: 
+            la_name_index = NETCDF_data_dim_names.index("latitude")
+        else:
+            raise ValueError("Dimention [latitude] is not present in NETCDF_data_dim_names")
+        if"longitude" in NETCDF_data_dim_names: 
+            lo_name_index = NETCDF_data_dim_names.index("longitude")
+        else:
+            raise ValueError("Dimention [longitude] is not present in NETCDF_data_dim_names")
+        if "time" in NETCDF_data_dim_names:
+            time_name_index = NETCDF_data_dim_names.index("time")
+        elif time_check > 1:
+            raise ValueError("Dimention [time] is not present in NETCDF_data_dim_names")
+        else:
+            pass
+
         depth_min = None
         depth_max = None
 
