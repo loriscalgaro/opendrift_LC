@@ -4305,7 +4305,7 @@ class ChemicalDrift(OceanDrift):
 
 
     @staticmethod
-    def print_progress_list(length):
+    def _print_progress_list(length):
         '''
         Create list of indexes to print progress of creating/saving images
 
