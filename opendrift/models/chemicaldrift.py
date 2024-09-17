@@ -3995,8 +3995,15 @@ class ChemicalDrift(OceanDrift):
             print("x/y dimentions used")
         else:
             raise ValueError("Unspecified lat/lon dimentions in DataArray")
+        
+        if DataArray.rio.crs is None:
+            DataArray = DataArray.rio.write_crs(shp_epsg, inplace=True)
+            print(f"DataArray.rio.crs not present, shp_epsg used: {shp_epsg}")
+        else:
+            if DataArray.rio.crs != shp_epsg:
+                # shp_mask = shp_mask.to_crs(DataArray.rio.crs)
+                raise ValueError("DataArray and shp have different crs systems")
 
-        DataArray = DataArray.rio.write_crs(shp_epsg, inplace=True)
         DataArray_masked = DataArray.rio.clip(shp_mask.geometry.apply(mapping), shp_mask.crs, drop=drop_data, invert = invert_shp)
 
         if "lat" in DataArray_masked.dims:
@@ -4086,9 +4093,17 @@ class ChemicalDrift(OceanDrift):
         import geopandas as gpd
         import rioxarray
 
-        shp_mask = gpd.read_file(shp_mask_file, crs=shp_epsg)
+        shp_mask = gpd.read_file(shp_mask_file)
+        if hasattr(shp_mask, "crs"):
+            shp_epsg = shp_mask.crs
+            print(f"shp_crs taken from shapefile: {shp_epsg} ")
+        elif shp_epsg is not None:
+            print(f"shp_mask.crs not present, specified shp_epsg used: {shp_epsg}")
+        else:
+            raise ValueError("shp_mask.crs not present and shp_epsg not specified ")
 
         if DataArray is not None:
+
             extra_dims = self._check_extra_dimensions(Dataset = DataArray, 
                                                       permitted_dims = permitted_dims)
             if extra_dims:
