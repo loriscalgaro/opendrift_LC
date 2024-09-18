@@ -3278,12 +3278,8 @@ class ChemicalDrift(OceanDrift):
 
         if"latitude" in NETCDF_data_dim_names: 
             la_name_index = NETCDF_data_dim_names.index("latitude")
-        else:
-            raise ValueError("Dimention [latitude] is not present in NETCDF_data_dim_names")
         if"longitude" in NETCDF_data_dim_names: 
             lo_name_index = NETCDF_data_dim_names.index("longitude")
-        else:
-            raise ValueError("Dimention [longitude] is not present in NETCDF_data_dim_names")
         if "time" in NETCDF_data_dim_names:
             time_name_index = NETCDF_data_dim_names.index("time")
         elif time_check > 1:
@@ -3307,27 +3303,22 @@ class ChemicalDrift(OceanDrift):
                 t = np.datetime64(str(np.array(NETCDF_data.time[0])))
                 t = np.array(t, dtype='datetime64[s]')
 
-            if "depth" in NETCDF_data.dims:
-                la = NETCDF_data.latitude[sel[la_name_index]].data
-                lo = NETCDF_data.longitude[sel[lo_name_index]].data
-                depth = np.absolute(NETCDF_data.depth[sel[depth_name_index]].data) # Change depth to positive values to calculate pixel volume
-            else:
-                la = NETCDF_data.latitude[sel[la_name_index]].data
-                lo = NETCDF_data.longitude[sel[lo_name_index]].data
-
         elif time_check > 1:
             t = NETCDF_data.time[sel[time_name_index]].data
             t = np.array(t, dtype='datetime64[s]')
-            if "depth" in NETCDF_data.dims:
-                la = NETCDF_data.latitude[sel[la_name_index]].data
-                lo = NETCDF_data.longitude[sel[lo_name_index]].data
-                depth = NETCDF_data.depth[sel[depth_name_index]].data
-            else:
-                la = NETCDF_data.latitude[sel[la_name_index]].data
-                lo = NETCDF_data.longitude[sel[lo_name_index]].data
 
-        print("Seeding " + str(la.size) + " datapoints")
-        
+        if "depth" in NETCDF_data.dims:
+            depth = np.absolute(NETCDF_data.depth[sel[depth_name_index]].data) # Change depth to positive values to calculate pixel volume
+
+        if"latitude" in NETCDF_data_dim_names: 
+            la = NETCDF_data.latitude[sel[la_name_index]].data
+        else:
+            la = np.array(NETCDF_data.latitude)
+        if"longitude" in NETCDF_data_dim_names: 
+            lo = NETCDF_data.longitude[sel[lo_name_index]].data
+        else:
+            lo = np.array(NETCDF_data.longitude)
+
         if (lon_resol is None or lat_resol is None):
             raise ValueError("lat/lon_resol must be specified")
 
@@ -3365,12 +3356,13 @@ class ChemicalDrift(OceanDrift):
                     pass
                 elif t.size > 1:
                     t = np.array(remove_positions([t], Check_bathimetry))
-                logger.info(str(len(Check_bathimetry)) +  " datapoint removed due to inconsistent bathimetry")
+                logger.info(str(len(Check_bathimetry)) +  " datapoints removed due to inconsistent bathimetry")
                 del(Check_bathimetry)
             else:
                 del(Check_bathimetry)
 
         data = np.array(NETCDF_data.data)
+        print("Seeding " + str(data.size) + " datapoints")
 
         sed_mixing_depth = np.array(self.get_config('chemical:sediment:mixing_depth')) # m
 
@@ -3493,10 +3485,21 @@ class ChemicalDrift(OceanDrift):
                                 sed_mix_depth = sed_mixing_depth)
 
                 for k in range(len(z)):
+                    
+                    if"latitude" in NETCDF_data_dim_names: 
+                        elem_lat = lat_array[i]
+                    else:
+                        # specify lat if all elements are seeded in the same place
+                        elem_lat = lat_array
+                    if"longitude" in NETCDF_data_dim_names: 
+                        elem_lon = lon_array[i]
+                    else:
+                        # specify lon if all elements are seeded in the same place
+                        elem_lon = lon_array
 
                     self.seed_elements(
-                        lon=lon_array[i],
-                        lat=lat_array[i],
+                        lon=elem_lon,
+                        lat=elem_lat,
                         radius=radius,
                         number=1,
                         time=time,
