@@ -3558,8 +3558,74 @@ class ChemicalDrift(OceanDrift):
         Interpolate the value of each concentration gridpoint within regrid_conc function
         """
         return np.einsum('nj,nj->n', np.take(values, vtx), wts)
+    
 
-    def regrid_conc(self, filename, filename_regridded, latmin, latmax, latstep, lonmin, lonmax, lonstep, concfile = None):
+    def regrid_dataarray(self,
+                         mode,
+                         ds,
+                         new_lat, new_lon,
+                         lonlat_2d, lonlat_2d_new,
+                         new_lon_coords, new_lat_coords,
+                         variable):
+        '''
+        Regrid output of "write_netcdf_chemical_density_map" or "calculate_water_sediment_conc" functions 
+        depending on the value of "mode"
+        Used inside "regrid_conc" function
+        
+        mode:         string, "chemical_density_map" or "wat_sed_map"
+        ds:           xarray DataSet containing "variable", topo (density, optional) dataarrays to be regridded
+        variable:     string, name of concentration variable to be regridded within ds
+
+        '''
+        import xarray as xr
+
+        # create an empty arrays to store the regridded data
+        if mode == "chemical_density_map":
+            regridded_avg_data = np.zeros((ds.sizes['avg_time'], ds.sizes['specie'], ds.sizes['depth'], new_lat.shape[1], new_lon.shape[0]))
+        else:
+            regridded_avg_data = np.zeros((ds.sizes['time'], ds.sizes['depth'], new_lat.shape[1], new_lon.shape[0]))
+
+        first=True
+        if mode == "chemical_density_map":
+            # loop over every value of avg_time, specie, and depth
+            for t, s, d in np.ndindex(ds.sizes['avg_time'], ds.sizes['specie'], ds.sizes['depth']):
+                # select the data for the current avg_time, specie, and depth
+                points = ds[variable][t,s,d,:,:].values.reshape(-1)
+
+                if first:
+                    # Store the weights for the interpolation
+                    vtx, wts = self.interp_weights(lonlat_2d, lonlat_2d_new)
+                    first=False
+
+                # interpolate the concentration data onto the new grid using griddata
+                new_concentration_2d = self.interpolate_regrid(points, vtx, wts)
+                # store the interpolated data in the regridded_avg_data array
+                regridded_avg_data[t, s, d] = np.transpose(np.reshape(new_concentration_2d,(len(new_lon_coords),len(new_lat_coords))))
+        else:
+            # loop over every value of time, and depth
+            for t, d in np.ndindex(ds.sizes['time'], ds.sizes['depth']):
+                points = ds[variable][t,d,:,:].values.reshape(-1)
+
+                if first:
+                    # Store the weights for the interpolation
+                    vtx, wts = self.interp_weights(lonlat_2d, lonlat_2d_new)
+                    first=False
+                    
+                # interpolate the concentration data onto the new grid using griddata
+                new_concentration_2d = self.interpolate_regrid(points, vtx, wts)
+                # store the interpolated data in the regridded_avg_data array
+                regridded_avg_data[t, d] = np.transpose(np.reshape(new_concentration_2d,(len(new_lon_coords),len(new_lat_coords))))
+
+
+        if mode == "chemical_density_map":
+            # create a new xarray dataarray with the regridded data
+            regridded_data_avg = xr.DataArray(regridded_avg_data, coords=[ds['avg_time'], ds['specie'], ds['depth'], new_lat_coords, new_lon_coords], dims=['avg_time', 'specie', 'depth', 'y', 'x'])
+        else:
+            regridded_data_avg = xr.DataArray(regridded_avg_data, coords=[ds['time'], ds['depth'], new_lat_coords, new_lon_coords], dims=['time', 'depth', 'lat', 'lon'])
+
+        return regridded_data_avg, vtx, wts
+
+    def regrid_conc(self, filename, filename_regridded, latmin, latmax, latstep, lonmin, lonmax, lonstep, variable = "concentration_avg", concfile = None):
         """
         Regrid "write_netcdf_chemical_density_map" output (concentration, topography, and density) to regular latlon grid
             filename:               string, path or filename of "write_netcdf_chemical_density_map" output file to be regridded
@@ -3570,7 +3636,9 @@ class ChemicalDrift(OceanDrift):
             lonmin:                 float 32, min longitude of new grid
             lonmax:                 float 32, max longitude of new grid
             lonstep:                float 32 longitude resolution of new grid, in degrees
-            concfile:               xarray Dataset of "write_netcdf_chemical_density_map" output file to be regridded
+            variable:               string, name of concentration variable to be regridded within DataSet
+            concfile:               xarray Dataset of "write_netcdf_chemical_density_map" or
+                                    "calculate_water_sediment_conc" output file to be regridded
         """
         import numpy as np
         import xarray as xr
@@ -3584,21 +3652,37 @@ class ChemicalDrift(OceanDrift):
 
         ds.load()
         start=dt.now()
+        
+        # Define if output of "write_netcdf_chemical_density_map" or 
+        # of "calculate_water_sediment_conc" was given as input
+        if "latitude" not in ds.dims:
+            mode = "chemical_density_map"
+            lat_name = "lat"
+            lon_name = "lon"
+        else:
+            mode = "wat_sed_map"
+            lat_name = "latitude"
+            lon_name = "longitude"
+        print(f"mode: {mode}")
 
-        if (latmin < min(ds['lat'].values.flatten()) or latmax > max(ds['lat'].values.flatten())\
-        or lonmin < min(ds['lon'].values.flatten()) or lonmax > max(ds['lon'].values.flatten())):
-            if latmin < min(ds['lat'].values.flatten()):
-                print("latmin (", latmin, ") is not in range, should not be lower than: ", min(ds['lat'].values.flatten()))
-            if latmax > max(ds['lat'].values.flatten()):
-                print("latmax (", latmax, ") is not in range, should not be higher than: ",max(ds['lat'].values.flatten()))
-            if lonmin < min(ds['lon'].values.flatten()):
-                print("lonmin (", lonmin, ") is not in range: should not be lower than:", min(ds['lon'].values.flatten()))
-            if lonmax > max(ds['lon'].values.flatten()):
-                print("lonmax (", lonmax, ") is not in range, should not be higher than: ",max(ds['lon'].values.flatten()))
+        if (latmin < min(ds[lat_name].values.flatten()) or latmax > max(ds[lat_name].values.flatten())\
+        or lonmin < min(ds[lon_name].values.flatten()) or lonmax > max(ds[lon_name].values.flatten())):
+            if latmin < min(ds[lat_name].values.flatten()):
+                print("latmin (", latmin, ") is not in range, should not be lower than: ", min(ds[lat_name].values.flatten()))
+            if latmax > max(ds[lat_name].values.flatten()):
+                print("latmax (", latmax, ") is not in range, should not be higher than: ",max(ds[lat_name].values.flatten()))
+            if lonmin < min(ds[lon_name].values.flatten()):
+                print("lonmin (", lonmin, ") is not in range: should not be lower than:", min(ds[lon_name].values.flatten()))
+            if lonmax > max(ds[lon_name].values.flatten()):
+                print("lonmax (", lonmax, ") is not in range, should not be higher than: ",max(ds[lon_name].values.flatten()))
 
             raise ValueError("Regrid coordinates out of bonds from input file range")
         else:
             pass
+
+        ds_attrs = ds[variable].attrs
+        for key in ["lon_resol", "lat_resol", "grid_mapping"]:
+            ds_attrs.pop(key, None)
 
         new_lat_coords = np.arange(latmin,latmax,latstep)
         new_lon_coords = np.arange(lonmin,lonmax,lonstep)
@@ -3606,55 +3690,67 @@ class ChemicalDrift(OceanDrift):
         # define new grid of latitude and longitude
         new_lat, new_lon = np.meshgrid(new_lat_coords, new_lon_coords)
 
-        # create an empty arrays to store the regridded data
-        regridded_concentration_avg_data = np.zeros((ds.sizes['avg_time'], ds.sizes['specie'], ds.sizes['depth'], new_lat.shape[1], new_lon.shape[0]))
-        regridded_topo_data = np.zeros((new_lat.shape[1], new_lon.shape[0]))
-
         # create 2D array of (y*x,) coordinates from the 2D (y,x) lat-lon grid
-        lon_2d = ds['lon'].values.flatten()
-        lat_2d = ds['lat'].values.flatten()
+        if mode == "chemical_density_map":
+            lon_2d = ds['lon'].values.flatten()
+            lat_2d = ds[lat_name].values.flatten()
+        else:
+            lat_2d = np.repeat((ds[lat_name].values.flatten()), len(ds[lon_name]))
+            lon_2d = np.tile((ds[lon_name].values.flatten()), len(ds[lat_name]))
         lonlat_2d = np.column_stack((lat_2d, lon_2d))
 
         # create 2D array of the new coordinates
         lonlat_2d_new=np.column_stack((new_lat.flatten(),new_lon.flatten()))
 
-        first=True
-        # loop over every value of avg_time, specie, and depth
-        for t, s, d in np.ndindex(ds.sizes['avg_time'], ds.sizes['specie'], ds.sizes['depth']):
-            # select the data for the current avg_time, specie, and depth
-            points = ds.concentration_avg[t,s,d,:,:].values.reshape(-1)        
+        regridded_concentration_avg, vtx, wts = self.regrid_dataarray(mode = mode,
+                                                 ds = ds,
+                                                 variable = "concentration_avg",
+                                                 new_lat = new_lat, new_lon = new_lon,
+                                                 lonlat_2d = lonlat_2d,
+                                                 lonlat_2d_new = lonlat_2d_new,
+                                                 new_lon_coords = new_lon_coords,
+                                                 new_lat_coords = new_lat_coords)
 
-            if first:
-                # Store the weights for the interpolation
-                vtx, wts = self.interp_weights(lonlat_2d, lonlat_2d_new)
-                first=False
-
-            # interpolate the concentration data onto the new grid using griddata
-            new_concentration_2d = self.interpolate_regrid(points, vtx, wts)
-            # store the interpolated data in the regridded_concentration_avg_data array
-            regridded_concentration_avg_data[t, s, d] = np.transpose(np.reshape(new_concentration_2d,(len(new_lon_coords),len(new_lat_coords))))
-
-        # create a new xarray dataarray with the regridded data
-        regridded_concentration_avg = xr.DataArray(regridded_concentration_avg_data, coords=[ds['avg_time'], ds['specie'], ds['depth'], new_lat_coords, new_lon_coords], dims=['avg_time', 'specie', 'depth', 'y', 'x'])
-        regridded_concentration_avg.name = "concentration_avg"
-
-        # regrid topography
-        points = ds.topo[:,:].values.reshape(-1)
-
-        # interpolate the concentration data onto the new grid using griddata
-        new_topo_2d = self.interpolate_regrid(points, vtx, wts)
-        # store the interpolated data in the regridded_topo array
-        regridded_topo_data = np.transpose(np.reshape(new_topo_2d,(len(new_lon_coords),len(new_lat_coords))))
-
-        # create a new xarray dataarray with the topography regridded data
-        regridded_topo = xr.DataArray(regridded_topo_data, coords=[new_lat_coords, new_lon_coords], dims=['y', 'x'])
-        regridded_topo.name = "topo"
-
+        regridded_concentration_avg.name = variable
+        regridded_concentration_avg.attrs['grid_mapping'] = 'projection_lonlat'
+        regridded_concentration_avg.attrs.update(ds_attrs)
+        regridded_concentration_avg.attrs['lon_resol'] = str(np.around(abs(new_lon[0][0]-new_lon[1][0]), decimals = 8)) + " degrees E"
+        regridded_concentration_avg.attrs['lat_resol'] = str(np.around(abs(new_lat[0][0]-new_lat[0][1]), decimals = 8)) + " degrees N"
         # change negative concentration values to 0
         regridded_concentration_avg_nan = xr.where(regridded_concentration_avg < 0, 0, regridded_concentration_avg)
-        regridded_topo_nan = xr.where(regridded_topo < 0, np.nan, regridded_topo)
+        
+        if "topo" in list(ds.keys()):
+            topo_attrs = ds["topo"].attrs
+            for key in ["lon_resol", "lat_resol", "grid_mapping"]:
+                topo_attrs.pop(key, None)
+
+            regridded_topo_data = np.zeros((new_lat.shape[1], new_lon.shape[0]))
+            # regrid topography
+            points = ds.topo[:,:].values.reshape(-1)
+
+            # interpolate the concentration data onto the new grid using griddata
+            new_topo_2d = self.interpolate_regrid(points, vtx, wts)
+            # store the interpolated data in the regridded_topo array
+            regridded_topo_data = np.transpose(np.reshape(new_topo_2d,(len(new_lon_coords),len(new_lat_coords))))
+
+            if mode == "chemical_density_map":
+                # create a new xarray dataarray with the topography regridded data
+                regridded_topo = xr.DataArray(regridded_topo_data, coords=[new_lat_coords, new_lon_coords], dims=['y', 'x'])
+            else:
+                regridded_topo = xr.DataArray(regridded_topo_data, coords=[new_lat_coords, new_lon_coords], dims=['lat', 'lon'])
+
+            regridded_topo.name = "topo"
+            regridded_topo.attrs['grid_mapping'] = 'projection_lonlat'
+            regridded_topo.attrs.update(topo_attrs)
+            regridded_topo.attrs['lon_resol'] = str(np.around(abs(new_lon[0][0]-new_lon[1][0]), decimals = 8)) + " degrees E"
+            regridded_topo.attrs['lat_resol'] = str(np.around(abs(new_lat[0][0]-new_lat[0][1]), decimals = 8)) + " degrees N"
+            # change negative concentration values to 0
+            regridded_topo_nan = xr.where(regridded_topo < 0, np.nan, regridded_topo)
 
         if 'density' in list(ds.keys()):
+            density_attrs = ds["density"].attrs
+            for key in ["lon_resol", "lat_resol", "grid_mapping"]:
+                density_attrs.pop(key, None)
             # regrid density of elements in gridcells
             points = ds.density[:,:].values.reshape(-1)
 
@@ -3666,6 +3762,12 @@ class ChemicalDrift(OceanDrift):
             # create a new xarray dataarray with the topography regridded data
             regridded_density = xr.DataArray(regridded_density_data, coords=[new_lat_coords, new_lon_coords], dims=['y', 'x'])
             regridded_density.name = "density"
+            regridded_density.attrs['grid_mapping'] = 'projection_lonlat'
+            regridded_density.attrs.update(topo_attrs)
+            regridded_density.attrs['lon_resol'] = str(np.around(abs(new_lon[0][0]-new_lon[1][0]), decimals = 8)) + " degrees E"
+            regridded_density.attrs['lat_resol'] = str(np.around(abs(new_lat[0][0]-new_lat[0][1]), decimals = 8)) + " degrees N"
+            # change negative concentration values to 0
+            regridded_density_nan = xr.where(regridded_density < 0, np.nan, regridded_density)
 
         print("Time elapsed (hr:min:sec): ", dt.now()-start)
 
@@ -3675,7 +3777,7 @@ class ChemicalDrift(OceanDrift):
             regridded_concentration_avg_dataset = xr.Dataset({
                 'concentration_avg':regridded_concentration_avg_nan,
                 'topo':regridded_topo_nan,
-                'density': regridded_density
+                'density': regridded_density_nan
                 })
         else:
             regridded_concentration_avg_dataset = xr.Dataset({
@@ -3686,6 +3788,7 @@ class ChemicalDrift(OceanDrift):
         regridded_concentration_avg_dataset.to_netcdf(filename_regridded)
 
         print("Time elapsed (hr:min:sec): ", dt.now()-start)
+
 
     @staticmethod
     def _rename_dimentions(DataArray):
@@ -3873,7 +3976,7 @@ class ChemicalDrift(OceanDrift):
                                                       lat_coord = lat,
                                                       time_coord = time_avg,
                                                       shift_time = Shift_time)
-        
+
         DC_topo = self.correct_conc_coordinates(DC_Conc_array = topo,
                                                       lon_coord = lon,
                                                       lat_coord = lat,
@@ -6541,6 +6644,10 @@ class ChemicalDrift(OceanDrift):
             dims_values.append(DataArray_dims_values)
 
         self._check_dims_values(dims_values)
+        ### Find common attributes to be added in Final_sum
+        common_attrs = DataArray_ls[0].attrs.copy()
+        for da in DataArray_ls[1:]:
+            common_attrs = {key: value for key, value in common_attrs.items() if da.attrs.get(key) == value}
 
         ### Convert time_name to string to allow indexing
         if not isinstance(time_name, str):
@@ -6592,7 +6699,10 @@ class ChemicalDrift(OceanDrift):
             if end_date is not None:
                 print("end_date: ", end_date)
             if freq_time is not None:
-                print("freq_time: ", freq_time)
+                if int(np.array(freq_time)) >= 3.6e+12: # freq_time in hours
+                    print("freq_time: ", int(np.array(freq_time)) / 3.6e+12, "hours")
+                else: # freq_time in minutes
+                    print("freq_time: ", int(np.array(freq_time)) / 6e+10, "min")
 
             print("Running sum of time_steps")
             Final_ts_sum_ls = []
@@ -6618,6 +6728,8 @@ class ChemicalDrift(OceanDrift):
 
             print("Concatenating Final_ts_sum_ls")
             Final_sum = xr.concat(Final_ts_sum_ls, dim = time_name)
+
+        Final_sum.attrs.update(common_attrs)
 
         return Final_sum
 
