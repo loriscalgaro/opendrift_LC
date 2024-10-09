@@ -3625,7 +3625,8 @@ class ChemicalDrift(OceanDrift):
 
         return regridded_data_avg, vtx, wts
 
-    def regrid_conc(self, filename, filename_regridded, latmin, latmax, latstep, lonmin, lonmax, lonstep, variable = "concentration_avg", concfile = None):
+    def regrid_conc(self, filename, filename_regridded, latmin, latmax, latstep, lonmin, lonmax, lonstep, variable = None, concfile = None,
+                    lon_2d_ncdm = None, lat_2d_ncdm = None):
         """
         Regrid "write_netcdf_chemical_density_map" output (concentration, topography, and density) to regular latlon grid
             filename:               string, path or filename of "write_netcdf_chemical_density_map" output file to be regridded
@@ -3639,6 +3640,8 @@ class ChemicalDrift(OceanDrift):
             variable:               string, name of concentration variable to be regridded within DataSet
             concfile:               xarray Dataset of "write_netcdf_chemical_density_map" or
                                     "calculate_water_sediment_conc" output file to be regridded
+            lon_2d_ncdm:            array of float 64, flattened array of ds['lon'].values.flatten() from ncdm
+            lat_2d_ncdm:            array of float 64, flattened array of ds['lat'].values.flatten() from ncdm
         """
         import numpy as np
         import xarray as xr
@@ -3649,6 +3652,9 @@ class ChemicalDrift(OceanDrift):
             ds = xr.open_dataset(filename)
         else:
             ds = concfile
+        
+        if variable is None:
+            raise ValueError("variable must be specified")
 
         ds.load()
         start=dt.now()
@@ -3663,7 +3669,9 @@ class ChemicalDrift(OceanDrift):
             mode = "wat_sed_map"
             lat_name = "latitude"
             lon_name = "longitude"
-        print(f"mode: {mode}")
+            if ((lon_2d_ncdm is None) or (lat_2d_ncdm is None)):
+                raise ValueError("lat/lon_2d_ncdm unspecified")
+        print(f"mode: {mode}, variable: {variable}")
 
         if (latmin < min(ds[lat_name].values.flatten()) or latmax > max(ds[lat_name].values.flatten())\
         or lonmin < min(ds[lon_name].values.flatten()) or lonmax > max(ds[lon_name].values.flatten())):
@@ -3676,7 +3684,7 @@ class ChemicalDrift(OceanDrift):
             if lonmax > max(ds[lon_name].values.flatten()):
                 print("lonmax (", lonmax, ") is not in range, should not be higher than: ",max(ds[lon_name].values.flatten()))
 
-            raise ValueError("Regrid coordinates out of bonds from input file range")
+            raise ValueError("Regrid coordinates out of bounds from input file range")
         else:
             pass
 
@@ -3692,11 +3700,12 @@ class ChemicalDrift(OceanDrift):
 
         # create 2D array of (y*x,) coordinates from the 2D (y,x) lat-lon grid
         if mode == "chemical_density_map":
-            lon_2d = ds['lon'].values.flatten()
+            lon_2d = ds[lon_name].values.flatten()
             lat_2d = ds[lat_name].values.flatten()
         else:
-            lat_2d = np.repeat((ds[lat_name].values.flatten()), len(ds[lon_name]))
-            lon_2d = np.tile((ds[lon_name].values.flatten()), len(ds[lat_name]))
+            lat_2d = lat_2d_ncdm
+            lon_2d = lon_2d_ncdm
+
         lonlat_2d = np.column_stack((lat_2d, lon_2d))
 
         # create 2D array of the new coordinates
@@ -3704,7 +3713,7 @@ class ChemicalDrift(OceanDrift):
 
         regridded_concentration_avg, vtx, wts = self.regrid_dataarray(mode = mode,
                                                  ds = ds,
-                                                 variable = "concentration_avg",
+                                                 variable = variable,
                                                  new_lat = new_lat, new_lon = new_lon,
                                                  lonlat_2d = lonlat_2d,
                                                  lonlat_2d_new = lonlat_2d_new,
@@ -4699,8 +4708,8 @@ class ChemicalDrift(OceanDrift):
                                                         robust = True,
                                                         vmin = vmin, vmax = vmax,
                                                         levels = levels_colormap,
-                                                        add_colorbar=False,
-                                                        zorder = 0) # colorbar is added ex-post
+                                                        add_colorbar=False, # colorbar is added ex-post
+                                                        zorder = 0)
                 ax.set_xlim(long_min, long_max)
                 ax.set_ylim(lat_min, lat_max)
                 ax.set_xlabel("Longitude", fontsize = x_label_font_size, labelpad = high_fig*2) # Change here size of ax labels
