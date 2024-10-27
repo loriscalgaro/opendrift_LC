@@ -4336,7 +4336,7 @@ class ChemicalDrift(OceanDrift):
 
 
     @staticmethod
-    def _remove_white_borders(image):
+    def _remove_white_borders(image, padding_r, padding_c):
         '''
         Remove white borders from an image
 
@@ -4348,6 +4348,11 @@ class ChemicalDrift(OceanDrift):
         # Get the bounding box of non-zero pixels
         rmin, rmax = np.where(rows)[0][[0, -1]]
         cmin, cmax = np.where(cols)[0][[0, -1]]
+
+        rmin = max(rmin - padding_r, 0)
+        rmax = min(rmax + padding_r, image.shape[0] - 1)
+        cmin = max(cmin - padding_c, 0)
+        cmax = min(cmax + padding_c, image.shape[1] - 1)
         # Crop the image to the bounding box
         cropped_image = image[rmin:rmax + 1, cmin:cmax + 1]
         return cropped_image
@@ -4493,6 +4498,7 @@ class ChemicalDrift(OceanDrift):
                       save_figures = True,
                       date_str_lenght = 10,
                       len_fig = 26, high_fig =15,
+                      padding_r = 0, padding_c = 0,
                       low_quality = False):
         '''
         Create a series of .jpg or .png for each timestep of a concentration map
@@ -4541,6 +4547,7 @@ class ChemicalDrift(OceanDrift):
         high_fig:             int, height of the figure (inches)
         shp_color:            string, color of shapefile when plotted
         trim_images:          boolean,select if white borders of images is removed
+        padding_r, padding_c: int, number of pixels not trimmed (_r for height, _c for width)
         save_figures:         boolean,select if figures are saved
         date_str_lenght:      int, number date string charcters kept in title [10 for YYYY-MM-DD, 19 for hour shown]
         low_quality:          boolean, select if figures are sized down for animation
@@ -4700,7 +4707,7 @@ class ChemicalDrift(OceanDrift):
                     Conc_DataArray_selected = Conc_DataArray
 
                 fig, ax = plt.subplots(figsize = (len_fig,high_fig)) # Change size of figure
-                shp.plot(ax = ax, color = shp_color, zorder = 10, edgecolor = 'black')
+                shp.plot(ax = ax, zorder = 10, edgecolor = 'black', facecolor = shp_color)
                 ax2 = Conc_DataArray_selected.plot.pcolormesh( 
                                                         x = 'longitude', 
                                                         y = 'latitude',
@@ -4753,7 +4760,7 @@ class ChemicalDrift(OceanDrift):
                     # Get the pixel buffer as an RGB array
                     width, height = fig.canvas.get_width_height()
                     rgb = (np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape((height, width, 3))).astype(np.float32) / 255.0
-                    rgb = self._remove_white_borders(rgb)
+                    rgb = self._remove_white_borders(rgb, padding_r, padding_c)
                     figure_ls[img_index] = rgb
             else:
                 pass
@@ -4855,7 +4862,7 @@ class ChemicalDrift(OceanDrift):
                     for img_index in range(0, len(figure_ls)):
                         if img_index in list_index_print:
                             print("trim image n° ", str(img_index+1), " out of ", str(figures_number))
-                        rgb = self._remove_white_borders(figure_ls[img_index])
+                        rgb = self._remove_white_borders(figure_ls[img_index], padding_r, padding_c)
                         figure_ls[img_index] = rgb
 
                     if save_figures == True:
@@ -6756,7 +6763,7 @@ class ChemicalDrift(OceanDrift):
         '''
         Calculate the weighted average over "depth" for a cancentration dataarray using the bathimerty to calculate average weights.
         Use with outputs of "calculate_water_sediment_conc" and " write_netcdf_chemical_density_map" functions
-        Depth must contain 0, and its value indicate the upper limit of the verical level
+        Depth must contain 0, and its value indicate the upper limit of the vertical level
 
         Dataset:           xarray DataSet, containing concentration (and topography) dataarray 
             * latitude      (latitude) float32
