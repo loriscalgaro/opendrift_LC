@@ -3011,7 +3011,7 @@ class ChemicalDrift(OceanDrift):
             "Nitrite":                  [55760.,    55000.],
             "Ammonium":                 [0.,        0.],
             "Sulphur":                  [12280000., 10104000.],
-            "Nitrogen": 				[42047.,    39335.],
+            "Nitrogen": 	                [42047.,    39335.],
             #
             "Naphthalene":              [50.6,   34.3],
             "Phenanthrene":             [3.67,   2.51],
@@ -3045,7 +3045,7 @@ class ChemicalDrift(OceanDrift):
             "Selenium":                 [43.7,   18.3],
             "Zinc":                     [395.,   174.],
             #
-            "Nitrogen":                  [430.,  0.],
+            "Nitrogen":                 [430.,  0.],
          }
         
         emission_factors_NOx = {
