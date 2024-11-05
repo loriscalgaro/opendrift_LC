@@ -6777,7 +6777,7 @@ class ChemicalDrift(OceanDrift):
         time_name:         string, name of time dimention of Dataset
         variable_name:     string, name of variable in DataSet to be averaged
         topograpy_name:    string, name of topograpy variable in DataSetTYPE, optional
-        save_file:         boolean, select if averege file is saved are saved
+        save_file:         boolean, select if averege file is saved
         file_output_path:  string, path of the file to be saved. Must end with /
         file_output_name:  string, name of the average DataArray output file (.nc)
         '''
@@ -6932,3 +6932,188 @@ class ChemicalDrift(OceanDrift):
                                                   file_output_name = file_output_name)
         else:
             return(weighted_avg)
+
+
+    @staticmethod
+    def _get_dataset_size(dataset_path):
+        '''
+        Load an xarray dataset and return its size in bytes as integer.
+
+        dataset_path:      string, path to the xarray dataset file (e.g., NetCDF format)
+        '''
+        import xarray as xr
+
+        # Load the dataset in xarray
+        ds = xr.open_dataset(dataset_path)
+        size_in_bytes = ds.nbytes  # Get the size in bytes
+        ds.close()  # Close the dataset to free up memory
+        return size_in_bytes
+
+    def divide_datasets_by_size(self, file_paths, max_size=16 * 1024 ** 3):
+        '''
+        Divide datasets into sub-lists, each not exceeding a specified max size.
+
+        file_paths:       list, paths to xarray dataset files. Must end with "/"
+        max_size:         int, maximum size for each sub-list in bytes (default is 16 GB)
+
+        '''
+        file_paths = sorted(file_paths, key = self._get_dataset_size)
+
+        sub_lists = []     # List to store all sub-lists
+        current_sub_list = []  # Current sub-list of dataset paths
+        current_size = 0    # Track current sub-list size
+
+        for file_path in file_paths:
+            # Get the size of the dataset
+            file_size = self._get_dataset_size(file_path)
+    
+            # Check if adding this file exceeds the max size
+            if current_size + file_size > max_size:
+                # Add the current sub-list to the list of sub-lists
+                sub_lists.append(current_sub_list)
+                # Start a new sub-list and reset the current size
+                current_sub_list = []
+                current_size = 0
+
+            # Add the file to the current sub-list
+            current_sub_list.append(file_path)
+            current_size += file_size
+
+        # Add the last sub-list if it's not empty
+        if current_sub_list:
+            sub_lists.append(current_sub_list)
+
+        return sub_lists
+    
+
+    def concat_simulation(self,
+                          sim_file_list,
+                          sim_name,
+                          simoutputpath,
+                          max_size_GB = 16,
+                          zip_files = True):
+        '''
+        Concatenate simulation slices into files not exceeding max_size_GB and compress results into a .zip file.
+        A summary file of which slices were included in each concatenated file is saved
+
+        sim_file_list:      list, strings with flinames of simulations files or .zip archives
+                                  files already present in simoutputpath are not extracted form
+                                 .zip archives
+        sim_name:           string, name of simulation 
+        simoutputpath:      string, folder containing files to be concatenated.
+        max_size_GB:        int, max size of concatenated files in GB (Default is 16)
+        zip_files:          boolean, select if concatenated files are zipped and the originals deleted
+        '''
+        import xarray as xr
+        import os
+        import zipfile
+
+        # Remove files that are not ".nc" or ".zip"
+        sim_file_list = [file for file in sim_file_list if file.endswith((".zip", ".nc"))]
+        if not simoutputpath.endswith("/"):
+            simoutputpath = simoutputpath + "/"
+
+        # Check if any zip archive of simulation to concatenate is in sim_file_list
+        zip_ls = []
+        start=datetime.now()
+        if any([".zip" in file for file in sim_file_list]):
+            for file in sim_file_list:
+                if file.endswith(".zip"):
+                    zip_ls.append(file)
+            # Remove each zip archive from sim_file_list and extract files to concatenate
+            sim_file_list = [file for file in sim_file_list if ".zip" not in file]
+
+            for index_zip, zipfilename in enumerate(zip_ls):
+                with zipfile.ZipFile((simoutputpath + zipfilename), 'r') as zip_ref:
+                    # Get a list of all files in the archive and add it to sim_file_list
+                    files_in_archive = zip_ref.namelist()
+
+                print(f"Extracting zip_file {index_zip + 1} out of {len(zip_ls)}")
+                # Extract each file to concatenate
+                for index_nc, nc_file in enumerate(files_in_archive):
+                    # Control if nc_file was already present in simoutputpath
+                    if not os.path.exists(simoutputpath + nc_file):
+                        sim_file_list.append(nc_file)
+                        print(f"Extracting nc_file {index_nc + 1} out of {len(files_in_archive)}")
+                        zip_file_path = (simoutputpath + zipfilename)
+                        with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
+                                zip_ref.extract(nc_file, simoutputpath)
+            end_zip = datetime.now()
+            print("Extracting time :",end_zip-start)
+
+            # Flatten sim_file_list in a single list
+            sim_file_list = [item for sublist in sim_file_list for item in (sublist if isinstance(sublist, list) else [sublist])]
+
+        file_paths = [simoutputpath + file_name for file_name in sim_file_list]
+        # Group .nc files into sublists for concatenation 
+        concat_parts = []
+        concat_parts = self._divide_datasets_by_size(file_paths = file_paths,
+                                                   max_size=max_size_GB * 1024 ** 3)
+
+        concat_parts = [sublist for sublist in concat_parts if sublist != []]
+        # Separate files to concatenate from files exceeding max size if concatenated
+        concat_parts_ls = []
+        files_not_concat = []
+        for sublist in concat_parts:
+            if len(sublist) == 1:
+                files_not_concat.append(sublist)
+            else:
+                concat_parts_ls.append(sublist)
+        # Flatten sim_file_list in a single list
+        files_not_concat = [item for sublist in files_not_concat for item in (sublist if isinstance(sublist, list) else [sublist])]
+
+        # Write concat_parts_ls to a txt file
+        with open(simoutputpath + sim_name+ "_concat_parts_ls.txt", 'w') as file:
+            for i, sublist in enumerate(concat_parts_ls):
+                # Write name of concatenated file as a header
+                file.write(sim_name + f"_concatenated_{i}.nc:\n")
+                for item in sublist:
+                    item_size = "{:.2f}".format((self._get_dataset_size(item)/1024**3))
+                    item = item.replace(simoutputpath, "")
+                    file.write(f"{item}, {item_size} GB\n")
+                file.write("\n")
+            file.write("Files not concatenated:\n")
+            for file_name in files_not_concat:
+                file_name_size = "{:.2f}".format((self._get_dataset_size(file_name)/1024**3))
+                file_name = file_name.replace(simoutputpath, "")
+                file.write(f"{file_name}, {file_name_size} GB\n")
+        # Load and concatenate slices 
+        concatenated_files = []
+        for index_concat, concat_ls in enumerate(concat_parts_ls):
+            concat_output_name = (sim_name + f"_concatenated_{index_concat}.nc")
+            ds=[]
+            print(f"Loading concat_ls {index_concat +1} out of {len(concat_parts_ls)}")
+            for nc_file in concat_ls:
+                if os.path.exists(nc_file):
+                    dsi=xr.open_dataset(nc_file)
+                    if len(dsi.time)>0:
+                        ds.append(dsi)
+
+            if len(ds) > 1:
+                print("Concatenate slices")
+                dsconc=xr.concat(ds,dim="trajectory")
+                dsconc.attrs['steps_exported']=max([ds[i].attrs['steps_exported'] for i in range(len(ds))])
+                print("Save concatenated file")
+                dsconc.to_netcdf(simoutputpath+concat_output_name)
+                concatenated_files.append((simoutputpath+concat_output_name))
+                print("Remove concatenated slices")
+                for nc_file in concat_ls:
+                    os.remove(nc_file)
+
+        if len(files_not_concat) > 0:
+            for nc_file in files_not_concat:
+                concatenated_files.append(nc_file)
+        if zip_files is True:
+            print("Zip concatenated files")
+            with zipfile.ZipFile(simoutputpath + sim_name+"_concatenated_files.zip", mode ='a', compression=zipfile.ZIP_DEFLATED) as myzip:
+                for index_zip, f in enumerate(concatenated_files):
+                    print(f"Zipping file {index_zip +1} out of {len(concatenated_files)}")
+                    arcname_f = f.replace(simoutputpath, "")
+                    myzip.write(f, arcname=arcname_f)
+
+            for file in os.listdir(simoutputpath):
+                if file.endswith(".nc"):
+                    os.remove(simoutputpath+"/" + file)
+
+        end=datetime.now()
+        print("Concatenating time :",end-start)
