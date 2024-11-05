@@ -6771,15 +6771,15 @@ class ChemicalDrift(OceanDrift):
             * time          (time) datetime64[ns]
             * depth         (depth) float32
             * other dims
-        Topograpy_DA : xarray DataArray, with topograpy corresponding to Dataset
+        Topograpy_DA :     xarray DataArray, with topograpy corresponding to Dataset
             * latitude      (latitude) float32
             * longitude     (longitude) float32
-        time_name:          string, name of time dimention of Dataset
-        variable_name:      string, name of variable in DataSet to be averaged
-        topograpy_name:     string, name of topograpy variable in DataSetTYPE, optional
-        save_file:          boolean, select if averege file is saved are saved
-        file_output_path:    string, path of the file to be saved. Must end with /
-        file_output_name:    string, name of the average DataArray output file (.nc)
+        time_name:         string, name of time dimention of Dataset
+        variable_name:     string, name of variable in DataSet to be averaged
+        topograpy_name:    string, name of topograpy variable in DataSetTYPE, optional
+        save_file:         boolean, select if averege file is saved are saved
+        file_output_path:  string, path of the file to be saved. Must end with /
+        file_output_name:  string, name of the average DataArray output file (.nc)
         '''
 
         import xarray as xr
