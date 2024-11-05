@@ -4760,7 +4760,7 @@ class ChemicalDrift(OceanDrift):
                     # Get the pixel buffer as an RGB array
                     width, height = fig.canvas.get_width_height()
                     rgb = (np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape((height, width, 3))).astype(np.float32) / 255.0
-                    rgb = self._remove_white_borders(rgb, padding_r, padding_c)
+                    rgb = self._remove_white_borders(rgb, padding_r = padding_r, padding_c = padding_c)
                     figure_ls[img_index] = rgb
             else:
                 pass
@@ -4862,7 +4862,7 @@ class ChemicalDrift(OceanDrift):
                     for img_index in range(0, len(figure_ls)):
                         if img_index in list_index_print:
                             print("trim image n° ", str(img_index+1), " out of ", str(figures_number))
-                        rgb = self._remove_white_borders(figure_ls[img_index], padding_r, padding_c)
+                        rgb = self._remove_white_borders(figure_ls[img_index], padding_r = padding_r, padding_c = padding_c)
                         figure_ls[img_index] = rgb
 
                     if save_figures == True:
