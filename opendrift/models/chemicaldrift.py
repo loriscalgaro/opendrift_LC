@@ -7047,7 +7047,7 @@ class ChemicalDrift(OceanDrift):
         file_paths = [simoutputpath + file_name for file_name in sim_file_list]
         # Group .nc files into sublists for concatenation 
         concat_parts = []
-        concat_parts = self._divide_datasets_by_size(file_paths = file_paths,
+        concat_parts = self.divide_datasets_by_size(file_paths = file_paths,
                                                    max_size=max_size_GB * 1024 ** 3)
 
         concat_parts = [sublist for sublist in concat_parts if sublist != []]
