@@ -7099,7 +7099,9 @@ class ChemicalDrift(OceanDrift):
                 print("Remove concatenated slices")
                 for nc_file in concat_ls:
                     os.remove(nc_file)
-
+        end=datetime.now()
+        print("Concatenating time :",end-start)
+        
         if len(files_not_concat) > 0:
             for nc_file in files_not_concat:
                 concatenated_files.append(nc_file)
@@ -7115,5 +7117,5 @@ class ChemicalDrift(OceanDrift):
                 if file.endswith(".nc"):
                     os.remove(simoutputpath+"/" + file)
 
-        end=datetime.now()
-        print("Concatenating time :",end-start)
+        end_zip=datetime.now()
+        print("Zip files time :", end_zip-end)
