@@ -1393,7 +1393,7 @@ class ChemicalDrift(OceanDrift):
             if z_index is None:
                 z_i = range(Tprofiles.shape[0])  # evtl. move out of loop
                 # evtl. move out of loop
-                z_index = interp1d(-self.environment_profiles['z'],
+                z_index = np.interp1d(-self.environment_profiles['z'],
                                    z_i, bounds_error=False)
             zi = z_index(-self.elements.z)
             upper = np.maximum(np.floor(zi).astype(np.uint8), 0)
@@ -4368,7 +4368,7 @@ class ChemicalDrift(OceanDrift):
                        figure_file_name,
                        animation_format,
                        fps,
-                       len_fig, high_fig,
+                       width_fig, high_fig,
                        low_quality):
         '''
         Make .mp4 or .gif animation of figures created with create_images
@@ -4403,7 +4403,7 @@ class ChemicalDrift(OceanDrift):
         if low_quality == True:
             fig = plt.figure()
         else:
-            fig = plt.figure(figsize = (len_fig,high_fig))
+            fig = plt.figure(figsize = (width_fig,high_fig))
 
         ax = plt.gca()
         draw_image = ax.imshow((figure_ls[0]),animated=True)
@@ -4462,6 +4462,39 @@ class ChemicalDrift(OceanDrift):
         return elem_print
 
 
+    @staticmethod
+    def _check_imgs_memory_use(width_fig, high_fig,
+                              fig_dpi, figures_number,
+                              trim_images,
+                              make_animation,
+                              color_depth = 4): # Bytes per pixel (default is 4 for RGBA)
+        '''
+        Check if enought memory can be allocated to create/trim/animate images
+
+        color_depth :     int, Bytes per pixel (default is 4 for RGBA)
+
+        '''
+        import psutil
+
+        total_ram = psutil.virtual_memory().total
+        total_ram_gb = (total_ram / (1024 ** 3))
+
+        # Calculate dimensions in pixels of figure
+        width_px = width_fig * fig_dpi
+        height_px = high_fig * fig_dpi
+        # Total pixels
+        total_pixels = (width_px * height_px) * figures_number
+        # Memory used in gigabytes
+        fig_memory_gb = (total_pixels * color_depth)/ (1024 ** 3)
+        if trim_images == True or make_animation == True:
+            fig_memory_gb = fig_memory_gb * (make_animation + trim_images*0.1 + 1) # memory for trimmed images and animation
+
+        if fig_memory_gb >= total_ram_gb*0.8:
+            print("WARNING: More than 80% of available RAM will be necessary")
+            if fig_memory_gb >= total_ram_gb:
+                raise MemoryError(f"Memory needed to create/trim/animate figures {fig_memory_gb} GB exceeds available RAM {total_ram_gb} GB")
+
+
     def create_images(self,
                       Conc_Dataset,
                       time_start, 
@@ -4484,6 +4517,7 @@ class ChemicalDrift(OceanDrift):
                       colorbar_title = None,
                       selected_depth = 0,
                       fig_format = ".jpg",
+                      fig_dpi = 100,
                       make_animation = False,
                       concat_animation = False,
                       animation_format = ".mp4",
@@ -4497,7 +4531,7 @@ class ChemicalDrift(OceanDrift):
                       trim_images = True,
                       save_figures = True,
                       date_str_lenght = 10,
-                      len_fig = 26, high_fig =15,
+                      width_fig = 26, high_fig =15,
                       padding_r = 0, padding_c = 0,
                       low_quality = False):
         '''
@@ -4532,6 +4566,7 @@ class ChemicalDrift(OceanDrift):
         selected_depth:       float32, depth selected when creating map if "depth" in Conc_Dataset.dims
                                    If no depth was selected when creating conc map, use 0
         fig_format:           string, format of produced images (e.g.,".jpg", ".png")
+        fig_dpi:              int, dots per inch resolution of figure
         make_animation:       boolean,select if animation (.mp4 or .gif) is created (True) or not (False)
         concat_animation:     boolean,select if animations (.mp4 or .gif) are loaded and concatenated (True) or not (False)
         animation_format:     string, format of produced animation (".mp4" or .gif")
@@ -4543,7 +4578,7 @@ class ChemicalDrift(OceanDrift):
         variable_name:        string, name of Conc_Datasetdata variable to plot if not concentration_avg_water/sediments
         labels_font_sizes:    list of int, [title_font_size, x_label_font_size, y_label_font_size, x_ticks_font_size
                                            y_ticks_font_size, cbar_label_font_size, cbar_ticks_font_size]
-        len_fig:              int, lenght of the figure (inches)
+        width_fig:              int, lenght of the figure (inches)
         high_fig:             int, height of the figure (inches)
         shp_color:            string, color of shapefile when plotted
         trim_images:          boolean,select if white borders of images is removed
@@ -4613,7 +4648,7 @@ class ChemicalDrift(OceanDrift):
             if add_shp_to_figure:
                 print("shp was added over the figures")
                 shp = gpd.read_file(shp_file_path)
-                cax_pad= pad_fraction1 * len_fig
+                cax_pad= pad_fraction1 * width_fig
             else:
                 print("shp was not added over the figures")
                 # Create an empty GeoDataFrame (shp) to plot 
@@ -4624,7 +4659,7 @@ class ChemicalDrift(OceanDrift):
                 shp =  gpd.GeoDataFrame(columns=columns, crs=crs)
                 point = Point(0, 0)
                 shp.loc[0, 'geometry'] = point
-                cax_pad= pad_fraction2 * len_fig
+                cax_pad= pad_fraction2 * width_fig
 
             if "longitude" not in Conc_Dataset.dims:
                 if 'lat' in Conc_Dataset.dims:
@@ -4673,12 +4708,16 @@ class ChemicalDrift(OceanDrift):
                 if fig_numbers[-1][1] > figures_number:
                     raise ValueError(f"fig_numbers selects more figures ({fig_numbers[-1][1] + 1}) that were created ({figures_number})")
 
+            self._check_imgs_memory_use(width_fig = width_fig,
+                                        high_fig = high_fig,
+                                        fig_dpi = fig_dpi,
+                                        figures_number = figures_number,
+                                        trim_images = trim_images,
+                                        make_animation = make_animation)
+
             for num in [0, figures_number]:
                 fig_num.append(str(f"{num:03d}"))
             anim_prefix = fig_num[0] + "_" + fig_num[1] + "_"
-
-            if figures_number >= 500:
-                print("WARNING: More than 500 figures will be created, memory may not be sufficient")
 
             for timestep in range(0, figures_number):
                 figure_name_ls.append(str(f"{timestep:03d}")+"_"+figure_file_name+fig_format)
@@ -4706,7 +4745,7 @@ class ChemicalDrift(OceanDrift):
                 elif (Conc_DataArray.time.to_numpy()).size <= 1 and "depth" not in Conc_DataArray.dims:
                     Conc_DataArray_selected = Conc_DataArray
 
-                fig, ax = plt.subplots(figsize = (len_fig,high_fig)) # Change size of figure
+                fig, ax = plt.subplots(figsize = (width_fig, high_fig), dpi=fig_dpi) # Change size of figure
                 shp.plot(ax = ax, zorder = 10, edgecolor = 'black', facecolor = shp_color)
                 ax2 = Conc_DataArray_selected.plot.pcolormesh( 
                                                         x = 'longitude', 
@@ -4747,23 +4786,17 @@ class ChemicalDrift(OceanDrift):
                     cbar = plt.colorbar(ax2, cax=cax, label=colorbar_title)
 
                 cbar.set_label(colorbar_title, fontsize=cbar_label_font_size, labelpad = 20, fontweight ="bold")
-                figure_ls.append(fig)
-                plt.close('all')
-
-            if trim_images == True:
-                for img_index in range(0, len(figure_ls)):
-                    if img_index in list_index_print:
-                        print("trim image n° ", str(img_index+1), " out of ", str(figures_number))
-                    fig = figure_ls[img_index]
-                    # Render the figure to a pixel buffer
+                if trim_images == True:
                     fig.canvas.draw()
                     # Get the pixel buffer as an RGB array
                     width, height = fig.canvas.get_width_height()
                     rgb = (np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape((height, width, 3))).astype(np.float32) / 255.0
                     rgb = self._remove_white_borders(rgb, padding_r = padding_r, padding_c = padding_c)
-                    figure_ls[img_index] = rgb
-            else:
-                pass
+                    figure_ls.append(rgb)
+                else:
+                    figure_ls.append(fig)
+                plt.close('all')
+
             print("Time to create figures (hr:min:sec): ", dt.now()-start)
 
             # Save figures
@@ -4774,7 +4807,7 @@ class ChemicalDrift(OceanDrift):
                         if img_index in list_index_print:
                              print("saving image n° ", str(img_index+1), " out of ", str(figures_number))
                         fig_path = (file_out_path + file_out_sub_folder + figure_name_ls[img_index])
-                        fig, ax = plt.subplots(figsize = (len_fig,high_fig))
+                        fig, ax = plt.subplots(figsize = (width_fig,high_fig))
                         ax.set_axis_off()
                         plt.imsave(fig_path, figure_ls[img_index], cmap=selected_colormap)
                         plt.close('all')
@@ -4799,7 +4832,7 @@ class ChemicalDrift(OceanDrift):
                                        figure_file_name = figure_file_name,
                                        animation_format = animation_format,
                                        fps = fps,
-                                       len_fig = len_fig,
+                                       width_fig = width_fig,
                                        high_fig = high_fig,
                                        low_quality = low_quality
                                        )
@@ -4822,7 +4855,7 @@ class ChemicalDrift(OceanDrift):
                                            figure_file_name = figure_file_name,
                                            animation_format = animation_format,
                                            fps = fps,
-                                           len_fig = len_fig,
+                                           width_fig = width_fig,
                                            high_fig = high_fig,
                                            low_quality = low_quality
                                            )
@@ -4839,8 +4872,14 @@ class ChemicalDrift(OceanDrift):
 
                 # Prepare progress messages
                 figures_number = (num_list[1] - num_list[0]) + 1
-                if figures_number >= 500:
-                    print("WARNING: More than 500 figures will be loaded, memory may not be sufficient")
+
+                self._check_imgs_memory_use(width_fig = width_fig,
+                                            high_fig = high_fig,
+                                            fig_dpi = fig_dpi,
+                                            figures_number = figures_number,
+                                            trim_images = trim_images,
+                                            make_animation = make_animation)
+
                 list_index_print = self._print_progress_list(figures_number)
 
                 # Create figures names
@@ -4854,7 +4893,7 @@ class ChemicalDrift(OceanDrift):
                 for fig_name in figure_name_ls:
                     fig_path = (file_out_path + file_out_sub_folder + fig_name)
                     image = plt.imread(fig_path)
-                    # fig, ax = plt.subplots(figsize = (len_fig,high_fig))
+                    # fig, ax = plt.subplots(figsize = (width_fig,high_fig))
                     # ax.set_axis_off()
                     figure_ls.append(image)
                     plt.close('all')
@@ -4870,7 +4909,7 @@ class ChemicalDrift(OceanDrift):
                             if img_index in list_index_print:
                                 print("saving image n° ", str(img_index+1), " out of ", str(figures_number))
                             fig_path = (file_out_path + file_out_sub_folder + figure_name_ls[img_index][:-4]+"_trim"+fig_format)
-                            fig, ax = plt.subplots(figsize = (len_fig,high_fig))
+                            fig, ax = plt.subplots(figsize = (width_fig,high_fig))
                             ax.set_axis_off()
                             plt.imsave(fig_path, figure_ls[img_index], cmap=selected_colormap)
                             plt.close('all')
@@ -4886,7 +4925,7 @@ class ChemicalDrift(OceanDrift):
                                            anim_prefix = anim_prefix,
                                            figure_file_name = figure_file_name,
                                            animation_format = animation_format,
-                                           len_fig = len_fig,
+                                           width_fig = width_fig,
                                            high_fig = high_fig,
                                            low_quality = low_quality
                                            )
@@ -6631,7 +6670,7 @@ class ChemicalDrift(OceanDrift):
             for dim in extra_dims:
                 for index, DataArray in enumerate(DataArray_ls):
                     if dim in DataArray.dims:
-                        print(f'Extra dimention {dim} in array {index}')
+                        print(f'Extra dimention "{dim}" in array {index}')
 
             raise ValueError("Uncommon dimentions are present in DataArray_ls")
 
@@ -6899,9 +6938,10 @@ class ChemicalDrift(OceanDrift):
         # Concatenate weights_array slices and delete list of slices
         weights_array_fin = xr.concat(weights_array_ls, dim = "depth")
         del weights_array_ls
-
         weights_array_check = weights_array_fin.sum(dim = "depth")
-        weights_array_check = (weights_array_check != 0) & (weights_array_check != 1)
+        # Account for 0.999 periodic as sum of weights
+        weights_array_check = (weights_array_check  != 0) & (np.abs(weights_array_check - 1) > 1e-10)
+
         if weights_array_check.sum() > 0:
             raise ValueError("weights_array sum higher >1 or <0")
 
@@ -6997,7 +7037,7 @@ class ChemicalDrift(OceanDrift):
         A summary file of which slices were included in each concatenated file is saved
 
         sim_file_list:      list, strings with flinames of simulations files or .zip archives
-                                  files already present in simoutputpath are not extracted form
+                                  files already present in simoutputpath are not extracted from
                                  .zip archives
         sim_name:           string, name of simulation 
         simoutputpath:      string, folder containing files to be concatenated.
