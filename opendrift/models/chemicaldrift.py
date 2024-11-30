@@ -4530,6 +4530,7 @@ class ChemicalDrift(OceanDrift):
                       shp_color = "black",
                       trim_images = True,
                       save_figures = True,
+                      shading = None,
                       date_str_lenght = 10,
                       width_fig = 26, high_fig =15,
                       padding_r = 0, padding_c = 0,
@@ -4583,6 +4584,7 @@ class ChemicalDrift(OceanDrift):
         shp_color:            string, color of shapefile when plotted
         trim_images:          boolean,select if white borders of images is removed
         padding_r, padding_c: int, number of pixels not trimmed (_r for height, _c for width)
+        shading:              string, interpolation format using plt. pcolormesh (None, 'flat', 'nearest', 'gouraud', 'auto')
         save_figures:         boolean,select if figures are saved
         date_str_lenght:      int, number date string charcters kept in title [10 for YYYY-MM-DD, 19 for hour shown]
         low_quality:          boolean, select if figures are sized down for animation
@@ -4745,17 +4747,34 @@ class ChemicalDrift(OceanDrift):
                 elif (Conc_DataArray.time.to_numpy()).size <= 1 and "depth" not in Conc_DataArray.dims:
                     Conc_DataArray_selected = Conc_DataArray
 
-                fig, ax = plt.subplots(figsize = (width_fig, high_fig), dpi=fig_dpi) # Change size of figure
+                fig, ax = plt.subplots(figsize = (width_fig, high_fig), dpi=fig_dpi)
                 shp.plot(ax = ax, zorder = 10, edgecolor = 'black', facecolor = shp_color)
-                ax2 = Conc_DataArray_selected.plot.pcolormesh( 
-                                                        x = 'longitude', 
-                                                        y = 'latitude',
-                                                        cmap=selected_colormap,
-                                                        robust = True,
-                                                        vmin = vmin, vmax = vmax,
-                                                        levels = levels_colormap,
-                                                        add_colorbar=False, # colorbar is added ex-post
-                                                        zorder = 0)
+
+                if shading in [None, "flat", "auto"]:
+                    ax2 = Conc_DataArray_selected.plot.pcolormesh(
+                                                x = 'longitude', 
+                                                y = 'latitude',
+                                                cmap = selected_colormap,
+                                                vmin = vmin, vmax = vmax,
+                                                levels = levels_colormap,
+                                                shading = shading,
+                                                add_colorbar = False, # colorbar is added ex-post
+                                                zorder = 0)
+                else:
+                    if shading not in ["gouraud", "nearest", "flat", "auto"]:
+                        raise ValueError("Incorrect shading specified")
+                    if shading in ["gouraud", "nearest"]:
+                        X = Conc_DataArray_selected.coords['longitude'].to_numpy()
+                        Y = Conc_DataArray_selected.coords['latitude'].to_numpy()
+                        Conc_DataArray_selected = Conc_DataArray_selected.to_numpy()
+
+                        ax2 = plt.pcolormesh(X,
+                                             Y,
+                                             Conc_DataArray_selected,
+                                             cmap = selected_colormap,
+                                             vmin = vmin, vmax = vmax,
+                                             shading = shading,
+                                             zorder = 0)
                 ax.set_xlim(long_min, long_max)
                 ax.set_ylim(lat_min, lat_max)
                 ax.set_xlabel("Longitude", fontsize = x_label_font_size, labelpad = high_fig*2) # Change here size of ax labels
