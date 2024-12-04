@@ -240,7 +240,7 @@ class ChemicalDrift(OceanDrift):
                 'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:transformations:pKa_base': {'type': 'float', 'default': -1,
                 'min': -1, 'max': 14, 'units': '',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'pKa of conjugated acid'},
             'chemical:transformations:KOC_DOM': {'type': 'float', 'default': -1,
                 'min': -1, 'max': 10000000000, 'units': 'L/KgOC',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
@@ -667,9 +667,11 @@ class ChemicalDrift(OceanDrift):
             KOC_sedcorr = KOC_sed_updated/KOC_sed_initial
 
         elif diss == 'base':
+            # Undissociated form is positively charged
             Phi_n_sed = 1/(1+10**(pH_sed-pKa_base))
+            # Dissociated form is neutral
             Phi_diss_sed = 1-Phi_n_sed
-            KOC_sed_updated = (KOC_sed_n*Phi_n_sed) + (Phi_diss_sed*KOC_sed_diss_acid)
+            KOC_sed_updated = (KOC_sed_n*Phi_diss_sed) + (Phi_n_sed*KOC_sed_diss_base)
 
             KOC_sedcorr = KOC_sed_updated/KOC_sed_initial
 
@@ -705,9 +707,11 @@ class ChemicalDrift(OceanDrift):
             KOC_SPMcorr = KOC_SPM_updated / KOC_SPM_initial
 
         elif diss == 'base':
+            # Undissociated form is positively charged
             Phi_n_SPM = 1 / (1 + 10 ** (pH_water_SPM - pKa_base))
+            # Dissociated form is neutral
             Phi_diss_SPM = 1 - Phi_n_SPM
-            KOC_SPM_updated = (KOC_sed_n * Phi_n_SPM) + (Phi_diss_SPM * KOC_sed_diss_acid)
+            KOC_SPM_updated = (KOC_sed_n * Phi_n_SPM) + (Phi_diss_SPM * KOC_sed_diss_base)
 
             KOC_SPMcorr = KOC_SPM_updated / KOC_SPM_initial
 
@@ -737,16 +741,18 @@ class ChemicalDrift(OceanDrift):
 
             Phi_n_DOM = 1 / (1 + 10 ** (pH_water_DOM - pKa_acid))
             Phi_diss_DOM = 1 - Phi_n_DOM
-            KOC_DOM_updated = (0.08 * ((Phi_n_DOM * (KOC_DOM_n)) + ((1 - Phi_diss_DOM) * 10 ** (np.log10(
-                KOW) - 3.5)))) / 0.526  # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
+            KOC_DOM_updated = (0.08 * ((Phi_n_DOM * (KOW)) + ((1 - Phi_diss_DOM) * 10 ** (np.log10(KOW) - 3.5)))
+                               ) / 0.526  # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
 
             KOC_DOMcorr = KOC_DOM_updated / KOC_DOM_initial
 
         elif diss == 'base':
-
+            # Undissociated form is positively charged
             Phi_n_DOM = 1 / (1 + 10 ** (pH_water_DOM - pKa_base))
+            # Dissociated form is neutral
             Phi_diss_DOM = 1 - Phi_n_DOM
-            KOC_DOM_updated = (0.08 * ((Phi_n_DOM * (KOC_DOM_n)) + ((1 - Phi_diss_DOM) * 10 ** (np.log10(KOW) - 3.5)))) / 0.526  # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
+            KOC_DOM_updated = (0.08 * ((Phi_diss_DOM * (KOW)) + ((1 - Phi_diss_DOM) * 10 ** (np.log10(KOW) - 3.5)))
+                               ) / 0.526 # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
 
             KOC_DOMcorr = KOC_DOM_updated / KOC_DOM_initial
 
@@ -754,7 +760,7 @@ class ChemicalDrift(OceanDrift):
 
             Phi_n_DOM = 1 / (1 + 10 ** (pH_water_DOM - pKa_acid) + 10 ** (pKa_base))
             Phi_diss_DOM = 1 - Phi_n_DOM
-            KOC_DOM_updated = (0.08 * ((Phi_n_DOM * (KOC_DOM_n)) + ((1 - Phi_diss_DOM) * 10 ** (np.log10(KOW) - 3.5)))) / 0.526  # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
+            KOC_DOM_updated = (0.08 * ((Phi_n_DOM * (KOW)) + ((1 - Phi_diss_DOM) * 10 ** (np.log10(KOW) - 3.5)))) / 0.526  # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
             KOC_DOMcorr = KOC_DOM_updated / KOC_DOM_initial
 
         elif diss == 'undiss':
