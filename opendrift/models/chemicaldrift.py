@@ -3374,6 +3374,7 @@ class ChemicalDrift(OceanDrift):
 
         data = np.array(NETCDF_data.data)
         print("Seeding " + str(data.size) + " datapoints")
+        list_index_print = self._print_progress_list(max(t.size, lo.size, la.size))
 
         sed_mixing_depth = np.array(self.get_config('chemical:sediment:mixing_depth')) # m
 
@@ -3391,6 +3392,8 @@ class ChemicalDrift(OceanDrift):
             Bathimetry_seed = None
 
         for i in range(0, max(t.size, lo.size, la.size)):
+            # if i in list_index_print:
+            #     print(f"Seeding elem {i} out of {max(t.size, lo.size, la.size)}")
             lon_grid_m = None
             depth_min = None
             depth_max = None
