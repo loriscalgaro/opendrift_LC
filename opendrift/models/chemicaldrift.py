@@ -1119,7 +1119,8 @@ class ChemicalDrift(OceanDrift):
 
                     KOC_sed_n = self.get_config('chemical:transformations:KOC_sed')
                     if KOC_sed_n < 0:
-                        KOC_sed_n =  KOC_sed_n = 2.62 * KOW**0.82   # (L/KgOC), Park and Clough, 2014 (334)/Org2C TO DO Add if choice between input and estimation
+                        # KOC_sed_n =  KOC_sed_n = 2.62 * KOW**0.82   # (L/KgOC), Park and Clough, 2014 (334)/Org2C TO DO Add if choice between input and estimation
+                        KOC_sed_n   = 10**((0.37*np.log10(KOW)) + 1.70) # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
                     else:
                         pass
 
@@ -1525,7 +1526,8 @@ class ChemicalDrift(OceanDrift):
 
                 KOC_sed_n = self.get_config('chemical:transformations:KOC_sed')
                 if KOC_sed_n < 0:
-                    KOC_sed_n = 2.62 * KOW**0.82   # (L/KgOC), Park and Clough, 2014 (334)/Org2C TO DO Add if choice between input and estimation
+                    # KOC_sed_n = 2.62 * KOW**0.82   # (L/KgOC), Park and Clough, 2014 (334)/Org2C TO DO Add if choice between input and estimation
+                    KOC_sed_n   = 10**((0.37*np.log10(KOW)) + 1.70) # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
                 else:
                     pass
 
@@ -1974,57 +1976,54 @@ class ChemicalDrift(OceanDrift):
                 # biodegradation, photodegradation, and hydrolysys
 
                 # Define parameters for each element not from NETCDF files
-                
-                Tref_kWt = self.get_config('chemical:transformations:Tref_kWt')                
+
+                Tref_kWt = self.get_config('chemical:transformations:Tref_kWt')
                 DH_kWt = self.get_config('chemical:transformations:DeltaH_kWt')
-                k_DecayMax_water = self.get_config('chemical:transformations:k_DecayMax_water')     
+                k_DecayMax_water = self.get_config('chemical:transformations:k_DecayMax_water')
                 
                 if k_DecayMax_water == 0:
                     logger.debug("k_DecayMax_water is set to 0 1/h, therefore  DOCorr = 0 and no biodegradation occurs")
                 else:
                     pass
 
-                k_Anaerobic_water = self.get_config('chemical:transformations:k_Anaerobic_water')  
-                
+                k_Anaerobic_water = self.get_config('chemical:transformations:k_Anaerobic_water')
+
                 if k_Anaerobic_water == 0:
                     logger.debug("k_Anaerobic_water is set to 0 1/h, therefore no biodegradation occurs without oxigen")
                 else:
                     pass
-                
-                
-                HalfSatO_w = self.get_config('chemical:transformations:HalfSatO_w')                
-                T_Max_bio = self.get_config('chemical:transformations:T_Max_bio')                
-                T_Opt_bio = self.get_config('chemical:transformations:T_Opt_bio')                
-                T_Adp_bio = self.get_config('chemical:transformations:T_Adp_bio')                
-                Max_Accl_bio = self.get_config('chemical:transformations:Max_Accl_bio')                
-                Dec_Accl_bio = self.get_config('chemical:transformations:Dec_Accl_bio')                
-                Q10_bio = self.get_config('chemical:transformations:Q10_bio')                
-                pH_min_bio = self.get_config('chemical:transformations:pH_min_bio')                
-                pH_max_bio = self.get_config('chemical:transformations:pH_max_bio')                
-                k_Acid = self.get_config('chemical:transformations:k_Acid')                
-                k_Base = self.get_config('chemical:transformations:k_Base')                
-                k_Hydr_Uncat = self.get_config('chemical:transformations:k_Hydr_Uncat')                
+
+                HalfSatO_w = self.get_config('chemical:transformations:HalfSatO_w')
+                T_Max_bio = self.get_config('chemical:transformations:T_Max_bio')
+                T_Opt_bio = self.get_config('chemical:transformations:T_Opt_bio')
+                T_Adp_bio = self.get_config('chemical:transformations:T_Adp_bio')
+                Max_Accl_bio = self.get_config('chemical:transformations:Max_Accl_bio')
+                Dec_Accl_bio = self.get_config('chemical:transformations:Dec_Accl_bio')
+                Q10_bio = self.get_config('chemical:transformations:Q10_bio')
+                pH_min_bio = self.get_config('chemical:transformations:pH_min_bio')
+                pH_max_bio = self.get_config('chemical:transformations:pH_max_bio')
+                k_Acid = self.get_config('chemical:transformations:k_Acid')
+                k_Base = self.get_config('chemical:transformations:k_Base')
+                k_Hydr_Uncat = self.get_config('chemical:transformations:k_Hydr_Uncat')
                 k_Photo = self.get_config('chemical:transformations:k_Photo') 
-                
+
                 if k_Photo == 0:
                     logger.debug("k_Photo is set to 0 1/h, therefore no phodegradation occurs")
                 else:
                     pass
-                
-                RadDistr = self.get_config('chemical:transformations:RadDistr')                
-                RadDistr0_ml = self.get_config('chemical:transformations:RadDistr0_ml')                
-                RadDistr0_bml = self.get_config('chemical:transformations:RadDistr0_bml')                
-                WaterExt = self.get_config('chemical:transformations:WaterExt')                
-                ExtCoeffDOM = self.get_config('chemical:transformations:ExtCoeffDOM')                
-                ExtCoeffSPM = self.get_config('chemical:transformations:ExtCoeffSPM')                
-                ExtCoeffPHY = self.get_config('chemical:transformations:ExtCoeffPHY')                
-                C2PHYC = self.get_config('chemical:transformations:C2PHYC')                
+
+                RadDistr = self.get_config('chemical:transformations:RadDistr')
+                RadDistr0_ml = self.get_config('chemical:transformations:RadDistr0_ml')
+                RadDistr0_bml = self.get_config('chemical:transformations:RadDistr0_bml')
+                WaterExt = self.get_config('chemical:transformations:WaterExt')
+                ExtCoeffDOM = self.get_config('chemical:transformations:ExtCoeffDOM')
+                ExtCoeffSPM = self.get_config('chemical:transformations:ExtCoeffSPM')
+                ExtCoeffPHY = self.get_config('chemical:transformations:ExtCoeffPHY')
+                C2PHYC = self.get_config('chemical:transformations:C2PHYC')
                 AveSolar = self.get_config('chemical:transformations:AveSolar')
-                
                 # Only "dissolved" and "DOC" elements will degrade
-                
+
                 # Define parameters from netCDF files
-                
                 W =   (self.elements.specie == self.num_lmm) \
                     + (self.elements.specie == self.num_humcol)
 
@@ -2032,28 +2031,27 @@ class ChemicalDrift(OceanDrift):
                 # TW=self.environment.sea_water_temperature
                 TW=self.environment.sea_water_temperature[W]
                 TW[TW==0]=np.median(TW)
-                
-                # # Dissolved oxigen in g/m3 or mg/L                                                                                
+
+                # # Dissolved oxigen in g/m3 or mg/L
                 Ox_water=self.environment.mole_concentration_of_dissolved_molecular_oxygen_in_sea_water[W]
                 # # Ox_water[Ox_water==0]=np.median(Ox_water)
-                
-                # # pH water                                                                                                       
+
+                # # pH water
                 pH_water=self.environment.sea_water_ph_reported_on_total_scale[W]
                 # # pH_water[pH_water==0]=np.median(pH_water) 
-                               
-                # # Concentration of C02 in the water column in mol_C/m3                                                            
+
+                # # Concentration of C02 in the water column in mol_C/m3
                 Conc_CO2_asC=self.environment.mole_concentration_of_dissolved_inorganic_carbon_in_sea_water[W]
                 # # Conc_CO2_asC[Conc_CO2_asC==0]=np.median(Conc_CO2_asC)
-                
-                # # Solar radiation in W/m2                                                                                        
+
+                # # Solar radiation in W/m2
                 Solar_radiation=self.environment.solar_irradiance[W]
                 # # Solar_radiation[Solar_radiation==0]=np.median(Solar_radiation)
-                
-                # # Concentration of phytoplankton in the water column in mol_C/m3                                                  
+
+                # # Concentration of phytoplankton in the water column in mol_C/m3
                 Conc_Phyto_water=self.environment.mole_concentration_of_phytoplankton_expressed_as_carbon_in_sea_water[W]
                 # # Conc_Phyto_water[Conc_Phyto_water==0]=np.median(Conc_Phyto_water)
-                
-                
+
                 # Concentration of SPM g/m3
                 concSPM=self.environment.spm # (g/m3) 
 
@@ -2152,7 +2150,7 @@ class ChemicalDrift(OceanDrift):
 
                 #to_deactivate = self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100
                 #vol_morethan_degr = self.elements.mass_degraded >= self.elements.mass_volatilized
-                #
+
                 #self.deactivate_elements(to_deactivate +  vol_morethan_degr, reason='volatilized')
                 #self.deactivate_elements(to_deactivate + ~vol_morethan_degr, reason='degraded')
         else:
@@ -2234,8 +2232,8 @@ class ChemicalDrift(OceanDrift):
                 # Only undissociated chemicals volatilize
                 Undiss_n = 1 / (1 + 10 ** (pH_water - pKa_acid))
             elif diss == 'base':
-                # Dissociation in water
-                Undiss_n = 1 / (1 + 10 ** (pH_water - pKa_base))
+                # Dissociation in water of conjugated acid: dissociated form is neutral
+                Undiss_n = 1- (1 / (1 + 10 ** (pH_water - pKa_base)))
             elif diss == 'amphoter':
                 # Only undissociated chemicals volatilize # This approach ignores the zwitterionic fraction. 10.1002/etc.115
                 Undiss_n = 1 / (1 + 10 ** (pH_water - pKa_acid) + 10 ** (pKa_base))
