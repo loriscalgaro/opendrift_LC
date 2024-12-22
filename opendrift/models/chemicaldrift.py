@@ -3390,8 +3390,15 @@ class ChemicalDrift(OceanDrift):
             Bathimetry_seed = None
 
         for i in range(0, max(t.size, lo.size, la.size)):
-            # if i in list_index_print:
+            if i == 0:
+                time_start_0 = datetime.now()
+            if i == 1:
+                time_start_1 = datetime.now()
+                estimated_time = (time_start_1 - time_start_0)*(range(0, max(t.size, lo.size, la.size)))
+                print(f"Estimated time (h:min:s): {estimated_time}")
+            if i in list_index_print:
             #     print(f"Seeding elem {i} out of {max(t.size, lo.size, la.size)}")
+                print(".", end="")
             lon_grid_m = None
             depth_min = None
             depth_max = None
@@ -6657,21 +6664,22 @@ class ChemicalDrift(OceanDrift):
     def _select_DataArray_ts(DataArray, time_step, time_name):
         '''
         Select the slice along "time_name" dimentions corresponding to time_step (or the one immediatly before)
-        If time_step is outside DataArray[time_name] returns a xr.zeros_like(DataArray) of one time step
+        If time_step is outside DataArray[time_name] returns None
 
         DataArray:        xarray DataArray
         time_step:        np.timedelta64, frequency of reconstructed time dimention
         time_name:           string, name of time dimention of all DataArray present in DataArray_ls
 
         '''
-        import xarray as xr
+        # import xarray as xr
 
         if time_step >= DataArray[time_name].min() and time_step <= DataArray[time_name].max():
             selected_ts = DataArray.sel(**{time_name: time_step}, method = "pad")
             return selected_ts
         else:
-            ts_ref = DataArray[time_name].min()
-            return xr.zeros_like(DataArray.sel(**{time_name: ts_ref}))
+            # ts_ref = DataArray[time_name].min()
+            # return xr.zeros_like(DataArray.sel(**{time_name: ts_ref}))
+            return None
 
 
     def sum_DataArray_list(self,
@@ -6692,6 +6700,7 @@ class ChemicalDrift(OceanDrift):
         time_name:           string, name of time dimention of all DataArray present in DataArray_ls
         '''
         import xarray as xr
+        from datetime import datetime
 
         print("Checking input DataArray dimentions")
         ### Check if uncommon dimentions are present
@@ -6792,28 +6801,53 @@ class ChemicalDrift(OceanDrift):
 
             print("Running sum of time_steps")
             Final_ts_sum_ls = []
+            list_index_print = self._print_progress_list(len(time_date_serie))
             for time_step in time_date_serie:
+                index_print = np.where(time_date_serie == time_step)[0]
+                if index_print == 0:
+                    time_start_0 = datetime.now()
+                if index_print == 1:
+                    time_start_1 = datetime.now()
+                    estimated_time = (time_start_1 - time_start_0)*(len(time_date_serie))
+                    print(f"Estimated time (h:min:s): {estimated_time}")
+                if index_print == (len(time_date_serie)-1):
+                    time_end = datetime.now()
+                print(index_print)
+                if index_print in list_index_print:
+                    print(".", end="")
+
                 sum_tstep_ls = []
                 for DataArray in DataArray_ls:
                     selected_ts = self._select_DataArray_ts(DataArray = DataArray,
                                         time_step = time_step,
                                         time_name = time_name)
-                    sum_tstep_ls.append(selected_ts)
+                    if selected_ts is not None:
+                        sum_tstep_ls.append(selected_ts)
 
-                sum_tstep = sum_tstep_ls[0].compute()
-                for ts in range(1, len (sum_tstep_ls)):
-                    tstep = sum_tstep_ls[ts]
-                    values = tstep.compute()
-                    del tstep
-                    sum_tstep += values.compute()
-                    del values
+                if len(sum_tstep_ls) == 0:
+                    pass
+                else:
+                    if len(sum_tstep_ls) > 1:
+                        sum_tstep = sum_tstep_ls[0].compute()
+                        for ts in range(1, len (sum_tstep_ls)):
+                            tstep = sum_tstep_ls[ts]
+                            values = tstep.compute()
+                            del tstep
+                            sum_tstep += values.compute()
+                            del values
+                    elif len(sum_tstep_ls) == 1:
+                        sum_tstep = sum_tstep_ls[0]
 
-                sum_tstep.__setitem__(time_name, time_step)
-                Final_ts_sum_ls.append(sum_tstep)
-                del sum_tstep
-
+                    sum_tstep.__setitem__(time_name, time_step)
+                    Final_ts_sum_ls.append(sum_tstep)
+                    del sum_tstep
+            sum_time = (time_end - time_start_0)
+            print(f"Sum_time (h:min:s): {sum_time}")
             print("Concatenating Final_ts_sum_ls")
+            Concat_time_start = datetime.now()
             Final_sum = xr.concat(Final_ts_sum_ls, dim = time_name)
+            Concat_time_end = datetime.now()
+            print(f"Concat_time (h:min:s): {Concat_time_end - Concat_time_start}")
 
         Final_sum.attrs.update(common_attrs)
 
