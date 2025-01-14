@@ -2557,7 +2557,7 @@ class ChemicalDrift(OceanDrift):
         sed_poro    = self.get_config('chemical:sediment:porosity')
         pixel_sed_mass = (pixelsize_m**2 *sed_L)*(1-sed_poro)*sed_dens      # mass in kg dry weight
 
-        # TODO this should be multiplied for the fraction og grid cell are that is not on land
+        # TODO this should be multiplied for the fraction of grid cell are that is not on land
 
         #conc = np.zeros_like(H)
         #if horizontal_smoothing:
@@ -3371,7 +3371,7 @@ class ChemicalDrift(OceanDrift):
                 del(Check_bathimetry)
 
         data = np.array(NETCDF_data.data)
-        print("Seeding " + str(data.size) + " datapoints")
+        print(f"Seeding {str(data.size)} datapoints")
         list_index_print = self._print_progress_list(max(t.size, lo.size, la.size))
 
         sed_mixing_depth = np.array(self.get_config('chemical:sediment:mixing_depth')) # m
@@ -3695,13 +3695,13 @@ class ChemicalDrift(OceanDrift):
         if (latmin < min(ds[lat_name].values.flatten()) or latmax > max(ds[lat_name].values.flatten())\
         or lonmin < min(ds[lon_name].values.flatten()) or lonmax > max(ds[lon_name].values.flatten())):
             if latmin < min(ds[lat_name].values.flatten()):
-                print("latmin (", latmin, ") is not in range, should not be lower than: ", min(ds[lat_name].values.flatten()))
+                print(f"latmin ({latmin}) is not in range, should not be lower than: {min(ds[lat_name].values.flatten())}")
             if latmax > max(ds[lat_name].values.flatten()):
-                print("latmax (", latmax, ") is not in range, should not be higher than: ",max(ds[lat_name].values.flatten()))
+                print(f"latmax ({latmax}) is not in range, should not be higher than: {max(ds[lat_name].values.flatten())}")
             if lonmin < min(ds[lon_name].values.flatten()):
-                print("lonmin (", lonmin, ") is not in range: should not be lower than:", min(ds[lon_name].values.flatten()))
+                print(f"lonmin ({lonmin}) is not in range: should not be lower than: {min(ds[lon_name].values.flatten())}")
             if lonmax > max(ds[lon_name].values.flatten()):
-                print("lonmax (", lonmax, ") is not in range, should not be higher than: ",max(ds[lon_name].values.flatten()))
+                print(f"lonmax ({lonmax}) is not in range, should not be higher than: {max(ds[lon_name].values.flatten())}")
 
             raise ValueError("Regrid coordinates out of bounds from input file range")
         else:
@@ -3797,7 +3797,7 @@ class ChemicalDrift(OceanDrift):
             # change negative concentration values to 0
             regridded_density_nan = xr.where(regridded_density < 0, np.nan, regridded_density)
 
-        print("Time elapsed (hr:min:sec): ", dt.now()-start)
+        print(f"Time elapsed (hr:min:sec): {dt.now()-start}")
 
         print("Saving to netcdf")
         # save regridded concentration, topography , and density data
@@ -3815,7 +3815,7 @@ class ChemicalDrift(OceanDrift):
 
         regridded_concentration_avg_dataset.to_netcdf(filename_regridded)
 
-        print("Time elapsed (hr:min:sec): ", dt.now()-start)
+        print(f"Time elapsed (hr:min:sec): {dt.now()-start}")
 
 
     @staticmethod
@@ -4075,7 +4075,7 @@ class ChemicalDrift(OceanDrift):
             print("file_output_path did not exist and was created")
         else:
             pass
-        print("Saving to ", file_output_path)
+        print(f"Saving to {file_output_path}")
 
         if 'grid_mapping' in DataArray_masked.attrs:
             del DataArray_masked.attrs['grid_mapping'] # delete grid_mapping attribute to avoid "ValueError in safe_setitem" from xarray
@@ -4095,13 +4095,13 @@ class ChemicalDrift(OceanDrift):
                 if "_FillValue" in var.attrs:
                     del var.attrs["_FillValue"]
                     var.attrs["_FillValue"] = -9999
-                    print("Changed _FillValue of ", var_name, "from NaN to -9999")
+                    print(f"Changed _FillValue of {var_name} from NaN to -9999")
 
             for coord_name, coord in DataArray_masked.coords.items():
                 if "_FillValue" in coord.attrs:
                     del coord.attrs["_FillValue"]
                     coord.attrs["_FillValue"] = -9999
-                    print("Changed _FillValue of ", coord_name, "from NaN to -9999")
+                    print(f"Changed _FillValue of {coord_name} from NaN to -9999")
 
             DataArray_masked.to_netcdf(file_output_path + file_output_name)
 
@@ -4290,11 +4290,11 @@ class ChemicalDrift(OceanDrift):
                         extra_dims = self._check_extra_dimensions(Dataset = Dataset, 
                                                                   permitted_dims = permitted_dims)
                         if extra_dims:
-                            print("Extra dimensions found for ", str(Dataset.data_vars)[20:])
+                            print(f"Extra dimensions found for {str(Dataset.data_vars)[20:]}")
                             print("Returning original DataArray")
                             DataArray_not_masked_ls.append([list(Dataset.data_vars), Dataset])
                         else:
-                            print("Masking ", str(Dataset.data_vars)[20:])
+                            print(f"Masking {str(Dataset.data_vars)[20:]}")
                             DataArray_masked = self._mask_DataArray(DataArray = Dataset,
                                                    shp_mask = shp_mask,
                                                    shp_epsg = shp_epsg,
@@ -4432,11 +4432,11 @@ class ChemicalDrift(OceanDrift):
         animation = FuncAnimation(fig, update, frames=len(figure_ls), interval=1000/fps, blit = True)
         plt.show()
         output_video = file_out_path + file_out_sub_folder + anim_prefix + figure_file_name + animation_format
-        print("Time to create animation (hr:min:sec): ", dt.now()-start)
-        print("Saving animation to ", file_out_path + file_out_sub_folder)
+        print(f"Time to create animation (hr:min:sec): {dt.now()-start}")
+        print(f"Saving animation to {file_out_path + file_out_sub_folder}")
         start = dt.now()
         animation.save(output_video, writer='ffmpeg')
-        print("Time to save animation (hr:min:sec): ", dt.now()-start)
+        print(f"Time to save animation (hr:min:sec): {dt.now()-start}")
 
 
     @staticmethod
@@ -4610,6 +4610,7 @@ class ChemicalDrift(OceanDrift):
         '''
 
         import numpy as np
+        import pandas as pd
         import matplotlib.pyplot as plt
         import matplotlib.ticker as ticker
         import os as os
@@ -4637,7 +4638,7 @@ class ChemicalDrift(OceanDrift):
             pad_fraction1 = -0.08
             pad_fraction2 = 0.0384
             file_output_path = file_out_path + file_out_sub_folder
-            print("Figures saved to: ", file_output_path)
+            print(f"Figures saved to: {file_output_path}")
 
             def fmt(x, pos):
                 '''
@@ -4687,6 +4688,14 @@ class ChemicalDrift(OceanDrift):
                     Conc_Dataset = Conc_Dataset.rename({'lat': 'latitude','lon': 'longitude'})
                 elif 'x' in Conc_Dataset.dims:
                     Conc_Dataset = Conc_Dataset.rename({'y': 'latitude','x': 'longitude'})
+                else:
+                    raise ValueError("Unknown spatial coordinates")
+            
+            if "depth" not in Conc_Dataset.dims:
+                if 'z' in Conc_Dataset.dims:
+                    Conc_Dataset = Conc_Dataset.rename({'z': 'depth'})
+            if 'avg_time' in Conc_Dataset.dims:
+                Conc_Dataset = Conc_Dataset.rename({'avg_time': 'time'})
 
             if "concentration_avg_water" in Conc_Dataset.keys():
                 Conc_DataArray = Conc_Dataset.concentration_avg_water
@@ -4707,15 +4716,48 @@ class ChemicalDrift(OceanDrift):
                 else:
                     raise ValueError("colorbar_title or variable_name are not specified")
 
-            if 'time' in Conc_DataArray.dims:
-                Conc_DataArray = Conc_DataArray.where(((Conc_DataArray.time >= time_start) &
-                                               (Conc_DataArray.time <= time_end)), drop=True)
-                if Conc_DataArray.time.size == 0:
-                    raise ValueError("Conc_DataArray.time is out of time_start/end interval")
-            elif time_start is not None:
-                Conc_DataArray['time'] = time_start
+            if 'time' not in Conc_DataArray.dims:
+                if "year" in Conc_DataArray.dims:
+                    # Change "year" dimention to "time", at the January, 1st
+                    Conc_DataArray['year'] = pd.to_datetime(np.char.add(np.array(Conc_DataArray['year']).astype(str), '-01-01'))
+                    Conc_DataArray = Conc_DataArray.rename({'year': 'time'})
+                    Conc_DataArray = Conc_DataArray.assign_coords(time=Conc_DataArray['time'])
+                elif "season" in Conc_DataArray.dims and time_start is not None:
+                    # Change "season" dimention to "time", at the first day of each season
+                    time_start_year = time_start.astype('datetime64[Y]').astype(int) + 1970
+                    time_season_dict = {"DJF":"-12-21", "JJA":"-06-21", "MAM":"-03-21", "SON":"-09-23"}
+                    time_season = [time_season_dict.get(season) for season in list(Conc_DataArray.season.values)]
+                    Conc_DataArray["season"] = pd.to_datetime(np.char.add(str(time_start_year), time_season))
+                    Conc_DataArray = Conc_DataArray.rename({'season': 'time'})
+                    Conc_DataArray = Conc_DataArray.assign_coords(time=Conc_DataArray['time'])
+                else:
+                    # Check if other dimentions than the ones to be lotted are present and add time_start as time
+                    acceptable_dimensions = set(['latitude', 'longitude', 'time', 'depth'])
+                    Dataset_dimensions = set(Conc_DataArray.dims)
+                    extra_dimentions = (Dataset_dimensions - acceptable_dimensions)
+                    if len(extra_dimentions) > 0:
+                        raise ValueError(f"Dimentions other than {acceptable_dimensions} are present: f{extra_dimentions}")
+                    else:
+                        if time_start is not None:
+                            Conc_DataArray['time'] = time_start
+                        else:
+                            raise ValueError("Conc_DataArray.time is missing, time_start must be specified")
             else:
-                raise ValueError("Conc_DataArray.time is missing, time_start must be specified")
+                # Check if other dimentions than the ones to be lotted are present
+                acceptable_dimensions = set(['latitude', 'longitude', 'time', 'depth'])
+                Dataset_dimensions = set(Conc_DataArray.dims)
+                extra_dimentions = (Dataset_dimensions - acceptable_dimensions)
+                if len(extra_dimentions) > 0:
+                    raise ValueError(f"Dimentions other than {acceptable_dimensions} are present: f{extra_dimentions}")
+
+            # Remove timesteps before time_start and after time_end
+            if time_start is not None:
+                Conc_DataArray = Conc_DataArray.where((Conc_DataArray.time >= time_start), drop=True)
+            if time_end is not None:
+                Conc_DataArray = Conc_DataArray.where((Conc_DataArray.time <= time_end), drop=True)
+
+            if Conc_DataArray.time.size == 0:
+                raise ValueError("Conc_DataArray.time is out of time_start/end interval")
 
             attribute_list = list(Conc_DataArray.attrs)
             for attr in attribute_list:
@@ -4755,7 +4797,7 @@ class ChemicalDrift(OceanDrift):
 
             for timestep in range(0, figures_number):
                 if timestep in list_index_print:
-                     print("creating image n° ", str(timestep+1), " out of ", str(figures_number))
+                     print(f"creating image n° {str(timestep+1)} out of {str(figures_number)}")
 
                 if (Conc_DataArray.time.to_numpy()).size > 1 and "depth" in Conc_DataArray.dims:
                     Conc_DataArray_selected = Conc_DataArray.isel(time = timestep, depth = selected_depth_index)
@@ -4835,7 +4877,7 @@ class ChemicalDrift(OceanDrift):
                     figure_ls.append(fig)
                 plt.close('all')
 
-            print("Time to create figures (hr:min:sec): ", dt.now()-start)
+            print(f"Time to create figures (hr:min:sec): {dt.now()-start}")
 
             # Save figures
             if save_figures == True:
@@ -4843,7 +4885,7 @@ class ChemicalDrift(OceanDrift):
                 if trim_images == True:
                     for img_index in range(0, len(figure_ls)):
                         if img_index in list_index_print:
-                             print("saving image n° ", str(img_index+1), " out of ", str(figures_number))
+                             print(f"saving image n° {str(img_index+1)} out of {str(figures_number)}")
                         fig_path = (file_out_path + file_out_sub_folder + figure_name_ls[img_index])
                         fig, ax = plt.subplots(figsize = (width_fig,high_fig))
                         ax.set_axis_off()
@@ -4852,9 +4894,9 @@ class ChemicalDrift(OceanDrift):
                 else:
                     for img_index in range(0, len(figure_ls)):
                         if img_index in list_index_print:
-                            print("saving image n° ", str(img_index+1), " out of ", str(figures_number))
+                            print(f"saving image n° {str(img_index+1)} out of {str(figures_number)}")
                         figure_ls[img_index].savefig(file_out_path + file_out_sub_folder + figure_name_ls[img_index])
-                print("Time to save figures (hr:min:sec): ", dt.now()-start)
+                print(f"Time to save figures (hr:min:sec): {dt.now()-start}")
             else:
                 print("Figures were not saved")
                 
@@ -4882,7 +4924,7 @@ class ChemicalDrift(OceanDrift):
                             fig_num.append(str(f"{num:03d}"))
                         anim_prefix = fig_num[0] + "_" + fig_num[1] + "_"
 
-                        print("Creating animation ", anim_prefix)
+                        print(f"Creating animation {anim_prefix}")
                         figure_ls_split = figure_ls[num_list[0]:num_list[1]]
                         self._create_animation(load_img_from_folder = load_img_from_folder, 
                                            trim_images = trim_images,
@@ -4927,7 +4969,7 @@ class ChemicalDrift(OceanDrift):
 
                 # Load figures
                 figure_ls = []
-                print("Loading images ", anim_prefix)
+                print(f"Loading images {anim_prefix}")
                 for fig_name in figure_name_ls:
                     fig_path = (file_out_path + file_out_sub_folder + fig_name)
                     image = plt.imread(fig_path)
@@ -4938,14 +4980,14 @@ class ChemicalDrift(OceanDrift):
                 if trim_images == True:
                     for img_index in range(0, len(figure_ls)):
                         if img_index in list_index_print:
-                            print("trim image n° ", str(img_index+1), " out of ", str(figures_number))
+                            print(f"trim image n° {str(img_index+1)} out of {str(figures_number)}")
                         rgb = self._remove_white_borders(figure_ls[img_index], padding_r = padding_r, padding_c = padding_c)
                         figure_ls[img_index] = rgb
 
                     if save_figures == True:
                         for img_index in range(0, len(figure_ls)):
                             if img_index in list_index_print:
-                                print("saving image n° ", str(img_index+1), " out of ", str(figures_number))
+                                print(f"saving image n° {str(img_index+1)} out of {str(figures_number)}")
                             fig_path = (file_out_path + file_out_sub_folder + figure_name_ls[img_index][:-4]+"_trim"+fig_format)
                             fig, ax = plt.subplots(figsize = (width_fig,high_fig))
                             ax.set_axis_off()
@@ -5137,41 +5179,41 @@ class ChemicalDrift(OceanDrift):
             results_dict["Perc_mass_selected"] = Perc_mass_selected
             return results_dict
         else:
-            print("DS_max: ", DS_max)
-            print("DS_min: ", DS_min, "\n")
-            print("number of data-points without limits: ", (len(emissions)))
-            print("upper limit: ", upper_limit)
-            print("lower limit: ", lower_limit, "\n")
+            print(f"DS_max: {DS_max}")
+            print(f"DS_min: {DS_min}", "\n")
+            print(f"number of data-points without limits: {len(emissions)}")
+            print(f"upper limit: {upper_limit}")
+            print(f"lower limit: {lower_limit}", "\n")
 
-            print("number of data-points selected within the limits: ", Num_selected, "\n")
-            print('total mass of chemical: ', total_mass, ' kg')
-            print('selected mass of chemical: ', selected_mass, ' kg')
-            print('% of total mass selected: ', Perc_mass_selected, " %")
+            print(f"number of data-points selected within the limits: {Num_selected}", "\n")
+            print(f'total mass of chemical: {total_mass} kg')
+            print(f'selected mass of chemical: {selected_mass} kg')
+            print(f'% of total mass selected: {Perc_mass_selected} %')
     
             # Print number and percentage of elements over upper limit
             num_upper_lim = np.count_nonzero(emissions > upper_limit)
-            print("n° of data-points over upper limit: ", num_upper_lim)
-            print("% of data-points over upper limit: ", 
-                  (num_upper_lim/np.prod(emissions.shape))*100, " %")
+            print(f"n° of data-points over upper limit: {num_upper_lim}")
+            print(f"% of data-points over upper limit: \
+                  {(num_upper_lim/np.prod(emissions.shape))*100} %")
             mass_over_limit = (sum((emissions[emissions > upper_limit])* emiss_factor))/1e9
-            print('mass of chemical over upper limit: ',
-                  mass_over_limit, ' kg')  # e.g. (L*ug/L)/10^9 -> Kg
-            print("% of total volume or mass of the elements over upper limit:", 
-                  (mass_over_limit/emissions_sum)*100, " %", "\n")
+            print(f'mass of chemical over upper limit: {mass_over_limit} kg')
+                  # e.g. (L*ug/L)/10^9 -> kg
+            print(f"% of total volume or mass of the elements over upper limit:\
+                  {(mass_over_limit/emissions_sum)*100} %", "\n")
 
             # Print number and percentage of elements under lower limit
             num_lower_lim = np.count_nonzero(emissions < lower_limit)
-            print("n° of data-points under lower limit: ", num_lower_lim)
-            print("% of data-points under lower limit: ", 
-                  (num_lower_lim/np.prod(emissions.shape))*100, " %")
+            print(f"n° of data-points under lower limit: {num_lower_lim}")
+            print(f"% of data-points under lower limit: \
+                  {(num_lower_lim/np.prod(emissions.shape))*100} %")
             mass_below_limit = (sum((emissions[emissions < lower_limit])* emiss_factor))/1e9
-            print('mass of chemical under limit: ',
-                  mass_below_limit, ' kg') # e.g. (L*ug/L)/10^9 -> Kg
-            print("% of total volume or mass of the elements under lower limit: ", 
-                  (mass_below_limit/(emissions_sum))*100, "%", "\n")
+            print(f'mass of chemical under limit: {mass_below_limit} kg')
+                  # e.g. (L*ug/L)/10^9 -> Kg
+            print(f"% of total volume or mass of the elements under lower limit: \
+                  {(mass_below_limit/(emissions_sum))*100} %", "\n")
 
-            print("% of total volume or mass of elements under lower limit considering also upper limit")
-            print(((mass_below_limit)/(np.sum(emissions[emissions < upper_limit])))*100, "\n")
+            print(f"% of total volume or mass of elements under lower limit considering also upper limit \
+                  {((mass_below_limit)/(np.sum(emissions[emissions < upper_limit])))*100}", "\n")
 
             # Plot histograms for frequency of values
 
@@ -5545,19 +5587,19 @@ class ChemicalDrift(OceanDrift):
         if 'dissolved' in legend:
             ax.bar(np.arange(steps),bars[:,self.num_lmm],width=1.25,color='midnightblue')
             bottom=bars[:,self.num_lmm]
-            print('dissolved' + ' : ' + str(bars[-1,self.num_lmm]) + mass_unit +' ('+ str(100*bars[-1,self.num_lmm]/np.sum(bars[-1,:]))+'%)')
+            print(f'dissolved: {str(bars[-1,self.num_lmm])} {mass_unit} ({str(100*bars[-1,self.num_lmm]/np.sum(bars[-1,:]))} %)')
         if 'DOC' in legend:
             ax.bar(np.arange(steps),bars[:,self.num_humcol],bottom=bottom,width=1.25,color='royalblue')
             bottom=bottom+bars[:,self.num_humcol]
-            print('DOC' + ' : ' + str(bars[-1,self.num_humcol]) + mass_unit +' ('+ str(100*bars[-1,self.num_humcol]/np.sum(bars[-1,:]))+'%)')
+            print(f'DOC: {str(bars[-1,self.num_humcol])} {mass_unit} ({str(100*bars[-1,self.num_humcol]/np.sum(bars[-1,:]))} %)')
         if 'SPM' in legend:
             ax.bar(np.arange(steps),bars[:,self.num_prev],bottom=bottom,width=1.25,color='palegreen')
             bottom=bottom+bars[:,self.num_prev]
-            print('SPM' + ' : ' + str(bars[-1,self.num_prev]) + mass_unit +' ('+ str(100*bars[-1,self.num_prev]/np.sum(bars[-1,:]))+'%)')
+            print(f'SPM: {str(bars[-1,self.num_prev])} {mass_unit} ({str(100*bars[-1,self.num_prev]/np.sum(bars[-1,:]))} %)')
         if 'sediment' in legend:
             ax.bar(np.arange(steps),bars[:,self.num_srev],bottom=bottom,width=1.25,color='orange')
             bottom=bottom+bars[:,self.num_srev]
-            print('sediment' + ' : ' + str(bars[-1,self.num_srev]) + mass_unit +' ('+ str(100*bars[-1,self.num_srev]/np.sum(bars[-1,:]))+'%)')
+            print(f'sediment: {str(bars[-1,self.num_srev])} {mass_unit} ({str(100*bars[-1,self.num_srev]/np.sum(bars[-1,:]))} %)')
 
         ax.legend(list(filter(None, legend)))
         ax.set_ylabel('mass (' + mass_unit + ')')
@@ -6023,7 +6065,7 @@ class ChemicalDrift(OceanDrift):
             mass_fin_df[('convertion_factors-[time_mass]')] = np.zeros_like(mass_emitted)
             mass_fin_df.loc[0, ('convertion_factors-[time_mass]')]= time_conversion_factor
             mass_fin_df.loc[1, ('convertion_factors-[time_mass]')]= mass_conversion_factor
-            print("save .csv file to ", file_out_path + csv_file_name)
+            print(f"save .csv file to {file_out_path + csv_file_name}")
             mass_fin_df.to_csv(file_out_path + csv_file_name)
 
         elif load_timeseries_from_file is True and timeseries_file_path is not None:
@@ -6174,10 +6216,12 @@ class ChemicalDrift(OceanDrift):
             bottom=bottom+bars[:,2]
             ax.bar(np.arange((len(time_steps))),bars[:,3],bottom=bottom,width=1.25,color='orange')
             bottom=bottom+bars[:,3]
-            print('dissolved' + ' : ' + str(bars[-1,0]) + mass_unit +' ('+ str(100*bars[-1,0]/np.sum(bars[-1,:]))+'%)')
-            print('DOC' + ' : ' + str(bars[-1,1]) + mass_unit +' ('+ str(100*bars[-1,1]/np.sum(bars[-1,:]))+'%)')
-            print('SPM' + ' : ' + str(bars[-1,2]) + mass_unit +' ('+ str(100*bars[-1,2]/np.sum(bars[-1,:]))+'%)')
-            print('sediment' + ' : ' + str(bars[-1,3]) + mass_unit +' ('+ str(100*bars[-1,3]/np.sum(bars[-1,:]))+'%)')
+
+            print(f'dissolved: {str(bars[-1,0])} {mass_unit} ({str(100*bars[-1,0]/np.sum(bars[-1,:]))} %)')
+            print(f'DOC: {str(bars[-1,1])} {mass_unit} ({str(100*bars[-1,1]/np.sum(bars[-1,:]))} %)')
+            print(f'SPM: {str(bars[-1,2])} {mass_unit} ({str(100*bars[-1,2]/np.sum(bars[-1,:]))} %)')
+            print(f'sediment: {str(bars[-1,3])} {mass_unit} ({str(100*bars[-1,3]/np.sum(bars[-1,:]))} %)')
+
 
             ax.legend(['dissolved', 'DOC', 'SPM','sediment'])
             ax.set_ylabel('mass (' + mass_unit + ')')
@@ -6218,46 +6262,34 @@ class ChemicalDrift(OceanDrift):
             print("save figures to ", file_out_path)
 
             if check_mass is True:
-                print("mass_vol extracted")
-                print(mass_volatilized.to_numpy()[-1])
+                print(f"mass_vol extracted: {mass_volatilized.to_numpy()[-1]}")
                 vol_active = (sum(self.elements.mass_volatilized)*mass_conversion_factor)
                 vol_inactive = (sum(self.elements_deactivated.mass_volatilized)*mass_conversion_factor)
-                print("mass_vol active")
-                print(vol_active)
-                print("mass_vol inactive")
-                print(vol_inactive)
-                print("mass_vol active + inactive")
-                print(vol_inactive + vol_active)
+                print(f"mass_vol active: {vol_active}")
+                print(f"mass_vol inactive: {vol_inactive}")
+                print(f"mass_vol active + inactive : {vol_inactive + vol_active}")
                 print("####")
 
-                print("mass_degraded extracted")
-                print(mass_degraded.to_numpy()[-1])
+                print(f"mass_degraded extracted {mass_degraded.to_numpy()[-1]}")
                 degraded_active = (sum(self.elements.mass_degraded)*mass_conversion_factor)
                 degraded_inactive = (sum(self.elements_deactivated.mass_degraded)*mass_conversion_factor)
-                print("mass_degraded active")
-                print(degraded_active)
-                print("mass_degraded inactive")
-                print(degraded_inactive)
-                print("mass_degraded active + inactive")
-                print(degraded_active + degraded_inactive)
+                print(f"mass_degraded active: {degraded_active}")
+                print(f"mass_degraded inactive: {degraded_inactive}")
+                print(f"mass_degraded active + inactive: {degraded_active + degraded_inactive}")
                 print("####")
 
-                print("mass_tot_ts extracted")
-                print(mass_tot_timestep[-1].sum())
+                print(f"mass_tot_ts extracted: {mass_tot_timestep[-1].sum()}")
+                print()
                 mass_active = (sum(self.elements.mass)*mass_conversion_factor)
                 mass_inactive = (sum(self.elements_deactivated.mass)*mass_conversion_factor)
-                print("mass_tot_ts active")
-                print(mass_active)
-                print("mass_tot_ts inactive")
-                print(mass_inactive)
-                print("mass_tot_ts active + inactive")
-                print(mass_active + mass_inactive)
+                print(f"mass_tot_ts active: {mass_active}")
+                print(f"mass_tot_ts inactive: {mass_inactive}")
+                print(f"mass_tot_ts active + inactive: {mass_active + mass_inactive}")
                 print("####")
 
-                print("mass emitted extracted")
-                print(mass_emitted.to_numpy()[-1])
-                print("mass emitted check")
-                print((mass_active + mass_inactive)+ (degraded_active + degraded_inactive)+ (vol_inactive + vol_active))
+                print(f"mass emitted extracted: {mass_emitted.to_numpy()[-1]}")
+                print(f"mass emitted check: \
+                      {(mass_active + mass_inactive)+ (degraded_active + degraded_inactive)+ (vol_inactive + vol_active)}")
                 print("####")
 
     @staticmethod
@@ -6516,7 +6548,7 @@ class ChemicalDrift(OceanDrift):
                 filtered_df["time"+ "-["+ time_unit +"]"] = np.array(filtered_df["time"+ "-["+ time_unit +"]"]) - time_delta
 
                 if mass_unit_out != mass_unit:
-                    print("converted mass from ",mass_unit, " to ", mass_unit_out)
+                    print(f"converted mass from {mass_unit} to {mass_unit_out}")
                     if mass_unit_out == "ug":
                         if mass_unit=='kg':
                             mass_conversion_factor= 1e-9
@@ -6633,7 +6665,7 @@ class ChemicalDrift(OceanDrift):
             raise ValueError("start_date, end_date, and freq_time must be specified")
 
         merged_df_fin.to_csv(ts_file_path + csv_file_name_fin)
-        print("saved sum file to ", ts_file_path + csv_file_name_fin)
+        print(f"saved sum file to {ts_file_path + csv_file_name_fin}")
 
 
     @staticmethod
@@ -6790,14 +6822,14 @@ class ChemicalDrift(OceanDrift):
             time_date_serie = np.arange(start_date, (end_date + freq_time), freq_time)
 
             if start_date is not None:
-                print("start_date: ", start_date)
+                print(f"start_date: {start_date}")
             if end_date is not None:
-                print("end_date: ", end_date)
+                print(f"end_date: {end_date}")
             if freq_time is not None:
                 if int(np.array(freq_time)) >= 3.6e+12: # freq_time in hours
-                    print("freq_time: ", int(np.array(freq_time)) / 3.6e+12, "hours")
+                    print(f"freq_time: {int(np.array(freq_time)) / 3.6e+12} hours")
                 else: # freq_time in minutes
-                    print("freq_time: ", int(np.array(freq_time)) / 6e+10, "min")
+                    print(f"freq_time: {int(np.array(freq_time)) / 6e+10} min")
 
             print("Running sum of time_steps")
             Final_ts_sum_ls = []
@@ -6812,7 +6844,7 @@ class ChemicalDrift(OceanDrift):
                     print(f"Estimated time (h:min:s): {estimated_time}")
                 if index_print == (len(time_date_serie)-1):
                     time_end = datetime.now()
-                print(index_print)
+                # print(index_print)
                 if index_print in list_index_print:
                     print(".", end="")
 
@@ -6949,7 +6981,7 @@ class ChemicalDrift(OceanDrift):
                 weights_array = xr.zeros_like(Conc_DA.sel(**{"depth": depth_levels[depth_index]}))
 
             if depth_levels[depth_index] == 0:
-                print("depth: ", depth_levels[depth_index])
+                print(f"depth: {depth_levels[depth_index]}")
                 depth_range = (abs(depth_levels[depth_index + 1]))
                 weights_array = xr.where(Bathymetry_DA <= depth_range,
                                 1, # if bathimetry is lower than the surface layer, consider only surface layer in average
@@ -6964,7 +6996,7 @@ class ChemicalDrift(OceanDrift):
 
             else:
                 if depth_index < (len(depth_levels) - 1):
-                    print("depth: ", depth_levels[depth_index])
+                    print(f"depth: {depth_levels[depth_index]}")
                     depth_range = (abs(depth_levels[depth_index + 1]) - abs(depth_levels[depth_index]))
                     # if bathimetry is within this layer
                     Mask_1 = (Bathymetry_DA <= abs(depth_levels[depth_index + 1])) & (Bathymetry_DA > abs(depth_levels[depth_index]))
@@ -6987,7 +7019,7 @@ class ChemicalDrift(OceanDrift):
                     weights_array_ls.append(weights_array)
 
                 elif depth_index == (len(depth_levels) - 1):
-                    print("depth: ", depth_levels[depth_index])
+                    print(f"depth: {depth_levels[depth_index]}")
                     Mask_3 = (Bathymetry_DA > abs(depth_levels[depth_index]))
                     weights_array = xr.where(Mask_3,
                                             ((Bathymetry_DA - abs(depth_levels[depth_index]))/Bathymetry_DA), 
@@ -7144,7 +7176,7 @@ class ChemicalDrift(OceanDrift):
                         with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
                                 zip_ref.extract(nc_file, simoutputpath)
             end_zip = datetime.now()
-            print("Extracting time :",end_zip-start)
+            print(f"Extracting time : {end_zip-start}")
 
             # Flatten sim_file_list in a single list
             sim_file_list = [item for sublist in sim_file_list for item in (sublist if isinstance(sublist, list) else [sublist])]
@@ -7205,7 +7237,7 @@ class ChemicalDrift(OceanDrift):
                 for nc_file in concat_ls:
                     os.remove(nc_file)
         end=datetime.now()
-        print("Concatenating time :",end-start)
+        print(f"Concatenating time : {end-start}")
         
         if len(files_not_concat) > 0:
             for nc_file in files_not_concat:
@@ -7223,4 +7255,4 @@ class ChemicalDrift(OceanDrift):
                     os.remove(simoutputpath+"/" + file)
 
         end_zip=datetime.now()
-        print("Zip files time :", end_zip-end)
+        print(f"Zip files time :{end_zip-end}")
