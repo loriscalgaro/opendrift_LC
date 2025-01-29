@@ -34,6 +34,7 @@ from abc import ABCMeta, abstractmethod, abstractproperty
 
 import geojson
 import xarray as xr
+import pandas as pd
 import numpy as np
 import scipy
 import pyproj
@@ -302,6 +303,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                 fromlist=['init', 'write_buffer', 'close', 'import_file'])
         except ImportError:
             logger.info('Could not import iomodule ' + iomodule)
+            raise
         self.io_init = types.MethodType(io_module.init, self)
         self.io_write_buffer = types.MethodType(io_module.write_buffer, self)
         self.io_close = types.MethodType(io_module.close, self)
@@ -474,9 +476,6 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             v = self.ElementType.variables[p]
             if 'seed' in v and v['seed'] is False:
                 continue  # Properties which may not be provided by user
-            minval = v['min'] if 'min' in v else None
-            maxval = v['max'] if 'max' in v else None
-            units = v['units'] if 'units' in v else None
             c['seed:%s' % p] = {
                 'type': v['type'] if 'type' in v else 'float',
                 'min': v['min'] if 'min' in v else None,
@@ -662,10 +661,10 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                 (self.environment.land_binary_mask == 1) & (self.elements.z <= 0),
                 reason='stranded'
             )
-            
+
             if not coastline_approximation_precision:
                 return
-            
+
             for on_land_id, on_land_prev_id in zip(on_land, self.elements.ID[on_land]):
                 lon = self.elements.lon[on_land_id]
                 lat = self.elements.lat[on_land_id]
@@ -673,7 +672,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                 prev_lat = self.previous_lat[on_land_prev_id - 1]
 
                 step_degrees = float(coastline_approximation_precision)
-                
+
                 x_degree_diff = np.abs(prev_lon - lon)
                 x_samples = np.floor(x_degree_diff / step_degrees).astype(np.int64) if x_degree_diff > step_degrees else 1
                 x = np.linspace(prev_lon, lon, x_samples)
@@ -695,7 +694,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                     self.elements.lat[on_land_id] = new_lat
 
             self.environment.land_binary_mask[on_land] = 0
-            
+
         elif i == 'previous':  # Go back to previous position (in water)
             if self.newly_seeded_IDs is not None:
                 self.deactivate_elements(
@@ -1871,6 +1870,13 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             raise ValueError(
                 "Time step must be negative if duration is negative.")
 
+        ratio_duration_output = duration/self.time_step_output
+        if not ratio_duration_output.is_integer():
+            initial_duration = duration
+            duration = np.ceil(ratio_duration_output)*self.time_step_output
+            logger.warning('Simulation end is not at an output time step. '
+                           f'Extending duration from {initial_duration} to {duration}')
+
         self.expected_steps_output = duration.total_seconds() / \
             self.time_step_output.total_seconds() + 1  # Includes start and end
         self.expected_steps_calculation = duration.total_seconds() / \
@@ -1917,7 +1923,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         if export_buffer_length is None:
             self.export_buffer_length = self.expected_steps_output
         else:
-            self.export_buffer_length = export_buffer_length
+            self.export_buffer_length = np.minimum(export_buffer_length, self.expected_steps_output)
 
         if self.time_step.days < 0:
             # For backwards simulation, we start at last seeded element
@@ -1963,6 +1969,22 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                                    dtype=history_dtype)
         self.history.mask = True
         self.steps_exported = 0
+
+        # Create Xarray Dataset to hold result jolabokk
+        #coords = {  # Initialize for the part fitting in memory
+        #    'trajectory': ('trajectory', np.arange(len(self.elements_scheduled))),
+        #    'time': ('time', pd.date_range(self.start_time, periods=self.export_buffer_length, freq=self.time_step_output))}
+        #shape = (len(coords['trajectory'][1]), len(coords['time'][1]))
+        #dims = ('trajectory', 'time')  # Presently, but shall also allow single dimension
+
+        #element_vars = {varname: (dims, np.nan*np.ones(shape=shape, dtype=var['dtype']),
+        #                          {attr:var[attr] for attr in var if attr not in ['seed', 'dtype']})
+        #                for varname,var in self.ElementType.variables.items()
+        #                if self.export_variables is None or varname in self.export_variables}
+        #environment_vars = {varname: (dims, np.nan*np.ones(shape=shape, dtype=np.float32))
+        #                    for varname,var in self.required_variables.items()
+        #                    if self.export_variables is None or varname in self.export_variables}
+        #self.result = xr.Dataset(coords=coords, data_vars=element_vars | environment_vars)
 
         if outfile is not None:
             self.io_init(outfile)
@@ -2208,6 +2230,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                 del self.environment_profiles
             self.io_import_file(outfile)
 
+        #return self.result
+
     def increase_age_and_retire(self):
         """Increase age of elements, and retire if older than config setting."""
         # Increase age of elements
@@ -2236,8 +2260,39 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                 self.deactivate_elements(self.elements.lat > N,
                                          reason='outside')
 
+    def state_to_xarray(self):
+
+        if pd.to_datetime(self.time) < self.result.time[0] or pd.to_datetime(self.time) > self.result.time[-1]:
+            logger.warning(f'Simulation time {self.time} outside coverage of self.result')
+            return
+        if pd.to_datetime(self.time) in self.result.time:  # Output time step
+            ID_ind = self.elements.ID - 1
+            element_ind = range(len(ID_ind))
+            insert_time = pd.to_datetime(self.time)
+        else:  # Deactivated elements must be written even if no output timestep
+            deactivated = np.where(self.elements.status != 0)[0]
+            if len(deactivated) == 0:
+                return  # No deactivated elements this sub-timestep
+            ID_ind = self.elements.ID[deactivated] - 1
+            element_ind = deactivated
+            insert_time = self.result['time'].sel(time=self.time, method='backfill').values
+
+        for var in self.result.var():
+            if var == 'ID':
+                continue
+            for source in (self.elements, self.environment):
+                d = getattr(source, var, None)
+                if d is not None:
+                    self.result[var].loc[{'time': insert_time,
+                                          'trajectory': ID_ind}] = d[element_ind]
+
+        if pd.to_datetime(self.time) == self.result.time[-1]:
+            pass  # write to file
+
     def state_to_buffer(self):
         """Append present state (elements and environment) to recarray."""
+
+        #self.state_to_xarray()  # Not ready yet
 
         steps_calculation_float = \
             (self.steps_calculation * self.time_step.total_seconds() /
@@ -2441,6 +2496,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             fig = plt.figure(figsize=(figsize, figsize * aspect_ratio))
 
         ax = fig.add_subplot(111, projection=self.crs_plot)
+        if lonmin == -180 and lonmax == 180:
+            lonmax -= .1  # To avoid problem with Cartopy
         ax.set_extent([lonmin, lonmax, latmin, latmax], crs=self.crs_lonlat)
 
         gl = ax.gridlines(self.crs_lonlat, draw_labels=True, xlocs=xlocs, ylocs=ylocs)
