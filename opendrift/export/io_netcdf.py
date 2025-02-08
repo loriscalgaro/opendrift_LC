@@ -32,15 +32,23 @@ def write_buffer(self):
     if not os.path.exists(self.outfile_name):
         logger.debug('Initialising output netCDF file '
                     f'{self.outfile_name} with {self.result.sizes["time"]} timesteps')
-        self.result.to_netcdf(self.outfile_name, unlimited_dims={'time': True})
+        encoding = {'time': {'units': 'Seconds since 1970-01-01 00:00:00',
+                             'dtype': np.float64}}  # Expected by some downstream clients
+        for varname, var in self.result.variables.items():
+            attrs = var.attrs.copy()
+            if 'dtype' in attrs and issubclass(attrs['dtype'], np.integer):
+                FillValue = np.iinfo(attrs['dtype']).max
+                encoding[varname] = {'dtype': attrs['dtype'], '_FillValue': FillValue}
+            attrs.pop('dtype', None)
+            self.result[varname].attrs = attrs
+        self.result.to_netcdf(self.outfile_name, unlimited_dims={'time': True},
+                              encoding=encoding)
         return
 
     self.outfile = Dataset(self.outfile_name, 'a')  # Re-open file at each write
     numtimes = self.outfile['time'].shape[0]
 
     for varname in self.result.var():
-        if varname == 'ID':
-            continue
         var = self.outfile.variables[varname]
         var[:, numtimes:numtimes + self.result.sizes['time']] = self.result[varname]
     self.outfile.variables['time'][numtimes:numtimes + self.result.sizes['time']] = \
@@ -57,10 +65,9 @@ def close(self):
 
     self.outfile = Dataset(self.outfile_name, 'a')
     for var in self.result.var():  # Updating variable attributes, if changed during simulation
-        if var == 'ID':
-            continue
         for atn, atv in self.result[var].attrs.items():
-            self.outfile[var].setncattr(atn, atv)
+            if atn != '_FillValue':
+                self.outfile[var].setncattr(atn, atv)
 
     self.outfile.close()  # Finally close file
     logger.debug('Closed netCDF-file')
