@@ -2375,6 +2375,7 @@ class ChemicalDrift(OceanDrift):
 
 
     def write_netcdf_chemical_density_map(self, filename, pixelsize_m='auto', zlevels=None,
+                                              lat_resol=None, lon_resol=None,
                                               deltat=None,
                                               density_proj=None,
                                               llcrnrlon=None, llcrnrlat=None,
@@ -2390,13 +2391,16 @@ class ChemicalDrift(OceanDrift):
                                               active_status=False):
         '''Write netCDF file with map of Chemical species densities and concentrations
         Arguments:
-            pixelsize_m:           float32, lenght of gridcells in m
+            pixelsize_m:           float32, lenght of gridcells in m (default mode)
+            lat_resol:             float32, latitude resolution of gricells in degrees
+            lon_resol:             float32, longitude resolution of gricells in degrees
             zlevels:               list of float32, depth levels at which concentration will be calculated
                            Values must be negative and ordered from the lowest depth (e.g. [-50., -10., -5.])
                            In the .nc file "depth" value will indicate the start of the vertical slice
                            i.e. "depth = 0" indicates slice from 0 to 5 m, and "depth = 50" indicates
                            slice from 50m to bathimietry 
-            density_proj:          string, <proj4_string
+            density_proj:          string, <proj4_string> .e.g., longlat +datum=WGS84 +no_defs for EPSG 4326
+                                   or int, number of reference system (e.g., 4326)
             llcrnrlon:             float32, min longitude of grid
             llcrnrlat:             float32, min latitude of grid
             urcrnrlon:             float32, max longitude of grid
@@ -2414,7 +2418,25 @@ class ChemicalDrift(OceanDrift):
 
         from netCDF4 import Dataset, date2num #, stringtochar
         import opendrift
+        from pyproj import CRS
         
+        def is_valid_proj4(density_proj):
+            try:
+                CRS.from_string(density_proj)  # Try to create a CRS object
+                return density_proj
+            except:
+                try:
+                    density_proj = (CRS.from_epsg(density_proj)).to_proj4() # Try to create a CRS object from EPSG number
+                    return density_proj
+                except:
+                    raise ValueError(f"Invalid density_proj: {density_proj}")
+
+        if sum(x is None for x in [lat_resol, lon_resol]) == 1:
+            raise ValueError("Both lat/lon_resol must be specified")
+        elif sum(x is None for x in [lat_resol, lon_resol]) == 0:
+            if pixelsize_m is not None:
+                raise ValueError("If lat/lon_resol are specified pixelsize_m must be None")
+
         if self.mode != opendrift.models.basemodel.Mode.Config:
             self.mode = opendrift.models.basemodel.Mode.Config
             logger.debug("Changed self.mode to Config")
@@ -2434,6 +2456,68 @@ class ChemicalDrift(OceanDrift):
 
         if reader_sea_depth is not None:
             from opendrift.readers import reader_netCDF_CF_generic
+            import xarray as xr
+            
+            reader_sea_depth_res = xr.open_dataset(reader_sea_depth)
+            reader_sea_depth_res = (reader_sea_depth_res[list(reader_sea_depth_res.data_vars)[0]])
+            
+            lat_names = ["latitude", "lat", "y"]
+            lat_name = next((name for name in lat_names if name in reader_sea_depth_res.coords), None)
+            lon_names = ["longitude","lon", "x", "long"]
+            lon_name = next((name for name in lon_names if name in reader_sea_depth_res.coords), None)
+            
+            if any(x is None for x in [lat_name, lon_name]):
+                raise ValueError("Latitude/Longitude coordinate names not found in bathimetry")
+
+            # Check if corners are covered by bathimetry
+            reader_sea_depth_lat_values = reader_sea_depth_res.coords[lat_name].values
+            reader_sea_depth_lon_values = reader_sea_depth_res.coords[lon_name].values
+
+            reader_sea_depth_lon_min = min(reader_sea_depth_lon_values)
+            reader_sea_depth_lat_min = min(reader_sea_depth_lat_values)
+            reader_sea_depth_lon_max = max(reader_sea_depth_lon_values)
+            reader_sea_depth_lat_max = max(reader_sea_depth_lat_values)
+
+            if ((llcrnrlat < reader_sea_depth_lat_min) or (urcrnrlat > reader_sea_depth_lat_max)\
+            or (llcrnrlon < reader_sea_depth_lon_min) or  (urcrnrlon > reader_sea_depth_lon_max)):
+                if llcrnrlat < reader_sea_depth_lat_min:
+                    logger.warning(f"Changed llcrnrlat from {llcrnrlat} to {str(reader_sea_depth_lat_values[1])[:8]}")
+                    llcrnrlat = reader_sea_depth_lat_values[1]
+                if urcrnrlat > reader_sea_depth_lat_max:
+                    logger.warning(f"Changed urcrnrlat from {urcrnrlat} to {str(reader_sea_depth_lat_values[-2])[:8]}")
+                    urcrnrlat = reader_sea_depth_lat_values[-2]
+                if llcrnrlon < reader_sea_depth_lon_min:
+                    logger.warning(f"Changed llcrnrlon from {llcrnrlon} to {str(reader_sea_depth_lon_values[1])[:8]}")
+                    llcrnrlon = reader_sea_depth_lon_values[1]
+                if urcrnrlon > reader_sea_depth_lon_max:
+                    logger.warning(f"Changed urcrnrlon from {urcrnrlon} to {str(reader_sea_depth_lon_values[-2])[:8]}")
+                    urcrnrlon = reader_sea_depth_lon_values[-2]
+            else:
+                pass
+
+            # Find resolution of bathimetry's selected section
+            reader_sea_depth_res=reader_sea_depth_res.where(
+                                            (reader_sea_depth_res[lon_name] > llcrnrlon) &
+                                            (reader_sea_depth_res[lon_name] < urcrnrlon) &
+                                            (reader_sea_depth_res[lat_name] > llcrnrlat) & 
+                                            (reader_sea_depth_res[lat_name] < urcrnrlat),
+                                            drop=True)
+            # Update lat/lon values of final selection
+            reader_sea_depth_lat_values = reader_sea_depth_res.coords[lat_name].values
+            reader_sea_depth_lon_values = reader_sea_depth_res.coords[lon_name].values
+
+            num_x = None
+            num_y = None
+
+            num_x = reader_sea_depth_lon_values.size
+            if num_x == 0:
+                raise ValueError("No longitude coordinate found in bathimetry")
+            num_y = reader_sea_depth_lat_values.size
+            if num_y == 0:
+                raise ValueError("No latitude coordinate found in bathimetry")
+
+            del reader_sea_depth_res
+            # Load bathimetry as reader for interpolation
             reader_sea_depth = reader_netCDF_CF_generic.Reader(reader_sea_depth)
         else:
             raise ValueError('A reader for ''sea_floor_depth_below_sea_level'' must be specified')
@@ -2457,15 +2541,21 @@ class ChemicalDrift(OceanDrift):
         logger.info('Postprocessing: Write density and concentration to netcdf file')
 
         # Default bathymetry resolution 500x500. Can be increased (carefully) if high-res data is available and needed
-        grid=np.meshgrid(np.linspace(llcrnrlon,urcrnrlon,500), np.linspace(llcrnrlat,urcrnrlat,500))
+        bathimetry_res = 500
+        if num_x > 500 and num_y > 500:
+            bathimetry_res = min(num_x, num_y)-1
+            logger.warning(f"Changed bathymetry resolution to {bathimetry_res}")
+
+        grid=np.meshgrid(np.linspace(llcrnrlon,urcrnrlon,bathimetry_res), np.linspace(llcrnrlat,urcrnrlat,bathimetry_res))
+        # grid=np.meshgrid(np.linspace(llcrnrlon,urcrnrlon,500), np.linspace(llcrnrlat,urcrnrlat,500))
         self.conc_lon=grid[0]
         self.conc_lat=grid[1]
-
         self.conc_topo=reader_sea_depth.get_variables_interpolated_xy(['sea_floor_depth_below_sea_level'],
                 x = self.conc_lon.flatten(),
                 y = self.conc_lat.flatten(),
                 time = reader_sea_depth.times[0] if reader_sea_depth.times is not None else None
                 )[0]['sea_floor_depth_below_sea_level'].reshape(self.conc_lon.shape)
+
 
         if pixelsize_m == 'auto':
             lon, lat = self.get_lonlats()
@@ -2486,7 +2576,11 @@ class ChemicalDrift(OceanDrift):
 
 
         if density_proj is None: # add default projection with equal-area property
+            density_proj_str = ('+proj=moll +ellps=WGS84 +lon_0=0.0')
             density_proj = pyproj.Proj('+proj=moll +ellps=WGS84 +lon_0=0.0')
+        else:
+            density_proj_str = density_proj
+            density_proj = pyproj.Proj(is_valid_proj4(density_proj))
 
 
         if mass_unit==None:
@@ -2503,20 +2597,22 @@ class ChemicalDrift(OceanDrift):
             z_array = np.append(np.append(-10000, zlevels) , max(0,np.nanmax(z)))
         else:
             z_array = [min(-10000,np.nanmin(z)), max(0,np.nanmax(z))]
-        logger.info('vertical grid boundaries: {}'.format(  [str(item) for item in z_array] ) )
+        logger.info('vertical grid boundaries: {}'.format([str(item) for item in z_array]))
 
-        #
         # H is array containing number of elements within each box defined by lon_array, lat_array and z_array
 
         H, lon_array, lat_array = \
             self.get_chemical_density_array(pixelsize_m, z_array,
-                                                density_proj=density_proj,
-                                                llcrnrlon=llcrnrlon, llcrnrlat=llcrnrlat,
-                                                urcrnrlon=urcrnrlon, urcrnrlat=urcrnrlat,
-                                                weight='mass',origin_marker=origin_marker,
-                                                active_status = active_status)
+                                           lat_resol = lat_resol,
+                                           lon_resol = lon_resol,
+                                           density_proj=density_proj,
+                                           llcrnrlon=llcrnrlon, llcrnrlat=llcrnrlat,
+                                           urcrnrlon=urcrnrlon, urcrnrlat=urcrnrlat,
+                                           weight='mass', origin_marker=origin_marker,
+                                           active_status = active_status)
 
-        # calculating center point for eacxh pixel
+
+        # calculating center point for each pixel
         lon_array = (lon_array[:-1,:-1] + lon_array[1:,1:])/2
         lat_array = (lat_array[:-1,:-1] + lat_array[1:,1:])/2
 
@@ -2525,6 +2621,9 @@ class ChemicalDrift(OceanDrift):
             landmask = self.env.readers['shape'].__on_land__(lon_array,lat_array)
         else:
             landmask = self.env.readers['global_landmask'].__on_land__(lon_array,lat_array)
+
+        if landmask.shape !=  lon_array.shape:
+            landmask = landmask.reshape(lon_array.shape)
 
         if horizontal_smoothing:
             # Compute horizontally smoother field
@@ -2536,18 +2635,21 @@ class ChemicalDrift(OceanDrift):
                         Hsm[ti,sp,zi,:,:] = self.horizontal_smooth(H[ti,sp,zi,:,:],n=smoothing_cells)
 
         # Compute mean depth and volume in each pixel grid cell
-        pixel_mean_depth  =  self.get_pixel_mean_depth(lon_array, lat_array)
-
+        pixel_mean_depth, pixel_area  =  self.get_pixel_mean_depth(lon_array, lat_array,
+                                                      density_proj_str,
+                                                      lat_resol, lon_resol)
 
         pixel_volume = np.zeros_like(H[0,0,:,:,:])
+        
         for zi,zz in enumerate(z_array[:-1]):
             topotmp = -pixel_mean_depth.copy()
             topotmp[np.where(topotmp < zz)] = zz
             topotmp = z_array[zi+1] - topotmp
             topotmp[np.where(topotmp < .1)] = 0.
-
-            pixel_volume[zi,:,:] = topotmp * pixelsize_m**2
-
+            if density_proj_str == ('+proj=moll +ellps=WGS84 +lon_0=0.0'):
+                pixel_volume[zi,:,:] = topotmp * pixelsize_m**2
+            else:
+                pixel_volume[zi,:,:] = topotmp * pixel_area
 
         pixel_volume[np.where(pixel_volume==0.)] = np.nan
 
@@ -2555,7 +2657,11 @@ class ChemicalDrift(OceanDrift):
         sed_L       = self.get_config('chemical:sediment:mixing_depth')
         sed_dens    = self.get_config('chemical:sediment:density')
         sed_poro    = self.get_config('chemical:sediment:porosity')
-        pixel_sed_mass = (pixelsize_m**2 *sed_L)*(1-sed_poro)*sed_dens      # mass in kg dry weight
+        if density_proj_str == ('+proj=moll +ellps=WGS84 +lon_0=0.0'):
+            pixel_sed_mass = (pixelsize_m**2 *sed_L)*(1-sed_poro)*sed_dens      # mass in kg dry weight
+        else:
+            pixel_sed_mass = (pixel_area *sed_L)*(1-sed_poro)*sed_dens
+            pixel_sed_mass = np.tile(pixel_sed_mass, (len(z_array[:-1]), 1, 1))
 
         # TODO this should be multiplied for the fraction of grid cell are that is not on land
 
@@ -2591,18 +2697,22 @@ class ChemicalDrift(OceanDrift):
             logger.debug ('ndt '+ str(ndt))   # number of time steps over which to average in conc file
             logger.debug ('odt '+ str(odt))   # number of average slices
 
-            Landmask=np.zeros_like(H[0:odt,:,:,:,:])
-            for zi in range(len(z_array)-1):
-                for sp in range(self.nspecies):
-                    for ti in range(odt):
-                        Landmask[ti,sp,zi,:,:] = landmask
-
+            # Landmask=np.zeros_like(H[0:odt,:,:,:,:])
+            # for zi in range(len(z_array)-1):
+            #     for sp in range(self.nspecies):
+            #         for ti in range(odt):
+            #             Landmask[ti,sp,zi,:,:] = landmask
+            
+            Landmask = np.tile(landmask, (odt, self.nspecies, len(z_array)-1, 1, 1))
 
             # This may probably be written more efficiently!
-            mean_conc = np.zeros( [odt,cshape[1],cshape[2],cshape[3],cshape[4]] )
-            for ii in range(odt):
-                meantmp  = np.mean(conctmp[(ii*ndt):(ii+1)*ndt,:,:,:,:],axis=0)
-                mean_conc[ii,:,:,:,:] = meantmp
+            # mean_conc = np.zeros( [odt,cshape[1],cshape[2],cshape[3],cshape[4]] )
+            # for ii in range(odt):
+            #     meantmp  = np.mean(conctmp[(ii*ndt):(ii+1)*ndt,:,:,:,:],axis=0)
+            #     mean_conc[ii,:,:,:,:] = meantmp
+            # Optimized
+            mean_conc = np.mean(conctmp.reshape(odt, ndt, *cshape[1:]), axis=1)
+
 
         nc = Dataset(filename, 'w')
         nc.createDimension('x', lon_array.shape[0])
@@ -2660,7 +2770,12 @@ class ChemicalDrift(OceanDrift):
         if elements_density is True:
             nc.createVariable('density', 'i4',
                               ('time','specie','depth','y', 'x'),fill_value=99999)
-            H = np.swapaxes(H, 3, 4).astype('i4')
+            H = np.swapaxes(H, 3, 4)#.astype('i4')
+            H = np.nan_to_num(H, nan=0, posinf=0, neginf=0).astype('i4')
+            Landmask_dens = np.tile(landmask, (len(times), self.nspecies, len(z_array)-1, 1, 1))
+            Landmask_dens = np.swapaxes(Landmask_dens, 3, 4)
+            H = np.ma.masked_where(Landmask_dens==1,H)
+            del Landmask_dens
             #H = np.ma.masked_where(H==0, H)
             nc.variables['density'][:] = H
             nc.variables['density'].long_name = 'Number of elements in grid cell'
@@ -2747,13 +2862,14 @@ class ChemicalDrift(OceanDrift):
 
         nc.close()
         logger.info('Wrote to '+filename)
-
+        
 
     def get_chemical_density_array(self, pixelsize_m, z_array,
-                                       density_proj=None, llcrnrlon=None,llcrnrlat=None,
-                                       urcrnrlon=None,urcrnrlat=None,
-                                       weight=None, origin_marker=None,
-                                       active_status = False):
+                                   lat_resol=None, lon_resol=None,
+                                   density_proj=None, llcrnrlon=None,llcrnrlat=None,
+                                   urcrnrlon=None,urcrnrlat=None,
+                                   weight=None, origin_marker=None,
+                                      active_status = False):
         '''
         compute a particle concentration map from particle positions
         Use user defined projection (density_proj=<proj4_string>)
@@ -2764,10 +2880,8 @@ class ChemicalDrift(OceanDrift):
         lat = self.get_property('lat')[0]
         times = self.get_time_array()[0]
 
-        # Redundant ??
-        if density_proj is None: # add default projection with equal-area property
-            density_proj = pyproj.Proj('+proj=moll +ellps=WGS84 +lon_0=0.0')
-
+        # if density_proj is None: # add default projection with equal-area property
+        #     density_proj = pyproj.Proj('+proj=moll +ellps=WGS84 +lon_0=0.0')
 
         # create a grid in the specified projection
         x,y = density_proj(lon, lat)
@@ -2775,18 +2889,29 @@ class ChemicalDrift(OceanDrift):
             llcrnrx,llcrnry = density_proj(llcrnrlon,llcrnrlat)
             urcrnrx,urcrnry = density_proj(urcrnrlon,urcrnrlat)
         else:
-            llcrnrx,llcrnry = x.min()-pixelsize_m, y.min()-pixelsize_m
-            urcrnrx,urcrnry = x.max()+pixelsize_m, y.max()+pixelsize_m
+            if density_proj == pyproj.Proj('+proj=moll +ellps=WGS84 +lon_0=0.0'):
+                llcrnrx,llcrnry = x.min()-pixelsize_m, y.min()-pixelsize_m
+                urcrnrx,urcrnry = x.max()+pixelsize_m, y.max()+pixelsize_m
+            else:
+                llcrnrx,llcrnry = x.min()-lon_resol, y.min()-lat_resol
+                urcrnrx,urcrnry = x.max()+lon_resol, y.max()+lat_resol
+                
+        if density_proj == pyproj.Proj('+proj=moll +ellps=WGS84 +lon_0=0.0'):
+            if pixelsize_m == None:
+                raise ValueError("If density_proj is '+proj=moll +ellps=WGS84 +lon_0=0.0', pixelsize_m must be specified")
+            x_array = np.arange(llcrnrx,urcrnrx, pixelsize_m)
+            y_array = np.arange(llcrnry,urcrnry, pixelsize_m)
+        else:
+            x_array = np.arange(llcrnrx,urcrnrx, lon_resol)
+            y_array = np.arange(llcrnry,urcrnry, lat_resol)
 
-        x_array = np.arange(llcrnrx,urcrnrx, pixelsize_m)
-        y_array = np.arange(llcrnry,urcrnry, pixelsize_m)
         bins=(x_array, y_array)
         outsidex, outsidey = max(x_array)*1.5, max(y_array)*1.5
         z = self.get_property('z')[0]
         if weight is not None:
             weight_array = self.get_property(weight)[0]
 
-        
+
         specie = self.get_property('specie')[0]
         if origin_marker is not None:
             originmarker = self.get_property('origin_marker')[0]
@@ -2833,7 +2958,7 @@ class ChemicalDrift(OceanDrift):
         return H, lon_array, lat_array
 
 
-    def get_pixel_mean_depth(self,lons,lats):
+    def get_pixel_mean_depth(self,lons,lats,density_proj_str,lat_resol,lon_resol):
         from scipy import interpolate
         # Ocean model depth and lat/lon
         h_grd = self.conc_topo
@@ -2846,8 +2971,24 @@ class ChemicalDrift(OceanDrift):
 
         # Interpolate topography to new grid
         h = interpolate.griddata((lon_grd.flatten(),lat_grd.flatten()), h_grd.flatten(), (lons, lats), method='linear')
-
-        return h
+        
+        if density_proj_str != ('+proj=moll +ellps=WGS84 +lon_0=0.0'):
+        # Calculate the area of each grid cell in square meters (m²)
+            Radius = 6.371e6  # Earth's radius in meters
+            # Convert degrees to radians
+            lat_resol_rad = np.radians(lat_resol)
+            lon_resol_rad = np.radians(lon_resol)
+            # Convert latitude centers to radians
+            lat_array_rad = np.radians(lats)
+            # Compute lat edges
+            lat1 = lat_array_rad - (lat_resol_rad / 2)  # Lower latitude boundary
+            lat2 = lat_array_rad + (lat_resol_rad / 2)  # Upper latitude boundary
+            # Calculate area using the spherical formula
+            area = (Radius**2) * lon_resol_rad * (np.sin(lat2) - np.sin(lat1))
+            return h, area
+        else:
+            area = None
+            return h, area
 
 
     def horizontal_smooth(self, a, n=0):
@@ -2855,13 +2996,11 @@ class ChemicalDrift(OceanDrift):
             num_coarse=a
             return num_coarse
 
-
         xdm=a.shape[1]
         ydm=a.shape[0]
         #msk = self.conc_mask
         b=np.zeros([ydm+2*n,xdm+2*n],dtype=int)
         b[n:-n,n:-n]=a
-
 
         num_coarse = np.zeros([ydm,xdm],dtype=float)
         smo_tmp1=np.zeros([ydm,xdm])
@@ -3365,7 +3504,7 @@ class ChemicalDrift(OceanDrift):
                     pass
                 elif t.size > 1:
                     t = np.array(remove_positions([t], Check_bathimetry))
-                logger.info(str(len(Check_bathimetry)) +  " datapoints removed due to inconsistent bathimetry")
+                logger.info(f"{len(Check_bathimetry)} datapoints removed due to inconsistent bathimetry")
                 del(Check_bathimetry)
             else:
                 del(Check_bathimetry)
@@ -4743,7 +4882,7 @@ class ChemicalDrift(OceanDrift):
                         else:
                             raise ValueError("Conc_DataArray.time is missing, time_start must be specified")
             else:
-                # Check if other dimentions than the ones to be lotted are present
+                # Check if other dimentions than the ones to be loaded are present
                 acceptable_dimensions = set(['latitude', 'longitude', 'time', 'depth'])
                 Dataset_dimensions = set(Conc_DataArray.dims)
                 extra_dimentions = (Dataset_dimensions - acceptable_dimensions)
@@ -5604,7 +5743,12 @@ class ChemicalDrift(OceanDrift):
         ax.legend(list(filter(None, legend)))
         ax.set_ylabel('mass (' + mass_unit + ')')
         if start_date is None:
-            ax.axes.get_xaxis().set_ticklabels(np.round(ax.axes.get_xticks() * time_conversion_factor))
+            # Get current tick positions
+            xticks = ax.get_xticks()
+            # Set the ticks explicitly before setting labels
+            ax.set_xticks(xticks)
+            ax.set_xticklabels(np.round(xticks * time_conversion_factor))
+            # ax.axes.get_xaxis().set_ticklabels(np.round(ax.axes.get_xticks() * time_conversion_factor))
             ax.set_xlabel('time (' + time_unit + ')')
         else:
             date_values = [datetime.strptime(start_date,"%Y-%m-%d") + i*self.time_step for i in range(steps)]
@@ -5885,7 +6029,8 @@ class ChemicalDrift(OceanDrift):
             active_elements = (mass[1]==0)
             # inactive_elements = (mass[1]!=0)
             # Mask that is true where mass[0] is not NaN
-            elements = ~mass[1].mask
+            # elements = ~mass[1].mask
+            elements = ~np.isnan(mass[1])
 
             # Find which elements are advected out of the domain
             print("Calculating mass advected out of the simulation")
@@ -5945,7 +6090,7 @@ class ChemicalDrift(OceanDrift):
             else:
                 error = ("shp_file_path and lat/lon limits not specified when " +
                          "deactivate_north_of/south_of/_east_of/_west_of parameters " +
-                        "were not used")
+                         "were not used")
                 raise ValueError(error)
 
             # Get mass associated to each specie for each timestep, considering only active elements that are inside 
@@ -6064,7 +6209,7 @@ class ChemicalDrift(OceanDrift):
             mass_fin_df = pd.concat([mass_by_specie_df, mass_df], axis=1)
             mass_fin_df[('convertion_factors-[time_mass]')] = np.zeros_like(mass_emitted)
             mass_fin_df.loc[0, ('convertion_factors-[time_mass]')]= time_conversion_factor
-            mass_fin_df.loc[1, ('convertion_factors-[time_mass]')]= mass_conversion_factor
+            mass_fin_df.loc[1, ('convertion_factors-[time_mass]')]= np.float32(mass_conversion_factor)
             print(f"save .csv file to {file_out_path + csv_file_name}")
             mass_fin_df.to_csv(file_out_path + csv_file_name)
 
@@ -6080,8 +6225,8 @@ class ChemicalDrift(OceanDrift):
         else:
             raise ValueError("timeseries_file_path must be specified")
 
-        time_conversion_factor = mass_fin_df.loc[0, ('convertion_factors-[time_mass]')]
-        mass_conversion_factor = mass_fin_df.loc[1, ('convertion_factors-[time_mass]')]
+        time_conversion_factor = np.float32(mass_fin_df.loc[0, ('convertion_factors-[time_mass]')])
+        mass_conversion_factor = np.float32(mass_fin_df.loc[1, ('convertion_factors-[time_mass]')])
 
         # Filter dataframe based on date
         mass_fin_df = self.filter_dataframe(df = mass_fin_df,
@@ -6255,7 +6400,13 @@ class ChemicalDrift(OceanDrift):
             
             ax.legend(['vol','deg_w', 'deg_s', 'adv', 'sed_burial'])
             ax.set_ylabel('percentage (%)')
-            ax.axes.get_xaxis().set_ticklabels(np.round(ax.axes.get_xticks() * time_conversion_factor))
+            # Get current tick positions
+            xticks = ax.get_xticks()
+            # Set the ticks explicitly before setting labels
+            ax.set_xticks(xticks)
+            ax.set_xticklabels(np.round(xticks * time_conversion_factor))
+
+            # ax.axes.get_xaxis().set_ticklabels(np.round(ax.axes.get_xticks() * time_conversion_factor))
             ax.set_xlabel('time (' + time_unit + ')')
 
             plt.savefig(file_out_path+"/"+sim_name+"-degrad"+".png", bbox_inches="tight", dpi=300)
@@ -6278,8 +6429,8 @@ class ChemicalDrift(OceanDrift):
                 print(f"mass_degraded active + inactive: {degraded_active + degraded_inactive}")
                 print("####")
 
-                print(f"mass_tot_ts extracted: {mass_tot_timestep[-1].sum()}")
-                print()
+                print(f"mass_tot_ts extracted: {np.array(mass_tot_timestep[-1]).sum()}")
+                print("####")
                 mass_active = (sum(self.elements.mass)*mass_conversion_factor)
                 mass_inactive = (sum(self.elements_deactivated.mass)*mass_conversion_factor)
                 print(f"mass_tot_ts active: {mass_active}")
@@ -6963,7 +7114,7 @@ class ChemicalDrift(OceanDrift):
 
         self._check_dims_values(dims_values)
 
-        # Create array to store weights for avarage
+        # Create array to store weights for average
         if time_name in Conc_DA.dims:
             ts_ref = Conc_DA[time_name].min()
 
