@@ -16,6 +16,7 @@
 
 from datetime import datetime, timedelta
 import numpy as np
+import pandas as pd
 from scipy.interpolate import interp1d
 import logging; logger = logging.getLogger(__name__)
 from opendrift.models.basemodel import OpenDriftSimulation
@@ -206,7 +207,6 @@ class OceanDrift(OpenDriftSimulation):
                               time_step=None, time_step_output=None,
                               simulation_duration=None, simulation_interval=None):
 
-        import pandas as pd
         time_step_output = pd.Timedelta(time_step_output)
         simulation_interval = pd.Timedelta(simulation_interval)
         # Interpolate trajectories to output time step
@@ -567,11 +567,10 @@ class OceanDrift(OpenDriftSimulation):
             time_step = self.get_config('vertical_mixing:timestep')
             times = [self.time + i*timedelta(seconds=time_step) for i in range(z.shape[0])]
         else:
-            z = self.get_property('z')[0]
-            z = np.ma.filled(z, np.nan)
-            K = self.get_property('ocean_vertical_diffusivity')[0]
+            z = self.result.z.values
+            K = self.result.ocean_vertical_diffusivity.values
             time_step = self.time_step.total_seconds()
-            times = self.get_time_array()[0]
+            times = pd.to_datetime(self.result.time).to_pydatetime()
         if maxdepth is None:
             maxdepth = np.nanmin(z)
         if maxdepth > 0:
@@ -655,30 +654,26 @@ class OceanDrift(OpenDriftSimulation):
         if bins is not None:
             dz = -maxrange/bins
 
-        # using get_property instead of result to exclude elements thare are not yet seeded
-        z = self.get_property('z')[0]
-        z = np.ma.filled(z, np.nan)
-
         if maxnum is None:
             # Precalculatig histograms to find maxnum
             hist_series = np.zeros((int(-maxrange/dz), steps_output-1))
             bin_series = np.zeros((int(-maxrange/dz)+1, steps_output-1))
             for i in range(steps_output-1):
-                hist_series[:,i], bin_series[:,i] = np.histogram(z[i,:][np.isfinite(z[i,:])], bins=int(-maxrange/dz), range=[maxrange, 0])
+                z = self.result.z.isel(time=i)
+                z = z[np.isfinite(z)]
+                hist_series[:,i], bin_series[:,i] = np.histogram(z, bins=int(-maxrange/dz), range=[maxrange, 0])
             maxnum = hist_series.max()
 
         def update(val):
             tindex = int(tslider.val)
             mainplot.cla()
             mainplot.grid()
-            mainplot.hist(z[tindex, :], bins=int(-maxrange/dz),
+            mainplot.hist(self.result.z.isel(time=tindex), bins=int(-maxrange/dz),
                           range=[maxrange, 0], orientation='horizontal')
             mainplot.set_ylim([maxrange, 0])
             mainplot.set_xlim([0, maxnum])
             mainplot.set_xlabel('number of particles')
             mainplot.set_ylabel('depth [m]')
-            #x_wind = self.history['x_wind'].T[tindex, :]
-            #y_wind = self.history['y_wind'].T[tindex, :]
             x_wind = self.result.x_wind.isel(time=tindex)
             y_wind = self.result.y_wind.isel(time=tindex)
             windspeed = np.mean(np.sqrt(x_wind**2 + y_wind**2))
