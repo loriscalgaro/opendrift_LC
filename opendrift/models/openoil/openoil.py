@@ -1320,8 +1320,7 @@ class OpenOil(OceanDrift):
 
         budget = np.cumsum(oil_budget, axis=0)
 
-        time, time_relative = self.get_time_array()
-        time = np.array([t.total_seconds() / 3600. for t in time_relative])
+        time = (self.result.time-self.result.time[0]).dt.total_seconds()/3600  # Hours since start
 
         if ax is None:
             # Left axis showing oil mass
@@ -1443,7 +1442,7 @@ class OpenOil(OceanDrift):
 
     def cumulative_oil_entrainment_fraction(self):
         '''Returns the fraction of oil elements which has been entrained vs time'''
-        z = self.get_property('z')[0].copy()
+        z = self.result.z.copy()
         z = np.ma.masked_where(z == 0, z)
         me = np.ma.notmasked_edges(z, axis=0)
         maskfirst = me[0][0]
@@ -1460,8 +1459,7 @@ class OpenOil(OceanDrift):
             fig, ax = plt.subplots()
         import matplotlib.dates as mdates
 
-        time, time_relative = self.get_time_array()
-        time = np.array([t.total_seconds() / 3600. for t in time_relative])
+        time = (self.result.time-self.result.time[0]).dt.total_seconds()/3600  # Hours since start
         kin_viscosity = self.result.viscosity
         dyn_viscosity = kin_viscosity * self.result.density*1000  # unit of mPas
         dyn_viscosity_mean = dyn_viscosity.mean(dim='trajectory')

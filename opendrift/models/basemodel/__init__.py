@@ -1927,10 +1927,10 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         # Create Xarray Dataset to hold result
         coords = {  # Initialize for the part fitting in memory
             'trajectory': ('trajectory', np.arange(len(self.elements_scheduled)),
-                {'dtype': np.int32, 'cf_role': 'trajectory_id'}),
+                {'cf_role': 'trajectory_id', 'dtype': np.int32}),
             'time': ('time', pd.date_range(self.start_time, periods=self.export_buffer_length,
                                            freq=self.time_step_output),
-                     {'standard_name': 'time', 'long_name': 'time'})}
+                     {'standard_name': 'time', 'long_name': 'time', 'dtype': np.float64})}
         shape = (len(coords['trajectory'][1]), len(coords['time'][1]))
         dims = ('trajectory', 'time')  # Presently, but shall also allow single dimension
 
@@ -1981,7 +1981,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
 
         if self.origin_marker is not None and 'origin_marker' in self.result.var():
             self.result['origin_marker'] = self.result.origin_marker.assign_attrs(
-                {'flag_values': np.arange(len(self.origin_marker)),
+                {'flag_values': np.arange(len(self.origin_marker)).astype(self.ElementType.variables['origin_marker']['dtype']),
                  'flag_meanings': " ".join(self.origin_marker.values())
                 })
 
@@ -2261,6 +2261,13 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                 if 'minval' in var.attrs:
                     minval = np.minimum(minval, var.minval)
                     maxval = np.maximum(maxval, var.maxval)
+                # Attributes shall have same datatype as in output file
+                if 'dtype' in var.attrs:
+                    att_type = var.attrs['dtype']
+                else:
+                    att_type = np.float32
+                minval = att_type(minval)
+                maxval = att_type(maxval)
                 self.result[varname] = self.result[varname].assign_attrs({'minval': minval, 'maxval': maxval})
 
         if final is True:
@@ -2271,9 +2278,10 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                 logger.debug(f'Truncating buffer from {numtimes_before} to {numtimes_after} times')
 
             # Final update some variable attributes
+            status_dtype = self.ElementType.variables['status']['dtype']
             self.result['status'] = self.result.status.assign_attrs(
-                {'valid_range': np.array((0, len(self.status_categories) - 1)),
-                 'flag_values': np.array(np.arange(len(self.status_categories))),
+                {'valid_range': np.array((0, len(self.status_categories) - 1)).astype(status_dtype),
+                 'flag_values': np.array(np.arange(len(self.status_categories))).astype(status_dtype),
                  'flag_meanings': " ".join(self.status_categories)
                 })
 
@@ -2387,21 +2395,19 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         """
         logger.debug(f"Setting up map: {corners=}, {fast=}, {lscale=}")
 
-        # Initialise map
-        lons, lats = self.get_lonlats()  # TODO: to be removed
+        if self.result is None:  # To allow plotting of scheduled elements, if simulation not done
+            lons = np.reshape(self.elements_scheduled.lon, (1, -1))
+            lats = np.reshape(self.elements_scheduled.lat, (1, -1))
+        else:
+            lons = self.result.lon
+            lats = self.result.lat
 
         if corners is not None:  # User provided map corners
             lonmin = corners[0]
             lonmax = corners[1]
             latmin = corners[2]
             latmax = corners[3]
-        elif hasattr(self, 'lonmin'):  # if dataset is lazily imported
-            lonmin = self.lonmin - buffer * 2
-            lonmax = self.lonmax + buffer * 2
-            latmin = self.latmin - buffer
-            latmax = self.latmax + buffer
         else:
-            lons, lats = self.get_lonlats()
             if 'compare_lonmin' in kwargs:  # checking min/max lon/lat of other simulations
                 lonmin = np.minimum(kwargs['compare_lonmin'], np.nanmin(lons))
                 lonmax = np.maximum(kwargs['compare_lonmax'], np.nanmax(lons))
@@ -2544,20 +2550,21 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         # TODO: avoid transposing lon, lat, and avoid returning lon, lat in the first place
         return fig, ax, self.crs_plot, lons.T, lats.T, index_of_first, index_of_last
 
-    def get_lonlats(self):
-        if self.result is not None:
-            lons = self.result.lon
-            lats = self.result.lat
-        else:
-            #if len(self.result.time) > 0:
-            #    lons = np.ma.array(np.reshape(self.elements.lon, (1, -1))).T
-            #    lats = np.ma.array(np.reshape(self.elements.lat, (1, -1))).T
-            #else:
-            lons = np.ma.array(
-                np.reshape(self.elements_scheduled.lon, (1, -1))).T
-            lats = np.ma.array(
-                np.reshape(self.elements_scheduled.lat, (1, -1))).T
-        return lons, lats
+    # Obsolete, to be removed
+    #def get_lonlats(self):
+    #    if self.result is not None:
+    #        lons = self.result.lon
+    #        lats = self.result.lat
+    #    else:
+    #        #if len(self.result.time) > 0:
+    #        #    lons = np.ma.array(np.reshape(self.elements.lon, (1, -1))).T
+    #        #    lats = np.ma.array(np.reshape(self.elements.lat, (1, -1))).T
+    #        #else:
+    #        lons = np.ma.array(
+    #            np.reshape(self.elements_scheduled.lon, (1, -1))).T
+    #        lats = np.ma.array(
+    #            np.reshape(self.elements_scheduled.lat, (1, -1))).T
+    #    return lons, lats
 
     def animation(self,
                   buffer=.2,
@@ -2766,16 +2773,15 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
 
         if color is not False and show_elements is True:
             if isinstance(color, str):
-                colorarray = self.get_property(color)[0].T
+                colorarray = self.result[color]
                 colorarray = colorarray * unitfactor
                 colorarray_deactivated = \
-                    self.get_property(color)[0][
+                    self.result[color].T[
                         index_of_last[self.elements_deactivated.ID-1],
-                                      self.elements_deactivated.ID-1].T
+                                      self.elements_deactivated.ID-1]
             elif hasattr(color,
                          '__len__'):  # E.g. array/list of ensemble numbers
-                colorarray_deactivated = color[self.elements_deactivated.ID -
-                                               1]
+                colorarray_deactivated = color[self.elements_deactivated.ID - 1]
                 colorarray = np.tile(color, (len(self.result.time), 1)).T
             else:
                 colorarray = color
@@ -3114,7 +3120,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             cmap = matplotlib.colormaps[cmap]
         if color is not False:
             if isinstance(color, str):
-                colorarray = self.get_property(color)[0].T
+                colorarray = self.result[color]
                 if vmin is None:
                     vmin = colorarray.min()
                     vmax = colorarray.max()
@@ -3128,11 +3134,11 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         # Set up plot
         index_of_first, index_of_last = \
             self.index_of_first_and_last()
-        z = self.get_property('z')[0].T
-        x = self.get_property('lon')[0].T
+        z = self.result.z
+        x = self.result.lon
 
         #seafloor_depth = \
-        #    -self.get_property('sea_floor_depth_below_sea_level')[0].T
+        #    -self.result.sea_floor_depth_below_sea_level
         fig = plt.figure(figsize=(10, 6.))  # Suitable aspect ratio
         ax = fig.gca()
         plt.xlabel('Longitude [degrees]')
@@ -3195,8 +3201,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             else:
                 # Other is given as an OpenDrift object
                 other = compare
-            z_other = other.get_property('z')[0].T
-            x_other = self.get_property('lon')[0].T
+            z_other = other.result.z
+            x_other = other.result.lon
             points_other = ax.scatter([], [],
                             c='r',
                             zorder=10,
@@ -3897,8 +3903,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         return h_om
 
     def get_density_array(self, pixelsize_m, weight=None):
-        lon = self.get_property('lon')[0].values
-        lat = self.get_property('lat')[0].values
+        lon = self.result.lon.values.T
+        lat = self.result.lat.values.T
         times = self.get_time_array()[0]
         deltalat = pixelsize_m / 111000.0  # m to degrees
         deltalon = deltalat / np.cos(
@@ -3910,11 +3916,11 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             np.nanmin(lon) - deltalat,
             np.nanmax(lon) + deltalon, deltalon)
         bins = (lon_array, lat_array)
-        z = self.get_property('z')[0].values
+        z = self.result.z.values.T
         if weight is not None:
-            weight_array = self.get_property(weight)[0]
+            weight_array = self.result[weight].values.T
 
-        status = self.get_property('status')[0].values
+        status = self.result.status.values.T
         lon_submerged = lon.copy()
         lat_submerged = lat.copy()
         lon_stranded = lon.copy()
@@ -3965,8 +3971,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         # TODO: should be merged with get_density_array
         # KFD Jan 2021
         #
-        lon = self.get_property('lon')[0]
-        lat = self.get_property('lat')[0]
+        lon = self.result.lon.values.T
+        lat = self.result.lat.values.T
         times = self.get_time_array()[0]
         #deltalat = pixelsize_m/111000.0  # m to degrees
         #deltalon = deltalat/np.cos(np.radians((np.nanmin(lat) +
@@ -3994,11 +4000,11 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         bins = (x_array, y_array)
         outsidex, outsidey = max(x_array) * 1.5, max(y_array) * 1.5
 
-        z = self.get_property('z')[0]
+        z = self.result.z.values.T
         if weight is not None:
-            weight_array = self.get_property(weight)[0]
+            weight_array = self.result[weight].values.T
 
-        status = self.get_property('status')[0]
+        status = self.result.status.values.T
         #lon_submerged = lon.copy()
         #lat_submerged = lat.copy()
         #lon_stranded = lon.copy()
@@ -4063,7 +4069,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         '''Write netCDF file with map of particles densities'''
 
         if pixelsize_m == 'auto':
-            lon, lat = self.get_lonlats()
+            lon = self.result.lon
+            lat = self.result.lat
             latspan = lat.max() - lat.min()
             pixelsize_m = 30
             if latspan > .05:
@@ -4162,7 +4169,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         #
 
         if pixelsize_m == 'auto':
-            lon, lat = self.get_lonlats()
+            lon = self.result.lon
+            lat = self.result.lat
             latspan = lat.max() - lat.min()
             pixelsize_m = 30
             if latspan > .05:
@@ -4270,9 +4278,9 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         colortable.SetColorEntry(3, (0, 255, 0, 255))
         colortable.SetColorEntry(4, (0, 0, 255, 255))
 
-        lon = self.get_property('lon')[0]
-        lat = self.get_property('lat')[0]
-        status = self.get_property('status')[0]
+        lon = self.result.lon.values.T
+        lat = self.result.lat.values.T
+        status = self.result.status.values.T
         times = self.get_time_array()[0]
         deltalat = pixelsize_km / 111.0  # km to degrees
         deltalon = deltalat / np.cos(np.radians((lat.min() + lat.max()) / 2))
@@ -4283,9 +4291,9 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         ilon = (np.round((lon - lon.min()) / deltalon)).astype(int)
         ilat = (np.round((lat - lat.min()) / deltalat)).astype(int)
         # Setting masked values to zero, for use as indices
-        ilon[ilon.mask] = 0
-        ilat[ilat.mask] = 0
-        status[ilon.mask] = 0
+        ilon[np.isinf(ilon)] = 0
+        ilat[np.isinf(ilat)] = 0
+        status[np.isinf(ilon)] = 0
         image = np.zeros(
             (len(times), len(lon_array), len(lat_array))).astype(int)
         geotransform = [
@@ -4409,6 +4417,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
     @require_mode(mode=Mode.Result)
     def get_property(self, propname):
         """Get property from result, sorted by status."""
+        logger.warning('Method get_property is obsolete and will soon be removed. Use o.result.<property> instead.')
         index_of_first, index_of_last = self.index_of_first_and_last()
         prop = self.result[propname].copy()
         status = self.result.status.copy()
@@ -4419,8 +4428,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
     @require_mode(mode=Mode.Result)
     def get_trajectory_lengths(self):
         """Calculate lengths and speeds along trajectories."""
-        lons = self.get_property('lon')[0]
-        lats = self.get_property('lat')[0]
+        lons = self.result.lon.T
+        lats = self.result.lat.T
         geod = pyproj.Geod(ellps='WGS84')
         a1, a2, distances = geod.inv(lons[0:-1, :], lats[0:-1, :],
                                      lons[1::, :], lats[1::, :])
@@ -4727,7 +4736,6 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         returns  (lon,lat), variance
         where (lon,lat) are the coordinates of the center of mass as
         function of time"""
-        #lon,lat = self.get_property('lon')[0], self.get_property('lat')[0]
         lon, lat = self.result.lon, self.result.lat
         x, y = self.proj_latlon(lon, lat)
         if onlysurface == True:
