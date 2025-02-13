@@ -2392,19 +2392,20 @@ class ChemicalDrift(OceanDrift):
         '''Write netCDF file with map of Chemical species densities and concentrations
         Arguments:
             pixelsize_m:           float32, lenght of gridcells in m (default mode)
-            lat_resol:             float32, latitude resolution of gricells in degrees
-            lon_resol:             float32, longitude resolution of gricells in degrees
+            lat_resol:             float32, latitude resolution of gricells (in degrees using EPSG 4326)
+            lon_resol:             float32, longitude resolution of gricells (in degrees using EPSG 4326)
             zlevels:               list of float32, depth levels at which concentration will be calculated
                            Values must be negative and ordered from the lowest depth (e.g. [-50., -10., -5.])
                            In the .nc file "depth" value will indicate the start of the vertical slice
                            i.e. "depth = 0" indicates slice from 0 to 5 m, and "depth = 50" indicates
                            slice from 50m to bathimietry 
-            density_proj:          string, <proj4_string> .e.g., longlat +datum=WGS84 +no_defs for EPSG 4326
-                                   or int, number of reference system (e.g., 4326)
-            llcrnrlon:             float32, min longitude of grid
-            llcrnrlat:             float32, min latitude of grid
-            urcrnrlon:             float32, max longitude of grid
-            urcrnrlat:             float32, max latitude of grid
+            density_proj:          None: add default projection with equal-area property (proj=moll +ellps=WGS84 +lon_0=0.0')
+                                   <proj4_string>: <longlat +datum=WGS84 +no_defs> for EPSG 4326
+                                   int, 4326 to indicate use of EPSG 4326
+            llcrnrlon:             float32, min longitude of grid (in degrees using EPSG 4326)
+            llcrnrlat:             float32, min latitude of grid (in degrees using EPSG 4326)
+            urcrnrlon:             float32, max longitude of grid (in degrees using EPSG 4326)
+            urcrnrlat:             float32, max latitude of grid (in degrees using EPSG 4326)
             mass_unit:             string, mass unit of output concentration (ug/mg/g/kg)
             time_avg_conc:         boolean, calculate concentration averaged each deltat
             horizontal_smoothing:  boolean, smooth concentration horizontally
@@ -2418,7 +2419,7 @@ class ChemicalDrift(OceanDrift):
 
         from netCDF4 import Dataset, date2num #, stringtochar
         import opendrift
-        from pyproj import CRS
+        from pyproj import CRS, Proj, Transformer
         import pandas as pd
 
 
@@ -2459,10 +2460,10 @@ class ChemicalDrift(OceanDrift):
         if reader_sea_depth is not None:
             from opendrift.readers import reader_netCDF_CF_generic
             import xarray as xr
-            
+
             reader_sea_depth_res = xr.open_dataset(reader_sea_depth)
             reader_sea_depth_res = (reader_sea_depth_res[list(reader_sea_depth_res.data_vars)[0]])
-            
+
             lat_names = ["latitude", "lat", "y"]
             lat_name = next((name for name in lat_names if name in reader_sea_depth_res.coords), None)
             lon_names = ["longitude","lon", "x", "long"]
@@ -2584,6 +2585,20 @@ class ChemicalDrift(OceanDrift):
         else:
             density_proj_str = density_proj
             density_proj = pyproj.Proj(is_valid_proj4(density_proj))
+
+        if sum(x is None for x in [lat_resol, lon_resol]) == 0:
+            if density_proj != pyproj.Proj('+proj=moll +ellps=WGS84 +lon_0=0.0'):
+                if density_proj != pyproj.Proj("+proj=longlat +datum=WGS84 +no_defs"):
+                    # lat/lon_resol are calculated at the centre of the grid
+                    # Unexpected behaviour may arise with large grids
+                    source_proj = Proj("+proj=longlat +datum=WGS84 +no_defs")
+                    transformer = Transformer.from_proj(source_proj, density_proj)
+                    dummy_lon, dummy_lat = (llcrnrlon + urcrnrlon)/2, (llcrnrlat + urcrnrlat)/2
+                    x1, y1 = transformer.transform(dummy_lon, dummy_lat)
+                    x2, y2 = transformer.transform(dummy_lon + lon_resol, dummy_lat + lat_resol)
+                    lon_resol = abs(x2 - x1)
+                    lat_resol = abs(y2 - y1)
+                    logger.info(f'Changed lon_resol, lat_resol to reference system: {density_proj}')
 
 
         if mass_unit==None:
@@ -2720,16 +2735,36 @@ class ChemicalDrift(OceanDrift):
             #     meantmp  = np.mean(conctmp[(ii*ndt):(ii+1)*ndt,:,:,:,:],axis=0)
             #     mean_conc[ii,:,:,:,:] = meantmp
             # Optimized
-            mean_conc = np.mean(conctmp.reshape(odt, ndt, *cshape[1:]), axis=1)
+            try:
+                mean_conc = np.mean(conctmp.reshape(odt, ndt, *cshape[1:]), axis=1)
+            except: # If (times) is not a perfect multiple of deltat
+                mean_conc = np.zeros([odt,cshape[1],cshape[2],cshape[3],cshape[4]])
+                for ii in range(odt):
+                    meantmp  = np.mean(conctmp[(ii*ndt):(ii+1)*ndt,:,:,:,:],axis=0)
+                    mean_conc[ii,:,:,:,:] = meantmp
 
             if elements_density is True:
                 denstmp = H_count[:-1,:,:,:,:]
                 dshape = denstmp.shape
-                mean_dens = np.sum(denstmp.reshape(odt, ndt, *dshape[1:]), axis=1)
+                try:
+                    mean_dens = np.sum(denstmp.reshape(odt, ndt, *dshape[1:]), axis=1)
+                except:
+                    mean_dens = np.zeros([odt,dshape[1],dshape[2],dshape[3],dshape[4]])
+                    for ii in range(odt):
+                        meantmp  = np.mean(denstmp[(ii*ndt):(ii+1)*ndt,:,:,:,:],axis=0)
+                        mean_dens[ii,:,:,:,:] = meantmp
+
             if horizontal_smoothing is True:
                 Hsmtmp = Hsm[:-1,:,:,:,:]
                 Hsmshape = Hsmtmp.shape
-                mean_Hsm = np.mean(Hsmtmp.reshape(odt, ndt, *Hsmshape[1:]), axis=1)
+                try:
+                    mean_Hsm = np.mean(Hsmtmp.reshape(odt, ndt, *Hsmshape[1:]), axis=1)
+                except:
+                    mean_Hsm = np.zeros([odt,Hsmshape[1],Hsmshape[2],Hsmshape[3],Hsmshape[4]])
+                    for ii in range(odt):
+                        meantmp  = np.mean(Hsmtmp[(ii*ndt):(ii+1)*ndt,:,:,:,:],axis=0)
+                        Hsmtmp[ii,:,:,:,:] = meantmp
+
 
         # Save outputs to netCDF Dataset
         nc = Dataset(filename, 'w')
@@ -2940,6 +2975,8 @@ class ChemicalDrift(OceanDrift):
             Arguments are described at write_netcdf_chemical_density_map
         '''
 
+        from pyproj import Proj, Transformer
+
         lon = (self.result.lon.T).values
         lat = (self.result.lat.T).values
         times = (self.result.time).values
@@ -2957,12 +2994,13 @@ class ChemicalDrift(OceanDrift):
             else:
                 llcrnrx,llcrnry = x.min()-lon_resol, y.min()-lat_resol
                 urcrnrx,urcrnry = x.max()+lon_resol, y.max()+lat_resol
-                
+
         if density_proj == pyproj.Proj('+proj=moll +ellps=WGS84 +lon_0=0.0'):
             if pixelsize_m == None:
                 raise ValueError("If density_proj is '+proj=moll +ellps=WGS84 +lon_0=0.0', pixelsize_m must be specified")
-            x_array = np.arange(llcrnrx,urcrnrx, pixelsize_m)
-            y_array = np.arange(llcrnry,urcrnry, pixelsize_m)
+            else:
+                x_array = np.arange(llcrnrx,urcrnrx, pixelsize_m)
+                y_array = np.arange(llcrnry,urcrnry, pixelsize_m)
         else:
             x_array = np.arange(llcrnrx,urcrnrx, lon_resol)
             y_array = np.arange(llcrnry,urcrnry, lat_resol)
@@ -3029,7 +3067,6 @@ class ChemicalDrift(OceanDrift):
                     final_mask = origin_mask
 
             elif active_status:
-                logger.warning(f'only active elements were considered for concentration, status: {active_index}')
                 active_status_mask = (status == active_index)
                 final_mask = active_status_mask
                 
@@ -3044,6 +3081,15 @@ class ChemicalDrift(OceanDrift):
         times = times.flatten()
         lat = lat.flatten()
         lon = lon.flatten()
+
+        # Change lat/lon to density_proj reference system
+        # OpenDrift output is already expressed as EPSG4326 ("+proj=longlat +datum=WGS84 +no_defs")
+        if density_proj != pyproj.Proj("+proj=longlat +datum=WGS84 +no_defs"):
+            source_proj = Proj("+proj=longlat +datum=WGS84 +no_defs")
+            transformer = Transformer.from_proj(source_proj, density_proj)
+            lon, lat = transformer.transform(lon, lat)
+            logger.info(f'Changed lat/lon from "{source_proj}" to "{density_proj}"')
+
         z = z.flatten()
         specie = specie.flatten()
 
@@ -6044,7 +6090,7 @@ class ChemicalDrift(OceanDrift):
         mass_wat:               mass present in the water column at each timestep
         mass_sed:               mass present in the active sediments at each timestep
             ---
-        mass_emitted:           mass emitted into the simulation until the end of each timestep
+        mass_emitted:           mass emitted into the simulation until the end of each timestep (ONLY ACTIVE ELEMENTS)
             ---
         mass_removed:           mass removed from the system until the end of each timestep
             ---
