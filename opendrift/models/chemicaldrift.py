@@ -3900,7 +3900,8 @@ class ChemicalDrift(OceanDrift):
                          new_lat, new_lon,
                          lonlat_2d, lonlat_2d_new,
                          new_lon_coords, new_lat_coords,
-                         variable):
+                         variable,
+                         time_name, **kwargs):
         '''
         Regrid output of "write_netcdf_chemical_density_map" or "calculate_water_sediment_conc" functions 
         depending on the value of "mode"
@@ -3909,21 +3910,22 @@ class ChemicalDrift(OceanDrift):
         mode:         string, "chemical_density_map" or "wat_sed_map"
         ds:           xarray DataSet containing "variable", topo (density, optional) dataarrays to be regridded
         variable:     string, name of concentration variable to be regridded within ds
+        time_name:    string, name of time dimention (tiime or time_avg)
 
         '''
         import xarray as xr
 
         # create an empty arrays to store the regridded data
         if mode == "chemical_density_map":
-            regridded_avg_data = np.zeros((ds.sizes['avg_time'], ds.sizes['specie'], ds.sizes['depth'], new_lat.shape[1], new_lon.shape[0]))
+            regridded_data = np.zeros((ds.sizes[time_name], ds.sizes['specie'], ds.sizes['depth'], new_lat.shape[1], new_lon.shape[0]))
         else:
-            regridded_avg_data = np.zeros((ds.sizes['time'], ds.sizes['depth'], new_lat.shape[1], new_lon.shape[0]))
+            regridded_data = np.zeros((ds.sizes['time'], ds.sizes['depth'], new_lat.shape[1], new_lon.shape[0]))
 
         first=True
         if mode == "chemical_density_map":
             # loop over every value of avg_time, specie, and depth
-            for t, s, d in np.ndindex(ds.sizes['avg_time'], ds.sizes['specie'], ds.sizes['depth']):
-                # select the data for the current avg_time, specie, and depth
+            for t, s, d in np.ndindex(ds.sizes[time_name], ds.sizes['specie'], ds.sizes['depth']):
+                # select the data for the current time, specie, and depth
                 points = ds[variable][t,s,d,:,:].values.reshape(-1)
 
                 if first:
@@ -3933,8 +3935,8 @@ class ChemicalDrift(OceanDrift):
 
                 # interpolate the concentration data onto the new grid using griddata
                 new_concentration_2d = self.interpolate_regrid(points, vtx, wts)
-                # store the interpolated data in the regridded_avg_data array
-                regridded_avg_data[t, s, d] = np.transpose(np.reshape(new_concentration_2d,(len(new_lon_coords),len(new_lat_coords))))
+                # store the interpolated data in the regridded_data array
+                regridded_data[t, s, d] = np.transpose(np.reshape(new_concentration_2d,(len(new_lon_coords),len(new_lat_coords))))
         else:
             # loop over every value of time, and depth
             for t, d in np.ndindex(ds.sizes['time'], ds.sizes['depth']):
@@ -3948,21 +3950,32 @@ class ChemicalDrift(OceanDrift):
                 # interpolate the concentration data onto the new grid using griddata
                 new_concentration_2d = self.interpolate_regrid(points, vtx, wts)
                 # store the interpolated data in the regridded_avg_data array
-                regridded_avg_data[t, d] = np.transpose(np.reshape(new_concentration_2d,(len(new_lon_coords),len(new_lat_coords))))
+                regridded_data[t, d] = np.transpose(np.reshape(new_concentration_2d,(len(new_lon_coords),len(new_lat_coords))))
 
 
         if mode == "chemical_density_map":
             # create a new xarray dataarray with the regridded data
-            regridded_data_avg = xr.DataArray(regridded_avg_data, coords=[ds['avg_time'], ds['specie'], ds['depth'], new_lat_coords, new_lon_coords], dims=['avg_time', 'specie', 'depth', 'y', 'x'])
+            regridded_data = xr.DataArray(regridded_data, coords=[ds[time_name], ds['specie'], ds['depth'], new_lat_coords, new_lon_coords], dims=[time_name, 'specie', 'depth', 'latitude', 'longitude'])
         else:
-            regridded_data_avg = xr.DataArray(regridded_avg_data, coords=[ds['time'], ds['depth'], new_lat_coords, new_lon_coords], dims=['time', 'depth', 'lat', 'lon'])
+            regridded_data = xr.DataArray(regridded_data, coords=[ds['time'], ds['depth'], new_lat_coords, new_lon_coords], dims=['time', 'depth', 'latitude', 'longitude'])
 
-        return regridded_data_avg, vtx, wts
+        regridded_data['latitude'] = regridded_data['latitude'].assign_attrs(standard_name='latitude')
+        regridded_data['latitude'] = regridded_data['latitude'].assign_attrs(long_name='latitude')
+        regridded_data['latitude'] = regridded_data['latitude'].assign_attrs(units='degrees_north')
+        regridded_data['latitude'] = regridded_data['latitude'].assign_attrs(axis='Y')
+    
+        regridded_data['longitude'] = regridded_data['longitude'].assign_attrs(standard_name='longitude')
+        regridded_data['longitude'] = regridded_data['longitude'].assign_attrs(long_name='longitude')
+        regridded_data['longitude'] = regridded_data['longitude'].assign_attrs(units='degrees_east')
+        regridded_data['longitude'] = regridded_data['longitude'].assign_attrs(axis='X')
 
-    def regrid_conc(self, filename, filename_regridded, latmin, latmax, latstep, lonmin, lonmax, lonstep, variable = None, concfile = None,
+        return regridded_data, vtx, wts
+
+    def regrid_conc(self, filename, filename_regridded, latmin, latmax, latstep, lonmin, lonmax, lonstep, mode = None, 
+                    variables = None, concfile = None,
                     lon_2d_ncdm = None, lat_2d_ncdm = None):
         """
-        Regrid "write_netcdf_chemical_density_map" output (concentration, topography, and density) to regular latlon grid
+        Interpolate "write_netcdf_chemical_density_map" or "calculate_water_sediment_conc" output to regular lat/lon grid
             filename:               string, path or filename of "write_netcdf_chemical_density_map" output file to be regridded
             filename_regridded:     string, path or filename of regridded output
             latmin:                 float 32, min latitude of new grid
@@ -3971,7 +3984,7 @@ class ChemicalDrift(OceanDrift):
             lonmin:                 float 32, min longitude of new grid
             lonmax:                 float 32, max longitude of new grid
             lonstep:                float 32 longitude resolution of new grid, in degrees
-            variable:               string, name of concentration variable to be regridded within DataSet
+            variables:              list, list of variables' name to be regridded within DataSet
             concfile:               xarray Dataset of "write_netcdf_chemical_density_map" or
                                     "calculate_water_sediment_conc" output file to be regridded
             lon_2d_ncdm:            array of float 64, flattened array of ds['lon'].values.flatten() from ncdm
@@ -3986,26 +3999,31 @@ class ChemicalDrift(OceanDrift):
             ds = xr.open_dataset(filename)
         else:
             ds = concfile
-        
-        if variable is None:
-            raise ValueError("variable must be specified")
 
         ds.load()
         start=dt.now()
-        
-        # Define if output of "write_netcdf_chemical_density_map" or 
-        # of "calculate_water_sediment_conc" was given as input
-        if "latitude" not in ds.dims:
-            mode = "chemical_density_map"
-            lat_name = "lat"
-            lon_name = "lon"
-        else:
-            mode = "wat_sed_map"
-            lat_name = "latitude"
-            lon_name = "longitude"
-            if ((lon_2d_ncdm is None) or (lat_2d_ncdm is None)):
-                raise ValueError("lat/lon_2d_ncdm unspecified")
-        print(f"mode: {mode}, variable: {variable}")
+        variable_ls = ['concentration', 'concentration_avg',
+                       'concentration_smooth', 'concentration_smooth_avg',
+                       'concentration_avg_sediments', 'concentration_avg_sediments',
+                       'density', 'density_avg', 'topo']
+
+        if variables is not None:
+            variable_ls = variables
+
+        if mode is None:
+            # Define if output of "write_netcdf_chemical_density_map" or 
+            # of "calculate_water_sediment_conc" was given as input
+            if "latitude" not in ds.dims:
+                mode = "chemical_density_map"
+                lat_name = "lat"
+                lon_name = "lon"
+            else:
+                mode = "wat_sed_map"
+                lat_name = "latitude"
+                lon_name = "longitude"
+                if ((lon_2d_ncdm is None) or (lat_2d_ncdm is None)):
+                    raise ValueError("lat/lon_2d_ncdm unspecified")
+        print(f"mode: {mode}, variables: {variable_ls}")
 
         if (latmin < min(ds[lat_name].values.flatten()) or latmax > max(ds[lat_name].values.flatten())\
         or lonmin < min(ds[lon_name].values.flatten()) or lonmax > max(ds[lon_name].values.flatten())):
@@ -4022,9 +4040,10 @@ class ChemicalDrift(OceanDrift):
         else:
             pass
 
-        ds_attrs = ds[variable].attrs
-        for key in ["lon_resol", "lat_resol", "grid_mapping"]:
-            ds_attrs.pop(key, None)
+        if "time" in ds.dims:
+            time_name = "time"
+        else:
+            time_name = "avg_time"
 
         new_lat_coords = np.arange(latmin,latmax,latstep)
         new_lon_coords = np.arange(lonmin,lonmax,lonstep)
@@ -4045,23 +4064,35 @@ class ChemicalDrift(OceanDrift):
         # create 2D array of the new coordinates
         lonlat_2d_new=np.column_stack((new_lat.flatten(),new_lon.flatten()))
 
-        regridded_concentration_avg, vtx, wts = self.regrid_dataarray(mode = mode,
-                                                 ds = ds,
-                                                 variable = variable,
-                                                 new_lat = new_lat, new_lon = new_lon,
-                                                 lonlat_2d = lonlat_2d,
-                                                 lonlat_2d_new = lonlat_2d_new,
-                                                 new_lon_coords = new_lon_coords,
-                                                 new_lat_coords = new_lat_coords)
+        regridded_vars_dict = {}
+        for variable in variable_ls:
+            print(variable)
+            if (variable in ds.data_vars) and (variable != 'topo'):
 
-        regridded_concentration_avg.name = variable
-        regridded_concentration_avg.attrs['grid_mapping'] = 'projection_lonlat'
-        regridded_concentration_avg.attrs.update(ds_attrs)
-        regridded_concentration_avg.attrs['lon_resol'] = str(np.around(abs(new_lon[0][0]-new_lon[1][0]), decimals = 8)) + " degrees E"
-        regridded_concentration_avg.attrs['lat_resol'] = str(np.around(abs(new_lat[0][0]-new_lat[0][1]), decimals = 8)) + " degrees N"
-        # change negative concentration values to 0
-        regridded_concentration_avg_nan = xr.where(regridded_concentration_avg < 0, 0, regridded_concentration_avg)
-        
+                ds_attrs = ds[variable].attrs
+                for key in ["lon_resol", "lat_resol", "grid_mapping"]:
+                    ds_attrs.pop(key, None)
+
+                regridded_variable, vtx, wts = self.regrid_dataarray(mode = mode,
+                                                         ds = ds,
+                                                         variable = variable,
+                                                         new_lat = new_lat, new_lon = new_lon,
+                                                         lonlat_2d = lonlat_2d,
+                                                         lonlat_2d_new = lonlat_2d_new,
+                                                         new_lon_coords = new_lon_coords,
+                                                         new_lat_coords = new_lat_coords,
+                                                         time_name = time_name)
+
+                regridded_variable.name = variable
+                regridded_variable.attrs['grid_mapping'] = "+proj=longlat +datum=WGS84 +no_defs"
+                regridded_variable.attrs.update(ds_attrs)
+                regridded_variable.attrs['lon_resol'] = str(np.around(abs(new_lon[0][0]-new_lon[1][0]), decimals = 8)) + " degrees E"
+                regridded_variable.attrs['lat_resol'] = str(np.around(abs(new_lat[0][0]-new_lat[0][1]), decimals = 8)) + " degrees N"
+                # regridded_variable.attrs['unit'] =
+                # change negative values to 0
+                regridded_variable =  regridded_variable.clip(min = 0)
+                regridded_vars_dict[variable] = regridded_variable
+
         if "topo" in list(ds.keys()):
             topo_attrs = ds["topo"].attrs
             for key in ["lon_resol", "lat_resol", "grid_mapping"]:
@@ -4076,59 +4107,32 @@ class ChemicalDrift(OceanDrift):
             # store the interpolated data in the regridded_topo array
             regridded_topo_data = np.transpose(np.reshape(new_topo_2d,(len(new_lon_coords),len(new_lat_coords))))
 
-            if mode == "chemical_density_map":
-                # create a new xarray dataarray with the topography regridded data
-                regridded_topo = xr.DataArray(regridded_topo_data, coords=[new_lat_coords, new_lon_coords], dims=['y', 'x'])
-            else:
-                regridded_topo = xr.DataArray(regridded_topo_data, coords=[new_lat_coords, new_lon_coords], dims=['lat', 'lon'])
+            # create a new xarray dataarray with the topography regridded data
+            regridded_topo = xr.DataArray(regridded_topo_data, coords=[new_lat_coords, new_lon_coords], dims=['latitude', 'longitude'])
 
             regridded_topo.name = "topo"
-            regridded_topo.attrs['grid_mapping'] = 'projection_lonlat'
+            regridded_topo.attrs['grid_mapping'] = "+proj=longlat +datum=WGS84 +no_defs"
             regridded_topo.attrs.update(topo_attrs)
             regridded_topo.attrs['lon_resol'] = str(np.around(abs(new_lon[0][0]-new_lon[1][0]), decimals = 8)) + " degrees E"
             regridded_topo.attrs['lat_resol'] = str(np.around(abs(new_lat[0][0]-new_lat[0][1]), decimals = 8)) + " degrees N"
-            # change negative concentration values to 0
-            regridded_topo_nan = xr.where(regridded_topo < 0, np.nan, regridded_topo)
-
-        if 'density' in list(ds.keys()):
-            density_attrs = ds["density"].attrs
-            for key in ["lon_resol", "lat_resol", "grid_mapping"]:
-                density_attrs.pop(key, None)
-            # regrid density of elements in gridcells
-            points = ds.density[:,:].values.reshape(-1)
-
-            # interpolate the concentration data onto the new grid using griddata
-            new_density_2d = self.interpolate_regrid(points, vtx, wts)
-            # store the interpolated data in the regridded_topo array
-            regridded_density_data = np.transpose(np.reshape(new_density_2d,(len(new_lon_coords),len(new_lat_coords))))
-
-            # create a new xarray dataarray with the topography regridded data
-            regridded_density = xr.DataArray(regridded_density_data, coords=[new_lat_coords, new_lon_coords], dims=['y', 'x'])
-            regridded_density.name = "density"
-            regridded_density.attrs['grid_mapping'] = 'projection_lonlat'
-            regridded_density.attrs.update(topo_attrs)
-            regridded_density.attrs['lon_resol'] = str(np.around(abs(new_lon[0][0]-new_lon[1][0]), decimals = 8)) + " degrees E"
-            regridded_density.attrs['lat_resol'] = str(np.around(abs(new_lat[0][0]-new_lat[0][1]), decimals = 8)) + " degrees N"
-            # change negative concentration values to 0
-            regridded_density_nan = xr.where(regridded_density < 0, np.nan, regridded_density)
+            # change negative topography values to np.nan
+            regridded_topo = xr.where(regridded_topo < 0, np.nan, regridded_topo)
+            regridded_topo['latitude'] = regridded_topo['latitude'].assign_attrs(standard_name='latitude')
+            regridded_topo['latitude'] = regridded_topo['latitude'].assign_attrs(long_name='latitude')
+            regridded_topo['latitude'] = regridded_topo['latitude'].assign_attrs(units='degrees_north')
+            regridded_topo['latitude'] = regridded_topo['latitude'].assign_attrs(axis='Y')
+        
+            regridded_topo['longitude'] = regridded_topo['longitude'].assign_attrs(standard_name='longitude')
+            regridded_topo['longitude'] = regridded_topo['longitude'].assign_attrs(long_name='longitude')
+            regridded_topo['longitude'] = regridded_topo['longitude'].assign_attrs(units='degrees_east')
+            regridded_topo['longitude'] = regridded_topo['longitude'].assign_attrs(axis='X')
+            regridded_vars_dict['topo'] = regridded_topo
 
         print(f"Time elapsed (hr:min:sec): {dt.now()-start}")
-
         print("Saving to netcdf")
-        # save regridded concentration, topography , and density data
-        if 'density' in list(ds.keys()):
-            regridded_concentration_avg_dataset = xr.Dataset({
-                'concentration_avg':regridded_concentration_avg_nan,
-                'topo':regridded_topo_nan,
-                'density': regridded_density_nan
-                })
-        else:
-            regridded_concentration_avg_dataset = xr.Dataset({
-                'concentration_avg':regridded_concentration_avg_nan,
-                'topo':regridded_topo_nan
-                })
-
-        regridded_concentration_avg_dataset.to_netcdf(filename_regridded)
+        # save regridded data
+        regridded_dataset = xr.Dataset(regridded_vars_dict)
+        regridded_dataset.to_netcdf(filename_regridded)
 
         print(f"Time elapsed (hr:min:sec): {dt.now()-start}")
 
@@ -4161,7 +4165,8 @@ class ChemicalDrift(OceanDrift):
         return(DataArray)
 
 
-    def correct_conc_coordinates(self, DC_Conc_array, lon_coord, lat_coord, time_coord, shift_time=False):
+    def correct_conc_coordinates(self, DC_Conc_array, lon_coord, lat_coord, time_coord, time_name,
+                                 shift_time=False):
         """
         Add longitude, latitude, and time coordinates to water and sediments concentration xarray DataArray
         
@@ -4173,19 +4178,25 @@ class ChemicalDrift(OceanDrift):
         shift_time:        boolean, if True shifts back time of 1 timestep so that the timestamp corresponds to 
                            the beginning of the first simulation timestep, not to the next one 
         """
+
+        if "longitude" not in DC_Conc_array.dims:
+            if any([x is None for x in [lon_coord, lat_coord]]) is False:
+                DC_Conc_array['latitude'] = ('latitude', lat_coord)
+                DC_Conc_array['longitude'] = ('longitude', lon_coord)
+            else:
+                raise ValueError('lat/lon_coord not in DS')
+        
         # Add latitude and longitude to the concentration dataset
-        DC_Conc_array["y"] = ("y", lat_coord)
-        DC_Conc_array["x"] = ("x", lon_coord)
-        DC_Conc_array=DC_Conc_array.rename({'x': 'longitude','y': 'latitude'})
         # Add attributes to latitude and longitude so that "remapcon" function from cdo can interpolate results
         DC_Conc_array = self._rename_dimentions(DC_Conc_array)
-
-        if ("avg_time" in DC_Conc_array.dims) and shift_time == True:
-            # Shifts back time 1 timestep so that the timestamp corresponds to the beginning of the first simulation timestep, not the next one
-            time_correction = time_coord[1] - time_coord[0]
-            time_corrected = np.array(time_coord - time_correction)
-            DC_Conc_array["avg_time"] = ("avg_time", time_corrected)
-            print("Shifted avg_time back of one timestep")
+        
+        if time_name is not None:
+            if (time_name in DC_Conc_array.dims) and shift_time == True:
+                # Shifts back time 1 timestep so that the timestamp corresponds to the beginning of the first simulation timestep, not the next one
+                time_correction = time_coord[1] - time_coord[0]
+                time_corrected = np.array(time_coord - time_correction)
+                DC_Conc_array[time_name] = (time_name, time_corrected)
+                print(f"Shifted {time_name} back of one timestep")
 
         if ("avg_time" in DC_Conc_array.dims):
             DC_Conc_array_corrected=DC_Conc_array.rename({'avg_time': 'time'})
@@ -4200,22 +4211,26 @@ class ChemicalDrift(OceanDrift):
                                       File_Path_out,
                                       Chemical_name,
                                       Origin_marker_name,
+                                      File_Name_out = None,
+                                      variables = None,
                                       Transfer_setup = "organics",
                                       Concentration_file = None,
                                       Shift_time = False,
                                       Conc_SPM = True):
         """
-        Add dissolved, DOC, and SPM concentration arrays to obtain total water concentration and save the resulting xarray as netCDF file 
+        Sum dissolved, DOC, and SPM concentration arrays to obtain total water concentration and save the resulting xarray as netCDF file 
         Save sediment concentration DataArray as netDCF file
         Results can be used as inputs by "seed_from_NETCDF" function
 
         Concentration_file:    "write_netcdf_chemical_density_map" output if already loaded (original or after regrid_conc)
         File_Path:             string, path of "write_netcdf_chemical_density_map" output
         File_Name:             string, name of "write_netcdf_chemical_density_map" output
+        File_Name_out:         string, suffix of wat/sed output files
         File_Path_out:         string, path where created concentration files will be saved, must end with "/"
         Chemical_name:         string, name of modelled chemical
         Transfer_setup:        string, transfer_setup used for the simulation, "organics" or "metals"
         Origin_marker_name:    string, name of source indicated by "origin_marker" parameter
+        variables:             list, list of variables' name to be considered
         Shift_time:            boolean, if True shifts back time of 1 timestep so that the timestamp corresponds to 
                                the beginning of the first simulation timestep, not to the next one
         """
@@ -4224,160 +4239,201 @@ class ChemicalDrift(OceanDrift):
 
         if ((Concentration_file is None) and (File_Path and File_Name is not None)):
             print("Loading Concentration_file from File_Path")
-            Concentration_file = xr.open_dataset(File_Path + File_Name)
+            DS = xr.open_dataset(File_Path + File_Name)
+        elif Concentration_file is not None:
+            DS = Concentration_file
         else:
-            if "concentration_avg" in Concentration_file.data_vars:
-                print("input is write_netcdf_chemical_density_map file")
-            else:
-                raise ValueError("Incorrect file or file/path not specified")
+            raise ValueError("Incorrect file or file/path not specified")
+
+        if not any([var in DS.data_vars for var in  ['concentration', 'concentration_avg',
+                       'concentration_smooth', 'concentration_smooth_avg',
+                       'density', 'density_avg']]):
+            raise ValueError("No valid variables")
+
 
         # Sum DataArray for specie 0, 1, and 2 (dissolved, DOC, and SPM) to obtain total water concentration
         print("Running sum of water concentration", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
 
-        time_avg = np.array(Concentration_file.avg_time)
-        topo = Concentration_file.topo
-
-        if Transfer_setup == "organics":
-            Dissolved_conc = Concentration_file.sel(specie = 0)
-            Dissolved_conc = Dissolved_conc.concentration_avg
-            SPM_conc = Concentration_file.sel(specie = 2)
-            SPM_conc = SPM_conc.concentration_avg
-            if 1 in Concentration_file.specie:
-                DOC_conc = Concentration_file.sel(specie = 1)
-                DOC_conc = DOC_conc.concentration_avg
-                # print("DOC was considered for partitioning of chemical")
-                if Conc_SPM == True:
-                    DA_Conc_array_wat = Dissolved_conc + SPM_conc + DOC_conc
-                else:
-                    DA_Conc_array_wat = Dissolved_conc + DOC_conc
-                    print("SPM was not considered for water concentration")
-            else:
-                if Conc_SPM == True:
-                    DA_Conc_array_wat = Dissolved_conc + SPM_conc
-                else:
-                    DA_Conc_array_wat = Dissolved_conc
-                    print("SPM was not considered for water concentration")
-
-        elif Transfer_setup == "metals":
-            Dissolved_conc = Concentration_file.sel(specie = 0)
-            Dissolved_conc = Dissolved_conc.concentration_avg
-            SPM_conc = Concentration_file.sel(specie = 1)
-            SPM_conc = SPM_conc.concentration_avg
-            SPM_conc_sr = Concentration_file.sel(specie = 2)
-            SPM_conc_sr = SPM_conc_sr.concentration_avg
-            if Conc_SPM == True:
-                DA_Conc_array_wat = Dissolved_conc + SPM_conc + SPM_conc_sr
-            else:
-                DA_Conc_array_wat = Dissolved_conc
-                print("SPM was not considered for water concentration")
-
-        print("Running sediment concentration", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
-
-        DA_Conc_array_sed = Concentration_file.sel(specie = 3)
-
-        if "depth" not in DA_Conc_array_sed.dims or DA_Conc_array_sed.depth.size == 1:
-            print("depth not included in DA_Conc_array_sed")
-            DA_Conc_array_sed = DA_Conc_array_sed.concentration_avg
-
-        elif "depth" in DA_Conc_array_sed.dims:
-            print("depth included in DA_Conc_array_sed")
-            # Mask to keep landmask when saving sediment concentration
-            mask = np.isnan(Concentration_file.concentration_avg)
-            # Sediments not buried are elements with specie = 3
-            DA_Conc_array_sed = Concentration_file.concentration_avg[:,3,:,:,:].sum(dim='depth')
-            # Add mask to DA_Conc_array_sed
-            DA_Conc_array_sed = xr.where(mask[:,0,-1,:,:],np.nan, DA_Conc_array_sed)
-
-        print("Changing coordinates", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
-
-        if "lat" in Concentration_file.data_vars:
-            lat = np.array(Concentration_file.lat[:,1])
-            print("lat data_var used")
-        elif "y" in Concentration_file.dims:
-            lat = np.array(Concentration_file.y)
-            print("y dimention from regridded file used")
+        if "time" in DS.dims:
+            time_name = "time"
         else:
-            raise ValueError("Incorrect dimention lat/y")
+            time_name = "avg_time"
 
-        if "lon" in Concentration_file.data_vars:
-            lon = np.array(Concentration_file.lon[1,:])
-            print("lon data_var used")
-        elif ("lon" not in Concentration_file.dims) and ("y" in Concentration_file.dims):
-            lon = np.array(Concentration_file.x)
-            print("x dimention from regridded file used")
-        else:
-            raise ValueError("Incorrect dimention lon/x")
+        variable_ls = ['concentration', 'concentration_avg',
+                       'concentration_smooth', 'concentration_smooth_avg',
+                       'density', 'density_avg']
 
-        DA_Conc_array_wat = self.correct_conc_coordinates(DC_Conc_array = DA_Conc_array_wat,
-                                                      lon_coord = lon,
-                                                      lat_coord = lat,
-                                                      time_coord = time_avg,
-                                                      shift_time = Shift_time)
+        if variables is not None:
+            variable_ls = variables
 
-        DA_Conc_array_sed = self.correct_conc_coordinates(DC_Conc_array = DA_Conc_array_sed,
-                                                      lon_coord = lon,
-                                                      lat_coord = lat,
-                                                      time_coord = time_avg,
-                                                      shift_time = Shift_time)
-
-        DC_topo = self.correct_conc_coordinates(DC_Conc_array = topo,
-                                                      lon_coord = lon,
-                                                      lat_coord = lat,
-                                                      time_coord = time_avg,
-                                                      shift_time = Shift_time)
-
-        DA_Conc_array_wat.name = "concentration_avg_water"
-        DA_Conc_array_wat.attrs['standard_name'] = "water_concentration"
-        DA_Conc_array_wat.attrs['long_name'] = (Chemical_name or "") + " time averaged water concentration"
-        DA_Conc_array_wat.attrs['units'] = 'ug/m3'
-        if "projection" in Concentration_file.data_vars:
-            DA_Conc_array_wat.attrs['grid_mapping'] = str(Concentration_file.projection.proj4)
-        else:
-            DA_Conc_array_wat.attrs['grid_mapping'] = "projection_lonlat_EPSG_4326_WGS_84"
-
-        DA_Conc_array_wat.attrs['lon_resol'] = str(np.around(abs(lon[0]-lon[1]), decimals = 8)) + " degrees E"
-        DA_Conc_array_wat.attrs['lat_resol'] = str(np.around(abs(lat[0]-lat[1]), decimals = 8)) + " degrees N"
-        if "specie" in DA_Conc_array_wat.dims:
-            if len(DA_Conc_array_wat.specie) == 1:
-                specie = float(np.array(DA_Conc_array_wat.specie)[0])
-                DA_Conc_array_wat = DA_Conc_array_wat.sel(specie = specie) # drop "specie" coordinate since only water elements were selected
-        # Add topography to water concentration dataset 
-        DS_Conc_array_wat = xr.Dataset({
-            'concentration_avg_water':DA_Conc_array_wat,
-            'topo':DC_topo
-            })
-
-        DA_Conc_array_sed.name = "concentration_avg_sediments"
-        DA_Conc_array_sed.attrs['standard_name'] = "sediment_concentration"
-        DA_Conc_array_sed.attrs['long_name'] = ((Chemical_name or "") + " time averaged sediment concentration")
-        DA_Conc_array_sed.attrs['units'] = 'ug/Kg d.w.'
-        if "projection" in Concentration_file.data_vars:
-            DA_Conc_array_sed.attrs['grid_mapping'] = str(Concentration_file.projection.proj4)
-        else:
-            DA_Conc_array_sed.attrs['grid_mapping'] = "projection_lonlat_EPSG_4326_WGS_84"
-
-        DA_Conc_array_sed.attrs['lon_resol'] = str(np.around(abs(lon[0]-lon[1]), decimals = 8)) + " degrees E"
-        DA_Conc_array_sed.attrs['lat_resol'] = str(np.around(abs(lat[0]-lat[1]), decimals = 8)) + " degrees N"
-        if "specie" in DA_Conc_array_sed.dims:
-            if len(DA_Conc_array_sed.specie) == 1:
-                specie = float(np.array(DA_Conc_array_sed.specie)[0])
-                DA_Conc_array_sed = DA_Conc_array_sed.sel(specie = specie) # drop "specie" coordinate since only sed elements were selected
-        # Add topography to sed concentration dataset
-        DS_Conc_array_sed = xr.Dataset({
-            'concentration_avg_sediments':DA_Conc_array_sed,
-            'topo':DC_topo
-            })
-
-        # Conc_time = datetime.now().strftime("%Y%m%d-%H%M%S")
-        # wat_file = File_Path_out + Conc_time + "_water_conc_" + (Chemical_name or "") + "_" + (Origin_marker_name or "") + ".nc"
-        # sed_file = File_Path_out + Conc_time + "_sediments_conc_" + (Chemical_name or "") + "_" + (Origin_marker_name or "")+ ".nc"
-        wat_file = File_Path_out + "water_conc_" + (Chemical_name or "") + "_" + (Origin_marker_name or "") + ".nc"
-        sed_file = File_Path_out + "sediments_conc_" + (Chemical_name or "") + "_" + (Origin_marker_name or "")+ ".nc"
+        time_array = np.array(DS[time_name])
         
+        if ('topo' in DS.data_vars):
+            topo = DS.topo
+
+        sum_vars_wat_dict = {}
+        sum_vars_sed_dict = {}
+        first_var = True
+        for variable in variable_ls:
+            # variable = variable_ls[0]
+            print(variable)
+            if (variable in DS.data_vars) and (variable != 'topo'):
+                var_wat_name = variable + "_wat"
+                var_sed_name = variable + "_sed"
+
+
+                if Transfer_setup == "organics":
+                    TOT_Conc = DS[variable]
+                    Dissolved_conc = TOT_Conc.sel(specie = 0)
+                    SPM_conc = TOT_Conc.sel(specie = 2)
+                    if 1 in DS.specie:
+                        DOC_conc = TOT_Conc.sel(specie = 1)
+                        # print("DOC was considered for partitioning of chemical")
+                        if Conc_SPM == True:
+                            DA_Conc_array_wat = Dissolved_conc + SPM_conc + DOC_conc
+                        else:
+                            DA_Conc_array_wat = Dissolved_conc + DOC_conc
+                            print("SPM was not considered for water concentration")
+                    else:
+                        if Conc_SPM == True:
+                            DA_Conc_array_wat = Dissolved_conc + SPM_conc
+                        else:
+                            DA_Conc_array_wat = Dissolved_conc
+                            print("SPM was not considered for water concentration")
+                elif Transfer_setup == "metals":
+                    TOT_Conc = DS[variable]
+                    Dissolved_conc = TOT_Conc.sel(specie = 0)
+                    SPM_conc = TOT_Conc.sel(specie = 1)
+                    SPM_conc_sr = TOT_Conc.sel(specie = 2)
+                    if Conc_SPM == True:
+                        DA_Conc_array_wat = Dissolved_conc + SPM_conc + SPM_conc_sr
+                    else:
+                        DA_Conc_array_wat = Dissolved_conc
+                        print("SPM was not considered for water concentration")
+
+                print("Running sediment concentration", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
+
+                DA_Conc_array_sed = DS[variable].sel(specie = 3)
+
+                if "depth" in DA_Conc_array_sed.dims:
+                    print("depth included in DA_Conc_array_sed")
+                    # Mask to keep landmask when saving sediment concentration
+                    mask = np.isnan(DS[variable])
+                    # Sediments not buried are elements with specie = 3
+                    DA_Conc_array_sed = DS[variable][:,3,:,:,:].sum(dim='depth')
+                    # Add mask to DA_Conc_array_sed
+                    DA_Conc_array_sed = xr.where(mask[:,0,-1,:,:],np.nan, DA_Conc_array_sed)
+                    
+                print("Changing coordinates", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
+
+                if "latitude" not in DS[variable].dims:
+                    if "lat" in DS.data_vars:
+                        lat = np.array(DS.lat[:,1])
+                        latitude = np.array(DS.lat[:,1])
+                        print("lat data_var used")
+                    else:
+                        raise ValueError("Latitude information not present in DS")
+                else:
+                    latitude = np.array(DS[variable].latitude)
+                    lat = None
+
+                if "longitude" not in DS[variable].dims:
+                    longitude = np.array(DS[variable].latitude)
+                    if "lon" in DS.data_vars:
+                        lon = np.array(DS.lon[1,:])
+                        longitude = np.array(DS.lon[1,:])
+                        print("lon data_var used")
+                    else:
+                        raise ValueError("Incorrect dimention lon/x")
+                else:
+                    longitude = np.array(DS[variable].longitude)
+                    lon = None
+
+                DA_Conc_array_wat = self.correct_conc_coordinates(DC_Conc_array = DA_Conc_array_wat,
+                                                              lon_coord = lon,
+                                                              lat_coord = lat,
+                                                              time_coord = time_array,
+                                                              shift_time = Shift_time,
+                                                              time_name = time_name)
+
+                DA_Conc_array_sed = self.correct_conc_coordinates(DC_Conc_array = DA_Conc_array_sed,
+                                                              lon_coord = lon,
+                                                              lat_coord = lat,
+                                                              time_coord = time_array,
+                                                              shift_time = Shift_time,
+                                                              time_name = time_name)
+                if ('topo' in DS.data_vars):
+                    if first_var == True:
+                        DC_topo = self.correct_conc_coordinates(DC_Conc_array = topo,
+                                                                      lon_coord = lon,
+                                                                      lat_coord = lat,
+                                                                      time_coord = time_array,
+                                                                      shift_time = Shift_time,
+                                                                      time_name = time_name)
+                        first_var = False
+                        sum_vars_wat_dict['topo'] = DC_topo
+                        sum_vars_sed_dict['topo'] = DC_topo
+
+
+                DA_Conc_array_wat.name = var_wat_name
+                DA_Conc_array_wat.attrs['long_name'] = (Chemical_name or "") + f" {variable} in water"
+                if hasattr(DS[variable], 'units'):
+                    if "concentration" in variable:
+                        DA_Conc_array_wat.attrs['units'] = DS[variable].units[0:5]
+                    else: 
+                        DA_Conc_array_wat.attrs['units'] = '1'
+                else:
+                    DA_Conc_array_sed.attrs['units'] = 'ug/m3 (assumed default)'
+
+                if "projection" in DS.data_vars:
+                    DA_Conc_array_wat.attrs['projection'] = str(DS.projection.proj4)
+
+                if hasattr(DS[variable], 'grid_mapping'):
+                    DA_Conc_array_wat.attrs['grid_mapping'] = DS[variable].grid_mapping
+
+                DA_Conc_array_wat.attrs['lon_resol'] = str(np.around(abs(longitude[0]-longitude[1]), decimals = 8)) + " degrees E"
+                DA_Conc_array_wat.attrs['lat_resol'] = str(np.around(abs(latitude[0]-latitude[1]), decimals = 8)) + " degrees N"
+                
+                sum_vars_wat_dict[var_wat_name] = DA_Conc_array_wat
+
+                DA_Conc_array_sed.name = var_sed_name
+                DA_Conc_array_sed.attrs['long_name'] = ((Chemical_name or "") + f" {variable} in sediments")
+                if hasattr(DS[variable], 'units'):
+                    if "concentration" in variable:
+                        DA_Conc_array_sed.attrs['units'] = DS[variable].units[11:20]
+                    else: 
+                        DA_Conc_array_sed.attrs['units'] = '1'
+                else:
+                    DA_Conc_array_sed.attrs['units'] = 'ug/Kg d.w (assumed default)'
+
+                if "projection" in DS.data_vars:
+                    DA_Conc_array_sed.attrs['projection'] = str(DS.projection.proj4)
+
+                if hasattr(DS[variable], 'grid_mapping'):
+                    DA_Conc_array_sed.attrs['grid_mapping'] = DS[variable].grid_mapping
+                
+                DA_Conc_array_sed.attrs['lon_resol'] = str(np.around(abs(longitude[0]-longitude[1]), decimals = 8)) + " degrees E"
+                DA_Conc_array_sed.attrs['lat_resol'] = str(np.around(abs(latitude[0]-latitude[1]), decimals = 8)) + " degrees N"
+                sum_vars_sed_dict[var_sed_name] = DA_Conc_array_sed
+
+        DS_wat_fin = xr.Dataset(sum_vars_wat_dict)
+        DS_sed_fin = xr.Dataset(sum_vars_sed_dict)
+
+        if File_Name_out is not None:
+            wat_file = File_Path_out + "wat_" + File_Name_out
+            sed_file = File_Path_out + "sed_" +File_Name_out
+            if not wat_file.endswith(".nc"):
+                wat_file = wat_file + ".nc"
+            if not sed_file.endswith(".nc"):
+                sed_file = sed_file + ".nc"
+        else:
+            wat_file = File_Path_out + "water_conc_" + (Chemical_name or "") + "_" + (Origin_marker_name or "") + ".nc"
+            sed_file = File_Path_out + "sediments_conc_" + (Chemical_name or "") + "_" + (Origin_marker_name or "")+ ".nc"
+
         print("Saving water concentration file", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))  
-        DS_Conc_array_wat.to_netcdf(wat_file)
+        DS_wat_fin.to_netcdf(wat_file)
         print("Saving sediment concentration file", datetime.now().strftime("%Y_%m_%d-%H_%M_%S"))
-        DS_Conc_array_sed.to_netcdf(sed_file)
+        DS_sed_fin.to_netcdf(sed_file)
 
     @staticmethod
     def _save_masked_DataArray(DataArray_masked,
