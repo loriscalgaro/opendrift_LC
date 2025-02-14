@@ -2358,7 +2358,7 @@ class ChemicalDrift(OceanDrift):
 
         print('Number of transformations:')
         for isp in range(self.nspecies):
-            print('{}'.format(['{:>9}'.format(np.int32(item)) for item in self.ntransformations[isp,:]]) )
+            print('{}'.format(['{:>9}'.format(np.int32(item)) for item in self.ntransformations[isp,:]]))
 
         m_pre = sum(self.elements.mass)+sum(self.elements_deactivated.mass)
         m_deg = sum(self.elements.mass_degraded)+sum(self.elements_deactivated.mass_degraded)
@@ -2368,6 +2368,7 @@ class ChemicalDrift(OceanDrift):
         m_tot = m_pre + m_deg + m_vol
 
         print('Mass balance:')
+        print('mass total           :', m_tot * 1e-6,' g   ')
         print('mass preserved       :', m_pre * 1e-6,' g   ',m_pre/m_tot*100,'%')
         print('mass degraded        :', m_deg * 1e-6,' g   ',m_deg/m_tot*100,'%')
         print('     in water column :', m_deg_w * 1e-6,' g   ',m_deg_w/m_tot*100,'%')
