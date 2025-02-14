@@ -3898,6 +3898,8 @@ class ChemicalDrift(OceanDrift):
             self.set_config('chemical:transformations:dissociation','nondiss')
             self.set_config('chemical:transformations:LogKOW',3.361)
             self.set_config('chemical:transformations:TrefKOW',25)
+            self.set_config('chemical:transformations:KOC_sed',959)
+            self.set_config('chemical:transformations:KOC_DOM',1798)
             self.set_config('chemical:transformations:DeltaH_KOC_Sed',-21036)
             self.set_config('chemical:transformations:DeltaH_KOC_DOM',-25900)                 ### Phenanthrene value
             self.set_config('chemical:transformations:Setchenow', 0.2503)
@@ -3929,6 +3931,8 @@ class ChemicalDrift(OceanDrift):
             self.set_config('chemical:transformations:dissociation','nondiss')
             self.set_config('chemical:transformations:LogKOW',4.505)
             self.set_config('chemical:transformations:TrefKOW',25)
+            self.set_config('chemical:transformations:KOC_sed',25936)
+            self.set_config('chemical:transformations:KOC_DOM',39355)
             self.set_config('chemical:transformations:DeltaH_KOC_Sed',-24900)
             self.set_config('chemical:transformations:DeltaH_KOC_DOM',-25900)
             self.set_config('chemical:transformations:Setchenow', 0.3026)
@@ -3960,6 +3964,8 @@ class ChemicalDrift(OceanDrift):
             self.set_config('chemical:transformations:dissociation','nondiss')
             self.set_config('chemical:transformations:LogKOW',5.089)
             self.set_config('chemical:transformations:TrefKOW',25)
+            self.set_config('chemical:transformations:KOC_sed',170850)
+            self.set_config('chemical:transformations:KOC_DOM',53700)
             self.set_config('chemical:transformations:DeltaH_KOC_Sed',-47413)
             self.set_config('chemical:transformations:DeltaH_KOC_DOM',-27900)
             self.set_config('chemical:transformations:Setchenow', 0.2885)
@@ -3990,7 +3996,9 @@ class ChemicalDrift(OceanDrift):
             self.set_config('chemical:transfer_setup','organics')
             self.set_config('chemical:transformations:dissociation','nondiss')
             self.set_config('chemical:transformations:LogKOW',5.724)
-            self.set_config('chemical:transformations:TrefKOW',25)
+            self.set_config('chemical:transformations:TrefKOW',20)
+            self.set_config('chemical:transformations:KOC_sed',732824)
+            self.set_config('chemical:transformations:KOC_DOM',309029)
             self.set_config('chemical:transformations:DeltaH_KOC_Sed', -38000)                ### Pyrene value
             self.set_config('chemical:transformations:DeltaH_KOC_DOM', -25400)                ### Pyrene value
             self.set_config('chemical:transformations:Setchenow', 0.3605)
@@ -4022,6 +4030,8 @@ class ChemicalDrift(OceanDrift):
             self.set_config('chemical:transformations:dissociation','nondiss')
             self.set_config('chemical:transformations:LogKOW', 6.124)
             self.set_config('chemical:transformations:TrefKOW',25)
+            self.set_config('chemical:transformations:KOC_sed',1658700)
+            self.set_config('chemical:transformations:KOC_DOM',172499)
             self.set_config('chemical:transformations:DeltaH_KOC_Sed', -43700)                ### mean value 16 PAHs
             self.set_config('chemical:transformations:DeltaH_KOC_DOM', -31280)
             self.set_config('chemical:transformations:Setchenow', 0.171)
@@ -4052,7 +4062,9 @@ class ChemicalDrift(OceanDrift):
             self.set_config('chemical:transfer_setup','organics')
             self.set_config('chemical:transformations:dissociation','nondiss')
             self.set_config('chemical:transformations:LogKOW', 6.618)
-            self.set_config('chemical:transformations:TrefKOW',25)
+            self.set_config('chemical:transformations:TrefKOW',20)
+            self.set_config('chemical:transformations:KOC_sed',5991009)
+            self.set_config('chemical:transformations:KOC_DOM',4120975)
             self.set_config('chemical:transformations:DeltaH_KOC_Sed', -43700)                ### mean value 16 PAHs
             self.set_config('chemical:transformations:DeltaH_KOC_DOM', -30900)
             self.set_config('chemical:transformations:Setchenow', 0.338)
@@ -4133,6 +4145,16 @@ class ChemicalDrift(OceanDrift):
 #
 # Merlin Expo Kd values are mean values from Allison and Allison 2005
 # https://cfpub.epa.gov/si/si_public_record_report.cfm?dirEntryId=135783
+
+        elif self.get_config('chemical:compound') == "Nitrogen":
+            self.set_config('chemical:transfer_setup', 'metals')
+            self.set_config('chemical:transformations:Kd', 0.)  # Nitrogen does not interact with particulate matter or sediments
+            self.set_config('chemical:transformations:S0', 17.0)#
+            
+        elif self.get_config('chemical:compound') == "Alkalinity":
+            self.set_config('chemical:transfer_setup', 'metals')
+            self.set_config('chemical:transformations:Kd', 0.)  # Alkalinity does not interact with particulate matter or sediments
+            self.set_config('chemical:transformations:S0', 17.0)  #
 
     def plot_mass(self,
                   legend=['dissolved','SPM','sediment'],
