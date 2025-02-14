@@ -3256,6 +3256,9 @@ class ChemicalDrift(OceanDrift):
             "Nitrite":                  [760.,     680.],
             "Ammonium":                 [730.,     30.],
             "Sulphur":                  [2200000., 446000.],
+            "Nitrogen":                 [1400.,    0.0],
+            #
+            "Alkalinity":               [142.39,   0.0], # H+ ions concentration form pH
             }
 
         emission_factors_closed_loop = {
@@ -3296,6 +3299,9 @@ class ChemicalDrift(OceanDrift):
             "Nitrite":                  [55760.,    55000.],
             "Ammonium":                 [0.,        0.],
             "Sulphur":                  [12280000., 10104000.],
+            "Nitrogen":                 [42030.,    0.0],
+            #
+            "Alkalinity":               [29.07, 0.0], # H+ ions concentration form pH
             }
 
         emission_factors_grey_water = {
@@ -3311,26 +3317,27 @@ class ChemicalDrift(OceanDrift):
             "Selenium":                 [16.1,    10.64],
             "Zinc":                     [517.,    112.],
             #
-            "Nitrogen":                  [28900., 0.0],
+            "Nitrogen":                 [28900.,  0.0],
          }
 
         emission_factors_bilge_water = {
             #                           mean    +/-95%
             #                           ug/L    ug/L
             "Arsenic":                  [35.9,    33.2],
-            "Cadmium":                  [0.32,   0.07],
-            "Chromium":                 [16.3,   15.4],
-            "Copper":                   [49.7,   22.9],
-            "Lead":                     [3.0,    1.24],
-            "Nickel":                   [71.1,   11.8],
-            "Selenium":                 [2.95,     1.01],
-            "Vanadium":                 [76.5,   22.4],
-            "Zinc":                     [949.,   660.],
+            "Cadmium":                  [0.32,    0.07],
+            "Chromium":                 [16.3,    15.4],
+            "Copper":                   [49.7,    22.9],
+            "Lead":                     [3.0,     1.24],
+            "Nickel":                   [71.1,    11.8],
+            "Selenium":                 [2.95,    1.01],
+            "Vanadium":                 [76.5,    22.4],
+            "Zinc":                     [949.,    660.],
             #
-            "Nitrate":                  [110980.,  100000.],
-            "Nitrite":                  [55760.,   55000.],
-            "Ammonium":                 [0.,     0.],
+            "Nitrate":                  [110980.,   100000.],
+            "Nitrite":                  [55760.,    55000.],
+            "Ammonium":                 [0.,        0.],
             "Sulphur":                  [12280000., 10104000.],
+            "Nitrogen": 	                [42047.,    39335.],
             #
             "Naphthalene":              [50.6,   34.3],
             "Phenanthrene":             [3.67,   2.51],
@@ -3345,10 +3352,10 @@ class ChemicalDrift(OceanDrift):
             "Anthracene":               [0.22,   0.14],
             "Pyrene":                   [1.23,   1.33],
             "Chrysene":                 [0.17,   0.25],
-            "Benzo(b)fluoranthene":     [0.09,   0.13],
-            "Benzo(k)fluoranthene":     [0.03,   0.00],
-            "Indeno(1,2,3-cd)pyrene":   [0.05,   0.06],
-            "Benzo(ghi)perylene":       [0.13,   0.16],
+            "Benzo-b-fluoranthene":     [0.09,   0.13],
+            "Benzo-k-fluoranthene":     [0.03,   0.00],
+            "Indeno-123-cd-pyrene":     [0.05,   0.06],
+            "Benzo-ghi-perylene":       [0.13,   0.16],
          }
 
         emission_factors_sewage_water = {
@@ -3364,8 +3371,20 @@ class ChemicalDrift(OceanDrift):
             "Selenium":                 [43.7,   18.3],
             "Zinc":                     [395.,   174.],
             #
-            "Nitrogen":                  [430.,  0.],
+            "Nitrogen":                 [430.,  0.],
          }
+        
+        emission_factors_NOx = {
+            #                           mean    +/-95%
+            #                           ug/L    ug/L
+            "Alkalinity": [(1.0080/46.005), 0.0], # H+ ions from NOx, MW H+/MW NOx, from kg_NOx to kg_H+
+        }
+
+        emission_factors_SOx = {
+            #                           mean    +/-95%
+            #                           ug/L    ug/L
+            "Alkalinity": [(1.0080/64.066)* 2, 0.0], # H+ ions from SOx, MW H+/MW SOx, from kg_SOx to kg_H+
+        }
 
         emission_factors_AFP = {
             # Copper = 63.546 g/mol
@@ -3414,9 +3433,17 @@ class ChemicalDrift(OceanDrift):
         elif scrubber_type=="AFP_metals_total":
             Emission_factors = 1e6 # g to ug
         elif scrubber_type=="N_sewage": # Nitrogen from sewage
-            Emission_factors = 1e9  # 1kg = 1e9 ug: N_sewage is expressed as kg
+            Emission_factors = 1e6  # 1kg = 1e9 ug: N_sewage is expressed as g
         elif scrubber_type=="N_foodwaste": # Nitrogen from foodwaste
-            Emission_factors = 1e9  # 1kg = 1e9 ug: N_sewage is expressed as kg
+            Emission_factors = 1e6  # 1kg = 1e9 ug: N_sewage is expressed as g
+        elif scrubber_type == "N_NOx":  # Nitrogen from engine's NOx emissions
+            Emission_factors = 1e9 * (14.0067 / 46.005)  # 1kg = 1e9 ug: NOx is expressed in kg, then tranformed to kg of nitrogen # MW of NOx: 46.005 g/mol # https://www.epa.gov/air-emissions-inventories/how-are-oxides-nitrogen-nox-defined-nei
+        elif scrubber_type == "NOx":  # Nitrogen from engine's NOx emissions
+            Emission_factors = 1e9 *emission_factors_NOx.get(chemical_compound)[0]
+        elif scrubber_type == "SOx":  # Nitrogen from engine's NOx emissions
+            Emission_factors = 1e9 *emission_factors_SOx.get(chemical_compound)[0]
+        elif scrubber_type == "emission_kg":  # Generic emission expresses as kg
+        	Emission_factors = 1e9
         elif scrubber_type=="SILAM_metals":
             Emission_factors = 1e9  #+ 1kg = 1e9 ug: Lead and Cadmium depositions given in kg
         elif scrubber_type=="SILAM_metals_from_ash":
@@ -3433,7 +3460,6 @@ class ChemicalDrift(OceanDrift):
                     * latitude   (latitude) float32
                     * longitude  (longitude) float32
                     * time       (time) datetime64[ns]
-
 
                 radius:      scalar, unit: meters
                 lowerbound:  scalar, elements with lower values are discarded
