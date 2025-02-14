@@ -147,7 +147,7 @@ class ChemicalDrift(OceanDrift):
                 'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:dissolved_diameter': {'type': 'float', 'default': 0,
                 'min': 0, 'max': 100e-6, 'units': 'm',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Diameter of SPM particles'},
             'chemical:particle_diameter': {'type': 'float', 'default': 5e-6,
                 'min': 0, 'max': 100e-6, 'units': 'm',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
@@ -158,17 +158,17 @@ class ChemicalDrift(OceanDrift):
                 'min': 0, 'max': 100, 'units': 'm',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:doc_concentration_half_depth': {'type': 'float', 'default': 1000, # TODO: check better
-                'min': 0, 'max': 1200, 'units': 'm',                                     # Vertical conc drops more slowly slower than for SPM
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},                # example: 10.3389/fmars.2017.00436. lower limit around 40 umol/L
+                'min': 0, 'max': 1200, 'units': 'm',                                    # Vertical conc drops more slowly slower than for SPM
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},                     # example: 10.3389/fmars.2017.00436. lower limit around 40 umol/L
             'chemical:particle_diameter_uncertainty': {'type': 'float', 'default': 1e-7,
                 'min': 0, 'max': 100e-6, 'units': 'm',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             'seed:LMM_fraction': {'type': 'float','default': .1,
                 'min': 0, 'max': 1, 'units': '',
-                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Percentage of dissolved elements (LMM) at seeding'},
             'seed:particle_fraction': {'type': 'float','default': 0.9,
                 'min': 0, 'max': 1, 'units': '',
-                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Percentage of SPM (prev) at seeding'},
             # Species
             'chemical:species:LMM': {'type': 'bool', 'default': True,
                 'level': CONFIG_LEVEL_BASIC, 'description': 'Toggle LMM species'},
@@ -197,16 +197,16 @@ class ChemicalDrift(OceanDrift):
             # Transformations
             'chemical:transformations:Kd': {'type': 'float', 'default': 2.0,
                 'min': 0, 'max': 1e9, 'units': 'm3/kg',
-                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Patitioning coefficient for metals'},
             'chemical:transformations:S0': {'type': 'float', 'default': 0.0,
                 'min': 0, 'max': 100, 'units': 'PSU',
-                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'parameter controlling salinity dependency of Kd for metals'},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Parameter controlling salinity dependency of Kd for metals'},
             'chemical:transformations:Dc': {'type': 'float', 'default': 1.16e-5,                # Simonsen 2019
                 'min': 0, 'max': 1e6, 'units': '',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Desorption rate for metals'},
             'chemical:transformations:slow_coeff': {'type': 'float', 'default': 0, #1.2e-7,         # Simonsen 2019
                 'min': 0, 'max': 1e6, 'units': '',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Adsorption rate from prev to psrev for metals'},
             'chemical:transformations:volatilization': {'type': 'bool', 'default': False,
                 'description': 'Chemical is evaporated.',
                 'level': CONFIG_LEVEL_BASIC},
@@ -219,63 +219,63 @@ class ChemicalDrift(OceanDrift):
             # sorption/desorption
             'chemical:transformations:dissociation': {'type': 'enum',
                 'enum': ['nondiss','acid', 'base', 'amphoter'], 'default': 'nondiss',
-                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Dissociation of chemical'},
             'chemical:transformations:LogKOW': {'type': 'float', 'default': 3.361,          # Naphthalene
                 'min': -3, 'max': 10, 'units': 'Log L/Kg',
-                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Octanol/water partitioning coefficient'},
             'chemical:transformations:TrefKOW': {'type': 'float', 'default': 25.,           # Naphthalene
                 'min': -3, 'max': 30, 'units': 'C',
-                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Reference temperature for KOW'},
             'chemical:transformations:DeltaH_KOC_Sed': {'type': 'float', 'default': -21036., # Naphthalene
                 'min': -100000., 'max': 100000., 'units': 'J/mol',
-                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Enthalpy of adsorption on sediments for organic chemicals'},
             'chemical:transformations:DeltaH_KOC_DOM': {'type': 'float', 'default': -25900., # Naphthalene
                 'min': -100000., 'max': 100000., 'units': 'J/mol',
-                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Enthalpy of adsorption on DOC for organic chemicals'},
             'chemical:transformations:Setchenow': {'type': 'float', 'default': 0.2503,      # Naphthalene
                 'min': 0, 'max': 1, 'units': 'L/mol',
-                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Setchenow constant for organic chemicals'},
             'chemical:transformations:pKa_acid': {'type': 'float', 'default': -1,
                 'min': -1, 'max': 14, 'units': '',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'pKa of acid'},
             'chemical:transformations:pKa_base': {'type': 'float', 'default': -1,
                 'min': -1, 'max': 14, 'units': '',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'pKa of conjugated acid'},
             'chemical:transformations:KOC_DOM': {'type': 'float', 'default': -1,
                 'min': -1, 'max': 10000000000, 'units': 'L/KgOC',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Partitioning coefficient between DOC and water'},
             'chemical:transformations:KOC_sed': {'type': 'float', 'default': -1,
                 'min': -1, 'max': 10000000000, 'units': 'L/KgOC',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Partitioning coefficient between SPM/sed and water'},
             'chemical:transformations:fOC_SPM': {'type': 'float', 'default': 0.05,
                 'min': 0.01, 'max': 0.1, 'units': 'gOC/g',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Organic fraction of SPM'},
             'chemical:transformations:fOC_sed': {'type': 'float', 'default': 0.05,
                 'min': 0.01, 'max': 0.1, 'units': 'gOC/g',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Organic fraction of sediments'},
             'chemical:transformations:aggregation_rate': {'type': 'float', 'default': 0,
                 'min': 0, 'max': 1, 'units': 's-1',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             # Degradation in water column
             'chemical:transformations:t12_W_tot': {'type': 'float', 'default': 224.08,      # Naphthalene
                 'min': 1, 'max': None, 'units': 'hours',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': 'half life in water, total'},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Half life in water, total'},
             'chemical:transformations:Tref_kWt': {'type': 'float', 'default': 25.,          # Naphthalene
                 'min': -3, 'max': 30, 'units': 'C',
-                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Reference temperature of t12_W'},
             'chemical:transformations:DeltaH_kWt': {'type': 'float', 'default': 50000.,     # generic
                 'min': -100000., 'max': 100000., 'units': 'J/mol',
-                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Enthalpy of t12_W'},
             # Degradation in sediment layer
             'chemical:transformations:t12_S_tot': {'type': 'float', 'default': 5012.4,      # Naphthalene
                 'min': 1, 'max': None, 'units': 'hours',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': 'half life in sediments, total'},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Half life in sediments, total'},
             'chemical:transformations:Tref_kSt': {'type': 'float', 'default': 25.,          # Naphthalene
                 'min': -3, 'max': 30, 'units': 'C',
-                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Reference temperature of t12_S'},
             'chemical:transformations:DeltaH_kSt': {'type': 'float', 'default': 50000.,     # generic
                 'min': -100000., 'max': 100000., 'units': 'J/mol',
-                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'nthalpy of t12_S'},
             # Volatilization
             'chemical:transformations:MolWt': {'type': 'float', 'default': 128.1705,         # Naphthalene
                 'min': 50, 'max': 1000, 'units': 'amu',
@@ -291,7 +291,7 @@ class ChemicalDrift(OceanDrift):
                 'min': None, 'max': None, 'units': 'C',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Vapour pressure ref temp'},
             'chemical:transformations:DeltaH_Vpress': {'type': 'float', 'default': 55925.,   # Naphthalene
-                'min': -100000., 'max': 115000., 'units': 'J/mol',
+                'min': -100000., 'max': 150000., 'units': 'J/mol',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Enthalpy of volatilization'},
             # solubility
             'chemical:transformations:Solub': {'type': 'float', 'default': 31.4,            # Naphthalene
@@ -306,43 +306,43 @@ class ChemicalDrift(OceanDrift):
             # Sedimentation/Resuspension
             'chemical:sediment:mixing_depth': {'type': 'float', 'default': 0.03,
                 'min': 0, 'max': 100, 'units': 'm',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Height of sediments active layer'},
             'chemical:sediment:density': {'type': 'float', 'default': 2600,
                 'min': 0, 'max': 10000, 'units': 'kg/m3',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Density of sediment/SPM particles'},
             'chemical:sediment:effective_fraction': {'type': 'float', 'default': 0.9,
                 'min': 0, 'max': 1, 'units': '',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Fraction of effective sediments acting as sorbents'},
             'chemical:sediment:corr_factor': {'type': 'float', 'default': 0.1,
                 'min': 0, 'max': 10, 'units': '',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Correction factor desorption, to calculate sed desorption from SPM desorption (metals only)'},
             'chemical:sediment:porosity': {'type': 'float', 'default': 0.6,
                 'min': 0, 'max': 1, 'units': '',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Fraction of sediment volume made of water, adimentional'},
             'chemical:sediment:layer_thickness': {'type': 'float', 'default': 1,
                 'min': 0, 'max': 100, 'units': 'm',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Thickness of seabed interaction layer'},
             'chemical:sediment:desorption_depth': {'type': 'float', 'default': 1,
                 'min': 0, 'max': 100, 'units': 'm',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Distance from seabed where desorbed elements are moved'},
             'chemical:sediment:desorption_depth_uncert': {'type': 'float', 'default': .5,
                 'min': 0, 'max': 100, 'units': 'm',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:resuspension_depth': {'type': 'float', 'default': 1,
                 'min': 0, 'max': 100, 'units': 'm',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Distance from seabed where resuspended elements are moved'},
             'chemical:sediment:resuspension_depth_uncert': {'type': 'float', 'default': .5,
                 'min': 0, 'max': 100, 'units': 'm',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:resuspension_critvel': {'type': 'float', 'default': .01,
                 'min': 0, 'max': 1, 'units': 'm/s',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Critiacal velocity of water to resuspend sediments'},
             'chemical:sediment:burial_rate': {'type': 'float', 'default': .00003,   # MacKay
                 'min': 0, 'max': 10, 'units': 'm/year',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Rate of sediment burial'},
             'chemical:sediment:buried_leaking_rate': {'type': 'float', 'default': 0,
                 'min': 0, 'max': 10, 'units': 's-1',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Rate of resuspension of buried sediments'},
             #
             'chemical:compound': {'type': 'enum',
                 'enum': ['Naphthalene','Phenanthrene','Fluoranthene',
@@ -353,86 +353,88 @@ class ChemicalDrift(OceanDrift):
                          'C2-Phenanthrene','Benzo-b-fluoranthene','Chrysene',
                          'C3-Dibenzothiophene','C3-Phenanthrene',
                          'Benzo-k-fluoranthene','Benzo-ghi-perylene','Indeno-123cd-pyrene',
-                         'Copper','Cadmium','Chromium','Lead','Vanadium','Zinc','Nickel',None],
+                         'Copper','Cadmium','Chromium','Lead','Vanadium','Zinc','Nickel','Nitrogen', 'Alkalinity', 
+                         'Azoxystrobin','Diflufenican','Metconazole','Penconazole','Tebuconazole',
+                         'Tetraconazole',None],
                 'default': None,
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
-# Single process degradation
+            # Single process degradation
             # Biodegradation
             'chemical:transformations:k_DecayMax_water': {'type': 'float', 'default': 0.054,      # from AQUATOX Database (0.13 1/day)
                 'min': 0, 'max': None, 'units': '1/hours',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ' max first-order rate constant for biodegradation in aerobic condition'}, 
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Max first-order rate constant for biodegradation in aerobic condition'}, 
             'chemical:transformations:k_Anaerobic_water': {'type': 'float', 'default': 0,      # Defalt for no anaerobic biodegradation
                 'min': 0, 'max': None, 'units': '1/hours',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ' max first-order rate constant for biodegradation in anaerobic condition '},   
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Max first-order rate constant for biodegradation in anaerobic condition'},   
             'chemical:transformations:HalfSatO_w': {'type': 'float', 'default': 0.5,      # Half-saturation constant for oxygen, default from AQUATOX Database
                 'min': 0.01, 'max': None, 'units': 'g/m3',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ' Half-saturation constant for oxygen, default from AQUATOX Database'},    
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Half-saturation constant for oxygen, default from AQUATOX Database'},    
             'chemical:transformations:T_Max_bio': {'type': 'float', 'default': 50,     # Default from AQUATOX Database  
                 'min': 1, 'max': None, 'units': 'C',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ' Maximum temperature at which biodegradation process will occur, default from AQUATOX Database'},     
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Maximum temperature at which biodegradation process will occur, default from AQUATOX Database'},     
              'chemical:transformations:T_Opt_bio': {'type': 'float', 'default': 24,     # Default from AQUATOX Database  
                  'min': 1, 'max': None, 'units': 'C',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' Optimal temperature for biodegradation, default from AQUATOX Database'},   
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Optimal temperature for biodegradation, default from AQUATOX Database'},   
 
              'chemical:transformations:T_Adp_bio': {'type': 'float', 'default': 2,     # Default from AQUATOX Database  
                  'min': 0.1, 'max': None, 'units': 'C',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' “adaptation” temperature below which there is no acclimation for biobegradation, default from AQUATOX Database'},
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': '“adaptation” temperature below which there is no acclimation for biobegradation, default from AQUATOX Database'},
              'chemical:transformations:Max_Accl_bio': {'type': 'float', 'default': 2,     # Default from AQUATOX Database  
                  'min': 0.1, 'max': None, 'units': 'C',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' Maximum acclimation allowed for biodegratation, default from AQUATOX Database'},  
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Maximum acclimation allowed for biodegratation, default from AQUATOX Database'},  
              'chemical:transformations:Dec_Accl_bio': {'type': 'float', 'default': 0.5,     # Default from AQUATOX Database  
                  'min': 0.1, 'max': None, 'units': '',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' Coefficient for decreasing acclimation as temperature approaches T_Adp_bio, default from AQUATOX Database'},
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Coefficient for decreasing acclimation as temperature approaches T_Adp_bio, default from AQUATOX Database'},
              'chemical:transformations:Q10_bio': {'type': 'float', 'default': 2,     # Default from AQUATOX Database  
                  'min': 0, 'max': None, 'units': '',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' Slope or rate of change per 10°C temperature change for biodegradation, default from AQUATOX Database'},  
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Slope or rate of change per 10°C temperature change for biodegradation, default from AQUATOX Database'},  
              'chemical:transformations:pH_min_bio': {'type': 'float', 'default': 5,     # Default from AQUATOX Database  
                  'min': 0, 'max': None, 'units': '',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' Minimum pH below which limitation on biodegradation rate occurs, default from AQUATOX Database'},  
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Minimum pH below which limitation on biodegradation rate occurs, default from AQUATOX Database'},  
              'chemical:transformations:pH_max_bio': {'type': 'float', 'default': 8.5,     # Default from AQUATOX Database  
                  'min': 0, 'max': None, 'units': '',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' Maximum pH over which limitation on biodegradation rate occurs, default from AQUATOX Database'}, 
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Maximum pH over which limitation on biodegradation rate occurs, default from AQUATOX Database'}, 
              # Hydrolysis
              'chemical:transformations:k_Acid': {'type': 'float', 'default': 0,     # Default for no acid catalyzed hydrolysis 
                  'min': 0, 'max': None, 'units': 'L/mol*h',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' pseudo-first-order acid-catalysed rate constant for a given pH for hydrolysis '},
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Pseudo-first-order acid-catalysed rate constant for a given pH for hydrolysis'},
              'chemical:transformations:k_Base': {'type': 'float', 'default': 0,     # Default for no base catalyzed hydrolysis  
                  'min': 0, 'max': None, 'units': 'L/mol*h',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' pseudo-first-order base-catalysed rate constant for a given pH '},  
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Pseudo-first-order base-catalysed rate constant for a given pH'},  
              'chemical:transformations:k_Hydr_Uncat': {'type': 'float', 'default': 0,     # Default for no hydrolysis  
                  'min': 0, 'max': None, 'units': '1/hours',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' measured first-order hydrolysis rate at pH 7  '},
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Measured first-order hydrolysis rate at pH 7'},
              # Photolysis
              'chemical:transformations:k_Photo': {'type': 'float', 'default': 0,     # Default for no photolysis  
                  'min': 0, 'max': None, 'units': '1/hours',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' measured first-order photolysis rate  '}, 
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Measured first-order photolysis rate'}, 
              'chemical:transformations:RadDistr': {'type': 'float', 'default': 1.6,     # Default from AQUATOX Database
                  'min': 0, 'max': None, 'units': '',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' radiance distribution function, which is the ratio of the average pathlength to the depth '}, 
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Radiance distribution function, which is the ratio of the average pathlength to the depth'}, 
              'chemical:transformations:RadDistr0_ml': {'type': 'float', 'default': 1.6,     # Default from AQUATOX Database
                  'min': 0, 'max': None, 'units': '',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' standard radiance distribution function in the Mixed Layer '}, 
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Standard radiance distribution function in the Mixed Layer'}, 
              'chemical:transformations:RadDistr0_bml': {'type': 'float', 'default': 1.2,     # Default from AQUATOX Database
                  'min': 0, 'max': None, 'units': '',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' standard radiance distribution function below the Mixed Layer '}, 
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Standard radiance distribution function below the Mixed Layer'}, 
              'chemical:transformations:WaterExt': {'type': 'float', 'default': 0.21,     # Default from AQUATOX Database
                  'min': 0, 'max': None, 'units': '1/m',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' extinction coeff. of light in the water with depht due to water '}, 
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Extinction coeff. of light in the water with depht due to water'}, 
              'chemical:transformations:ExtCoeffDOM': {'type': 'float', 'default': 0.028,     # Default from AQUATOX Database
                  'min': 0, 'max': None, 'units': '1/(m*g/m3)',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' extinction coeff. of light in the water with depht due to DOM '}, 
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Extinction coeff. of light in the water with depht due to DOM'}, 
              'chemical:transformations:ExtCoeffSPM': {'type': 'float', 'default': 0.17,     # Default from AQUATOX Database
                  'min': 0, 'max': None, 'units': '1/(m*g/m3)',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' extinction coeff. of light in the water with depht due to SPM '}, 
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Extinction coeff. of light in the water with depht due to SPM'}, 
              'chemical:transformations:ExtCoeffPHY': {'type': 'float', 'default': 0.14,     # Default from AQUATOX Database
                  'min': 0, 'max': None, 'units': '1/(m*g/m3)',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' extinction coeff. of light in the water with depht due to phytoplankton '}, 
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Extinction coeff. of light in the water with depht due to phytoplankton'}, 
              'chemical:transformations:C2PHYC': {'type': 'float', 'default': 0.44,     # Default from https://doi.org/10.1007/BF00006636
                  'min': 0, 'max': None, 'units': 'g_Caron/g_Biomass',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' phytoplankton carbon content '}, 
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Phytoplankton carbon content'}, 
              'chemical:transformations:AveSolar': {'type': 'float', 'default': 500,     # Default from AQUATOX Database
                  'min': 0, 'max': None, 'units': 'Ly/day',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' average light intensity for late spring or early summer, corresponding to time when photolytic half-life is often measured '},
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Average light intensity for late spring or early summer, corresponding to time when photolytic half-life is often measured'},
              
             })
 
@@ -538,7 +540,6 @@ class ChemicalDrift(OceanDrift):
 #             logger.info( '{:>3} {}'.format( i, sp ) )
 
 
-
     def seed_elements(self, *args, **kwargs):
 
         if hasattr(self,'name_species') == False:
@@ -546,12 +547,10 @@ class ChemicalDrift(OceanDrift):
             self.init_transfer_rates()
 
 
-
         if 'number' in kwargs:
             num_elements = kwargs['number']
         else:
             num_elements = self.get_config('seed:number')
-
 
         if 'specie' in kwargs:
             print('num_elements', num_elements)
@@ -562,7 +561,6 @@ class ChemicalDrift(OceanDrift):
 
             init_specie = np.ones(num_elements,dtype=int)
             init_specie[:] = kwargs['specie']
-
 
         else:
 
@@ -592,9 +590,7 @@ class ChemicalDrift(OceanDrift):
                 init_specie[dissolved]=self.num_lmm
             init_specie[~dissolved]=self.num_prev
 
-
             kwargs['specie'] = init_specie
-
 
         logger.debug('Initial partitioning:')
         for i,sp in enumerate(self.name_species):
@@ -611,7 +607,6 @@ class ChemicalDrift(OceanDrift):
         init_diam = np.zeros(num_elements,float)
         init_diam[init_specie==self.num_prev] = diameter + np.random.normal(0, std, sum(init_specie==self.num_prev))
         kwargs['diameter'] = init_diam
-
 
 
         super(ChemicalDrift, self).seed_elements(*args, **kwargs)
@@ -998,7 +993,6 @@ class ChemicalDrift(OceanDrift):
             DH_KOC_DOM = self.get_config('chemical:transformations:DeltaH_KOC_DOM')
             Setchenow  = self.get_config('chemical:transformations:Setchenow')
 
-
             diss       = self.get_config('chemical:transformations:dissociation')
             pKa_acid   = self.get_config('chemical:transformations:pKa_acid')
             if pKa_acid < 0 and diss in ['acid', 'amphoter']:
@@ -1203,13 +1197,12 @@ class ChemicalDrift(OceanDrift):
             self.transfer_rates[self.num_srev,self.num_lmm] = \
                 k_des_sed * sed_phi / TcorrSed / Scorr                                      # k41
 
-            #self.transfer_rates[self.num_srev,self.num_ssrev] = slow_coeff                  # k46
-            #self.transfer_rates[self.num_ssrev,self.num_srev] = slow_coeff*.1               # k64
+            #self.transfer_rates[self.num_srev,self.num_ssrev] = slow_coeff                 # k46
+            #self.transfer_rates[self.num_ssrev,self.num_srev] = slow_coeff*.1              # k64
 
             # Using slowly reversible specie for burial - TODO buried sediment should be a new specie
             self.transfer_rates[self.num_srev,self.num_ssrev] = sed_burial / sed_L / 31556926 # k46 (m/y) / m / (s/y) = s-1
-            self.transfer_rates[self.num_ssrev,self.num_srev] = sed_leaking_rate                # k64
-
+            self.transfer_rates[self.num_ssrev,self.num_srev] = sed_leaking_rate              # k64
 
             self.transfer_rates[self.num_humcol,self.num_prev] = self.get_config('chemical:transformations:aggregation_rate')
             self.transfer_rates[self.num_prev,self.num_humcol] = 0          # TODO check if valid for organics
@@ -1224,16 +1217,16 @@ class ChemicalDrift(OceanDrift):
 
 
             # Values from Simonsen et al (2019a)
-            Kd         = self.get_config('chemical:transformations:Kd') # (m3/Kg)
-            Dc         = self.get_config('chemical:transformations:Dc') # (1/s)
+            Kd         = self.get_config('chemical:transformations:Kd')          # (m3/Kg)
+            Dc         = self.get_config('chemical:transformations:Dc')          # (1/s)
             slow_coeff = self.get_config('chemical:transformations:slow_coeff')
             concSPM    = 1.e-3   # concentration of available suspended particulate matter (kg/m3)
-            sed_L = self.get_config('chemical:sediment:mixing_depth')     # sediment mixing depth (m)
-            sed_dens =  self.get_config('chemical:sediment:density') # default particle density (kg/m3)
+            sed_L = self.get_config('chemical:sediment:mixing_depth')            # sediment mixing depth (m)
+            sed_dens =  self.get_config('chemical:sediment:density')             # default particle density (kg/m3)
             sed_f           =  self.get_config('chemical:sediment:effective_fraction')      # fraction of effective sorbents
-            sed_phi         =  self.get_config('chemical:sediment:corr_factor')      # sediment correction factor
+            sed_phi         =  self.get_config('chemical:sediment:corr_factor')   # sediment correction factor
             sed_poro        =  self.get_config('chemical:sediment:porosity')      # sediment porosity
-            sed_H =  self.get_config('chemical:sediment:layer_thickness')      # thickness of seabed interaction layer (m)
+            sed_H =  self.get_config('chemical:sediment:layer_thickness')         # thickness of seabed interaction layer (m)
 
             #self.k_ads = Dc * Kd * 1e3 # L/(Kg*s)
             self.transfer_rates[self.num_lmm,self.num_prev] = Dc * Kd * concSPM
@@ -1266,11 +1259,11 @@ class ChemicalDrift(OceanDrift):
             Kd         = self.get_config('chemical:transformations:Kd')
             Dc         = self.get_config('chemical:transformations:Dc')
             concSPM    = 1.e-3   # concentration of available suspended particulate matter (kg/m3)
-            sed_L           = self.get_config('chemical:sediment:mixing_depth')     # sediment mixing depth (m)
-            sed_dens        = self.get_config('chemical:sediment:density') # default particle density (kg/m3)
-            sed_f           = self.get_config('chemical:sediment:effective_fraction')      # fraction of effective sorbents
-            sed_phi         = self.get_config('chemical:sediment:corr_factor')      # sediment correction factor
-            sed_poro        = self.get_config('chemical:sediment:porosity')      # sediment porosity
+            sed_L           = self.get_config('chemical:sediment:mixing_depth')# sediment mixing depth (m)
+            sed_dens        = self.get_config('chemical:sediment:density')     # default particle density (kg/m3)
+            sed_f           = self.get_config('chemical:sediment:effective_fraction') # fraction of effective sorbents
+            sed_phi         = self.get_config('chemical:sediment:corr_factor') # sediment correction factor
+            sed_poro        = self.get_config('chemical:sediment:porosity')    # sediment porosity
             sed_H =  self.get_config('chemical:sediment:layer_thickness')      # thickness of seabed interaction layer (m)
 
             self.transfer_rates[self.num_lmm,self.num_prev] = Dc * Kd * concSPM
@@ -1295,7 +1288,6 @@ class ChemicalDrift(OceanDrift):
             if self.get_config('chemical:irreversible_fraction'):
                 self.num_pirrev  = self.specie_name2num('Particle irreversible')
                 self.num_sirrev  = self.specie_name2num('Sediment irreversible')
-
 
             if self.get_config('chemical:species:Particle_reversible'):
                 self.transfer_rates[self.num_lmm,self.num_prev] = 5.e-6 #*0.
@@ -1373,9 +1365,6 @@ class ChemicalDrift(OceanDrift):
             self.transfer_rates[3,self.num_polymer,   self.num_lmmanion]  = 12.*Dc
             self.transfer_rates[3,self.num_polymer,   self.num_prev]      = 8.e-5
 
-
-
-
         else:
             logger.ERROR('No transfer setup available')
 
@@ -1393,12 +1382,6 @@ class ChemicalDrift(OceanDrift):
 
         logger.debug('nspecies: %s' % self.nspecies)
         logger.debug('Transfer rates:\n %s' % self.transfer_rates)
-
-
-
-
-
-
 
 
     def update_terminal_velocity(self, Tprofiles=None,
@@ -1423,7 +1406,7 @@ class ChemicalDrift(OceanDrift):
             if z_index is None:
                 z_i = range(Tprofiles.shape[0])  # evtl. move out of loop
                 # evtl. move out of loop
-                z_index = interp1d(-self.environment_profiles['z'],
+                z_index = np.interp1d(-self.environment_profiles['z'],
                                    z_i, bounds_error=False)
             zi = z_index(-self.elements.z)
             upper = np.maximum(np.floor(zi).astype(np.uint8), 0)
@@ -1589,8 +1572,6 @@ class ChemicalDrift(OceanDrift):
 
                 # Temperature and salinity correction for desorption rates (inversely proportional to Kd)
 
-                ####
-
                 self.elements.transfer_rates1D[self.elements.specie==self.num_humcol,self.num_lmm] = \
                     self.k21_0 * KOC_watcorrDOM / tempcorrDOM[self.elements.specie==self.num_humcol] / salinitycorr[self.elements.specie==self.num_humcol]
 
@@ -1605,7 +1586,6 @@ class ChemicalDrift(OceanDrift):
             if transfer_setup=='organics':
 
                 # Updating sorption rates according to local SPM concentration
-
                 concSPM=self.environment.spm * 1e-6 # (Kg/L) from (g/m3)
 
                 # Apply SPM concentration profile if SPM reader has not depth coordinate
@@ -1661,7 +1641,6 @@ class ChemicalDrift(OceanDrift):
                 self.elements.transfer_rates1D[self.elements.specie==self.num_lmm,self.num_srev] = \
                     Dc * Kd * sed_L * sed_dens * (1.-sed_poro) * sed_f * sed_phi / sed_H
 
-
             if transfer_setup=='organics':
 
                 # Updating sorption rates according to local DOC concentration
@@ -1698,7 +1677,6 @@ class ChemicalDrift(OceanDrift):
             self.elements.transfer_rates1D = self.transfer_rates[sali,self.elements.specie,:]
 
 
-
     def update_partitioning(self):
         '''Check if transformation processes shall occur
         Do transformation (change value of self.elements.specie)
@@ -1732,13 +1710,11 @@ class ChemicalDrift(OceanDrift):
             ttmp.append(np.searchsorted(np.cumsum(p[phaseshift][ii]/psum[phaseshift][ii]),ran4[ii]))
         specie_out[phaseshift] = np.array(ttmp)
 
-
         # Set the new partitioning
         self.elements.specie = specie_out
 
         logger.debug('old species: %s' % specie_in[phaseshift])
         logger.debug('new species: %s' % specie_out[phaseshift])
-
 
         for iin in range(self.nspecies):
             for iout in range(self.nspecies):
@@ -1746,14 +1722,10 @@ class ChemicalDrift(OceanDrift):
 
         logger.debug('Number of transformations total:\n %s' % self.ntransformations )
 
-
         # Update Chemical properties after transformations
         self.update_chemical_diameter(specie_in, specie_out)
         self.sorption_to_sediments(specie_in, specie_out)
         self.desorption_from_sediments(specie_in, specie_out)
-
-
-
 
 
     def sorption_to_sediments(self,sp_in=None,sp_out=None):
@@ -1773,7 +1745,6 @@ class ChemicalDrift(OceanDrift):
         if np.nansum(self.elements.z>0):
             logger.debug('Number of elements lowered down to sea surface: %s' % np.nansum(self.elements.z>0))
         self.elements.z[self.elements.z > 0] = 0
-
 
 
     def desorption_from_sediments(self,sp_in=None,sp_out=None):
@@ -1803,9 +1774,6 @@ class ChemicalDrift(OceanDrift):
         if np.nansum(self.elements.z>0):
             logger.debug('Number of elements lowered down to sea surface: %s' % np.nansum(self.elements.z>0))
         self.elements.z[self.elements.z > 0] = 0
-
-
-
 
 
     def update_chemical_diameter(self,sp_in=None,sp_out=None):
@@ -1862,8 +1830,6 @@ class ChemicalDrift(OceanDrift):
             self.elements.diameter[(sp_out==self.num_humcol) & (sp_in!=self.num_humcol)] = dia_diss
         if self.get_config('chemical:species:Polymer'):
             self.elements.diameter[(sp_out==self.num_polymer) & (sp_in!=self.num_polymer)] = dia_diss
-
-
 
 
     def bottom_interaction(self,Zmin=None):
@@ -2360,12 +2326,9 @@ class ChemicalDrift(OceanDrift):
             self.update_terminal_velocity()
             self.vertical_buoyancy()
 
-
         # Resuspension
         self.resuspension()
         logger.info('partitioning: {} {}'.format([sum(self.elements.specie==ii) for ii in range(self.nspecies)],self.name_species))
-
-
 
         # Horizontal advection
         self.advect_ocean_current()
@@ -2379,11 +2342,6 @@ class ChemicalDrift(OceanDrift):
                 self.time == (self.expected_end_time) or \
                 self.num_elements_active() == 0 :
             self.update_transfer_rates()
-
-
-
-
-
 
 # ################
 # POSTPROCESSING
