@@ -435,7 +435,7 @@ class ChemicalDrift(OceanDrift):
              'chemical:transformations:AveSolar': {'type': 'float', 'default': 500,     # Default from AQUATOX Database
                  'min': 0, 'max': None, 'units': 'Ly/day',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': ' average light intensity for late spring or early summer, corresponding to time when photolytic half-life is often measured '},
-             
+
             })
 
 
@@ -2807,12 +2807,12 @@ class ChemicalDrift(OceanDrift):
             nc.variables['lon_resol'].long_name = 'Longitude resolution'
             nc.variables['lon_resol'].unit = 'degrees_east'
 
-
-        # Horizontal smoothing cells
-        nc.createVariable('smoothing_cells','i8')
-        nc.variables['smoothing_cells'][:] = smoothing_cells
-        nc.variables['smoothing_cells'].long_name = 'Number of cells in each direction for horizontal smoothing'
-        nc.variables['smoothing_cells'].units = '1'
+        if horizontal_smoothing:
+            # Horizontal smoothing cells
+            nc.createVariable('smoothing_cells','i8')
+            nc.variables['smoothing_cells'][:] = smoothing_cells
+            nc.variables['smoothing_cells'].long_name = 'Number of cells in each direction for horizontal smoothing'
+            nc.variables['smoothing_cells'].units = '1'
 
 
         # Coordinates
@@ -2925,7 +2925,7 @@ class ChemicalDrift(OceanDrift):
         if pixelsize_m is not None:
             nc.variables['volume'].long_name = f'Volume of grid cell ({str(pixelsize_m)} x {str(pixelsize_m)} m)'
         else:
-            nc.variables['volume'].long_name = f'Volume of grid cell (lat_resol: {lat_resol}, lon_resol: {lon_resol} degrees)'
+            nc.variables['volume'].long_name = f'Volume of grid cell (lat_resol: {lat_resol} degrees, lon_resol: {lon_resol} degrees)'
         nc.variables['volume'].grid_mapping = density_proj_str
         nc.variables['volume'].units = 'm3'
 
@@ -4066,9 +4066,8 @@ class ChemicalDrift(OceanDrift):
 
         regridded_vars_dict = {}
         for variable in variable_ls:
-            print(variable)
             if (variable in ds.data_vars) and (variable != 'topo'):
-
+                print(variable)
                 ds_attrs = ds[variable].attrs
                 for key in ["lon_resol", "lat_resol", "grid_mapping"]:
                     ds_attrs.pop(key, None)
@@ -4088,7 +4087,6 @@ class ChemicalDrift(OceanDrift):
                 regridded_variable.attrs.update(ds_attrs)
                 regridded_variable.attrs['lon_resol'] = str(np.around(abs(new_lon[0][0]-new_lon[1][0]), decimals = 8)) + " degrees E"
                 regridded_variable.attrs['lat_resol'] = str(np.around(abs(new_lat[0][0]-new_lat[0][1]), decimals = 8)) + " degrees N"
-                # regridded_variable.attrs['unit'] =
                 # change negative values to 0
                 regridded_variable =  regridded_variable.clip(min = 0)
                 regridded_vars_dict[variable] = regridded_variable
@@ -4121,7 +4119,7 @@ class ChemicalDrift(OceanDrift):
             regridded_topo['latitude'] = regridded_topo['latitude'].assign_attrs(long_name='latitude')
             regridded_topo['latitude'] = regridded_topo['latitude'].assign_attrs(units='degrees_north')
             regridded_topo['latitude'] = regridded_topo['latitude'].assign_attrs(axis='Y')
-        
+
             regridded_topo['longitude'] = regridded_topo['longitude'].assign_attrs(standard_name='longitude')
             regridded_topo['longitude'] = regridded_topo['longitude'].assign_attrs(long_name='longitude')
             regridded_topo['longitude'] = regridded_topo['longitude'].assign_attrs(units='degrees_east')
@@ -4156,7 +4154,7 @@ class ChemicalDrift(OceanDrift):
         DataArray['latitude'] = DataArray['latitude'].assign_attrs(long_name='latitude')
         DataArray['latitude'] = DataArray['latitude'].assign_attrs(units='degrees_north')
         DataArray['latitude'] = DataArray['latitude'].assign_attrs(axis='Y')
-    
+
         DataArray['longitude'] = DataArray['longitude'].assign_attrs(standard_name='longitude')
         DataArray['longitude'] = DataArray['longitude'].assign_attrs(long_name='longitude')
         DataArray['longitude'] = DataArray['longitude'].assign_attrs(units='degrees_east')
@@ -4185,11 +4183,11 @@ class ChemicalDrift(OceanDrift):
                 DC_Conc_array['longitude'] = ('longitude', lon_coord)
             else:
                 raise ValueError('lat/lon_coord not in DS')
-        
+
         # Add latitude and longitude to the concentration dataset
         # Add attributes to latitude and longitude so that "remapcon" function from cdo can interpolate results
         DC_Conc_array = self._rename_dimentions(DC_Conc_array)
-        
+
         if time_name is not None:
             if (time_name in DC_Conc_array.dims) and shift_time == True:
                 # Shifts back time 1 timestep so that the timestamp corresponds to the beginning of the first simulation timestep, not the next one
@@ -4275,9 +4273,9 @@ class ChemicalDrift(OceanDrift):
         sum_vars_sed_dict = {}
         first_var = True
         for variable in variable_ls:
-            # variable = variable_ls[0]
-            print(variable)
+            # variable = variable_ls[1]
             if (variable in DS.data_vars) and (variable != 'topo'):
+                print(variable)
                 var_wat_name = variable + "_wat"
                 var_sed_name = variable + "_sed"
 
@@ -4383,7 +4381,7 @@ class ChemicalDrift(OceanDrift):
                     else: 
                         DA_Conc_array_wat.attrs['units'] = '1'
                 else:
-                    DA_Conc_array_sed.attrs['units'] = 'ug/m3 (assumed default)'
+                    DA_Conc_array_wat.attrs['units'] = 'ug/m3 (assumed default)'
 
                 if "projection" in DS.data_vars:
                     DA_Conc_array_wat.attrs['projection'] = str(DS.projection.proj4)
