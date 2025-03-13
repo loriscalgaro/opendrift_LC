@@ -74,7 +74,7 @@ class Chemical(Lagrangian3DArray):
         ('mass_biodegraded', {'dtype': np.float32,
                              'units': 'ug',
                              'seed': True,
-                             'default': 0})
+                             'default': 0}),
         ('mass_hydrolyzed', {'dtype': np.float32,
                              'units': 'ug',
                              'seed': True,
@@ -364,8 +364,8 @@ class ChemicalDrift(OceanDrift):
                          'C3-Dibenzothiophene','C3-Phenanthrene',
                          'Benzo-k-fluoranthene','Benzo-ghi-perylene','Indeno-123cd-pyrene',
                          'Copper','Cadmium','Chromium','Lead','Vanadium','Zinc','Nickel','Nitrogen', 'Alkalinity', 
-                         'Azoxystrobin','Diflufenican','Metconazole','Penconazole','Tebuconazole',
-                         'Tetraconazole',None],
+                         'Azoxystrobin','Diflufenican','Metconazole','Penconazole','Tebuconazole', 'Metaflumizone',
+                         'Tetraconazole', 'test', None],
                 'default': None,
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Name of modelled chemical'},
             # Single process degradation
@@ -412,17 +412,18 @@ class ChemicalDrift(OceanDrift):
                  'min': 0, 'max': None, 'units': '',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': 'Maximum pH over which limitation on biodegradation rate occurs, default from AQUATOX Database'},
              # Hydrolysis
-             'chemical:transformations:k_Acid': {'type': 'float', 'default': 0,     # Default for no acid catalyzed hydrolysis
+             # Based on the approach reported by Mabey, W., & Mill, T. (1978) https://doi.org/10.1063/1.555572 (Figure 1)
+             'chemical:transformations:k_Acid': {'type': 'float', 'default': 0,     # Default: no acid catalyzed hydrolysis
                  'min': 0, 'max': None, 'units': 'L/mol*h',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': 'Pseudo-first-order acid-catalysed rate constant for a given pH for hydrolysis'},
-             'chemical:transformations:k_Base': {'type': 'float', 'default': 0,     # Default for no base catalyzed hydrolysis
+             'chemical:transformations:k_Base': {'type': 'float', 'default': 0,     # Default: no base catalyzed hydrolysis
                  'min': 0, 'max': None, 'units': 'L/mol*h',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': 'Pseudo-first-order base-catalysed rate constant for a given pH'},
-             'chemical:transformations:k_Hydr_Uncat': {'type': 'float', 'default': 0,     # Default for no hydrolysis
+             'chemical:transformations:k_Hydr_Uncat': {'type': 'float', 'default': 0,     # Default: no hydrolysis
                  'min': 0, 'max': None, 'units': '1/hours',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': 'Measured first-order hydrolysis rate at pH 7'},
              # Photolysis
-             'chemical:transformations:k_Photo': {'type': 'float', 'default': 0,     # Default for no photolysis
+             'chemical:transformations:k_Photo': {'type': 'float', 'default': 0,     # Default: no photolysis
                  'min': 0, 'max': None, 'units': '1/hours',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': 'Measured first-order photolysis rate'},
              'chemical:transformations:RadDistr': {'type': 'float', 'default': 1.6,     # Default from AQUATOX Database
