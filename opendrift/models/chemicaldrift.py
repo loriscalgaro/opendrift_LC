@@ -2050,19 +2050,19 @@ class ChemicalDrift(OceanDrift):
 
                 degraded_now[S] = self.elements.mass[S] * (1-np.exp(-k_S_fin * self.time_step.total_seconds()))
 
-            self.elements.mass_degraded_water[W] = self.elements.mass_degraded_water[W] + degraded_now[W]
-            self.elements.mass_degraded_sediment[S] = self.elements.mass_degraded_sediment[S] + degraded_now[S]
+                self.elements.mass_degraded_water[W] = self.elements.mass_degraded_water[W] + degraded_now[W]
+                self.elements.mass_degraded_sediment[S] = self.elements.mass_degraded_sediment[S] + degraded_now[S]
+    
+                self.elements.mass_degraded = self.elements.mass_degraded + degraded_now
+                self.elements.mass = self.elements.mass - degraded_now
+                self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/500,
+                                         reason='removed')
 
-            self.elements.mass_degraded = self.elements.mass_degraded + degraded_now
-            self.elements.mass = self.elements.mass - degraded_now
-            self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/500,
-                                     reason='removed')
-
-            #to_deactivate = self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100
-            #vol_morethan_degr = self.elements.mass_degraded >= self.elements.mass_volatilized
-            #
-            #self.deactivate_elements(to_deactivate +  vol_morethan_degr, reason='volatilized')
-            #self.deactivate_elements(to_deactivate + ~vol_morethan_degr, reason='degraded')
+                #to_deactivate = self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100
+                #vol_morethan_degr = self.elements.mass_degraded >= self.elements.mass_volatilized
+                #
+                #self.deactivate_elements(to_deactivate +  vol_morethan_degr, reason='volatilized')
+                #self.deactivate_elements(to_deactivate + ~vol_morethan_degr, reason='degraded')
 
         elif self.get_config('chemical:transformations:degradation_mode')=='SingleRateConstants':
                 logger.debug('Calculating single degradation rates in water')
@@ -3860,7 +3860,7 @@ class ChemicalDrift(OceanDrift):
                 time_start_0 = datetime.now()
             if i == 1:
                 time_start_1 = datetime.now()
-                estimated_time = (time_start_1 - time_start_0)*(range(0, max(t.size, lo.size, la.size)))
+                estimated_time = (time_start_1 - time_start_0)* (max(t.size, lo.size, la.size))
                 print(f"Estimated time (h:min:s): {estimated_time}")
             if i in list_index_print:
             #     print(f"Seeding elem {i} out of {max(t.size, lo.size, la.size)}")
