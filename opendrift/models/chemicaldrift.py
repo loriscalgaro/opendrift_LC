@@ -7866,8 +7866,8 @@ class ChemicalDrift(OceanDrift):
 
     def concat_simulation(self,
                           sim_file_list,
-                          sim_name,
                           simoutputpath,
+                          sim_name = "sim",
                           max_size_GB = 16,
                           zip_files = True):
         '''
@@ -7890,6 +7890,8 @@ class ChemicalDrift(OceanDrift):
         sim_file_list = [file for file in sim_file_list if file.endswith((".zip", ".nc"))]
         if not simoutputpath.endswith("/"):
             simoutputpath = simoutputpath + "/"
+        if sim_name is None:
+            sim_name = "sim"
 
         # Check if any zip archive of simulation to concatenate is in sim_file_list
         zip_ls = []
