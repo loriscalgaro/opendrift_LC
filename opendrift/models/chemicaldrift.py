@@ -3076,11 +3076,11 @@ class ChemicalDrift(OceanDrift):
         # Create final landmask
         if time_avg_conc is False:
             Landmask = np.tile(landmask, (len(times), self.nspecies, len(z_array)-1, 1, 1))
-            Landmask = np.swapaxes(Landmask, 3, 4)
         else:
             Landmask = np.tile(landmask, (odt, self.nspecies, len(z_array)-1, 1, 1))
-            Landmask = np.swapaxes(Landmask, 3, 4)
-
+        Landmask = np.swapaxes(Landmask, 3, 4)
+        landmask_depth = np.tile(landmask[np.newaxis, :, :], (len(z_array)-1, 1, 1))
+        landmask_depth = np.swapaxes(landmask_depth, 1, 2)
 
         # Density
         if elements_density is True:
@@ -3162,6 +3162,7 @@ class ChemicalDrift(OceanDrift):
                           ('depth','y', 'x'),fill_value=0)
         pixel_volume = np.swapaxes(pixel_volume, 1, 2) #.astype('i4')
         pixel_volume = np.ma.masked_where(pixel_volume==0, pixel_volume)
+        # pixel_volume = np.ma.masked_where(landmask_depth==1, pixel_volume)
         nc.variables['volume'][:] = pixel_volume
         if pixelsize_m is not None:
             nc.variables['volume'].long_name = f'Volume of grid cell ({str(pixelsize_m)} x {str(pixelsize_m)} m)'
@@ -4421,7 +4422,8 @@ class ChemicalDrift(OceanDrift):
         """
 
         if "longitude" not in DC_Conc_array.dims:
-            if any([x is None for x in [lon_coord, lat_coord]]) is False:
+            DC_Conc_array = self._rename_dimentions(DC_Conc_array)
+            if all(x is not None for x in [lon_coord, lat_coord]):
                 DC_Conc_array['latitude'] = ('latitude', lat_coord)
                 DC_Conc_array['longitude'] = ('longitude', lon_coord)
             else:
@@ -4579,7 +4581,6 @@ class ChemicalDrift(OceanDrift):
                     lat = None
 
                 if "longitude" not in DS[variable].dims:
-                    longitude = np.array(DS[variable].latitude)
                     if "lon" in DS.data_vars:
                         lon = np.array(DS.lon[1,:])
                         longitude = np.array(DS.lon[1,:])
@@ -4662,7 +4663,7 @@ class ChemicalDrift(OceanDrift):
 
         if File_Name_out is not None:
             wat_file = File_Path_out + "wat_" + File_Name_out
-            sed_file = File_Path_out + "sed_" +File_Name_out
+            sed_file = File_Path_out + "sed_" + File_Name_out
             if not wat_file.endswith(".nc"):
                 wat_file = wat_file + ".nc"
             if not sed_file.endswith(".nc"):
@@ -7533,14 +7534,14 @@ class ChemicalDrift(OceanDrift):
 
             print("Time dimentions are all equal in DataArray_ls, set up of time_date_serie was skipped")
             print("Running sum of DataArray_ls")
-            Final_sum = DataArray_ls[0].compute()
+            Final_sum = DataArray_ls[0].fillna(0)
+            mask = ~DataArray_ls[0].isnull()
 
-            for index in range(1, len(DataArray_ls)):
-                DataArray = DataArray_ls[index]
-                values = DataArray.compute()
-                del DataArray
-                Final_sum += values
-                del values
+            for da in DataArray_ls[1:]:
+                da_filled = da.fillna(0)
+                Final_sum += da_filled
+            # Preserve landmask at different depth
+            Final_sum = Final_sum.where(mask)
         else:
             print("Time dimentions are not equal in DataArray_ls, set up time_date_serie")
             ### Set up time_date_serie array from input or from DataArray_ls
@@ -7601,17 +7602,19 @@ class ChemicalDrift(OceanDrift):
                     pass
                 else:
                     if len(sum_tstep_ls) > 1:
-                        sum_tstep = sum_tstep_ls[0].compute()
-                        for ts in range(1, len (sum_tstep_ls)):
-                            tstep = sum_tstep_ls[ts]
-                            values = tstep.compute()
-                            del tstep
-                            sum_tstep += values.compute()
-                            del values
+                        sum_tstep = sum_tstep_ls[0].fillna(0)
+                        mask = ~sum_tstep_ls[0].isnull()
+
+                        for da in sum_tstep_ls[1:]:
+                            da_filled = da.fillna(0)
+                            sum_tstep += da_filled
+                        # Preserve landmask at different depth
+                        sum_tstep = sum_tstep.where(mask)
                     elif len(sum_tstep_ls) == 1:
                         sum_tstep = sum_tstep_ls[0]
 
-                    sum_tstep.__setitem__(time_name, time_step)
+                    # sum_tstep.__setitem__(time_name, time_step)
+                    sum_tstep = sum_tstep.expand_dims(dim={time_name: [time_step]})
                     Final_ts_sum_ls.append(sum_tstep)
                     del sum_tstep
             sum_time = (time_end - time_start_0)
@@ -7955,8 +7958,12 @@ class ChemicalDrift(OceanDrift):
             file.write("Files not concatenated:\n")
             for file_name in files_not_concat:
                 file_name_size = "{:.2f}".format((self._get_dataset_size(file_name)/1024**3))
+                file_name_size_um = "GB"
+                if file_name_size < 0.01:
+                    file_name_size = file_name_size*1000
+                    file_name_size_um = "MB"
                 file_name = file_name.replace(simoutputpath, "")
-                file.write(f"{file_name}, {file_name_size} GB\n")
+                file.write(f"{file_name}, {file_name_size} {file_name_size_um}\n")
         # Load and concatenate slices 
         concatenated_files = []
         for index_concat, concat_ls in enumerate(concat_parts_ls):
