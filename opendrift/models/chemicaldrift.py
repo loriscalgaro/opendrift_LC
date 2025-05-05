@@ -582,7 +582,7 @@ class ChemicalDrift(OceanDrift):
         self.nspecies      = len(self.name_species)
 #         logger.info( 'Number of species: {}'.format(self.nspecies) )
 #         for i,sp in enumerate(self.name_species):
-#             logger.info( '{:>3} {}'.format( i, sp ) )
+#             logger.info( '{:>3} {}'.format( i, sp ))
 
 
     def seed_elements(self, *args, **kwargs):
@@ -1476,7 +1476,6 @@ class ChemicalDrift(OceanDrift):
 
         logger.debug('nspecies: %s' % self.nspecies)
         logger.debug('Transfer rates:\n %s' % self.transfer_rates)
-        self.num_cycle = 0
 
 
     def update_terminal_velocity(self, Tprofiles=None,
@@ -1590,8 +1589,8 @@ class ChemicalDrift(OceanDrift):
                 # Select elements for updating trasfer rates in sediments, SPM, and DOM
 
                 #Sediments
-                S =   (self.elements.specie == self.num_srev) \
-                    + (self.elements.specie == self.num_ssrev)
+                S =   (self.elements.specie == self.num_srev)# \
+                    # + (self.elements.specie == self.num_ssrev)
 
                 SPM = (self.elements.specie == self.num_prev)
 
@@ -2629,7 +2628,8 @@ class ChemicalDrift(OceanDrift):
                                               landmask_shapefile=None,
                                               origin_marker=None,
                                               elements_density=False,
-                                              active_status=False):
+                                              active_status=False,
+                                              weight=None):
         '''Write netCDF file with map of Chemical species densities and concentrations
         Arguments:
             pixelsize_m:           float32, lenght of gridcells in m (default mode)
@@ -2656,6 +2656,7 @@ class ChemicalDrift(OceanDrift):
             elements_density:      boolean, add number of elements present in each grid cell to output
             origin_marker:         int, only elements with this value of "origin_marker" will be considered
             active_status:         boolean, only active elements will be considered
+            weight:                string, elements property to be extracted to produce maps
         '''
 
         from netCDF4 import Dataset, date2num #, stringtochar
@@ -2860,7 +2861,8 @@ class ChemicalDrift(OceanDrift):
 
         # H is array containing the mass of chemical within each box defined by lon_array, lat_array and z_array
         # H_count is array containing the number of elements within each box defined by lon_array, lat_array and z_array
-
+        if weight is None:
+            weight = 'mass'
         H, lon_array, lat_array, H_count = \
             self.get_chemical_density_array(pixelsize_m = pixelsize_m,
                                            z_array = z_array,
@@ -2869,7 +2871,7 @@ class ChemicalDrift(OceanDrift):
                                            density_proj=density_proj,
                                            llcrnrlon=llcrnrlon, llcrnrlat=llcrnrlat,
                                            urcrnrlon=urcrnrlon, urcrnrlat=urcrnrlat,
-                                           weight='mass', origin_marker=origin_marker,
+                                           weight=weight, origin_marker=origin_marker,
                                            active_status = active_status,
                                            elements_density = elements_density)
 
@@ -7866,6 +7868,32 @@ class ChemicalDrift(OceanDrift):
 
         return sub_lists
     
+    @staticmethod
+    def _is_compressed_at_level_6(nc_file):
+        '''
+        Check if simulation files to be concatenated are already compressed.
+        If true, files are only stored in .zip archive
+        '''
+        import h5py
+        compression_status = []
+        with h5py.File(nc_file, 'r') as f:
+            for var_name in f.keys():
+                if var_name in ['time', 'trajectory']:
+                    continue  # Skip 'time' and 'trajectory'
+
+                dataset = f[var_name]
+                compression = dataset.compression
+                compression_opts = dataset.compression_opts
+
+                if compression != 'gzip' or compression_opts != 6:
+                    compression_status.append(False)
+                else:
+                    compression_status.append(True)
+        if all(compression_status):
+            return True
+        else:
+            return False
+
 
     def concat_simulation(self,
                           sim_file_list,
@@ -7891,6 +7919,8 @@ class ChemicalDrift(OceanDrift):
 
         # Remove files that are not ".nc" or ".zip"
         sim_file_list = [file for file in sim_file_list if file.endswith((".zip", ".nc"))]
+        if len(sim_file_list) == 0:
+            raise ValueError("No files to be concatenated")
         if not simoutputpath.endswith("/"):
             simoutputpath = simoutputpath + "/"
         if sim_name is None:
@@ -7959,8 +7989,8 @@ class ChemicalDrift(OceanDrift):
             for file_name in files_not_concat:
                 file_name_size = "{:.2f}".format((self._get_dataset_size(file_name)/1024**3))
                 file_name_size_um = "GB"
-                if file_name_size < 0.01:
-                    file_name_size = file_name_size*1000
+                if float(file_name_size) < 0.01:
+                    file_name_size = str(float(file_name_size)*1000)
                     file_name_size_um = "MB"
                 file_name = file_name.replace(simoutputpath, "")
                 file.write(f"{file_name}, {file_name_size} {file_name_size_um}\n")
@@ -7990,15 +8020,19 @@ class ChemicalDrift(OceanDrift):
                     os.remove(nc_file)
         end=datetime.now()
         print(f"Concatenating time : {end-start}")
-        
+
         if len(files_not_concat) > 0:
             for nc_file in files_not_concat:
                 concatenated_files.append(nc_file)
         if zip_files is True:
             print("Zip concatenated files")
-            with zipfile.ZipFile(simoutputpath + sim_name+"_concatenated_files.zip", mode ='a', compression=zipfile.ZIP_DEFLATED) as myzip:
+            compress_type = zipfile.ZIP_STORED if self._is_compressed_at_level_6(concatenated_files[0]) else zipfile.ZIP_DEFLATED
+
+            zip_path = os.path.join(simoutputpath, sim_name + "_concatenated_files.zip")
+
+            with zipfile.ZipFile(zip_path, mode='w', compression=compress_type) as myzip:
                 for index_zip, f in enumerate(concatenated_files):
-                    print(f"Zipping file {index_zip +1} out of {len(concatenated_files)}")
+                    print(f"Zipping file {index_zip + 1} out of {len(concatenated_files)}")
                     arcname_f = f.replace(simoutputpath, "")
                     myzip.write(f, arcname=arcname_f)
 
