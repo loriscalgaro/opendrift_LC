@@ -3115,7 +3115,7 @@ class ChemicalDrift(OceanDrift):
             H = np.swapaxes(H, 3, 4)
             H = np.ma.masked_where(Landmask==1,H)
             nc.variables['concentration'][:] = H
-            nc.variables['concentration'].long_name = self.get_config('chemical:compound') +' concentration ' + '\n' + 'specie '+ \
+            nc.variables['concentration'].long_name = self.get_config('chemical:compound') +' concentration of ' + weight + '\n' + 'specie '+ \
                                                             ' '.join(['{}:{}'.format(isp,sp) for isp,sp in enumerate(self.name_species)])
             nc.variables['concentration'].grid_mapping = density_proj_str
             nc.variables['concentration'].units = mass_unit+'/m3'+' (sed '+mass_unit+'/Kg d.w.)'
@@ -3126,7 +3126,7 @@ class ChemicalDrift(OceanDrift):
             mean_conc = np.swapaxes(mean_conc, 3, 4)
             mean_conc = np.ma.masked_where(Landmask==1, mean_conc)
             nc.variables['concentration_avg'][:] = mean_conc
-            nc.variables['concentration_avg'].long_name = self.get_config('chemical:compound') + ' time averaged concentration ' + '\n' + 'specie '+ \
+            nc.variables['concentration_avg'].long_name = self.get_config('chemical:compound') + ' time averaged concentration of ' + weight + '\n' + 'specie '+ \
                                                             ' '.join(['{}:{}'.format(isp,sp) for isp,sp in enumerate(self.name_species)])
             nc.variables['concentration_avg'].grid_mapping = density_proj_str
             nc.variables['concentration_avg'].units = mass_unit+'/m3'+' (sed '+mass_unit+'/Kg)'
@@ -3140,7 +3140,7 @@ class ChemicalDrift(OceanDrift):
                 Hsm = np.swapaxes(Hsm, 3, 4)
                 Hsm = np.ma.masked_where(Landmask==1, Hsm)
                 nc.variables['concentration_smooth'][:] = Hsm
-                nc.variables['concentration_smooth'].long_name = self.get_config('chemical:compound') +' horizontally smoothed concentration '  + '\n' + 'specie '+ \
+                nc.variables['concentration_smooth'].long_name = self.get_config('chemical:compound') +' horizontally smoothed concentration of ' + weight + '\n' + 'specie '+ \
                                                                 ' '.join(['{}:{}'.format(isp,sp) for isp,sp in enumerate(self.name_species)])
                 nc.variables['concentration_smooth'].grid_mapping = density_proj_str
                 nc.variables['concentration_smooth'].units = mass_unit+'/m3'+' (sed '+mass_unit+'/Kg)'
@@ -3152,7 +3152,7 @@ class ChemicalDrift(OceanDrift):
                 mean_Hsm = np.swapaxes(mean_Hsm, 3, 4)
                 mean_Hsm = np.ma.masked_where(Landmask==1, mean_Hsm)
                 nc.variables['concentration_smooth_avg'][:] = mean_Hsm
-                nc.variables['concentration_smooth_avg'].long_name = self.get_config('chemical:compound') +' horizontally smoothed time averaged concentration '  + '\n' + 'specie '+ \
+                nc.variables['concentration_smooth_avg'].long_name = self.get_config('chemical:compound') +' horizontally smoothed time averaged concentration of ' + weight + '\n' + 'specie '+ \
                                                                 ' '.join(['{}:{}'.format(isp,sp) for isp,sp in enumerate(self.name_species)])
                 nc.variables['concentration_smooth_avg'].grid_mapping = density_proj_str
                 nc.variables['concentration_smooth_avg'].units = mass_unit+'/m3'+' (sed '+mass_unit+'/Kg)'
