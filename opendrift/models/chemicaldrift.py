@@ -7468,6 +7468,9 @@ class ChemicalDrift(OceanDrift):
         '''
         import xarray as xr
         from datetime import datetime
+        
+        if len(DataArray_ls) < 2:
+            raise ValueError("DataArray_ls contains less than two DataArrays")
 
         print("Checking input DataArray dimentions")
         ### Check if uncommon dimentions are present
