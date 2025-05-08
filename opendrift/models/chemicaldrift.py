@@ -3223,21 +3223,34 @@ class ChemicalDrift(OceanDrift):
 
         lon = (self.result.lon.T).values
         lat = (self.result.lat.T).values
+        # Create masks for valid ranges
+        valid_lon_mask = (lon >= -180) & (lon <= 180)
+        valid_lat_mask = (lat >= -90) & (lat <= 90)
+        # Combine masks
+        valid_mask = valid_lon_mask & valid_lat_mask
+        del valid_lon_mask, valid_lat_mask
+        # Apply mask: set invalid values to np.nan
+        lon = np.where(valid_mask, lon, np.nan)
+        lat = np.where(valid_mask, lat, np.nan)
+        del valid_mask
+        
         times = (self.result.time).values
         times = np.repeat(np.expand_dims(times, axis=0), lon.shape[1], axis=0).T
 
-        # Create a grid in the specified projection
-        x,y = density_proj(lon, lat)
+        # Create a grid in the specified projection     
         if llcrnrlon is not None:
             llcrnrx,llcrnry = density_proj(llcrnrlon,llcrnrlat)
             urcrnrx,urcrnry = density_proj(urcrnrlon,urcrnrlat)
         else:
+            x,y = density_proj(lon, lat)
             if density_proj == pyproj.Proj('+proj=moll +ellps=WGS84 +lon_0=0.0'):
                 llcrnrx,llcrnry = x.min()-pixelsize_m, y.min()-pixelsize_m
                 urcrnrx,urcrnry = x.max()+pixelsize_m, y.max()+pixelsize_m
+                del x,y
             else:
                 llcrnrx,llcrnry = x.min()-lon_resol, y.min()-lat_resol
                 urcrnrx,urcrnry = x.max()+lon_resol, y.max()+lat_resol
+                del x,y
 
         if density_proj == pyproj.Proj('+proj=moll +ellps=WGS84 +lon_0=0.0'):
             if pixelsize_m == None:
@@ -3253,8 +3266,6 @@ class ChemicalDrift(OceanDrift):
         t_resol = (times[1][0] - times[0][0])/2
         t_array = np.append(times[:,0] - t_resol, np.array(times[:,0][-1] + t_resol))
 
-        # bins=(x_array, y_array)
-        # outsidex, outsidey = max(x_array)*1.5, max(y_array)*1.5
         z = (self.result.z.T).values
         if weight is not None:
             weight_array = (self.result[weight].T).values
@@ -3278,26 +3289,6 @@ class ChemicalDrift(OceanDrift):
                       len(x_array) - 1,
                       len(y_array) - 1
                       ))
-
-        # for sp in range(Nspecies):
-        #     for i in range(len(times)):
-        #         if weight is not None:
-        #             weights = weight_array[i,:]
-        #             if ((origin_marker is not None) and (active_status is False)):
-        #                 weight_array[i,:] = weight_array[i,:] * (originmarker[i,:]==origin_marker)
-        #             elif ((origin_marker is not None) and (active_status is True)):
-        #                 weight_array[i,:] = weight_array[i,:] * (originmarker[i,:]==origin_marker) * (status[i,:]==active_index)
-        #             elif ((origin_marker is None) and (active_status is True)):
-        #                 weight_array[i,:] = weight_array[i,:] * (status[i,:]==active_index)
-        #             else:
-        #                 pass
-        #         else:
-        #             weights = None
-        #         for zi in range(len(z_array)-1):
-        #             kktmp = ( (specie[i,:]==sp) & (z[i,:]>z_array[zi]) & (z[i,:]<=z_array[zi+1]) )
-        #             H[i,sp,zi,:,:], dummy, dummy = \
-        #                 np.histogram2d(x[i,kktmp], y[i,kktmp],
-        #                            weights=weight_array[i,kktmp], bins=bins)
 
         # Mask elements based on oring_marker and status
         if weight is not None:
