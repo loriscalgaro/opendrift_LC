@@ -51,8 +51,9 @@ def write_buffer(self):
     numtimes = self.outfile['time'].shape[0]
 
     for varname in self.result.data_vars:
-        var = self.outfile.variables[varname]
-        var[:, numtimes:numtimes + self.result.sizes['time']] = self.result[varname]
+        if 'time' in self.result[varname].dims:
+            var = self.outfile.variables[varname]
+            var[:, numtimes:numtimes + self.result.sizes['time']] = self.result[varname]
     self.outfile.variables['time'][numtimes:numtimes + self.result.sizes['time']] = \
         date2num(pd.to_datetime(self.result.time).to_pydatetime(),
                  self.outfile['time'].units, self.outfile['time'].calendar)
@@ -70,7 +71,8 @@ def close(self):
         for atn, atv in self.result[var].attrs.items():
             if atn != '_FillValue':
                 self.outfile[var].setncattr(atn, atv)
-
+    for atn, atv in self.result.attrs.items():  # Updating global attributes
+        self.outfile.setncattr(atn, atv)
     self.outfile.close()  # Finally close file
     logger.debug('Closed netCDF-file')
 
@@ -115,7 +117,15 @@ def import_file(self, filename):
     kwargs = {}
     for var in self.result.data_vars:
         if var in self.ElementType.variables:
-            kwargs[var] = self.result[var][np.arange(num_elements), index_of_last]
+            last_vals_var = xr.apply_ufunc(
+                lambda arr, i: arr[i],
+                self.result[var], index_of_last,
+                input_core_dims=[['time'], []],
+                output_core_dims=[[]],
+                vectorize=True, dask='parallelized',
+                output_dtypes=[self.result[var].dtype]
+            )
+            kwargs[var] = last_vals_var.compute()
     kwargs['ID'] = np.arange(num_elements)
     self.elements = self.ElementType(**kwargs)
     self.elements_deactivated = self.ElementType()

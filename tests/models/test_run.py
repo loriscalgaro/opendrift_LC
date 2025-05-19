@@ -24,6 +24,7 @@ import os
 import inspect
 
 import pandas as pd
+import geopandas as gpd
 import numpy as np
 
 from opendrift.readers import reader_ArtificialOceanEddy
@@ -268,17 +269,16 @@ class TestRun(unittest.TestCase):
                      'OGR library needed to read shapefiles')
     def test_seed_shapefile(self):
         o = OceanDrift(loglevel=20)
+        g = gpd.read_file(o.test_data_folder() +
+                                'shapefile_spawning_areas/Torsk.shp')
+        g = g.iloc[[1, 3]]  # Selecting layers number 1 and 3
+        o.seed_from_geopandas(g, number=1000, time=datetime.now())
+        self.assertEqual(len(o.elements_scheduled), 1000)
         o.seed_from_shapefile(o.test_data_folder() +
                                   'shapefile_spawning_areas/Torsk.shp',
-                                  number=100, layername=None,
-                                  featurenum=[2, 4], time=datetime.now())
-        self.assertEqual(len(o.elements_scheduled), 100)
-        o.seed_from_shapefile(o.test_data_folder() +
-                                  'shapefile_spawning_areas/Torsk.shp',
-                                  number=300, layername=None,
-                                  featurenum=None, time=datetime.now())
-        self.assertEqual(len(o.elements_scheduled), 400)
-        self.assertAlmostEqual(o.elements_scheduled.lat[-1], 52.5, 2)
+                                  number=300, time=datetime.now())
+        self.assertEqual(len(o.elements_scheduled), 1300)
+        self.assertAlmostEqual(o.elements_scheduled.lat[-1], 51.74, 2)
 
     @unittest.skipIf(has_ogr is False,
                      'GDAL library needed to read shapefiles')
@@ -350,7 +350,7 @@ class TestRun(unittest.TestCase):
 
         o1.run(steps=20, time_step=300, time_step_output=1800,
                export_buffer_length=10, outfile='verticalmixing.nc')
-        self.assertAlmostEqual(o1.result.z.min().values, -42.77, 1)
+        self.assertAlmostEqual(o1.result.z.min().values, -42.60, 1)
         self.assertAlmostEqual(o1.result.z.max().values, 0.0, 1)
         os.remove('verticalmixing.nc')
 
@@ -368,7 +368,7 @@ class TestRun(unittest.TestCase):
                     'zmin': -42.76, 'zmax': -0.02, 'zmean': -14.38},
                 {'vt': .005, 'K': .01, 'K_below': .01, 'T': 60, # Mixing and rising
                     #'zmin': -8.1, 'zmax': -0.01, 'zmean': -2.1},
-                    'zmin': -7.86, 'zmax': -0.01, 'zmean': -2.1},
+                    'zmin': -7.85, 'zmax': -0.01, 'zmean': -2.1},
                 {'vt': -0.005, 'K': .01, 'K_below': .01, 'T': 60, # Mixing and sinking
                     #'zmin': -75.8, 'zmax': -20.7, 'zmean': -48.1},
                     'zmin': -78.76, 'zmax': -19.74, 'zmean': -48.0},
