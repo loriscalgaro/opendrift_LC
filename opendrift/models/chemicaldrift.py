@@ -509,6 +509,27 @@ class ChemicalDrift(OceanDrift):
                 if (hasattr(value,'sigma') or hasattr(value,'z') ):
                     self.DOC_vertical_levels_given = True
 
+        # List of additional custom variables to be saved in self.result
+        # TODO: These could now be moved to post_run() which should be 
+        # more robust in case variables are changed during run()
+
+        savelist = ['nspecies',
+                    'name_species',
+                    'transfer_rates',
+                    'ntransformations']
+
+        # Add all variables starting with "num_"
+        savelist.extend(k for k in vars(self) if k.startswith("num_"))
+
+        # Saving the variables
+        for var_name in savelist:
+            var_value = getattr(self, var_name)
+            if isinstance(var_value, np.ndarray):
+                dims = tuple(f'specie_{i}' for i in range(var_value.ndim))
+                self.result[var_name] = (dims, var_value)
+            else:
+                self.result[var_name] = var_value
+
         super(ChemicalDrift, self).prepare_run()
 
     def init_species(self):
@@ -543,6 +564,7 @@ class ChemicalDrift(OceanDrift):
             pass
         else:
             logger.error('No valid transfer_setup {}'.format(self.get_config('chemical:transfer_setup')))
+
 
         self.name_species=[]
         if self.get_config('chemical:species:LMM'):
@@ -2056,12 +2078,13 @@ class ChemicalDrift(OceanDrift):
                 W =   (self.elements.specie == self.num_lmm) \
                     + (self.elements.specie == self.num_humcol)
 
-                TW=self.environment.sea_water_temperature[W]
-                TW[TW==0]=np.median(TW)
+                if np.any(W):
+                    TW=self.environment.sea_water_temperature[W]
+                    #TW[TW==0]=np.median(TW)
 
-                k_W_fin = k_W_tot * self.tempcorr("Arrhenius",DH_kWt,TW,Tref_kWt)
+                    k_W_fin = k_W_tot * self.tempcorr("Arrhenius",DH_kWt,TW,Tref_kWt)
 
-                degraded_now[W] = self.elements.mass[W] * (1-np.exp(-k_W_fin * self.time_step.total_seconds()))
+                    degraded_now[W] = self.elements.mass[W] * (1-np.exp(-k_W_fin * self.time_step.total_seconds()))
 
                 # Degradation in the sediments
 
@@ -2072,26 +2095,27 @@ class ChemicalDrift(OceanDrift):
                 S =   (self.elements.specie == self.num_srev) \
                     + (self.elements.specie == self.num_ssrev)
 
-                TS=self.environment.sea_water_temperature[S]
-                TS[TS==0]=np.median(TS)
+                if np.any(S):
+                    TS=self.environment.sea_water_temperature[S]
+                    #TS[TS==0]=np.median(TS)
 
-                k_S_fin = k_S_tot * self.tempcorr("Arrhenius",DH_kSt,TS,Tref_kSt)
+                    k_S_fin = k_S_tot * self.tempcorr("Arrhenius",DH_kSt,TS,Tref_kSt)
 
-                degraded_now[S] = self.elements.mass[S] * (1-np.exp(-k_S_fin * self.time_step.total_seconds()))
+                    degraded_now[S] = self.elements.mass[S] * (1-np.exp(-k_S_fin * self.time_step.total_seconds()))
 
-                self.elements.mass_degraded_water[W] = self.elements.mass_degraded_water[W] + degraded_now[W]
-                self.elements.mass_degraded_sediment[S] = self.elements.mass_degraded_sediment[S] + degraded_now[S]
-    
-                self.elements.mass_degraded = self.elements.mass_degraded + degraded_now
-                self.elements.mass = self.elements.mass - degraded_now
-                self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/500,
-                                         reason='removed')
-
-                #to_deactivate = self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100
-                #vol_morethan_degr = self.elements.mass_degraded >= self.elements.mass_volatilized
-                #
-                #self.deactivate_elements(to_deactivate +  vol_morethan_degr, reason='volatilized')
-                #self.deactivate_elements(to_deactivate + ~vol_morethan_degr, reason='degraded')
+	                self.elements.mass_degraded_water[W] = self.elements.mass_degraded_water[W] + degraded_now[W]
+	                self.elements.mass_degraded_sediment[S] = self.elements.mass_degraded_sediment[S] + degraded_now[S]
+	    
+	                self.elements.mass_degraded = self.elements.mass_degraded + degraded_now
+	                self.elements.mass = self.elements.mass - degraded_now
+	                self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/500,
+	                                         reason='removed')
+	
+	                #to_deactivate = self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100
+	                #vol_morethan_degr = self.elements.mass_degraded >= self.elements.mass_volatilized
+	                #
+	                #self.deactivate_elements(to_deactivate +  vol_morethan_degr, reason='volatilized')
+	                #self.deactivate_elements(to_deactivate + ~vol_morethan_degr, reason='degraded')
 
             elif self.get_config('chemical:transformations:degradation_mode')=='SingleRateConstants':
                 logger.debug('Calculating single degradation rates in water')
@@ -6184,31 +6208,32 @@ class ChemicalDrift(OceanDrift):
 
         for i in range(steps):
 
-            bars[i]=[np.sum(mass[0][i,:]*(sp[0][i,:]==0))*mass_conversion_factor,
-                     np.sum(mass[0][i,:]*(sp[0][i,:]==1))*mass_conversion_factor,
-                     np.sum(mass[0][i,:]*(sp[0][i,:]==2))*mass_conversion_factor,
-                     np.sum(mass[0][i,:]*(sp[0][i,:]==3))*mass_conversion_factor,
-                     np.sum(mass[0][i,:]*(sp[0][i,:]==4))*mass_conversion_factor]
+            bars[i]=[np.sum(mass[:,i]*(sp[:,i]==0))*mass_conversion_factor,
+                     np.sum(mass[:,i]*(sp[:,i]==1))*mass_conversion_factor,
+                     np.sum(mass[:,i]*(sp[:,i]==2))*mass_conversion_factor,
+                     np.sum(mass[:,i]*(sp[:,i]==3))*mass_conversion_factor,
+                     np.sum(mass[:,i]*(sp[:,i]==4))*mass_conversion_factor]
         bottom=np.zeros_like(bars[:,0])
         if 'dissolved' in legend:
-            ax.bar(np.arange(steps),bars[:,self.num_lmm],width=1.25,color='midnightblue')
-            bottom=bars[:,self.num_lmm]
-            print(f'dissolved: {str(bars[-1,self.num_lmm])} {mass_unit} ({str(100*bars[-1,self.num_lmm]/np.sum(bars[-1,:]))} %)')
+            ax.bar(np.arange(steps),bars[:,self.result.num_lmm],width=1.01,color='midnightblue')
+            bottom=bars[:,self.result.num_lmm]
+            print(f'dissolved: {str(bars[-1,self.result.num_lmm])} {mass_unit} ({str(100*bars[-1,self.result.num_lmm]/np.sum(bars[-1,:]))} %)')
         if 'DOC' in legend:
-            ax.bar(np.arange(steps),bars[:,self.num_humcol],bottom=bottom,width=1.25,color='royalblue')
-            bottom=bottom+bars[:,self.num_humcol]
-            print(f'DOC: {str(bars[-1,self.num_humcol])} {mass_unit} ({str(100*bars[-1,self.num_humcol]/np.sum(bars[-1,:]))} %)')
+            ax.bar(np.arange(steps),bars[:,self.result.num_humcol],bottom=bottom,width=1.01,color='royalblue')
+            bottom=bottom+bars[:,self.result.num_humcol]
+            print(f'DOC: {str(bars[-1,self.result.num_humcol])} {mass_unit} ({str(100*bars[-1,self.result.num_humcol]/np.sum(bars[-1,:]))} %)')
         if 'SPM' in legend:
-            ax.bar(np.arange(steps),bars[:,self.num_prev],bottom=bottom,width=1.25,color='palegreen')
-            bottom=bottom+bars[:,self.num_prev]
-            print(f'SPM: {str(bars[-1,self.num_prev])} {mass_unit} ({str(100*bars[-1,self.num_prev]/np.sum(bars[-1,:]))} %)')
+            ax.bar(np.arange(steps),bars[:,self.result.num_prev],bottom=bottom,width=1.01,color='palegreen')
+            bottom=bottom+bars[:,self.result.num_prev]
+            print(f'SPM: {str(bars[-1,self.result.num_prev])} {mass_unit} ({str(100*bars[-1,self.result.num_prev]/np.sum(bars[-1,:]))} %)')
         if 'sediment' in legend:
-            ax.bar(np.arange(steps),bars[:,self.num_srev],bottom=bottom,width=1.25,color='orange')
-            bottom=bottom+bars[:,self.num_srev]
-            print(f'sediment: {str(bars[-1,self.num_srev])} {mass_unit} ({str(100*bars[-1,self.num_srev]/np.sum(bars[-1,:]))} %)')
+            ax.bar(np.arange(steps),bars[:,self.result.num_srev],bottom=bottom,width=1.01,color='orange')
+            bottom=bottom+bars[:,self.result.num_srev]
+            print(f'sediment: {str(bars[-1,self.result.num_srev])} {mass_unit} ({str(100*bars[-1,self.result.num_srev]/np.sum(bars[-1,:]))} %)')
 
         ax.legend(list(filter(None, legend)))
         ax.set_ylabel('mass (' + mass_unit + ')')
+        ax.set_xlim(-.49,steps-1+0.49)
         if start_date is None:
             # Get current tick positions
             xticks = ax.get_xticks()
