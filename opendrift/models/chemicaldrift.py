@@ -6464,7 +6464,7 @@ class ChemicalDrift(OceanDrift):
             csv_file_name = sim_name + "_extracted_timeseries.csv"
 
         if load_timeseries_from_file is False:
-
+            # Initialize init_species() and init_transfer_rates() if they were not stored in self.result
             if not np.all([(hasattr(self.result, attr)) for attr in ['nspecies', 'name_species', 'transfer_rates', 'ntransformations']]):
                 # Init species and transfer rates
                 if self.mode != opendrift.models.basemodel.Mode.Config:
@@ -6721,7 +6721,7 @@ class ChemicalDrift(OceanDrift):
                                    .groupby('output_step', as_index=True)
                                    .sum()
                                    ).reindex(full_index_range, fill_value=0)
-            
+
 
             # Mass of all elements present in simulation during each timestep
             mass_results_timestep = {}
