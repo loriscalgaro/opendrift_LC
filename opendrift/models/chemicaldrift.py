@@ -2120,30 +2120,30 @@ class ChemicalDrift(OceanDrift):
                 W =   (self.elements.specie == self.num_lmm) \
                     + (self.elements.specie == self.num_humcol)
 
-                if np.any(W):
-                    # Temperature
-                    TW=self.environment.sea_water_temperature[W]
-                    # if np.any(TW==0):
-                    #     TW[TW==0]=np.median(TW)
-                    #     logger.debug("Temperature in degradation was 0, set to median value")
+                S =   (self.elements.specie == self.num_srev) \
+                    + (self.elements.specie == self.num_ssrev)
 
+                W_deg = np.any(W)
+                S_deg = np.any(S)
+
+                k_Photo = self.get_config('chemical:transformations:k_Photo')
+                k_DecayMax_water = self.get_config('chemical:transformations:k_DecayMax_water')
+                k_Anaerobic_water = self.get_config('chemical:transformations:k_Anaerobic_water')
+                if k_Photo == 0:
+                    logger.debug("k_Photo is set to 0 1/h, therefore no photodegradation occurs")
+                if k_DecayMax_water == 0:
+                    logger.debug("k_DecayMax_water is set to 0 1/h, therefore  DOCorr = 0 and no biodegradation occurs")
+                if k_Anaerobic_water == 0:
+                    logger.debug("k_Anaerobic_water is set to 0 1/h, therefore no biodegradation occurs without oxigen")
+
+
+                if W_deg == True or S_deg == True:
                     Tref_kWt = self.get_config('chemical:transformations:Tref_kWt')
                     DH_kWt = self.get_config('chemical:transformations:DeltaH_kWt')
-                    k_DecayMax_water = self.get_config('chemical:transformations:k_DecayMax_water')
+                    Tref_kSt = self.get_config('chemical:transformations:Tref_kSt')
+                    DH_kSt = self.get_config('chemical:transformations:DeltaH_kSt')
                     
-                    if k_DecayMax_water == 0:
-                        logger.debug("k_DecayMax_water is set to 0 1/h, therefore  DOCorr = 0 and no biodegradation occurs")
-                    else:
-                        pass
-
-                    k_Anaerobic_water = self.get_config('chemical:transformations:k_Anaerobic_water')
-
-                    if k_Anaerobic_water == 0:
-                        logger.debug("k_Anaerobic_water is set to 0 1/h, therefore no biodegradation occurs without oxigen")
-                    else:
-                        pass
-
-
+                    
                     if Bio_degr is True and k_DecayMax_water > 0:
                         HalfSatO_w = self.get_config('chemical:transformations:HalfSatO_w')
                         T_Max_bio = self.get_config('chemical:transformations:T_Max_bio')
@@ -2159,14 +2159,23 @@ class ChemicalDrift(OceanDrift):
                     else:
                         pass
 
-
                     if Hydro_degr is True:
                         k_Acid = self.get_config('chemical:transformations:k_Acid')
                         k_Base = self.get_config('chemical:transformations:k_Base')
                         k_Hydr_Uncat = self.get_config('chemical:transformations:k_Hydr_Uncat')
+                        if (k_Acid <= 0 and k_Base <= 0 and k_Hydr_Uncat == 0):
+                            logger.debug("k_Acid, k_Base, and  k_Hydr_Uncat are set to 0 1/h, therefore no hydrolysis occurs")
 
 
-                    k_Photo = self.get_config('chemical:transformations:k_Photo') 
+                if W_deg:
+                    # Temperature
+                    TW=self.environment.sea_water_temperature[W]
+                    # if np.any(TW==0):
+                    #     TW[TW==0]=np.median(TW)
+                    #     logger.debug("Temperature in degradation was 0, set to median value")
+
+
+
                     if Photo_degr is True and k_Photo > 0:
                         RadDistr = self.get_config('chemical:transformations:RadDistr')
                         RadDistr0_ml = self.get_config('chemical:transformations:RadDistr0_ml')
@@ -2287,13 +2296,8 @@ class ChemicalDrift(OceanDrift):
                     k_W_fin_sum = 0
 
                 # Degradation in the sediments
-                Tref_kSt = self.get_config('chemical:transformations:Tref_kSt')
-                DH_kSt = self.get_config('chemical:transformations:DeltaH_kSt')
 
-                S =   (self.elements.specie == self.num_srev) \
-                    + (self.elements.specie == self.num_ssrev)
-
-                if np.any(S):
+                if S_deg:
                     TS=self.environment.sea_water_temperature[S]
                     # if np.any(TS==0):
                     #     TS[TS==0]=np.median(TS)
@@ -2647,7 +2651,8 @@ class ChemicalDrift(OceanDrift):
                                               origin_marker=None,
                                               elements_density=False,
                                               active_status=False,
-                                              weight=None):
+                                              weight=None,
+                                              sim_description=None):
         '''Write netCDF file with map of Chemical species densities and concentrations
         Arguments:
             pixelsize_m:           float32, lenght of gridcells in m (default mode)
@@ -2672,9 +2677,10 @@ class ChemicalDrift(OceanDrift):
             reader_sea_depth:      string, path of bathimethy .nc file,
             landmask_shapefile:    string, path of bathimethylandmask .shp file
             elements_density:      boolean, add number of elements present in each grid cell to output
-            origin_marker:         int, only elements with this value of "origin_marker" will be considered
+            origin_marker:         int/list/tuple/np.ndarray, only elements with these values of "origin_marker" will be considered
             active_status:         boolean, only active elements will be considered
             weight:                string, elements property to be extracted to produce maps
+            sim_description:       string, descrition of simulation to be included in netcdf attributes
         '''
 
         from netCDF4 import Dataset, date2num #, stringtochar
@@ -3010,6 +3016,9 @@ class ChemicalDrift(OceanDrift):
 
 
         # Save outputs to netCDF Dataset
+        compound = self.get_config('chemical:compound')
+        species_str = ' '.join([f"{isp}:{sp}" for isp, sp in enumerate(self.name_species)])
+
         nc = Dataset(filename, 'w')
         nc.createDimension('x', lon_array.shape[0])
         nc.createDimension('y', lon_array.shape[1])
@@ -3096,6 +3105,8 @@ class ChemicalDrift(OceanDrift):
                 nc.variables['density'].long_name = 'Number of elements in grid cell'
                 nc.variables['density'].grid_mapping = density_proj_str
                 nc.variables['density'].units = '1'
+                if sim_description is not None:
+                    nc.variables['density'].sim_description = str(sim_description)
             else:
                 nc.createVariable('density_avg', 'i4',
                                   ('avg_time','specie','depth','y', 'x'),fill_value=99999)
@@ -3106,6 +3117,8 @@ class ChemicalDrift(OceanDrift):
                 nc.variables['density_avg'].long_name = "Number of elements in grid cell at avg_time"
                 nc.variables['density_avg'].grid_mapping = density_proj_str
                 nc.variables['density_avg'].units = '1'
+                if sim_description is not None:
+                    nc.variables['density_avg'].sim_description = str(sim_description)
 
 
         # Chemical concentration
@@ -3115,10 +3128,12 @@ class ChemicalDrift(OceanDrift):
             H = np.swapaxes(H, 3, 4)
             H = np.ma.masked_where(Landmask==1,H)
             nc.variables['concentration'][:] = H
-            nc.variables['concentration'].long_name = self.get_config('chemical:compound') +' concentration of ' + weight + '\n' + 'specie '+ \
-                                                            ' '.join(['{}:{}'.format(isp,sp) for isp,sp in enumerate(self.name_species)])
+            nc.variables['concentration'].long_name = (f"{compound} concentration of {weight}\n"
+                                                           f"specie {species_str}")
             nc.variables['concentration'].grid_mapping = density_proj_str
             nc.variables['concentration'].units = mass_unit+'/m3'+' (sed '+mass_unit+'/Kg d.w.)'
+            if sim_description is not None:
+                nc.variables['concentration'].sim_description = str(sim_description)
         else:
         # Chemical concentration, time averaged
             nc.createVariable('concentration_avg', 'f8',
@@ -3126,10 +3141,12 @@ class ChemicalDrift(OceanDrift):
             mean_conc = np.swapaxes(mean_conc, 3, 4)
             mean_conc = np.ma.masked_where(Landmask==1, mean_conc)
             nc.variables['concentration_avg'][:] = mean_conc
-            nc.variables['concentration_avg'].long_name = self.get_config('chemical:compound') + ' time averaged concentration of ' + weight + '\n' + 'specie '+ \
-                                                            ' '.join(['{}:{}'.format(isp,sp) for isp,sp in enumerate(self.name_species)])
+            nc.variables['concentration_avg'].long_name = (f"{compound} time averaged concentration of {weight}\n"
+                                                           f"specie {species_str}")
             nc.variables['concentration_avg'].grid_mapping = density_proj_str
             nc.variables['concentration_avg'].units = mass_unit+'/m3'+' (sed '+mass_unit+'/Kg)'
+            if sim_description is not None:
+                nc.variables['concentration_avg'].sim_description = str(sim_description)
 
 
         # Chemical concentration, horizontally smoothed
@@ -3140,11 +3157,13 @@ class ChemicalDrift(OceanDrift):
                 Hsm = np.swapaxes(Hsm, 3, 4)
                 Hsm = np.ma.masked_where(Landmask==1, Hsm)
                 nc.variables['concentration_smooth'][:] = Hsm
-                nc.variables['concentration_smooth'].long_name = self.get_config('chemical:compound') +' horizontally smoothed concentration of ' + weight + '\n' + 'specie '+ \
-                                                                ' '.join(['{}:{}'.format(isp,sp) for isp,sp in enumerate(self.name_species)])
+                nc.variables['concentration_smooth'].long_name = (f"{compound} horizontally smoothed concentration of {weight}\n"
+                                                               f"specie {species_str}")
                 nc.variables['concentration_smooth'].grid_mapping = density_proj_str
                 nc.variables['concentration_smooth'].units = mass_unit+'/m3'+' (sed '+mass_unit+'/Kg)'
                 nc.variables['concentration_smooth'].comment = 'Smoothed over '+str(smoothing_cells)+' grid points in all horizontal directions'
+                if sim_description is not None:
+                    nc.variables['concentration_smooth'].sim_description = str(sim_description)
             else:
             # Chemical concentration, horizontally smoothed, time averaged
                 nc.createVariable('concentration_smooth_avg', 'f8',
@@ -3152,11 +3171,13 @@ class ChemicalDrift(OceanDrift):
                 mean_Hsm = np.swapaxes(mean_Hsm, 3, 4)
                 mean_Hsm = np.ma.masked_where(Landmask==1, mean_Hsm)
                 nc.variables['concentration_smooth_avg'][:] = mean_Hsm
-                nc.variables['concentration_smooth_avg'].long_name = self.get_config('chemical:compound') +' horizontally smoothed time averaged concentration of ' + weight + '\n' + 'specie '+ \
-                                                                ' '.join(['{}:{}'.format(isp,sp) for isp,sp in enumerate(self.name_species)])
+                nc.variables['concentration_smooth_avg'].long_name = (f"{compound} horizontally smoothed time averaged concentration of {weight}\n"
+                                                               f"specie {species_str}")
                 nc.variables['concentration_smooth_avg'].grid_mapping = density_proj_str
                 nc.variables['concentration_smooth_avg'].units = mass_unit+'/m3'+' (sed '+mass_unit+'/Kg)'
                 nc.variables['concentration_smooth_avg'].comment = 'Smoothed over '+str(smoothing_cells)+' grid points in all horizontal directions'
+                if sim_description is not None:
+                    nc.variables['concentration_smooth_avg'].sim_description = str(sim_description)
 
 
         # Volume of boxes
@@ -3181,6 +3202,8 @@ class ChemicalDrift(OceanDrift):
         nc.variables['topo'].long_name = 'Depth of grid point'
         nc.variables['topo'].grid_mapping = density_proj_str
         nc.variables['topo'].units = 'm'
+        if sim_description is not None:
+            nc.variables['topo'].sim_description = str(sim_description)
 
 
         # Gridcell area
@@ -3294,7 +3317,10 @@ class ChemicalDrift(OceanDrift):
         if weight is not None:
             weights = weight_array
             if origin_marker is not None:
-                origin_mask = (originmarker == origin_marker)
+                if isinstance(origin_marker, (list, tuple, np.ndarray)):
+                    origin_mask = np.isin(originmarker, origin_marker)
+                else:
+                    origin_mask = (originmarker == origin_marker)
                 if active_status:
                     active_status_mask = (status == active_index)
                     final_mask = active_status_mask & origin_mask
@@ -4453,7 +4479,8 @@ class ChemicalDrift(OceanDrift):
                                       Transfer_setup = "organics",
                                       Concentration_file = None,
                                       Shift_time = False,
-                                      Conc_SPM = True):
+                                      Conc_SPM = True,
+                                      Sim_description=None):
         """
         Sum dissolved, DOC, and SPM concentration arrays to obtain total water concentration and save the resulting xarray as netCDF file 
         Save sediment concentration DataArray as netDCF file
@@ -4470,6 +4497,7 @@ class ChemicalDrift(OceanDrift):
         variables:             list, list of variables' name to be considered
         Shift_time:            boolean, if True shifts back time of 1 timestep so that the timestamp corresponds to 
                                the beginning of the first simulation timestep, not to the next one
+        Sim_description:       string, descrition of simulation to be included in netcdf attributes
         """
         from datetime import datetime
         import xarray as xr
@@ -4518,9 +4546,8 @@ class ChemicalDrift(OceanDrift):
                 var_wat_name = variable + "_wat"
                 var_sed_name = variable + "_sed"
 
-
+                TOT_Conc = DS[variable]
                 if Transfer_setup == "organics":
-                    TOT_Conc = DS[variable]
                     Dissolved_conc = TOT_Conc.sel(specie = 0)
                     SPM_conc = TOT_Conc.sel(specie = 2)
                     if 1 in DS.specie:
@@ -4538,7 +4565,6 @@ class ChemicalDrift(OceanDrift):
                             DA_Conc_array_wat = Dissolved_conc
                             print("SPM was not considered for water concentration")
                 elif Transfer_setup == "metals":
-                    TOT_Conc = DS[variable]
                     Dissolved_conc = TOT_Conc.sel(specie = 0)
                     SPM_conc = TOT_Conc.sel(specie = 1)
                     SPM_conc_sr = TOT_Conc.sel(specie = 2)
@@ -4612,7 +4638,16 @@ class ChemicalDrift(OceanDrift):
 
 
                 DA_Conc_array_wat.name = var_wat_name
-                DA_Conc_array_wat.attrs['long_name'] = (Chemical_name or "") + f" {variable} in water"
+                if hasattr(DS[variable], 'sim_description'):
+                    DA_Conc_array_wat.attrs['sim_description'] = (DS[variable].sim_description)
+                elif Sim_description is not None:
+                    DA_Conc_array_wat.attrs['sim_description'] = str(Sim_description)
+
+                if hasattr(DS[variable], 'long_name'):
+                    DA_Conc_array_wat.attrs['long_name'] = (DS[variable].long_name).split('specie')[0].strip() + " in water"
+                else:
+                    DA_Conc_array_wat.attrs['long_name'] = (Chemical_name or "") + f" {variable} in water (assumed from mass of elements)"
+
                 if hasattr(DS[variable], 'units'):
                     if "concentration" in variable:
                         DA_Conc_array_wat.attrs['units'] = DS[variable].units[0:5]
@@ -4633,7 +4668,16 @@ class ChemicalDrift(OceanDrift):
                 sum_vars_wat_dict[var_wat_name] = DA_Conc_array_wat
 
                 DA_Conc_array_sed.name = var_sed_name
-                DA_Conc_array_sed.attrs['long_name'] = ((Chemical_name or "") + f" {variable} in sediments")
+                if hasattr(DS[variable], 'sim_description'):
+                    DA_Conc_array_sed.attrs['sim_description'] = (DS[variable].sim_description)
+                elif Sim_description is not None:
+                    DA_Conc_array_sed.attrs['sim_description'] = str(Sim_description)
+
+                if hasattr(DS[variable], 'long_name'):
+                    DA_Conc_array_sed.attrs['long_name'] = (DS[variable].long_name).split('specie')[0].strip() + " in sediments"
+                else:
+                    DA_Conc_array_sed.attrs['long_name'] = ((Chemical_name or "") + f" {variable} in sediments (assumed from mass of elements)")
+
                 if hasattr(DS[variable], 'units'):
                     if "concentration" in variable:
                         DA_Conc_array_sed.attrs['units'] = DS[variable].units[11:20]
@@ -7450,7 +7494,8 @@ class ChemicalDrift(OceanDrift):
                            start_date = None,
                            end_date = None,
                            freq_time = None,
-                           time_name = "time"
+                           time_name = "time",
+                           sim_description = None
                            ):
         '''
         Sum a list of xarray DataArrays, with the same or different time step
@@ -7461,12 +7506,17 @@ class ChemicalDrift(OceanDrift):
         end_date:            np.datetime64, start of reconstructed time dimention
         time_step:           np.timedelta64, frequency of reconstructed time dimention
         time_name:           string, name of time dimention of all DataArray present in DataArray_ls
+        sim_description:     string, descrition of simulation to be included in netcdf attributes
         '''
         import xarray as xr
         from datetime import datetime
         
         if len(DataArray_ls) < 2:
-            raise ValueError("DataArray_ls contains less than two DataArrays")
+            if len(DataArray_ls) == 1:
+                print("len(DataArray_ls) is 1, returning DataArray_ls[0]")
+                return DataArray_ls[0]
+            else:
+                raise ValueError("Empty DataArray_ls")
 
         print("Checking input DataArray dimentions")
         ### Check if uncommon dimentions are present
@@ -7618,6 +7668,8 @@ class ChemicalDrift(OceanDrift):
             print(f"Concat_time (h:min:s): {Concat_time_end - Concat_time_start}")
 
         Final_sum.attrs.update(common_attrs)
+        if not hasattr(Final_sum, 'sim_description') and sim_description is not None:
+            Final_sum.attrs['sim_description'] = str(sim_description)
 
         return Final_sum
 
@@ -7633,7 +7685,7 @@ class ChemicalDrift(OceanDrift):
                             file_output_name = None
                             ):
         '''
-        Calculate the weighted average over "depth" for a cancentration dataarray using the bathimerty to calculate average weights.
+        Calculate the weighted average over "depth" for a concentration dataarray using the bathimerty to calculate average weights.
         Use with outputs of "calculate_water_sediment_conc" and " write_netcdf_chemical_density_map" functions
         Depth must contain 0, and its value indicate the upper limit of the vertical level
 
@@ -7648,7 +7700,7 @@ class ChemicalDrift(OceanDrift):
             * longitude     (longitude) float32
         time_name:         string, name of time dimention of Dataset
         variable_name:     string, name of variable in DataSet to be averaged
-        topograpy_name:    string, name of topograpy variable in DataSetTYPE, optional
+        topograpy_name:    string, name of topograpy variable in Dataset
         save_file:         boolean, select if averege file is saved
         file_output_path:  string, path of the file to be saved. Must end with /
         file_output_name:  string, name of the average DataArray output file (.nc)
