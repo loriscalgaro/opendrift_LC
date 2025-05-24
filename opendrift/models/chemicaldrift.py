@@ -3840,17 +3840,18 @@ class ChemicalDrift(OceanDrift):
                     * latitude      (latitude) float32
                     * longitude     (longitude) float32
                 mode:               "water_conc" (seed from concentration in water colum, in ug/L), "sed_conc" (seed from sediment concentration, in ug/kg d.w.), "emission" (seed from direct discharge to water, in kg)
-                radius:             scalar, unit: meters, elements will be created in a circular area around coordinates
-                lowerbound:         scalar, elements with lower values are discarded
-                higherbound:        scalar, elements with higher values are discarded
-                number_of_elements: scalar, number of elements created for each vertical layer at each gridpoint
-                mass_element_ug:    scalar, maximum mass of elements if number_of_elements is not specificed
-                lon_resol:          scalar, longitude resolution of the NETCDF dataset
-                lat_resol:          scalar, latitude resolution of the NETCDF dataset
-                gen_mode:           "mass" (elements generated from mass), "fixed" (fixed number of elements for each data point)
+                radius:             float32, unit: meters, elements will be created in a circular area around coordinates
+                lowerbound:         float32 elements with lower values are discarded
+                higherbound:        float32, elements with higher values are discarded
+                number_of_elements: int, number of elements created for each vertical layer at each gridpoint
+                mass_element_ug:    float32, maximum mass of elements if number_of_elements is not specificed
+                lon_resol:          float32, longitude resolution of the NETCDF dataset
+                lat_resol:          float32, latitude resolution of the NETCDF dataset
+                gen_mode:           string, "mass" (elements generated from mass), "fixed" (fixed number of elements for each data point)
                 last_depth_until_bathimetry: boolean, when depth is specified in NETCDF_data using "water_conc" mode
                                             the water column below the highest depth value is considered the same as the last 
                                             available layer (True) or is consedered without chemical (False)
+                origin_marker:      int, or string "single", assign a marker to seeded elements. If "single" a different origin_marker will be assigned to each datapoint
             """
 
         # mass_element_ug=1e3     # 1e3 - 1 element is 1mg chemical
@@ -3950,7 +3951,7 @@ class ChemicalDrift(OceanDrift):
                 del(Check_bathimetry)
 
         data = np.array(NETCDF_data.data)
-        print(f"Seeding {str(data.size)} datapoints")
+        print(f"Seeding {str(np.sum((~np.isnan(data)) & (data > 0)))} datapoints")
         list_index_print = self._print_progress_list(max(t.size, lo.size, la.size))
 
         sed_mixing_depth = np.array(self.get_config('chemical:sediment:mixing_depth')) # m
@@ -3967,6 +3968,9 @@ class ChemicalDrift(OceanDrift):
 
         if mode == 'emission':
             Bathimetry_seed = None
+
+        if origin_marker == "single":
+            origin_marker_np = np.arange(0, max(t.size, lo.size, la.size))
 
         for i in range(0, max(t.size, lo.size, la.size)):
             if i == 0:
@@ -4046,6 +4050,9 @@ class ChemicalDrift(OceanDrift):
             else:
                 raise ValueError("Incorrect mode")
 
+            if mass_ug == 0:
+                continue
+
             number = self._get_number_of_elements(
                 g_mode=gen_mode,
                 mass_element_ug=mass_element_ug,
@@ -4094,6 +4101,11 @@ class ChemicalDrift(OceanDrift):
                     else:
                         # specify lon if all elements are seeded in the same place
                         elem_lon = lon_array
+                    
+                    if origin_marker == "single":
+                        origin_marker_seed = origin_marker_np[i]
+                    else:
+                        origin_marker_seed = origin_marker
 
                     self.seed_elements(
                         lon=elem_lon,
@@ -4107,7 +4119,7 @@ class ChemicalDrift(OceanDrift):
                         specie = specie_elements,
                         moving = moving_emement,
                         z=z[k],
-                        origin_marker=origin_marker)
+                        origin_marker=origin_marker_seed)
 
                     if gen_mode != "fixed":
                         mass_residual = (mass_ug) - (number * mass_element_seed_ug)
@@ -4133,7 +4145,7 @@ class ChemicalDrift(OceanDrift):
                                 specie = specie_elements,
                                 moving = moving_emement,
                                 z=z,
-                                origin_marker=origin_marker)
+                                origin_marker=origin_marker_seed)
 
     def interp_weights(self, xyz, uvw):
         """
@@ -8024,8 +8036,12 @@ class ChemicalDrift(OceanDrift):
                 file.write(sim_name + f"_concatenated_{i}.nc:\n")
                 for item in sublist:
                     item_size = "{:.2f}".format((self._get_dataset_size(item)/1024**3))
+                    file_name_size_um = "GB"
+                    if float(item_size) < 0.01:
+                        item_size = str(float(item_size)*1000)
+                        file_name_size_um = "MB"
                     item = item.replace(simoutputpath, "")
-                    file.write(f"{item}, {item_size} GB\n")
+                    file.write(f"{item}, {item_size} {file_name_size_um}\n")
                 file.write("\n")
             file.write("Files not concatenated:\n")
             for file_name in files_not_concat:
