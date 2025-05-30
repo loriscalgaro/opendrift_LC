@@ -75,7 +75,23 @@ class Chemical(Lagrangian3DArray):
                              'units': 'ug',
                              'seed': True,
                              'default': 0}),
+        ('mass_biodegraded_water', {'dtype': np.float32,
+                             'units': 'ug',
+                             'seed': True,
+                             'default': 0}),
+        ('mass_biodegraded_sediment', {'dtype': np.float32,
+                             'units': 'ug',
+                             'seed': True,
+                             'default': 0}),
         ('mass_hydrolyzed', {'dtype': np.float32,
+                             'units': 'ug',
+                             'seed': True,
+                             'default': 0}),
+        ('mass_hydrolyzed_water', {'dtype': np.float32,
+                             'units': 'ug',
+                             'seed': True,
+                             'default': 0}),
+        ('mass_hydrolyzed_sediment', {'dtype': np.float32,
                              'units': 'ug',
                              'seed': True,
                              'default': 0})
@@ -144,11 +160,10 @@ class ChemicalDrift(OceanDrift):
         # Calling general constructor of parent class
         super(ChemicalDrift, self).__init__(*args, **kwargs)
 
-        # TODO: descriptions and units must be added in config setting below
         self._add_config({
             'chemical:transfer_setup': {'type': 'enum',
                 'enum': ['Sandnesfj_Al','metals', '137Cs_rev', 'custom', 'organics'], 'default': 'custom',
-                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Define partitioning scheme'},
             'chemical:dynamic_partitioning': {'type': 'bool', 'default': True,
                 'level': CONFIG_LEVEL_BASIC, 'description': 'Toggle dynamic partitioning'},
             'chemical:slowly_fraction': {'type': 'bool', 'default': False,
@@ -493,6 +508,27 @@ class ChemicalDrift(OceanDrift):
                 if (hasattr(value,'sigma') or hasattr(value,'z') ):
                     self.DOC_vertical_levels_given = True
 
+        # List of additional custom variables to be saved in self.result
+        # TODO: These could now be moved to post_run() which should be 
+        # more robust in case variables are changed during run()
+
+        savelist = ['nspecies',
+                    'name_species',
+                    'transfer_rates',
+                    'ntransformations']
+
+        # Add all variables starting with "num_"
+        savelist.extend(k for k in vars(self) if k.startswith("num_"))
+
+        # Saving the variables
+        for var_name in savelist:
+            var_value = getattr(self, var_name)
+            if isinstance(var_value, np.ndarray):
+                dims = tuple(f'specie_{i}' for i in range(var_value.ndim))
+                self.result[var_name] = (dims, var_value)
+            else:
+                self.result[var_name] = var_value
+
         super(ChemicalDrift, self).prepare_run()
 
     def init_species(self):
@@ -567,7 +603,7 @@ class ChemicalDrift(OceanDrift):
         self.nspecies      = len(self.name_species)
 #         logger.info( 'Number of species: {}'.format(self.nspecies) )
 #         for i,sp in enumerate(self.name_species):
-#             logger.info( '{:>3} {}'.format( i, sp ) )
+#             logger.info( '{:>3} {}'.format( i, sp ))
 
 
     def seed_elements(self, *args, **kwargs):
@@ -619,7 +655,6 @@ class ChemicalDrift(OceanDrift):
             else:
                 init_specie[dissolved]=self.num_lmm
             init_specie[~dissolved]=self.num_prev
-
             kwargs['specie'] = init_specie
 
         logger.debug('Initial partitioning:')
@@ -676,6 +711,8 @@ class ChemicalDrift(OceanDrift):
         corr = 10**(Setschenow*ConcSalt)
 
         return corr
+
+### Functions to update partitioning coefficients
 
     def calc_KOC_sedcorr(self, KOC_sed_initial, KOC_sed_n, pKa_acid, pKa_base, KOW, pH_sed, diss,
                          KOC_sed_acid, KOC_sed_base):
@@ -785,7 +822,7 @@ class ChemicalDrift(OceanDrift):
 
     def calc_DOCorr(self, HalfSatO_w, k_Anaerobic_water, k_DecayMax_water, Ox_water):
         ''' Correction for the effects of Dissolved Ox concentration on biodegradation
-        '''   
+        '''
         DOCorr = np.zeros_like(Ox_water)
         N = len(DOCorr)  # Total number of elements
         chunk_size = int(1e5)
@@ -811,7 +848,6 @@ class ChemicalDrift(OceanDrift):
 
         return DOCorr
 
-
     def calc_TCorr(self, T_Max_bio, T_Opt_bio, T_Adp_bio, Max_Accl_bio, Dec_Accl_bio, Q10_bio, TW):
         ''' Correction for the effects of water temperature on biodegradation
         '''  
@@ -834,13 +870,18 @@ class ChemicalDrift(OceanDrift):
             # Compute TCorr only where VT > 0, otherwise keep as 0
             TCorr[i:end] = np.where(VT > 0, (VT**XT) * np.exp(XT * (1 - VT)), 0)
 
-            if np.any((TCorr[i:end] < 0) | (TCorr[i:end] > 1)): 
+            if np.any((TCorr[i:end] < 0) | (TCorr[i:end] > 1.0001)): # Allow for 0.01% rounding error
+                invalid_indices = np.where((TCorr[i:end] < 0) | (TCorr[i:end] > 1.0001))
+                print("Invalid TCorr values and corresponding TW values:")
+                print(f"TCorr[{invalid_indices}] = {TCorr[i:end][invalid_indices]}")
+                print(f"TW[{invalid_indices}] = {TW[i:end][invalid_indices]}")
+                
+                
                 raise ValueError("TCorr is not between 0 and 1")
             else:
                 pass
 
         return TCorr
-
 
     def calc_pHCorr(self, pH_min_bio, pH_max_bio, pH_water):
         ''' Correction for the effects of water pH on biodegradation
@@ -865,7 +906,6 @@ class ChemicalDrift(OceanDrift):
                 pass
 
         return pHCorr
-
 
     def calc_k_hydro_water(self, k_Acid, k_Base, k_Hydr_Uncat, pH_water):
         ''' Hydrolysis rate in water
@@ -894,7 +934,6 @@ class ChemicalDrift(OceanDrift):
 
         return k_W_hydro
 
-
     def calc_k_hydro_sed(self, k_Acid, k_Base, k_Hydr_Uncat, pH_sed):
         ''' Hydrolysis rate in sediments
         ''' 
@@ -920,7 +959,6 @@ class ChemicalDrift(OceanDrift):
                 k_S_hydro[i:end] = np.clip(k_S_hydro[i:end], 0, None)
 
         return k_S_hydro
-
 
     def calc_ScreeningFactor(self, RadDistr, RadDistr0_ml, RadDistr0_bml, WaterExt, ExtCoeffDOM, ExtCoeffSPM, ExtCoeffPHY, C2PHYC, concDOC, concSPM, Conc_Phyto_water, Depth, MLDepth):
         ''' Screening Factor for photolisis attenuation with depth due to DOM, SPM, and Pythoplankton
@@ -962,7 +1000,6 @@ class ChemicalDrift(OceanDrift):
                 pass
 
         return ScreeningFactor
-
 
     def calc_LightFactor(self, AveSolar, Solar_radiation, Conc_CO2_asC, TW, Depth, MLDepth):
         ''' Light Factor for photolisis attenuation with depth 
@@ -1051,6 +1088,7 @@ class ChemicalDrift(OceanDrift):
             # Read water pH to calculate dissociation
             # pH_water = self.environment.sea_water_ph_reported_on_total_scale
             pH_water   = 8.1 # 8.1
+
             pH_sed     = 6.9 # 6.9
 
             fOC_SPM    = self.get_config('chemical:transformations:fOC_SPM')       # typical values from 0.01 to 0.1 gOC/g
@@ -1090,6 +1128,7 @@ class ChemicalDrift(OceanDrift):
                     Phi_diss_water = 1-Phi_n_water
 
                     KOC_sed_n = self.get_config('chemical:transformations:KOC_sed')
+
                     if KOC_sed_n < 0:
                         # KOC_sed_n    = 2.62 * KOW**0.82   # (L/KgOC), Park and Clough, 2014 (334)/Org2C
                         KOC_sed_n   = 10**((0.54*np.log10(KOW)) + 1.11) # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
@@ -1277,6 +1316,7 @@ class ChemicalDrift(OceanDrift):
             self.transfer_rates[self.num_srev,self.num_ssrev] = sed_burial / sed_L / 31556926 # k46 (m/y) / m / (s/y) = s-1
             self.transfer_rates[self.num_ssrev,self.num_srev] = sed_leaking_rate              # k64
 
+
             self.transfer_rates[self.num_humcol,self.num_prev] = self.get_config('chemical:transformations:aggregation_rate')
             self.transfer_rates[self.num_prev,self.num_humcol] = 0          # TODO check if valid for organics
 
@@ -1317,6 +1357,7 @@ class ChemicalDrift(OceanDrift):
             self.transfer_rates[self.num_srev,self.num_ssrev] = sed_burial / sed_L / 3155692
             self.transfer_rates[self.num_ssrev,self.num_srev] = sed_leaking_rate
             self.transfer_rates[self.num_prev,self.num_psrev] = slow_coeff
+            self.transfer_rates[self.num_ssrev,self.num_srev] = slow_coeff*.1
             self.transfer_rates[self.num_psrev,self.num_prev] = slow_coeff*.1
 
 
@@ -1441,7 +1482,6 @@ class ChemicalDrift(OceanDrift):
         else:
             logger.ERROR('No transfer setup available')
 
-
         # Set diagonal to 0. (not possible to transform to present specie)
         if len(self.transfer_rates.shape) == 3:
             for ii in range(self.transfer_rates.shape[0]):
@@ -1455,7 +1495,6 @@ class ChemicalDrift(OceanDrift):
 
         logger.debug('nspecies: %s' % self.nspecies)
         logger.debug('Transfer rates:\n %s' % self.transfer_rates)
-
 
     def update_terminal_velocity(self, Tprofiles=None,
                                  Sprofiles=None, z_index=None):
@@ -1520,7 +1559,6 @@ class ChemicalDrift(OceanDrift):
 
         self.elements.terminal_velocity = W * self.elements.moving
 
-
     def update_transfer_rates(self):
         '''Pick out the correct row from transfer_rates for each element. Modify the
         transfer rates according to local environmental conditions '''
@@ -1539,10 +1577,10 @@ class ChemicalDrift(OceanDrift):
                 # filtering out zero values from temperature and salinity
                 # TODO: Find out if problem is in the reader or in the data
                 temperature=self.environment.sea_water_temperature
-                temperature[temperature==0]=np.median(temperature)
+                #temperature[temperature==0]=np.median(temperature)
 
                 salinity=self.environment.sea_water_salinity
-                salinity[salinity==0]=np.median(salinity)
+                #salinity[salinity==0]=np.median(salinity)
 
                 KOWTref    = self.get_config('chemical:transformations:TrefKOW')
                 DH_KOC_Sed = self.get_config('chemical:transformations:DeltaH_KOC_Sed')
@@ -1568,8 +1606,8 @@ class ChemicalDrift(OceanDrift):
                 # Select elements for updating trasfer rates in sediments, SPM, and DOM
 
                 #Sediments
-                S =   (self.elements.specie == self.num_srev) \
-                    + (self.elements.specie == self.num_ssrev)
+                S =   (self.elements.specie == self.num_srev)# \
+                    # + (self.elements.specie == self.num_ssrev)
 
                 SPM = (self.elements.specie == self.num_prev)
 
@@ -1632,7 +1670,7 @@ class ChemicalDrift(OceanDrift):
                     KOC_DOM_base = 0.08 * 10**(np.log10(KOW)-3.5) # from  http://i-pie.org/wp-content/uploads/2019/12/ePiE_Technical_Manual-Final_Version_20191202
                 else:
                     pass
-                
+                                    
                 fOC_SPM    = self.get_config('chemical:transformations:fOC_SPM')       # typical values from 0.01 to 0.1 gOC/g
                 fOC_sed    = self.get_config('chemical:transformations:fOC_sed')
                 Org2C      = 0.526  # kgOC/KgOM
@@ -1647,10 +1685,10 @@ class ChemicalDrift(OceanDrift):
                 # filtering out zero values from temperature and salinity
                 # TODO: Find out if problem is in the reader or in the data
                 temperature=self.environment.sea_water_temperature
-                temperature[temperature==0]=np.median(temperature)
+                #temperature[temperature==0]=np.median(temperature)
 
                 salinity=self.environment.sea_water_salinity
-                salinity[salinity==0]=np.median(salinity)
+                #salinity[salinity==0]=np.median(salinity)
 
                 KOWTref    = self.get_config('chemical:transformations:TrefKOW')
                 DH_KOC_Sed = self.get_config('chemical:transformations:DeltaH_KOC_Sed')
@@ -1670,6 +1708,8 @@ class ChemicalDrift(OceanDrift):
 
                 # Temperature and salinity correction for desorption rates (inversely proportional to Kd)
 
+                ####
+
                 self.elements.transfer_rates1D[self.elements.specie==self.num_humcol,self.num_lmm] = \
                     self.k21_0 * KOC_watcorrDOM / tempcorrDOM[self.elements.specie==self.num_humcol] / salinitycorr[self.elements.specie==self.num_humcol]
 
@@ -1684,6 +1724,7 @@ class ChemicalDrift(OceanDrift):
             if transfer_setup=='organics':
 
                 # Updating sorption rates according to local SPM concentration
+
                 concSPM=self.environment.spm * 1e-6 # (Kg/L) from (g/m3)
 
                 # Apply SPM concentration profile if SPM reader has not depth coordinate
@@ -1719,15 +1760,15 @@ class ChemicalDrift(OceanDrift):
                         *np.log(0.5)/self.get_config('chemical:particle_concentration_half_depth')
                         )
 
-                Kd0         = self.get_config('chemical:transformations:Kd') # (m3/Kg)
-                S0          = self.get_config('chemical:transformations:S0') # (PSU)
-                Dc          = self.get_config('chemical:transformations:Dc') # (1/s)
+                Kd0         = self.get_config('chemical:transformations:Kd')        # (m3/Kg)
+                S0          = self.get_config('chemical:transformations:S0')        # (PSU)
+                Dc          = self.get_config('chemical:transformations:Dc')        # (1/s)
                 sed_L       = self.get_config('chemical:sediment:mixing_depth')     # sediment mixing depth (m)
-                sed_dens    = self.get_config('chemical:sediment:density') # default particle density (kg/m3)
-                sed_f       = self.get_config('chemical:sediment:effective_fraction')      # fraction of effective sorbents
+                sed_dens    = self.get_config('chemical:sediment:density')          # default particle density (kg/m3)
+                sed_f       = self.get_config('chemical:sediment:effective_fraction') # fraction of effective sorbents
                 sed_phi     = self.get_config('chemical:sediment:corr_factor')      # sediment correction factor
-                sed_poro    = self.get_config('chemical:sediment:porosity')      # sediment porosity
-                sed_H       = self.get_config('chemical:sediment:layer_thickness')      # thickness of seabed interaction layer (m)
+                sed_poro    = self.get_config('chemical:sediment:porosity')         # sediment porosity
+                sed_H       = self.get_config('chemical:sediment:layer_thickness')  # thickness of seabed interaction layer (m)
 
                 # Adjust Kd for salinity according to Perianez 2018 https://doi.org/10.1016/j.jenvrad.2018.02.014
                 if S0>0:
@@ -1738,6 +1779,7 @@ class ChemicalDrift(OceanDrift):
 
                 self.elements.transfer_rates1D[self.elements.specie==self.num_lmm,self.num_srev] = \
                     Dc * Kd * sed_L * sed_dens * (1.-sed_poro) * sed_f * sed_phi / sed_H
+
 
             if transfer_setup=='organics':
 
@@ -1774,7 +1816,6 @@ class ChemicalDrift(OceanDrift):
             sali = np.searchsorted(self.salinity_intervals, sal) - 1
             self.elements.transfer_rates1D = self.transfer_rates[sali,self.elements.specie,:]
 
-
     def update_partitioning(self):
         '''Check if transformation processes shall occur
         Do transformation (change value of self.elements.specie)
@@ -1784,29 +1825,29 @@ class ChemicalDrift(OceanDrift):
         specie_in  = self.elements.specie.copy()    # for storage of the initial partitioning
         specie_out = self.elements.specie.copy()    # for storage of the final partitioning
         deltat = self.time_step.total_seconds()     # length of a time step
-        phaseshift = np.array(self.num_elements_active()*[False])  # Denotes which trajectory that shall be transformed
+        # phaseshift = np.array(self.num_elements_active()*[False]
+        phaseshift = np.zeros(self.num_elements_active(), dtype=bool) # Denotes which trajectory that shall be transformed
 
         p = 1. - np.exp(-self.elements.transfer_rates1D*deltat)  # Probability for transformation
-
         psum = np.sum(p,axis=1)
 
         ran1=np.random.random(self.num_elements_active())
 
         # Transformation where ran1 < total probability for transformation
-        phaseshift[ ran1 < psum ] = True
-
-        logger.info('Number of transformations: %s' % sum(phaseshift))
-        if sum(phaseshift) == 0:
+        # phaseshift[ ran1 < psum ] = True
+        phaseshift = ran1 < psum
+        num_transformed = np.count_nonzero(phaseshift)
+        logger.info('Number of transformations: %s' % num_transformed)
+        if num_transformed == 0:
             return
 
-        ran4 = np.random.random(sum(phaseshift)) # New random number to decide which specie to end up in
-
-        ttmp=[]  # list for storing the out specie
-        # Loop through each trajectory
-        for ii in range(sum(phaseshift)):
-            # Compare random number to the relative probability for each transfer process
-            ttmp.append(np.searchsorted(np.cumsum(p[phaseshift][ii]/psum[phaseshift][ii]),ran4[ii]))
-        specie_out[phaseshift] = np.array(ttmp)
+        ran4 = np.random.random(num_transformed) # New random number to decide which specie to end up in
+        p_selected = p[phaseshift]  # Only rows where transformation happens
+        psum_selected = psum[phaseshift]  # Corresponding sum of probabilities
+        psum_selected = np.where(psum_selected == 0, 1, psum_selected)  
+        cumsum_p = np.cumsum(p_selected / psum_selected[:, np.newaxis], axis=1)
+        ran4 = ran4[:cumsum_p.shape[0]]  # Matching the number of transformed elements
+        specie_out[phaseshift] = np.array([np.searchsorted(cumsum_p[i], ran4[i]) for i in range(len(ran4))])
 
         # Set the new partitioning
         self.elements.specie = specie_out
@@ -1814,9 +1855,10 @@ class ChemicalDrift(OceanDrift):
         logger.debug('old species: %s' % specie_in[phaseshift])
         logger.debug('new species: %s' % specie_out[phaseshift])
 
+
         for iin in range(self.nspecies):
             for iout in range(self.nspecies):
-                self.ntransformations[iin,iout]+=sum((specie_in[phaseshift]==iin) & (specie_out[phaseshift]==iout))
+                self.ntransformations[iin,iout]+=np.count_nonzero((specie_in[phaseshift]==iin) & (specie_out[phaseshift]==iout))
 
         logger.debug('Number of transformations total:\n %s' % self.ntransformations )
 
@@ -1825,10 +1867,8 @@ class ChemicalDrift(OceanDrift):
         self.sorption_to_sediments(specie_in, specie_out)
         self.desorption_from_sediments(specie_in, specie_out)
 
-
     def sorption_to_sediments(self,sp_in=None,sp_out=None):
         '''Update Chemical properties  when sorption to sediments occurs'''
-
 
         # Set z to local sea depth
         if self.get_config('chemical:species:LMM'):
@@ -1844,13 +1884,11 @@ class ChemicalDrift(OceanDrift):
             logger.debug('Number of elements lowered down to sea surface: %s' % np.nansum(self.elements.z>0))
         self.elements.z[self.elements.z > 0] = 0
 
-
     def desorption_from_sediments(self,sp_in=None,sp_out=None):
         '''Update Chemical properties when desorption from sediments occurs'''
 
         desorption_depth = self.get_config('chemical:sediment:desorption_depth')
         std = self.get_config('chemical:sediment:desorption_depth_uncert')
-
 
         if self.get_config('chemical:species:LMM'):
             self.elements.z[(sp_out==self.num_lmm) & (sp_in==self.num_srev)] = \
@@ -1873,10 +1911,8 @@ class ChemicalDrift(OceanDrift):
             logger.debug('Number of elements lowered down to sea surface: %s' % np.nansum(self.elements.z>0))
         self.elements.z[self.elements.z > 0] = 0
 
-
     def update_chemical_diameter(self,sp_in=None,sp_out=None):
         '''Update the diameter of the chemicals when specie is changed'''
-
 
         dia_part=self.get_config('chemical:particle_diameter')
         dia_DOM_part = self.get_config('chemical:doc_particle_diameter')
@@ -1928,7 +1964,6 @@ class ChemicalDrift(OceanDrift):
         if self.get_config('chemical:species:Polymer'):
             self.elements.diameter[(sp_out==self.num_polymer) & (sp_in!=self.num_polymer)] = dia_diss
 
-
     def bottom_interaction(self,Zmin=None):
         ''' Change partitioning of chemicals that reach bottom due to settling.
         particle specie -> sediment specie '''
@@ -1953,7 +1988,6 @@ class ChemicalDrift(OceanDrift):
             self.elements.specie[bottom[kktmp]] = self.num_sirrev
             self.ntransformations[self.num_pirrev,self.num_sirrev]+=len(kktmp)
             self.elements.moving[bottom[kktmp]] = 0
-
 
     def resuspension(self):
         """ Simple method to estimate the resuspension of sedimented particles,
@@ -2027,12 +2061,15 @@ class ChemicalDrift(OceanDrift):
                 W =   (self.elements.specie == self.num_lmm) \
                     + (self.elements.specie == self.num_humcol)
 
-                TW=self.environment.sea_water_temperature[W]
-                TW[TW==0]=np.median(TW)
+                if np.any(W):
+                    TW=self.environment.sea_water_temperature[W]
+                    # if np.any(TW==0):
+                    #     TW[TW==0]=np.median(TW)
+                    #     logger.debug("Temperature in degradation was 0, set to median value")
 
-                k_W_fin = k_W_tot * self.tempcorr("Arrhenius",DH_kWt,TW,Tref_kWt)
+                    k_W_fin = k_W_tot * self.tempcorr("Arrhenius",DH_kWt,TW,Tref_kWt)
 
-                degraded_now[W] = self.elements.mass[W] * (1-np.exp(-k_W_fin * self.time_step.total_seconds()))
+                    degraded_now[W] = self.elements.mass[W] * (1-np.exp(-k_W_fin * self.time_step.total_seconds()))
 
                 # Degradation in the sediments
 
@@ -2043,12 +2080,13 @@ class ChemicalDrift(OceanDrift):
                 S =   (self.elements.specie == self.num_srev) \
                     + (self.elements.specie == self.num_ssrev)
 
-                TS=self.environment.sea_water_temperature[S]
-                TS[TS==0]=np.median(TS)
+                if np.any(S):
+                    TS=self.environment.sea_water_temperature[S]
+                    #TS[TS==0]=np.median(TS)
 
-                k_S_fin = k_S_tot * self.tempcorr("Arrhenius",DH_kSt,TS,Tref_kSt)
+                    k_S_fin = k_S_tot * self.tempcorr("Arrhenius",DH_kSt,TS,Tref_kSt)
 
-                degraded_now[S] = self.elements.mass[S] * (1-np.exp(-k_S_fin * self.time_step.total_seconds()))
+                    degraded_now[S] = self.elements.mass[S] * (1-np.exp(-k_S_fin * self.time_step.total_seconds()))
 
                 self.elements.mass_degraded_water[W] = self.elements.mass_degraded_water[W] + degraded_now[W]
                 self.elements.mass_degraded_sediment[S] = self.elements.mass_degraded_sediment[S] + degraded_now[S]
@@ -2064,9 +2102,9 @@ class ChemicalDrift(OceanDrift):
                 #self.deactivate_elements(to_deactivate +  vol_morethan_degr, reason='volatilized')
                 #self.deactivate_elements(to_deactivate + ~vol_morethan_degr, reason='degraded')
 
-        elif self.get_config('chemical:transformations:degradation_mode')=='SingleRateConstants':
+            elif self.get_config('chemical:transformations:degradation_mode')=='SingleRateConstants':
                 logger.debug('Calculating single degradation rates in water')
-                
+
                 Photo_degr = self.get_config('chemical:transformations:Photodegradation')
                 Bio_degr = self.get_config('chemical:transformations:Biodegradation')
                 Hydro_degr = self.get_config('chemical:transformations:Hydrolysis')
@@ -2082,231 +2120,271 @@ class ChemicalDrift(OceanDrift):
                 W =   (self.elements.specie == self.num_lmm) \
                     + (self.elements.specie == self.num_humcol)
 
-                # Temperature
-                TW=self.environment.sea_water_temperature[W]
-                TW[TW==0]=np.median(TW)
-
-                Tref_kWt = self.get_config('chemical:transformations:Tref_kWt')
-                DH_kWt = self.get_config('chemical:transformations:DeltaH_kWt')
-                k_DecayMax_water = self.get_config('chemical:transformations:k_DecayMax_water')
-                
-                if k_DecayMax_water == 0:
-                    logger.debug("k_DecayMax_water is set to 0 1/h, therefore  DOCorr = 0 and no biodegradation occurs")
-                else:
-                    pass
-
-                k_Anaerobic_water = self.get_config('chemical:transformations:k_Anaerobic_water')
-
-                if k_Anaerobic_water == 0:
-                    logger.debug("k_Anaerobic_water is set to 0 1/h, therefore no biodegradation occurs without oxigen")
-                else:
-                    pass
-
-
-                if Bio_degr is True and k_DecayMax_water > 0:
-                    HalfSatO_w = self.get_config('chemical:transformations:HalfSatO_w')
-                    T_Max_bio = self.get_config('chemical:transformations:T_Max_bio')
-                    T_Opt_bio = self.get_config('chemical:transformations:T_Opt_bio')
-                    T_Adp_bio = self.get_config('chemical:transformations:T_Adp_bio')
-                    Max_Accl_bio = self.get_config('chemical:transformations:Max_Accl_bio')
-                    Dec_Accl_bio = self.get_config('chemical:transformations:Dec_Accl_bio')
-                    Q10_bio = self.get_config('chemical:transformations:Q10_bio')
-                    pH_min_bio = self.get_config('chemical:transformations:pH_min_bio')
-                    pH_max_bio = self.get_config('chemical:transformations:pH_max_bio')
-                    # # Dissolved oxigen in g/m3 or mg/L
-                    Ox_water=self.environment.mole_concentration_of_dissolved_molecular_oxygen_in_sea_water[W]
-                    # # Ox_water[Ox_water==0]=np.median(Ox_water)
-                else:
-                    pass
-
-
-                if Hydro_degr is True:
-                    k_Acid = self.get_config('chemical:transformations:k_Acid')
-                    k_Base = self.get_config('chemical:transformations:k_Base')
-                    k_Hydr_Uncat = self.get_config('chemical:transformations:k_Hydr_Uncat')
-                    k_Photo = self.get_config('chemical:transformations:k_Photo') 
-
-
-                if Photo_degr is True and k_Photo > 0:
-                    RadDistr = self.get_config('chemical:transformations:RadDistr')
-                    RadDistr0_ml = self.get_config('chemical:transformations:RadDistr0_ml')
-                    RadDistr0_bml = self.get_config('chemical:transformations:RadDistr0_bml')
-                    WaterExt = self.get_config('chemical:transformations:WaterExt')
-                    ExtCoeffDOM = self.get_config('chemical:transformations:ExtCoeffDOM')
-                    ExtCoeffSPM = self.get_config('chemical:transformations:ExtCoeffSPM')
-                    ExtCoeffPHY = self.get_config('chemical:transformations:ExtCoeffPHY')
-                    C2PHYC = self.get_config('chemical:transformations:C2PHYC')
-                    AveSolar = self.get_config('chemical:transformations:AveSolar')
-                    # Concentration of C02 in the water column (mol_C/m3)
-                    Conc_CO2_asC=self.environment.mole_concentration_of_dissolved_inorganic_carbon_in_sea_water[W]
-                    # Conc_CO2_asC[Conc_CO2_asC==0]=np.median(Conc_CO2_asC)
-                    
-                    # Solar radiation (W/m2)
-                    Solar_radiation=self.environment.solar_irradiance[W]
-                    # Solar_radiation[Solar_radiation==0]=np.median(Solar_radiation)
-
-                    # Concentration of phytoplankton in the water column (mol_C/m3)
-                    Conc_Phyto_water=self.environment.mole_concentration_of_phytoplankton_expressed_as_carbon_in_sea_water[W]
-                    # Conc_Phyto_water[Conc_Phyto_water==0]=np.median(Conc_Phyto_water)
-                    
-                    # Concentration of SPM (g/m3)
-                    concSPM=self.environment.spm
-                    
-                    # Mixed Layer depth (m)
-                    MLDepth=self.environment.ocean_mixed_layer_thickness[W] 
-                    # MLDepth[MLDepthr==0]=np.median(MLDepth)
-
-                    # Depth of element (m)
-                    Depth=-self.elements.z[W]     # self.elements.z is negative
-
-                    # Apply SPM concentration profile if SPM reader has not depth coordinate
-                    # SPM concentration is kept constant to surface value in the mixed layer
-                    # Exponentially decreasing with depth below the mixed layers
-
-                    if not self.SPM_vertical_levels_given:
-                        lowerMLD = self.elements.z < -self.environment.ocean_mixed_layer_thickness
-                        #concSPM[lowerMLD] = concSPM[lowerMLD]/2
-                        concSPM[lowerMLD] = concSPM[lowerMLD] * np.exp(
-                            -(self.elements.z[lowerMLD]+self.environment.ocean_mixed_layer_thickness[lowerMLD])
-                            *np.log(0.5)/self.get_config('chemical:particle_concentration_half_depth')
-                            )
-                    concSPM=concSPM[W] # (g/m3)
-
-                    # Concentration of DOC (umol[C]/Kg)
-                    concDOC = self.environment.doc
-
-                    # Apply DOC concentration profile if DOC reader has not depth coordinate
-                    # DOC concentration is kept constant to surface value in the mixed layer
-                    # Exponentially decreasing with depth below the mixed layers
-
-                    if not self.DOC_vertical_levels_given:
-                        lowerMLD = self.elements.z < -self.environment.ocean_mixed_layer_thickness
-                        #concDOM[lowerMLD] = concDOM[lowerMLD]/2
-                        concDOC[lowerMLD] = concDOC[lowerMLD] * np.exp(
-                            -(self.elements.z[lowerMLD]+self.environment.ocean_mixed_layer_thickness[lowerMLD])
-                            *np.log(0.5)/self.get_config('chemical:doc_concentration_half_depth')
-                            )
-                    concDOC=concDOC[W] # in (umol[C]/Kg)
-                else:
-                    pass
-
-
-                if (Bio_degr is True and k_DecayMax_water > 0) or Hydro_degr is True:
-                    # # pH water
-                    pH_water=self.environment.sea_water_ph_reported_on_total_scale[W]
-                    # # pH_water[pH_water==0]=np.median(pH_water)
-                else:
-                    pass
-
-                # Calculate correction factors for degradation rates
-
-                if Bio_degr is True and k_DecayMax_water > 0:
-                    k_W_bio = k_DecayMax_water * self.calc_DOCorr(HalfSatO_w, k_Anaerobic_water, k_DecayMax_water, Ox_water)
-                    k_W_bio = k_W_bio * self.calc_pHCorr(pH_min_bio, pH_max_bio, pH_water)
-                    k_W_bio = k_W_bio * self.calc_TCorr(T_Max_bio, T_Opt_bio, T_Adp_bio, Max_Accl_bio,
-                                                        Dec_Accl_bio, Q10_bio, TW)
-                else:
-                    k_W_bio = np.zeros_like(TW)
-
-                if Photo_degr is True and k_Photo > 0:
-                    k_W_photo = k_Photo * self.calc_LightFactor(AveSolar, Solar_radiation, Conc_CO2_asC, TW, Depth, MLDepth)
-                    k_W_photo = k_W_photo * self.calc_ScreeningFactor(RadDistr, RadDistr0_ml, RadDistr0_bml, WaterExt, 
-                                                                      ExtCoeffDOM, ExtCoeffSPM, ExtCoeffPHY, C2PHYC, concDOC, 
-                                                                      concSPM, Conc_Phyto_water, Depth, MLDepth)
-                    k_W_photo = k_W_photo * self.tempcorr("Arrhenius",DH_kWt,TW,Tref_kWt)
-                else:
-                    k_W_photo = np.zeros_like(TW)
-
-                if Hydro_degr is True:
-                    k_W_hydro = self.calc_k_hydro_water(k_Acid, k_Base, k_Hydr_Uncat, pH_water)
-                    k_W_hydro = k_W_hydro * self.tempcorr("Arrhenius",DH_kWt,TW,Tref_kWt)
-                else:
-                    k_W_hydro = np.zeros_like(TW)
-
-
-                k_W_fin = (k_W_bio + k_W_hydro + k_W_photo)/(60*60) # from 1/h to 1/s
-                degraded_now[W] = self.elements.mass[W] * (1-np.exp(-k_W_fin * self.time_step.total_seconds()))
-
-
-                # Degradation in the sediments
-
-
-                # k_S_tot = -np.log(0.5)/(self.get_config('chemical:transformations:t12_S_tot')*(60*60)) # (1/s)
-
-                Tref_kSt = self.get_config('chemical:transformations:Tref_kSt')
-                DH_kSt = self.get_config('chemical:transformations:DeltaH_kSt')
-
                 S =   (self.elements.specie == self.num_srev) \
                     + (self.elements.specie == self.num_ssrev)
 
-                TS=self.environment.sea_water_temperature[S]
-                TS[TS==0]=np.median(TS)
+                W_deg = np.any(W)
+                S_deg = np.any(S)
 
-                if (Bio_degr is True and k_DecayMax_water > 0) or Hydro_degr is True:
-                    # pH sediments
-                    pH_sed=self.environment.pH_sediment[S]
-                    pH_sed[pH_sed==0]=np.median(pH_sed)
+                k_Photo = self.get_config('chemical:transformations:k_Photo')
+                k_DecayMax_water = self.get_config('chemical:transformations:k_DecayMax_water')
+                k_Anaerobic_water = self.get_config('chemical:transformations:k_Anaerobic_water')
+                if k_Photo == 0:
+                    logger.debug("k_Photo is set to 0 1/h, therefore no photodegradation occurs")
+                if k_DecayMax_water == 0:
+                    logger.debug("k_DecayMax_water is set to 0 1/h, therefore  DOCorr = 0 and no biodegradation occurs")
+                if k_Anaerobic_water == 0:
+                    logger.debug("k_Anaerobic_water is set to 0 1/h, therefore no biodegradation occurs without oxigen")
 
-                if Bio_degr is True and k_DecayMax_water > 0:
-                    k_S_bio = self.get_config('chemical:transformations:k_DecayMax_water')/4  # From AQUATOX   k_DecayMax_water is a rate (1/h), and k_S_bio is four times slower than k_DecayMax_water
-                    k_S_bio = k_S_bio * self.tempcorr("Arrhenius",DH_kSt,TS,Tref_kSt)
-                    # k_S_bio = k_S_bio * self.calc_TCorr(T_Max_bio, T_Opt_bio, T_Adp_bio, Max_Accl_bio,
-                    #                                     Dec_Accl_bio, Q10_bio, TW)
+
+                if W_deg == True or S_deg == True:
+                    Tref_kWt = self.get_config('chemical:transformations:Tref_kWt')
+                    DH_kWt = self.get_config('chemical:transformations:DeltaH_kWt')
+                    Tref_kSt = self.get_config('chemical:transformations:Tref_kSt')
+                    DH_kSt = self.get_config('chemical:transformations:DeltaH_kSt')
+                    
+                    
+                    if Bio_degr is True and k_DecayMax_water > 0:
+                        HalfSatO_w = self.get_config('chemical:transformations:HalfSatO_w')
+                        T_Max_bio = self.get_config('chemical:transformations:T_Max_bio')
+                        T_Opt_bio = self.get_config('chemical:transformations:T_Opt_bio')
+                        T_Adp_bio = self.get_config('chemical:transformations:T_Adp_bio')
+                        Max_Accl_bio = self.get_config('chemical:transformations:Max_Accl_bio')
+                        Dec_Accl_bio = self.get_config('chemical:transformations:Dec_Accl_bio')
+                        Q10_bio = self.get_config('chemical:transformations:Q10_bio')
+                        pH_min_bio = self.get_config('chemical:transformations:pH_min_bio')
+                        pH_max_bio = self.get_config('chemical:transformations:pH_max_bio')
+                        # # Dissolved oxigen in g/m3 or mg/L
+                        Ox_water=self.environment.mole_concentration_of_dissolved_molecular_oxygen_in_sea_water[W]
+                    else:
+                        pass
+
+                    if Hydro_degr is True:
+                        k_Acid = self.get_config('chemical:transformations:k_Acid')
+                        k_Base = self.get_config('chemical:transformations:k_Base')
+                        k_Hydr_Uncat = self.get_config('chemical:transformations:k_Hydr_Uncat')
+                        if (k_Acid <= 0 and k_Base <= 0 and k_Hydr_Uncat == 0):
+                            logger.debug("k_Acid, k_Base, and  k_Hydr_Uncat are set to 0 1/h, therefore no hydrolysis occurs")
+
+
+                if W_deg:
+                    # Temperature
+                    TW=self.environment.sea_water_temperature[W]
+                    # if np.any(TW==0):
+                    #     TW[TW==0]=np.median(TW)
+                    #     logger.debug("Temperature in degradation was 0, set to median value")
+
+
+
+                    if Photo_degr is True and k_Photo > 0:
+                        RadDistr = self.get_config('chemical:transformations:RadDistr')
+                        RadDistr0_ml = self.get_config('chemical:transformations:RadDistr0_ml')
+                        RadDistr0_bml = self.get_config('chemical:transformations:RadDistr0_bml')
+                        WaterExt = self.get_config('chemical:transformations:WaterExt')
+                        ExtCoeffDOM = self.get_config('chemical:transformations:ExtCoeffDOM')
+                        ExtCoeffSPM = self.get_config('chemical:transformations:ExtCoeffSPM')
+                        ExtCoeffPHY = self.get_config('chemical:transformations:ExtCoeffPHY')
+                        C2PHYC = self.get_config('chemical:transformations:C2PHYC')
+                        AveSolar = self.get_config('chemical:transformations:AveSolar')
+                        # Concentration of C02 in the water column (mol_C/m3)
+                        Conc_CO2_asC=self.environment.mole_concentration_of_dissolved_inorganic_carbon_in_sea_water[W]
+                        # if np.any(Conc_CO2_asC==0):
+                        #     Conc_CO2_asC[Conc_CO2_asC==0]=np.median(Conc_CO2_asC)
+                        #     logger.debug("CO2_asC in degradation was 0, set to median value")
+
+                        # Solar radiation (W/m2)
+                        Solar_radiation=self.environment.solar_irradiance[W]
+                        # if np.any(Solar_radiation==0):
+                        #     Solar_radiation[Solar_radiation==0]=np.median(Solar_radiation)
+                        #     logger.debug("Solar_radiation in degradation was 0, set to median value")
+
+                        # Concentration of phytoplankton in the water column (mol_C/m3)
+                        Conc_Phyto_water=self.environment.mole_concentration_of_phytoplankton_expressed_as_carbon_in_sea_water[W]
+                        # if np.any(Conc_Phyto_water==0):
+                        #     Conc_Phyto_water[Conc_Phyto_water==0]=np.median(Conc_Phyto_water)
+                        #     logger.debug("Conc_Phyto_water in degradation was 0, set to median value")
+
+                        # Concentration of SPM (g/m3)
+                        concSPM=self.environment.spm
+
+                        # Mixed Layer depth (m)
+                        MLDepth=self.environment.ocean_mixed_layer_thickness[W]
+                        # if np.any(MLDepthr==0):
+                        #     MLDepth[MLDepthr==0]=np.median(MLDepth)
+                        #     logger.debug("MLDepth in degradation was 0, set to median value")
+
+                        # Depth of element (m)
+                        Depth=-self.elements.z[W]     # self.elements.z is negative
+
+                        # Apply SPM concentration profile if SPM reader has not depth coordinate
+                        # SPM concentration is kept constant to surface value in the mixed layer
+                        # Exponentially decreasing with depth below the mixed layers
+
+                        if not self.SPM_vertical_levels_given:
+                            lowerMLD = self.elements.z < -self.environment.ocean_mixed_layer_thickness
+                            #concSPM[lowerMLD] = concSPM[lowerMLD]/2
+                            concSPM[lowerMLD] = concSPM[lowerMLD] * np.exp(
+                                -(self.elements.z[lowerMLD]+self.environment.ocean_mixed_layer_thickness[lowerMLD])
+                                *np.log(0.5)/self.get_config('chemical:particle_concentration_half_depth')
+                                )
+                        concSPM=concSPM[W] # (g/m3)
+
+                        # Concentration of DOC (umol[C]/Kg)
+                        concDOC = self.environment.doc
+
+                        # Apply DOC concentration profile if DOC reader has not depth coordinate
+                        # DOC concentration is kept constant to surface value in the mixed layer
+                        # Exponentially decreasing with depth below the mixed layers
+
+                        if not self.DOC_vertical_levels_given:
+                            lowerMLD = self.elements.z < -self.environment.ocean_mixed_layer_thickness
+                            #concDOM[lowerMLD] = concDOM[lowerMLD]/2
+                            concDOC[lowerMLD] = concDOC[lowerMLD] * np.exp(
+                                -(self.elements.z[lowerMLD]+self.environment.ocean_mixed_layer_thickness[lowerMLD])
+                                *np.log(0.5)/self.get_config('chemical:doc_concentration_half_depth')
+                                )
+                        concDOC=concDOC[W] # in (umol[C]/Kg)
+                    else:
+                        pass
+
+
+                    if (Bio_degr is True and k_DecayMax_water > 0) or Hydro_degr is True:
+                        # pH water
+                        pH_water=self.environment.sea_water_ph_reported_on_total_scale[W]
+                        if np.any(pH_water==0):
+                            pH_water[pH_water==0]=np.median(pH_water)
+                            logger.debug("pH_water in degradation was 0, set to median value")
+                    else:
+                        pass
+
+                    # Calculate correction factors for degradation rates
+
+                    if Bio_degr is True and k_DecayMax_water > 0:
+                        k_W_bio = k_DecayMax_water * self.calc_DOCorr(HalfSatO_w, k_Anaerobic_water, k_DecayMax_water, Ox_water)
+                        k_W_bio = k_W_bio * self.calc_pHCorr(pH_min_bio, pH_max_bio, pH_water)
+                        k_W_bio = k_W_bio * self.calc_TCorr(T_Max_bio, T_Opt_bio, T_Adp_bio, Max_Accl_bio,
+                                                            Dec_Accl_bio, Q10_bio, TW)
+                    else:
+                        k_W_bio = np.zeros_like(TW)
+
+                    if Photo_degr is True and k_Photo > 0:
+                        k_W_photo = k_Photo * self.calc_LightFactor(AveSolar, Solar_radiation, Conc_CO2_asC, TW, Depth, MLDepth)
+                        k_W_photo = k_W_photo * self.calc_ScreeningFactor(RadDistr, RadDistr0_ml, RadDistr0_bml, WaterExt, 
+                                                                          ExtCoeffDOM, ExtCoeffSPM, ExtCoeffPHY, C2PHYC, concDOC, 
+                                                                          concSPM, Conc_Phyto_water, Depth, MLDepth)
+                        k_W_photo = k_W_photo * self.tempcorr("Arrhenius",DH_kWt,TW,Tref_kWt)
+                    else:
+                        k_W_photo = np.zeros_like(TW)
+
+                    if Hydro_degr is True:
+                        k_W_hydro = self.calc_k_hydro_water(k_Acid, k_Base, k_Hydr_Uncat, pH_water)
+                        k_W_hydro = k_W_hydro * self.tempcorr("Arrhenius",DH_kWt,TW,Tref_kWt)
+                    else:
+                        k_W_hydro = np.zeros_like(TW)
+
+                    k_W_fin = (k_W_bio + k_W_hydro + k_W_photo)/(60*60) # from 1/h to 1/s
+                    k_W_fin_sum = np.sum(k_W_fin)
+
+                    if k_W_fin_sum > 0:
+                        degraded_now[W] = np.minimum(self.elements.mass[W], 
+                                        self.elements.mass[W] * (1 - np.exp(-k_W_fin * self.time_step.total_seconds())))
+                        self.elements.mass_degraded_water[W] = self.elements.mass_degraded_water[W] + degraded_now[W]
                 else:
-                    k_S_bio = np.zeros_like(TS)
+                    k_W_bio = 0
+                    k_W_hydro = 0
+                    k_W_photo = 0
+                    k_W_fin_sum = 0
 
-                if Hydro_degr is True:
-                    k_S_hydro = self.calc_k_hydro_sed(k_Acid, k_Base, k_Hydr_Uncat, pH_sed)
-                    k_S_hydro = k_S_hydro * self.tempcorr("Arrhenius",DH_kSt,TS,Tref_kSt)
+                # Degradation in the sediments
+
+                if S_deg:
+                    TS=self.environment.sea_water_temperature[S]
+                    # if np.any(TS==0):
+                    #     TS[TS==0]=np.median(TS)
+                    #     logger.debug("Temperature in degradation was 0, set to median value")
+
+                    if (Bio_degr is True and k_DecayMax_water > 0) or Hydro_degr is True:
+                        # pH sediments
+                        pH_sed=self.environment.pH_sediment[S]
+                        if np.any(pH_sed==0):
+                            pH_sed[pH_sed==0]=np.median(pH_sed)
+                            logger.debug("pH_sed in degradation was 0, set to median value")
+
+                    if Bio_degr is True and k_DecayMax_water > 0:
+                        k_S_bio = self.get_config('chemical:transformations:k_DecayMax_water')/4  # From AQUATOX   k_DecayMax_water is a rate (1/h), and k_S_bio is four times slower than k_DecayMax_water
+                        k_S_bio = k_S_bio * self.calc_pHCorr(pH_min_bio, pH_max_bio, pH_sed)
+                        k_S_bio = k_S_bio * self.tempcorr("Arrhenius",DH_kSt,TS,Tref_kSt)
+                        # k_S_bio = k_S_bio * self.calc_TCorr(T_Max_bio, T_Opt_bio, T_Adp_bio, Max_Accl_bio,
+                        #                                     Dec_Accl_bio, Q10_bio, TW)
+                    else:
+                        k_S_bio = np.zeros_like(TS)
+
+                    if Hydro_degr is True:
+                        k_S_hydro = self.calc_k_hydro_sed(k_Acid, k_Base, k_Hydr_Uncat, pH_sed)
+                        k_S_hydro = k_S_hydro * self.tempcorr("Arrhenius",DH_kSt,TS,Tref_kSt)
+                    else:
+                        k_S_hydro = np.zeros_like(TS)
+    
+                    k_S_fin = (k_S_bio + k_S_hydro)/(60*60) # from 1/h to 1/s
+                    k_S_fin_sum = k_S_fin.sum()
+
+                    # Update mass of elements due to degradation
+                    if k_S_fin_sum > 0:
+                        degraded_now[S] = np.minimum(self.elements.mass[S], 
+                                        self.elements.mass[S] * (1 - np.exp(-k_S_fin * self.time_step.total_seconds())))
+                        self.elements.mass_degraded_sediment[S] = self.elements.mass_degraded_sediment[S] + degraded_now[S]
+
+                    if (k_S_fin_sum > 0) or (k_W_fin_sum > 0):
+                        self.elements.mass_degraded = self.elements.mass_degraded + degraded_now
                 else:
-                    k_S_hydro = np.zeros_like(TS)
-
-                k_S_fin = (k_S_bio + k_S_hydro)/(60*60) # from 1/h to 1/s
-                k_S_fin_sum = k_S_fin.sum()
-
-                # Update mass of elements due to degradation
-                if k_S_fin_sum > 0:
-                    degraded_now[S] = self.elements.mass[S] * (1-np.exp(-k_S_fin * self.time_step.total_seconds()))
-                    self.elements.mass_degraded_sediment[S] = self.elements.mass_degraded_sediment[S] + degraded_now[S]
-
-                self.elements.mass_degraded_water[W] = self.elements.mass_degraded_water[W] + degraded_now[W]
-
-                self.elements.mass_degraded = self.elements.mass_degraded + degraded_now
-                self.elements.mass = self.elements.mass - degraded_now
-                self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/500,
-                                         reason='removed')
+                    k_S_bio = 0
+                    k_S_hydro = 0
+                    k_S_fin_sum = 0
 
                 if self.get_config('chemical:transformations:Save_single_degr_mass') is True:
                     if Photo_degr is True and k_Photo > 0:
-                        photo_degraded_now = np.zeros(self.num_elements_active())
-                        k_W_photo = k_W_photo/(60*60) # from 1/h to 1/s
-                        photo_degraded_now[W] = self.elements.mass[W] * (1-np.exp(-k_W_photo * self.time_step.total_seconds()))
-                        self.elements.mass_photodegraded[W] = self.elements.mass_photodegraded[W] + photo_degraded_now[W]
+                        if k_W_fin_sum > 0:
+                            if np.sum(k_W_photo) > 0:
+                                photo_degraded_now = np.zeros(self.num_elements_active())
+                                k_W_photo_fraction = (k_W_photo/(60*60))/k_W_fin # from 1/h to 1/s
+                                photo_degraded_now[W] = degraded_now[W] * k_W_photo_fraction
+                                self.elements.mass_photodegraded[W] = self.elements.mass_photodegraded[W] + photo_degraded_now[W]
 
                     if Bio_degr is True and k_DecayMax_water > 0:
-                        bio_degraded_now = np.zeros(self.num_elements_active())
-                        k_W_bio = k_W_bio/(60*60) # from 1/h to 1/s
-                        bio_degraded_now[W] = self.elements.mass[W] * (1-np.exp(-k_W_bio * self.time_step.total_seconds()))
-                        self.elements.mass_biodegraded[W] = self.elements.mass_biodegraded[W] + bio_degraded_now[W]
-                        bio_degraded_now[S] = self.elements.mass[S] * (1-np.exp(-k_S_bio * self.time_step.total_seconds()))
-                        self.elements.mass_biodegraded[S] = self.elements.mass_biodegraded[S] + bio_degraded_now[S]
+                        if np.sum(k_W_bio) > 0 or np.sum(k_S_bio) > 0:
+                            bio_degraded_now = np.zeros(self.num_elements_active())
+                            if np.sum(k_W_bio) > 0:
+                                k_W_bio_fraction = (k_W_bio / (60 * 60)) / k_W_fin  # Convert from 1/h to 1/s
+                                bio_degraded_now[W] = degraded_now[W] * k_W_bio_fraction
+                                self.elements.mass_biodegraded[W] = self.elements.mass_biodegraded[W] + bio_degraded_now[W]
+                                self.elements.mass_biodegraded_water[W] = self.elements.mass_biodegraded_water[W] + bio_degraded_now[W]
+                            if np.sum(k_S_bio) > 0:
+                                k_S_bio_fraction = (k_S_bio / (60 * 60)) / k_S_fin  # Convert from 1/h to 1/s
+                                bio_degraded_now[S] = degraded_now[S] * k_S_bio_fraction
+                                self.elements.mass_biodegraded[S] = self.elements.mass_biodegraded[S] + bio_degraded_now[S]
+                                self.elements.mass_biodegraded_sediment[S] = self.elements.mass_biodegraded_sediment[S] + bio_degraded_now[S]
 
                     if Hydro_degr is True:
-                        hydro_degraded_now = np.zeros(self.num_elements_active())
-                        k_W_hydro = k_W_hydro/(60*60) # from 1/h to 1/s
-                        hydro_degraded_now[W] = self.elements.mass[W] * (1-np.exp(-k_W_hydro * self.time_step.total_seconds()))
-                        self.elements.mass_hydrolyzed[W] = self.elements.mass_hydrolyzed[W] + hydro_degraded_now[W]
-                        hydro_degraded_now[S] = self.elements.mass[S] * (1-np.exp(-k_S_hydro * self.time_step.total_seconds()))
-                        self.elements.mass_hydrolyzed[S] = self.elements.mass_hydrolyzed[S] + hydro_degraded_now[S]
+                        if np.sum(k_W_hydro) > 0 or np.sum(k_S_hydro) > 0:
+                            hydro_degraded_now = np.zeros(self.num_elements_active())
+                            if np.sum(k_W_hydro) > 0:
+                                k_W_hydro_fraction = (k_W_hydro/(60*60))/k_W_fin # from 1/h to 1/s
+                                hydro_degraded_now[W] = degraded_now[W] * k_W_hydro_fraction
+                                self.elements.mass_hydrolyzed[W] = self.elements.mass_hydrolyzed[W] + hydro_degraded_now[W]
+                                self.elements.mass_hydrolyzed_water[W] = self.elements.mass_hydrolyzed_water[W] + hydro_degraded_now[W]
+                            if np.sum(k_S_hydro) > 0:
+                                k_S_hydro_fraction = (k_S_hydro/(60*60))/k_S_fin # from 1/h to 1/s
+                                hydro_degraded_now[S] = degraded_now[S] * k_S_hydro_fraction
+                                self.elements.mass_hydrolyzed[S] = self.elements.mass_hydrolyzed[S] + hydro_degraded_now[S]
+                                self.elements.mass_hydrolyzed_sediment[S] = self.elements.mass_hydrolyzed_sediment[S] + hydro_degraded_now[S]
 
-                #to_deactivate = self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100
-                #vol_morethan_degr = self.elements.mass_degraded >= self.elements.mass_volatilized
+                if (k_S_fin_sum > 0) or (k_W_fin_sum > 0):
+                    self.elements.mass = self.elements.mass - degraded_now
+                self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/500,
+                                         reason='removed')
 
-                #self.deactivate_elements(to_deactivate +  vol_morethan_degr, reason='volatilized')
-                #self.deactivate_elements(to_deactivate + ~vol_morethan_degr, reason='degraded')
         else:
             pass
-
 
     def volatilization(self):
         if self.get_config('chemical:transformations:volatilization') is True:
@@ -2318,6 +2396,7 @@ class ChemicalDrift(OceanDrift):
             MolWt=self.get_config('chemical:transformations:MolWt')
             wind=5                  # (m/s) (to read from atmosferic forcing)
             mixedlayerdepth=50      # m     (to read from ocean forcing)
+            Undiss_n=1              # 1 for PAHs
 
             Henry=self.get_config('chemical:transformations:Henry') # (atm m3/mol)
 
@@ -2360,7 +2439,7 @@ class ChemicalDrift(OceanDrift):
             mixedlayerdepth = mixedlayerdepth[W]
 
             T=self.environment.sea_water_temperature[W]
-            T[T==0]=np.median(T)                            # temporary fix for missing values
+            #T[T==0]=np.median(T)                            # temporary fix for missing values
 
             S=self.environment.sea_water_salinity[W]
 
@@ -2369,8 +2448,6 @@ class ChemicalDrift(OceanDrift):
             Henry=(      (Vp * self.tempcorr("Arrhenius",DH_Vp,T,Tref_Vp)))   \
                        / (Slb *  self.tempcorr("Arrhenius",DH_Slb,T,Tref_Slb))  \
                        * MolWt / 101325.    # atm m3 mol-1
-
-            #k_S_fin = k_S_tot * self.tempcorr("Arrhenius",DH_kSt,TS,Tref_kSt)
 
             # Calculate mass transfer coefficient water side
             # Schwarzenbach et al., 2016 Eq.(19-20)
@@ -2442,12 +2519,6 @@ class ChemicalDrift(OceanDrift):
             self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/500,
                                      reason='removed')
 
-            #to_deactivate = self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100
-            #vol_morethan_degr = self.elements.mass_degraded >= self.elements.mass_volatilized
-            #
-            #self.deactivate_elements(to_deactivate +  vol_morethan_degr, reason='volatilized')
-            #self.deactivate_elements(to_deactivate + ~vol_morethan_degr, reason='degraded')
-
         else:
             pass
 
@@ -2492,6 +2563,8 @@ class ChemicalDrift(OceanDrift):
                 self.num_elements_active() == 0 :
             self.update_transfer_rates()
 
+
+
 # ################
 # POSTPROCESSING
     def simulation_summary(self, chemical_compound):
@@ -2509,20 +2582,58 @@ class ChemicalDrift(OceanDrift):
         for isp in range(self.nspecies):
             print('{}'.format(['{:>9}'.format(np.int32(item)) for item in self.ntransformations[isp,:]]))
 
-        m_pre = sum(self.elements.mass)+sum(self.elements_deactivated.mass)
-        m_deg = sum(self.elements.mass_degraded)+sum(self.elements_deactivated.mass_degraded)
-        m_deg_w = sum(self.elements.mass_degraded_water)+sum(self.elements_deactivated.mass_degraded_water)
-        m_deg_s = sum(self.elements.mass_degraded_sediment)+sum(self.elements_deactivated.mass_degraded_sediment)
-        m_vol = sum(self.elements.mass_volatilized)+sum(self.elements_deactivated.mass_volatilized)
+        base_attrs = [
+            "mass", "mass_degraded", "mass_degraded_water", "mass_degraded_sediment", 
+            "mass_volatilized", "mass_photodegraded", "mass_biodegraded", 
+            "mass_biodegraded_water", "mass_biodegraded_sediment", "mass_hydrolyzed", 
+            "mass_hydrolyzed_water", "mass_hydrolyzed_sediment"
+            ]
+
+        mass_values = {
+            attr: (sum(np.nan_to_num(getattr(self.elements, attr, []), nan = 0)) +
+            sum(np.nan_to_num(getattr(self.elements_deactivated, attr, []), nan = 0)))
+            for attr in base_attrs
+        }
+
+        # Ensure missing attributes default to zero
+        m_pre = mass_values["mass"]
+        m_deg = mass_values["mass_degraded"]
+        m_deg_w = mass_values["mass_degraded_water"]
+        m_deg_s = mass_values["mass_degraded_sediment"]
+        m_vol = mass_values["mass_volatilized"]
+        m_photo = mass_values.get("mass_photodegraded", 0)
+        m_bio = mass_values.get("mass_biodegraded", 0)
+        m_bio_w = mass_values.get("mass_biodegraded_water", 0)
+        m_bio_s = mass_values.get("mass_biodegraded_sediment", 0)
+        m_hydro = mass_values.get("mass_hydrolyzed", 0)
+        m_hydro_w = mass_values.get("mass_hydrolyzed_water", 0)
+        m_hydro_s = mass_values.get("mass_hydrolyzed_sediment", 0)
         m_tot = m_pre + m_deg + m_vol
 
-        print('Mass balance:')
-        print('mass total           :', m_tot * 1e-6,' g   ')
-        print('mass preserved       :', m_pre * 1e-6,' g   ',m_pre/m_tot*100,'%')
-        print('mass degraded        :', m_deg * 1e-6,' g   ',m_deg/m_tot*100,'%')
-        print('     in water column :', m_deg_w * 1e-6,' g   ',m_deg_w/m_tot*100,'%')
-        print('     in sediments    :', m_deg_s * 1e-6,' g   ',m_deg_s/m_tot*100,'%')
-        print('mass volatilized     :', m_vol * 1e-6,' g   ',m_vol/m_tot*100,'%')
+        print("Mass balance:")
+        print(f"mass total                : {m_tot * 1e-6:.3e} g   ")
+
+        mass_components = {
+            "mass preserved            ": (m_pre, m_tot),
+            "mass degraded             ": (m_deg, m_tot),
+            "     degr in water        ": (m_deg_w, m_deg),
+            "     degr in sediments    ": (m_deg_s, m_deg),
+            "mass volatilized          ": (m_vol, m_tot),
+            "mass photodegraded        ": (m_photo, m_tot),
+            "mass biodegraded          ": (m_bio, m_tot),
+            "     biodegr in water     ": (m_bio_w, m_bio if m_bio > 0 else 1),
+            "     biodegr in sediments ": (m_bio_s, m_bio if m_bio > 0 else 1),
+            "mass hydrolyzed           ": (m_hydro, m_tot),
+            "     hydr in water        ": (m_hydro_w, m_hydro if m_hydro > 0 else 1),  # Avoid division by zero
+            "     hydr in sediments    ": (m_hydro_s, m_hydro if m_hydro > 0 else 1)   # Avoid division by zero
+            }
+
+        for label, (value, divisor) in mass_components.items():
+            if value > 0:  # Only print if nonzero
+                if not any(keyword in label for keyword in ['hydrolyzed', 'biodegraded', 'photodegraded', 'volatilized', 'degraded', 'preserved']):
+                    print(f"{label}: {value * 1e-6:.3e} g   {value / m_tot * 100:.2f} % of m_tot  ({value / divisor * 100:.2f} %)")
+                else:
+                    print(f"{label}: {value * 1e-6:.3e} g   {value / m_tot * 100:.2f} % of m_tot")
 
 
     def write_netcdf_chemical_density_map(self, filename, pixelsize_m='auto', zlevels=None,
@@ -2539,7 +2650,9 @@ class ChemicalDrift(OceanDrift):
                                               landmask_shapefile=None,
                                               origin_marker=None,
                                               elements_density=False,
-                                              active_status=False):
+                                              active_status=False,
+                                              weight=None,
+                                              sim_description=None):
         '''Write netCDF file with map of Chemical species densities and concentrations
         Arguments:
             pixelsize_m:           float32, lenght of gridcells in m (default mode)
@@ -2564,8 +2677,10 @@ class ChemicalDrift(OceanDrift):
             reader_sea_depth:      string, path of bathimethy .nc file,
             landmask_shapefile:    string, path of bathimethylandmask .shp file
             elements_density:      boolean, add number of elements present in each grid cell to output
-            origin_marker:         int, only elements with this value of "origin_marker" will be considered
+            origin_marker:         int/list/tuple/np.ndarray, only elements with these values of "origin_marker" will be considered
             active_status:         boolean, only active elements will be considered
+            weight:                string, elements property to be extracted to produce maps
+            sim_description:       string, descrition of simulation to be included in netcdf attributes
         '''
 
         from netCDF4 import Dataset, date2num #, stringtochar
@@ -2770,7 +2885,8 @@ class ChemicalDrift(OceanDrift):
 
         # H is array containing the mass of chemical within each box defined by lon_array, lat_array and z_array
         # H_count is array containing the number of elements within each box defined by lon_array, lat_array and z_array
-
+        if weight is None:
+            weight = 'mass'
         H, lon_array, lat_array, H_count = \
             self.get_chemical_density_array(pixelsize_m = pixelsize_m,
                                            z_array = z_array,
@@ -2779,7 +2895,7 @@ class ChemicalDrift(OceanDrift):
                                            density_proj=density_proj,
                                            llcrnrlon=llcrnrlon, llcrnrlat=llcrnrlat,
                                            urcrnrlon=urcrnrlon, urcrnrlat=urcrnrlat,
-                                           weight='mass', origin_marker=origin_marker,
+                                           weight=weight, origin_marker=origin_marker,
                                            active_status = active_status,
                                            elements_density = elements_density)
 
@@ -2800,12 +2916,6 @@ class ChemicalDrift(OceanDrift):
         if horizontal_smoothing:
             # Compute horizontally smoother field
             logger.debug('H.shape: ' + str(H.shape))
-
-            # Hsm = np.zeros_like(H)
-            # for zi in range(len(z_array)-1):
-            #     for sp in range(self.nspecies):
-            #         for ti in range(H.shape[0]):
-            #             Hsm[ti,sp,zi,:,:] = self.horizontal_smooth(H[ti,sp,zi,:,:],n=smoothing_cells)
 
             Hsm = np.array([
                             [[self.horizontal_smooth(H[ti, sp, zi, :, :], n=smoothing_cells) 
@@ -2874,18 +2984,6 @@ class ChemicalDrift(OceanDrift):
             logger.debug ('ndt '+ str(ndt))   # number of time steps over which to average in conc file
             logger.debug ('odt '+ str(odt))   # number of average slices
 
-            # Landmask=np.zeros_like(H[0:odt,:,:,:,:])
-            # for zi in range(len(z_array)-1):
-            #     for sp in range(self.nspecies):
-            #         for ti in range(odt):
-            #             Landmask[ti,sp,zi,:,:] = landmask
-
-            # This may probably be written more efficiently!
-            # mean_conc = np.zeros( [odt,cshape[1],cshape[2],cshape[3],cshape[4]] )
-            # for ii in range(odt):
-            #     meantmp  = np.mean(conctmp[(ii*ndt):(ii+1)*ndt,:,:,:,:],axis=0)
-            #     mean_conc[ii,:,:,:,:] = meantmp
-            # Optimized
             try:
                 mean_conc = np.mean(conctmp.reshape(odt, ndt, *cshape[1:]), axis=1)
             except: # If (times) is not a perfect multiple of deltat
@@ -2918,6 +3016,9 @@ class ChemicalDrift(OceanDrift):
 
 
         # Save outputs to netCDF Dataset
+        compound = self.get_config('chemical:compound')
+        species_str = ' '.join([f"{isp}:{sp}" for isp, sp in enumerate(self.name_species)])
+
         nc = Dataset(filename, 'w')
         nc.createDimension('x', lon_array.shape[0])
         nc.createDimension('y', lon_array.shape[1])
@@ -2986,11 +3087,11 @@ class ChemicalDrift(OceanDrift):
         # Create final landmask
         if time_avg_conc is False:
             Landmask = np.tile(landmask, (len(times), self.nspecies, len(z_array)-1, 1, 1))
-            Landmask = np.swapaxes(Landmask, 3, 4)
         else:
             Landmask = np.tile(landmask, (odt, self.nspecies, len(z_array)-1, 1, 1))
-            Landmask = np.swapaxes(Landmask, 3, 4)
-
+        Landmask = np.swapaxes(Landmask, 3, 4)
+        landmask_depth = np.tile(landmask[np.newaxis, :, :], (len(z_array)-1, 1, 1))
+        landmask_depth = np.swapaxes(landmask_depth, 1, 2)
 
         # Density
         if elements_density is True:
@@ -3004,6 +3105,8 @@ class ChemicalDrift(OceanDrift):
                 nc.variables['density'].long_name = 'Number of elements in grid cell'
                 nc.variables['density'].grid_mapping = density_proj_str
                 nc.variables['density'].units = '1'
+                if sim_description is not None:
+                    nc.variables['density'].sim_description = str(sim_description)
             else:
                 nc.createVariable('density_avg', 'i4',
                                   ('avg_time','specie','depth','y', 'x'),fill_value=99999)
@@ -3014,6 +3117,8 @@ class ChemicalDrift(OceanDrift):
                 nc.variables['density_avg'].long_name = "Number of elements in grid cell at avg_time"
                 nc.variables['density_avg'].grid_mapping = density_proj_str
                 nc.variables['density_avg'].units = '1'
+                if sim_description is not None:
+                    nc.variables['density_avg'].sim_description = str(sim_description)
 
 
         # Chemical concentration
@@ -3023,10 +3128,12 @@ class ChemicalDrift(OceanDrift):
             H = np.swapaxes(H, 3, 4)
             H = np.ma.masked_where(Landmask==1,H)
             nc.variables['concentration'][:] = H
-            nc.variables['concentration'].long_name = self.get_config('chemical:compound') +' concentration ' + '\n' + 'specie '+ \
-                                                            ' '.join(['{}:{}'.format(isp,sp) for isp,sp in enumerate(self.name_species)])
+            nc.variables['concentration'].long_name = (f"{compound} concentration of {weight}\n"
+                                                           f"specie {species_str}")
             nc.variables['concentration'].grid_mapping = density_proj_str
             nc.variables['concentration'].units = mass_unit+'/m3'+' (sed '+mass_unit+'/Kg d.w.)'
+            if sim_description is not None:
+                nc.variables['concentration'].sim_description = str(sim_description)
         else:
         # Chemical concentration, time averaged
             nc.createVariable('concentration_avg', 'f8',
@@ -3034,10 +3141,12 @@ class ChemicalDrift(OceanDrift):
             mean_conc = np.swapaxes(mean_conc, 3, 4)
             mean_conc = np.ma.masked_where(Landmask==1, mean_conc)
             nc.variables['concentration_avg'][:] = mean_conc
-            nc.variables['concentration_avg'].long_name = self.get_config('chemical:compound') + ' time averaged concentration ' + '\n' + 'specie '+ \
-                                                            ' '.join(['{}:{}'.format(isp,sp) for isp,sp in enumerate(self.name_species)])
+            nc.variables['concentration_avg'].long_name = (f"{compound} time averaged concentration of {weight}\n"
+                                                           f"specie {species_str}")
             nc.variables['concentration_avg'].grid_mapping = density_proj_str
             nc.variables['concentration_avg'].units = mass_unit+'/m3'+' (sed '+mass_unit+'/Kg)'
+            if sim_description is not None:
+                nc.variables['concentration_avg'].sim_description = str(sim_description)
 
 
         # Chemical concentration, horizontally smoothed
@@ -3048,11 +3157,13 @@ class ChemicalDrift(OceanDrift):
                 Hsm = np.swapaxes(Hsm, 3, 4)
                 Hsm = np.ma.masked_where(Landmask==1, Hsm)
                 nc.variables['concentration_smooth'][:] = Hsm
-                nc.variables['concentration_smooth'].long_name = self.get_config('chemical:compound') +' horizontally smoothed concentration '  + '\n' + 'specie '+ \
-                                                                ' '.join(['{}:{}'.format(isp,sp) for isp,sp in enumerate(self.name_species)])
+                nc.variables['concentration_smooth'].long_name = (f"{compound} horizontally smoothed concentration of {weight}\n"
+                                                               f"specie {species_str}")
                 nc.variables['concentration_smooth'].grid_mapping = density_proj_str
                 nc.variables['concentration_smooth'].units = mass_unit+'/m3'+' (sed '+mass_unit+'/Kg)'
                 nc.variables['concentration_smooth'].comment = 'Smoothed over '+str(smoothing_cells)+' grid points in all horizontal directions'
+                if sim_description is not None:
+                    nc.variables['concentration_smooth'].sim_description = str(sim_description)
             else:
             # Chemical concentration, horizontally smoothed, time averaged
                 nc.createVariable('concentration_smooth_avg', 'f8',
@@ -3060,11 +3171,13 @@ class ChemicalDrift(OceanDrift):
                 mean_Hsm = np.swapaxes(mean_Hsm, 3, 4)
                 mean_Hsm = np.ma.masked_where(Landmask==1, mean_Hsm)
                 nc.variables['concentration_smooth_avg'][:] = mean_Hsm
-                nc.variables['concentration_smooth_avg'].long_name = self.get_config('chemical:compound') +' horizontally smoothed time averaged concentration '  + '\n' + 'specie '+ \
-                                                                ' '.join(['{}:{}'.format(isp,sp) for isp,sp in enumerate(self.name_species)])
+                nc.variables['concentration_smooth_avg'].long_name = (f"{compound} horizontally smoothed time averaged concentration of {weight}\n"
+                                                               f"specie {species_str}")
                 nc.variables['concentration_smooth_avg'].grid_mapping = density_proj_str
                 nc.variables['concentration_smooth_avg'].units = mass_unit+'/m3'+' (sed '+mass_unit+'/Kg)'
                 nc.variables['concentration_smooth_avg'].comment = 'Smoothed over '+str(smoothing_cells)+' grid points in all horizontal directions'
+                if sim_description is not None:
+                    nc.variables['concentration_smooth_avg'].sim_description = str(sim_description)
 
 
         # Volume of boxes
@@ -3072,6 +3185,7 @@ class ChemicalDrift(OceanDrift):
                           ('depth','y', 'x'),fill_value=0)
         pixel_volume = np.swapaxes(pixel_volume, 1, 2) #.astype('i4')
         pixel_volume = np.ma.masked_where(pixel_volume==0, pixel_volume)
+        # pixel_volume = np.ma.masked_where(landmask_depth==1, pixel_volume)
         nc.variables['volume'][:] = pixel_volume
         if pixelsize_m is not None:
             nc.variables['volume'].long_name = f'Volume of grid cell ({str(pixelsize_m)} x {str(pixelsize_m)} m)'
@@ -3088,6 +3202,8 @@ class ChemicalDrift(OceanDrift):
         nc.variables['topo'].long_name = 'Depth of grid point'
         nc.variables['topo'].grid_mapping = density_proj_str
         nc.variables['topo'].units = 'm'
+        if sim_description is not None:
+            nc.variables['topo'].sim_description = str(sim_description)
 
 
         # Gridcell area
@@ -3130,21 +3246,34 @@ class ChemicalDrift(OceanDrift):
 
         lon = (self.result.lon.T).values
         lat = (self.result.lat.T).values
+        # Create masks for valid ranges
+        valid_lon_mask = (lon >= -180) & (lon <= 180)
+        valid_lat_mask = (lat >= -90) & (lat <= 90)
+        # Combine masks
+        valid_mask = valid_lon_mask & valid_lat_mask
+        del valid_lon_mask, valid_lat_mask
+        # Apply mask: set invalid values to np.nan
+        lon = np.where(valid_mask, lon, np.nan)
+        lat = np.where(valid_mask, lat, np.nan)
+        del valid_mask
+        
         times = (self.result.time).values
         times = np.repeat(np.expand_dims(times, axis=0), lon.shape[1], axis=0).T
 
-        # Create a grid in the specified projection
-        x,y = density_proj(lon, lat)
+        # Create a grid in the specified projection     
         if llcrnrlon is not None:
             llcrnrx,llcrnry = density_proj(llcrnrlon,llcrnrlat)
             urcrnrx,urcrnry = density_proj(urcrnrlon,urcrnrlat)
         else:
+            x,y = density_proj(lon, lat)
             if density_proj == pyproj.Proj('+proj=moll +ellps=WGS84 +lon_0=0.0'):
                 llcrnrx,llcrnry = x.min()-pixelsize_m, y.min()-pixelsize_m
                 urcrnrx,urcrnry = x.max()+pixelsize_m, y.max()+pixelsize_m
+                del x,y
             else:
                 llcrnrx,llcrnry = x.min()-lon_resol, y.min()-lat_resol
                 urcrnrx,urcrnry = x.max()+lon_resol, y.max()+lat_resol
+                del x,y
 
         if density_proj == pyproj.Proj('+proj=moll +ellps=WGS84 +lon_0=0.0'):
             if pixelsize_m == None:
@@ -3160,8 +3289,6 @@ class ChemicalDrift(OceanDrift):
         t_resol = (times[1][0] - times[0][0])/2
         t_array = np.append(times[:,0] - t_resol, np.array(times[:,0][-1] + t_resol))
 
-        # bins=(x_array, y_array)
-        # outsidex, outsidey = max(x_array)*1.5, max(y_array)*1.5
         z = (self.result.z.T).values
         if weight is not None:
             weight_array = (self.result[weight].T).values
@@ -3186,31 +3313,14 @@ class ChemicalDrift(OceanDrift):
                       len(y_array) - 1
                       ))
 
-        # for sp in range(Nspecies):
-        #     for i in range(len(times)):
-        #         if weight is not None:
-        #             weights = weight_array[i,:]
-        #             if ((origin_marker is not None) and (active_status is False)):
-        #                 weight_array[i,:] = weight_array[i,:] * (originmarker[i,:]==origin_marker)
-        #             elif ((origin_marker is not None) and (active_status is True)):
-        #                 weight_array[i,:] = weight_array[i,:] * (originmarker[i,:]==origin_marker) * (status[i,:]==active_index)
-        #             elif ((origin_marker is None) and (active_status is True)):
-        #                 weight_array[i,:] = weight_array[i,:] * (status[i,:]==active_index)
-        #             else:
-        #                 pass
-        #         else:
-        #             weights = None
-        #         for zi in range(len(z_array)-1):
-        #             kktmp = ( (specie[i,:]==sp) & (z[i,:]>z_array[zi]) & (z[i,:]<=z_array[zi+1]) )
-        #             H[i,sp,zi,:,:], dummy, dummy = \
-        #                 np.histogram2d(x[i,kktmp], y[i,kktmp],
-        #                            weights=weight_array[i,kktmp], bins=bins)
-
         # Mask elements based on oring_marker and status
         if weight is not None:
             weights = weight_array
             if origin_marker is not None:
-                origin_mask = (originmarker == origin_marker)
+                if isinstance(origin_marker, (list, tuple, np.ndarray)):
+                    origin_mask = np.isin(originmarker, origin_marker)
+                else:
+                    origin_mask = (originmarker == origin_marker)
                 if active_status:
                     active_status_mask = (status == active_index)
                     final_mask = active_status_mask & origin_mask
@@ -3610,6 +3720,7 @@ class ChemicalDrift(OceanDrift):
                     * longitude  (longitude) float32
                     * time       (time) datetime64[ns]
 
+
                 radius:      scalar, unit: meters
                 lowerbound:  scalar, elements with lower values are discarded
             """
@@ -3729,23 +3840,26 @@ class ChemicalDrift(OceanDrift):
                     * latitude      (latitude) float32
                     * longitude     (longitude) float32
                 mode:               "water_conc" (seed from concentration in water colum, in ug/L), "sed_conc" (seed from sediment concentration, in ug/kg d.w.), "emission" (seed from direct discharge to water, in kg)
-                radius:             scalar, unit: meters, elements will be created in a circular area around coordinates
-                lowerbound:         scalar, elements with lower values are discarded
-                higherbound:        scalar, elements with higher values are discarded
-                number_of_elements: scalar, number of elements created for each vertical layer at each gridpoint
-                mass_element_ug:    scalar, maximum mass of elements if number_of_elements is not specificed
-                lon_resol:          scalar, longitude resolution of the NETCDF dataset
-                lat_resol:          scalar, latitude resolution of the NETCDF dataset
-                gen_mode:           "mass" (elements generated from mass), "fixed" (fixed number of elements for each data point)
+                radius:             float32, unit: meters, elements will be created in a circular area around coordinates
+                lowerbound:         float32 elements with lower values are discarded
+                higherbound:        float32, elements with higher values are discarded
+                number_of_elements: int, number of elements created for each vertical layer at each gridpoint
+                mass_element_ug:    float32, maximum mass of elements if number_of_elements is not specificed
+                lon_resol:          float32, longitude resolution of the NETCDF dataset
+                lat_resol:          float32, latitude resolution of the NETCDF dataset
+                gen_mode:           string, "mass" (elements generated from mass), "fixed" (fixed number of elements for each data point)
                 last_depth_until_bathimetry: boolean, when depth is specified in NETCDF_data using "water_conc" mode
                                             the water column below the highest depth value is considered the same as the last 
                                             available layer (True) or is consedered without chemical (False)
+                origin_marker:      int, or string "single", assign a marker to seeded elements. If "single" a different origin_marker will be assigned to each datapoint
             """
 
         # mass_element_ug=1e3     # 1e3 - 1 element is 1mg chemical
         # mass_element_ug=100e3   # 100e3 - 1 element is 100mg chemical
         # mass_element_ug=1e6     # 1e6 - 1 element is 1g chemical
         # mass_element_ug=1e9     # 1e9 - 1 element is 1kg chemical
+        if mode not in ['water_conc', 'sed_conc', 'emission']:
+            raise ValueError(f"Invalid mode: '{mode}', only 'water_conc', 'sed_conc', and 'emission' are permitted")
 
         sel = np.where((NETCDF_data > lowerbound) & (NETCDF_data < higherbound))
         time_check = (NETCDF_data.time).size
@@ -3823,8 +3937,8 @@ class ChemicalDrift(OceanDrift):
                 sel = remove_positions(sel, Check_bathimetry)
                 la = np.array(remove_positions([la], Check_bathimetry))
                 lo = np.array(remove_positions([lo], Check_bathimetry))
-                lat_array = np.array(remove_positions([lat_array ], Check_bathimetry))
-                lon_array = np.array(remove_positions([lon_array ], Check_bathimetry))
+                lat_array = np.array(remove_positions([lat_array], Check_bathimetry))
+                lon_array = np.array(remove_positions([lon_array], Check_bathimetry))
                 if "depth" in NETCDF_data.dims:
                     depth = np.array(remove_positions([depth], Check_bathimetry))
                 if t.size == 1:
@@ -3837,7 +3951,7 @@ class ChemicalDrift(OceanDrift):
                 del(Check_bathimetry)
 
         data = np.array(NETCDF_data.data)
-        print(f"Seeding {str(data.size)} datapoints")
+        print(f"Seeding {str(np.sum((~np.isnan(data)) & (data > 0)))} datapoints")
         list_index_print = self._print_progress_list(max(t.size, lo.size, la.size))
 
         sed_mixing_depth = np.array(self.get_config('chemical:sediment:mixing_depth')) # m
@@ -3854,6 +3968,9 @@ class ChemicalDrift(OceanDrift):
 
         if mode == 'emission':
             Bathimetry_seed = None
+
+        if origin_marker == "single":
+            origin_marker_np = np.arange(0, max(t.size, lo.size, la.size))
 
         for i in range(0, max(t.size, lo.size, la.size)):
             if i == 0:
@@ -3933,6 +4050,9 @@ class ChemicalDrift(OceanDrift):
             else:
                 raise ValueError("Incorrect mode")
 
+            if mass_ug == 0:
+                continue
+
             number = self._get_number_of_elements(
                 g_mode=gen_mode,
                 mass_element_ug=mass_element_ug,
@@ -3981,6 +4101,11 @@ class ChemicalDrift(OceanDrift):
                     else:
                         # specify lon if all elements are seeded in the same place
                         elem_lon = lon_array
+                    
+                    if origin_marker == "single":
+                        origin_marker_seed = origin_marker_np[i]
+                    else:
+                        origin_marker_seed = origin_marker
 
                     self.seed_elements(
                         lon=elem_lon,
@@ -3994,7 +4119,7 @@ class ChemicalDrift(OceanDrift):
                         specie = specie_elements,
                         moving = moving_emement,
                         z=z[k],
-                        origin_marker=origin_marker)
+                        origin_marker=origin_marker_seed)
 
                     if gen_mode != "fixed":
                         mass_residual = (mass_ug) - (number * mass_element_seed_ug)
@@ -4020,7 +4145,7 @@ class ChemicalDrift(OceanDrift):
                                 specie = specie_elements,
                                 moving = moving_emement,
                                 z=z,
-                                origin_marker=origin_marker)
+                                origin_marker=origin_marker_seed)
 
     def interp_weights(self, xyz, uvw):
         """
@@ -4329,7 +4454,8 @@ class ChemicalDrift(OceanDrift):
         """
 
         if "longitude" not in DC_Conc_array.dims:
-            if any([x is None for x in [lon_coord, lat_coord]]) is False:
+            DC_Conc_array = self._rename_dimentions(DC_Conc_array)
+            if all(x is not None for x in [lon_coord, lat_coord]):
                 DC_Conc_array['latitude'] = ('latitude', lat_coord)
                 DC_Conc_array['longitude'] = ('longitude', lon_coord)
             else:
@@ -4365,7 +4491,8 @@ class ChemicalDrift(OceanDrift):
                                       Transfer_setup = "organics",
                                       Concentration_file = None,
                                       Shift_time = False,
-                                      Conc_SPM = True):
+                                      Conc_SPM = True,
+                                      Sim_description=None):
         """
         Sum dissolved, DOC, and SPM concentration arrays to obtain total water concentration and save the resulting xarray as netCDF file 
         Save sediment concentration DataArray as netDCF file
@@ -4382,6 +4509,7 @@ class ChemicalDrift(OceanDrift):
         variables:             list, list of variables' name to be considered
         Shift_time:            boolean, if True shifts back time of 1 timestep so that the timestamp corresponds to 
                                the beginning of the first simulation timestep, not to the next one
+        Sim_description:       string, descrition of simulation to be included in netcdf attributes
         """
         from datetime import datetime
         import xarray as xr
@@ -4430,9 +4558,8 @@ class ChemicalDrift(OceanDrift):
                 var_wat_name = variable + "_wat"
                 var_sed_name = variable + "_sed"
 
-
+                TOT_Conc = DS[variable]
                 if Transfer_setup == "organics":
-                    TOT_Conc = DS[variable]
                     Dissolved_conc = TOT_Conc.sel(specie = 0)
                     SPM_conc = TOT_Conc.sel(specie = 2)
                     if 1 in DS.specie:
@@ -4450,7 +4577,6 @@ class ChemicalDrift(OceanDrift):
                             DA_Conc_array_wat = Dissolved_conc
                             print("SPM was not considered for water concentration")
                 elif Transfer_setup == "metals":
-                    TOT_Conc = DS[variable]
                     Dissolved_conc = TOT_Conc.sel(specie = 0)
                     SPM_conc = TOT_Conc.sel(specie = 1)
                     SPM_conc_sr = TOT_Conc.sel(specie = 2)
@@ -4487,7 +4613,6 @@ class ChemicalDrift(OceanDrift):
                     lat = None
 
                 if "longitude" not in DS[variable].dims:
-                    longitude = np.array(DS[variable].latitude)
                     if "lon" in DS.data_vars:
                         lon = np.array(DS.lon[1,:])
                         longitude = np.array(DS.lon[1,:])
@@ -4525,7 +4650,16 @@ class ChemicalDrift(OceanDrift):
 
 
                 DA_Conc_array_wat.name = var_wat_name
-                DA_Conc_array_wat.attrs['long_name'] = (Chemical_name or "") + f" {variable} in water"
+                if hasattr(DS[variable], 'sim_description'):
+                    DA_Conc_array_wat.attrs['sim_description'] = (DS[variable].sim_description)
+                elif Sim_description is not None:
+                    DA_Conc_array_wat.attrs['sim_description'] = str(Sim_description)
+
+                if hasattr(DS[variable], 'long_name'):
+                    DA_Conc_array_wat.attrs['long_name'] = (DS[variable].long_name).split('specie')[0].strip() + " in water"
+                else:
+                    DA_Conc_array_wat.attrs['long_name'] = (Chemical_name or "") + f" {variable} in water (assumed from mass of elements)"
+
                 if hasattr(DS[variable], 'units'):
                     if "concentration" in variable:
                         DA_Conc_array_wat.attrs['units'] = DS[variable].units[0:5]
@@ -4546,7 +4680,16 @@ class ChemicalDrift(OceanDrift):
                 sum_vars_wat_dict[var_wat_name] = DA_Conc_array_wat
 
                 DA_Conc_array_sed.name = var_sed_name
-                DA_Conc_array_sed.attrs['long_name'] = ((Chemical_name or "") + f" {variable} in sediments")
+                if hasattr(DS[variable], 'sim_description'):
+                    DA_Conc_array_sed.attrs['sim_description'] = (DS[variable].sim_description)
+                elif Sim_description is not None:
+                    DA_Conc_array_sed.attrs['sim_description'] = str(Sim_description)
+
+                if hasattr(DS[variable], 'long_name'):
+                    DA_Conc_array_sed.attrs['long_name'] = (DS[variable].long_name).split('specie')[0].strip() + " in sediments"
+                else:
+                    DA_Conc_array_sed.attrs['long_name'] = ((Chemical_name or "") + f" {variable} in sediments (assumed from mass of elements)")
+
                 if hasattr(DS[variable], 'units'):
                     if "concentration" in variable:
                         DA_Conc_array_sed.attrs['units'] = DS[variable].units[11:20]
@@ -4570,7 +4713,7 @@ class ChemicalDrift(OceanDrift):
 
         if File_Name_out is not None:
             wat_file = File_Path_out + "wat_" + File_Name_out
-            sed_file = File_Path_out + "sed_" +File_Name_out
+            sed_file = File_Path_out + "sed_" + File_Name_out
             if not wat_file.endswith(".nc"):
                 wat_file = wat_file + ".nc"
             if not sed_file.endswith(".nc"):
@@ -5251,7 +5394,7 @@ class ChemicalDrift(OceanDrift):
                     Conc_DataArray = Conc_DataArray.rename({'season': 'time'})
                     Conc_DataArray = Conc_DataArray.assign_coords(time=Conc_DataArray['time'])
                 else:
-                    # Check if other dimentions than the ones to be lotted are present and add time_start as time
+                    # Check if other dimentions than the ones to be allowed are present and add time_start as time
                     acceptable_dimensions = set(['latitude', 'longitude', 'time', 'depth'])
                     Dataset_dimensions = set(Conc_DataArray.dims)
                     extra_dimentions = (Dataset_dimensions - acceptable_dimensions)
@@ -6041,12 +6184,12 @@ class ChemicalDrift(OceanDrift):
         elif self.get_config('chemical:compound') == "Nitrogen":
             self.set_config('chemical:transfer_setup', 'metals')
             self.set_config('chemical:transformations:Kd', 0.)  # Nitrogen does not interact with particulate matter or sediments
-            self.set_config('chemical:transformations:S0', 17.0)#
+            self.set_config('chemical:transformations:S0', 17.0)
             
         elif self.get_config('chemical:compound') == "Alkalinity":
             self.set_config('chemical:transfer_setup', 'metals')
             self.set_config('chemical:transformations:Kd', 0.)  # Alkalinity does not interact with particulate matter or sediments
-            self.set_config('chemical:transformations:S0', 17.0)  #
+            self.set_config('chemical:transformations:S0', 17.0)
 
     def plot_mass(self,
                   legend=['dissolved','SPM','sediment'],
@@ -6098,31 +6241,32 @@ class ChemicalDrift(OceanDrift):
 
         for i in range(steps):
 
-            bars[i]=[np.sum(mass[0][i,:]*(sp[0][i,:]==0))*mass_conversion_factor,
-                     np.sum(mass[0][i,:]*(sp[0][i,:]==1))*mass_conversion_factor,
-                     np.sum(mass[0][i,:]*(sp[0][i,:]==2))*mass_conversion_factor,
-                     np.sum(mass[0][i,:]*(sp[0][i,:]==3))*mass_conversion_factor,
-                     np.sum(mass[0][i,:]*(sp[0][i,:]==4))*mass_conversion_factor]
+            bars[i]=[np.sum(mass[:,i]*(sp[:,i]==0))*mass_conversion_factor,
+                     np.sum(mass[:,i]*(sp[:,i]==1))*mass_conversion_factor,
+                     np.sum(mass[:,i]*(sp[:,i]==2))*mass_conversion_factor,
+                     np.sum(mass[:,i]*(sp[:,i]==3))*mass_conversion_factor,
+                     np.sum(mass[:,i]*(sp[:,i]==4))*mass_conversion_factor]
         bottom=np.zeros_like(bars[:,0])
         if 'dissolved' in legend:
-            ax.bar(np.arange(steps),bars[:,self.num_lmm],width=1.25,color='midnightblue')
-            bottom=bars[:,self.num_lmm]
-            print(f'dissolved: {str(bars[-1,self.num_lmm])} {mass_unit} ({str(100*bars[-1,self.num_lmm]/np.sum(bars[-1,:]))} %)')
+            ax.bar(np.arange(steps),bars[:,self.result.num_lmm],width=1.01,color='midnightblue')
+            bottom=bars[:,self.result.num_lmm]
+            print(f'dissolved: {str(bars[-1,self.result.num_lmm])} {mass_unit} ({str(100*bars[-1,self.result.num_lmm]/np.sum(bars[-1,:]))} %)')
         if 'DOC' in legend:
             ax.bar(np.arange(steps),bars[:,self.num_humcol],bottom=bottom,width=1.25,color='royalblue')
             bottom=bottom+bars[:,self.num_humcol]
-            print(f'DOC: {str(bars[-1,self.num_humcol])} {mass_unit} ({str(100*bars[-1,self.num_humcol]/np.sum(bars[-1,:]))} %)')
+            print(f'DOC: {str(bars[-1,self.result.num_humcol])} {mass_unit} ({str(100*bars[-1,self.result.num_humcol]/np.sum(bars[-1,:]))} %)')
         if 'SPM' in legend:
             ax.bar(np.arange(steps),bars[:,self.num_prev],bottom=bottom,width=1.25,color='palegreen')
             bottom=bottom+bars[:,self.num_prev]
-            print(f'SPM: {str(bars[-1,self.num_prev])} {mass_unit} ({str(100*bars[-1,self.num_prev]/np.sum(bars[-1,:]))} %)')
+            print(f'SPM: {str(bars[-1,self.result.num_prev])} {mass_unit} ({str(100*bars[-1,self.result.num_prev]/np.sum(bars[-1,:]))} %)')
         if 'sediment' in legend:
             ax.bar(np.arange(steps),bars[:,self.num_srev],bottom=bottom,width=1.25,color='orange')
             bottom=bottom+bars[:,self.num_srev]
-            print(f'sediment: {str(bars[-1,self.num_srev])} {mass_unit} ({str(100*bars[-1,self.num_srev]/np.sum(bars[-1,:]))} %)')
+            print(f'sediment: {str(bars[-1,self.result.num_srev])} {mass_unit} ({str(100*bars[-1,self.result.num_srev]/np.sum(bars[-1,:]))} %)')
 
         ax.legend(list(filter(None, legend)))
         ax.set_ylabel('mass (' + mass_unit + ')')
+        ax.set_xlim(-.49,steps-1+0.49)
         if start_date is None:
             # Get current tick positions
             xticks = ax.get_xticks()
@@ -6142,1069 +6286,6 @@ class ChemicalDrift(OceanDrift):
 
         if filename is not None:
             plt.savefig(filename, format=filename[-3:], transparent=True, bbox_inches="tight", dpi=300)
-
-    @staticmethod
-    def _change_datetime_format(datetime_str, new_format):
-        '''
-        Change format of datetime string to a specified format
-    
-        Parameters
-        ----------
-        datetime_str: str, datetime string to be reformatted
-        new_format:  str, specified datetime format
-        '''
-        possible_formats = ["%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y/%m/%d %H", "%Y/%m/%d", 
-                            "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d %H", "%Y-%m-%d",
-                            "%d-%m-%Y %H:%M:%S", "%d-%m-%Y %H:%M", "%d-%m-%Y %H", "%d-%m-%Y",
-                            "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y %H", "%d/%m/%Y",
-                            "%m-%d-%Y %H:%M:%S", "%m-%d-%Y %H:%M", "%m-%d-%Y %H", "%m-%d%Y",
-                            "%m/%d/%Y %H:%M:%S", "%m/%d/%Y %H:%M", "%m/%d/%Y %H", "%m/%d/%Y"
-                            ]
-        for fmt in possible_formats:
-            try:
-                # Attempt to parse the datetime string
-                dt = datetime.strptime(datetime_str, fmt)
-                # If parsing is successful, format the datetime object
-                formatted_datetime = dt.strftime(new_format)
-                # Return the formatted datetime string
-                return formatted_datetime
-            except ValueError:
-                pass  # Continue to the next format if parsing fails
-        # Return None if parsing fails for all formats
-        raise ValueError("Unknown format of date_of_timestep")
-
-
-
-    @staticmethod
-    def _select_df_column(col_name, dataframe):
-        '''
-        Select a column of mass_fin_df based on name 
-        '''
-        return dataframe[dataframe.columns[dataframe.columns.str.contains(col_name)]]
-
-
-
-    def filter_dataframe(self, df, time_unit, start_date=None, end_date=None):
-        '''
-        Filter dataframe based on start and end date
-
-        df:                     Pandas dataframe, mass_fin_df
-        start_date:                   pd.Datetime, start of plotted timeserie
-                                      (e.g., pd.to_datetime("2018-01-01 00:00:00", format = '%Y-%m-%d %H:%M:%S'))
-        end_date:                     pd.Datetime, end of plotted timeserie
-        '''
-        import pandas as pd
-
-        # Check if both start_date and end_date are None
-        if start_date is None and end_date is None:
-            return df
-
-        date_of_timestep_ls = []
-        for element in df['date_of_timestep']:
-            if isinstance(element, pd.Timestamp):
-                element = element.strftime('%Y-%m-%d %H:%M:%S')
-
-            date_of_timestep_ls.append(self._change_datetime_format(datetime_str = element,
-                                        new_format = "%Y-%m-%d %H:%M:%S"))
-        df['date_of_timestep'] = date_of_timestep_ls
-        del date_of_timestep_ls
-
-        date_column = pd.to_datetime(df['date_of_timestep'], format='%Y-%m-%d %H:%M:%S')
-
-        # Filter based on start_date and/or end_date
-        if start_date is not None and end_date is not None:
-            filtered_df = df[( date_column >= start_date) & (date_column <= end_date)]
-        elif start_date is not None:
-            filtered_df = df[(date_column >= start_date)]
-        else:  # end_date is not None
-            filtered_df = df[(date_column <= end_date)]
-        # Correct 'time'+"-["+ time_unit +"]" column to start at new start_date
-        time_delta_filter = filtered_df['time'+"-["+ time_unit +"]"].iloc[0] - df['time'+"-["+ time_unit +"]"].iloc[0]
-        filtered_df['time'+"-["+ time_unit +"]"] = np.array(filtered_df['time'+"-["+ time_unit +"]"]) - time_delta_filter
-        return filtered_df
-
-
-    def extract_summary_timeseries(self, 
-            file_out_path,
-            sim_name,
-            chemical_compound= None,
-            mass_unit='g',
-            time_unit='hours',
-            shp_file_path = None,
-            load_timeseries_from_file = False,
-            timeseries_file_path = None, 
-            plot_figures = False,
-            title_fig_tserie = None,
-            title_fig_mass = None,
-            title_fig_deg = None,
-            subplot_width = 4,
-            subplot_height = 3,
-            lon_min = None,
-            lon_max = None,
-            lat_min = None,
-            lat_max = None,
-            start_date = None,
-            end_date = None,
-            check_mass = False,
-            deactivate_coords = False):
-        '''
-        Extract, plot to .png, and export to a .csv file aggregated mass of all elements at each timestep of the simulation
-        Plot directly data from a produced .cvs file.
-        Use deactivate_north_of/south_of/_east_of/_west_of parameters to define simulation domain and avoid double counting
-        advection out of the system for elements that are not deactivated when crossing the simulation border
-
-        Parameters
-        ----------
-        chemical_compound:            string, name of chemical to be included into plot titles
-        file_out_path:                string, file path where .csv and .png files will be saved. Must end with /
-        sim_name:                     string, name of simulation that will be included in .csv and .png file names
-        mass_unit:                    string, 'kg' 'g','mg','ug'
-        time_unit:                    string, 'seconds', 'minutes', 'hours' , 'days'
-        shp_file_path:                string, file path of shapefile. Must end with /
-        load_timeseries_from_file:    boolean,select if timeseries are loaded from .csv (True) or not (False)
-        timeseries_file_path:         string, file path of timeseries .csv file. Must end with /
-        plot_figures:                 boolean,select if data is plotted (True) or not (False)
-        title_fig_tserie:             string, title of timeseries figure
-        title_fig_mass:               string, title of mass among dissolved/DOC/SPM/sed figure
-        title_fig_deg:                string, title of removal mechanisms figure
-        subplot_width:                float32, width (inches) of each subplot in timeseries figure
-        subplot_height                float32, height (inches) of each subplot in timeseries figure
-        lon_min:                      float32, min longitude of domain to consider advection out of the simulation domain
-        lon_max:                      float32, max longitude of domain to consider advection out of the simulation domain
-        lat_min:                      float32, min latitude of domain to consider advection out of the simulation domain
-        lat_max:                      float32, max latitude of domain to consider advection out of the simulation domain
-        deactivate_coords:            boolean, indicate if deactivate_north_of/south_of/_east_of/_west_of were used in simulation when plotting from .csv file
-        start_date:                   pd.Datetime, start of plotted timeserie
-                                      (e.g., pd.to_datetime("2018-01-01 00:00:00", format = '%Y-%m-%d %H:%M:%S'))
-        end_date:                     pd.Datetime, end of plotted timeserie
-
-        Returns a Pandas Dataframe:
-            ----
-        date_of_timestep:       calendar date of timestep as datetime.datetime object 
-        time:                   time from start of simulation expressed as time_unit
-        time_conversion_factor
-        mass_conversion_factor
-            ---
-        [considers only active elements inside the simulation domain]
-        dissolved:              mass associated to dissolved elements for each timestep
-        DOC:                    mass associated to DOC elements for each timestep
-        SPM:                    mass associated to SPM elements for each timestep
-        sed_rev:                mass associated to superficial sediments elements for each timestep
-        sed_buried:             mass associated to buried sediments elements for each timestep
-        mass_current:           mass present in the simulation at each timestep
-        mass_wat:               mass present in the water column at each timestep
-        mass_sed:               mass present in the active sediments at each timestep
-            ---
-        mass_emitted:           mass emitted into the simulation until the end of each timestep (ONLY ACTIVE ELEMENTS)
-            ---
-        mass_removed:           mass removed from the system until the end of each timestep
-            ---
-        [does not consider the specie of each element at each timestep]
-        mass_degr:              mass that has been degraded up to the end of each timestep
-        mass_degr_sed:          mass that has been degraded in sediments up to the end of each timestep
-        mass_degr_wat:          mass that has been degraded in water up to the end of each timestep
-        mass_vol:               mass that has been volatilized in water up to the end of each timestep
-        mass_sed_buried:        mass that has been buried in sediments up to the end of each timestep
-            ---
-        adv_out_cumul:          mass that has been advected out up to the end of each timestep
-        adv_out_ts:             mass that has been advected at each timestep
-        --- IF deactivate_north_of/south_of/_east_of/_west_of ARE NOT USED IN SIMULATION
-            An element is considered advected out only if it is outside the domain of 
-            the ou and vo velocity fields (i.e. deactivated) AND out of the shp/ lat-lon specified.
-            Comment "adv_out = out_of_bounds & missing_var" to consider only shp/ lat-lon limits 
-            but this  will double count elements moving along the border at different timesteps.
-            IF shp/lat-lon limits are not the same area covered by ou and vo velocity fields mass
-            advected may be overestimated.
-        --- IF deactivate_north_of/south_of/_east_of/_west_of ARE USED IN SIMULATION only elements 
-            deactivated with "outside" as reason will be counted
-        '''
-        import opendrift
-        import matplotlib.pyplot as plt
-        import pandas as pd
-
-        if shp_file_path is not None:
-            import geopandas as gpd
-            from shapely.geometry import Point
-
-        if timeseries_file_path is not None:
-            if timeseries_file_path.endswith(".csv"):
-                csv_file_name = ""
-            else:
-                csv_file_name = sim_name + "_extracted_timeseries.csv"
-
-        if load_timeseries_from_file is False:
-            # Init species and transfer rates 
-            if self.mode != opendrift.models.basemodel.Mode.Config:
-                self.mode = opendrift.models.basemodel.Mode.Config
-            self.init_species()
-            self.init_transfer_rates()
-            if self.mode != opendrift.models.basemodel.Mode.Result:
-                self.mode = opendrift.models.basemodel.Mode.Result
-
-            # Check if deactivate_N/S/E/W_of where specified
-            deactivate_coords = []
-            deactivate_coords.append(self.get_config('drift:deactivate_north_of'))
-            deactivate_coords.append(self.get_config('drift:deactivate_south_of'))
-            deactivate_coords.append(self.get_config('drift:deactivate_east_of'))
-            deactivate_coords.append(self.get_config('drift:deactivate_west_of'))
-            deactivate_coords = any(bool(dic) for dic in deactivate_coords)
-
-            # Define elimination processes
-            status_categories = self.status_categories
-            if 'active' in status_categories:
-                active_index = status_categories.index('active')
-            if 'removed' in status_categories:
-                removed_index = status_categories.index('removed')
-            if 'missing_data' in status_categories:
-                missing_data_index = status_categories.index('missing_data')
-            if 'outside' in status_categories:
-                out_of_bounds_index = status_categories.index('outside')
-
-            # Define time and mass convertions
-            steps=len(self.result.time)
-
-            mass_conversion_factor=1e-6
-            if mass_unit=='g' and self.elements.variables['mass']['units']=='ug':
-                mass_conversion_factor=1e-6
-            if mass_unit=='mg' and self.elements.variables['mass']['units']=='ug':
-                mass_conversion_factor=1e-3
-            if mass_unit=='ug' and self.elements.variables['mass']['units']=='ug':
-                mass_conversion_factor=1
-            if mass_unit=='kg' and self.elements.variables['mass']['units']=='ug':
-                mass_conversion_factor=1e-9
-
-            time_conversion_factor = self.time_step_output.total_seconds() / (60*60)
-            if time_unit=='seconds':
-                time_conversion_factor = self.time_step_output.total_seconds()
-            if time_unit=='minutes':
-                time_conversion_factor = self.time_step_output.total_seconds() / 60
-            if time_unit=='hours':
-                time_conversion_factor = self.time_step_output.total_seconds() / (60*60)
-            if time_unit=='days':
-                time_conversion_factor = self.time_step_output.total_seconds() / (24*60*60)
-            print("Extracting data from simulation")
-            # Extract properties from simulation
-            lat=self.result.lat.T.values
-            lon=self.result.lon.T.values
-            mass=self.result.mass.T.values
-            sp=self.result.specie.T.values
-            mass_d = self.result.mass_degraded.T.values
-            mass_d = np.nan_to_num(mass_d, 0)
-            mass_d_W = self.result.mass_degraded_water.T.values
-            mass_d_W = np.nan_to_num(mass_d_W, 0)
-            mass_d_S = self.result.mass_degraded_sediment.T.values
-            mass_d_S = np.nan_to_num(mass_d_S, 0)
-            mass_v = self.result.mass_volatilized.T.values
-            mass_v = np.nan_to_num(mass_v, 0)
-            status = self.result.status.T.values
-
-            # Get mask for elements in water column and sedments for each timestep
-            in_water_column_ls = []
-            if hasattr(self, 'num_lmm'):
-                in_water_column_ls.append(self.num_lmm)
-            if hasattr(self, 'num_humcol'):
-                in_water_column_ls.append(self.num_humcol)
-            if hasattr(self, 'num_prev'):
-                in_water_column_ls.append(self.num_prev)
-
-            in_water_column = np.any([sp == value for value in in_water_column_ls], axis=0)
-
-            in_sediment_layer = (sp==self.num_srev)
-            in_buried_sed = (sp==self.num_ssrev)
-            active_elements = (status==0)
-            # inactive_elements = (status!=0)
-            # Mask that is true where mass[0] is not NaN
-            # elements = ~mass[1].mask
-            elements = ~np.isnan(mass)
-            mass = np.nan_to_num(mass, 0)
-
-            # Find which elements are advected out of the domain
-            print("Calculating mass advected out of the simulation")
-            if shp_file_path is not None:
-                # Calculate mass of elemements outside of shapefile at each timestep. 
-                # Cumulative advection will double count elements that are not deactivated
-                # when they exit the domain
-                print("shp used to define simulation domain")
-                gdf_shapefile = gpd.read_file(shp_file_path)
-                out_of_bounds = []
-                for t_step in range(0, len(lon)):
-                    lon_ = lon[t_step]
-                    lat_ = lat[t_step]
-                    # Create Point objects from latitude and longitude
-                    geometry = [Point(long, latit) for long, latit in zip(lon_,  lat_)]
-                    gdf_points = gpd.GeoDataFrame(geometry=geometry, crs=gdf_shapefile.crs)
-                    # Spatial join to check if points are within the shapefile geometry
-                    # Use 'within' operation to check if points are within the shapefile
-                    joined = gpd.sjoin(gdf_points, gdf_shapefile, predicate='within')
-                    # Extract the indices of points that are within the shapefile
-                    indices_within = joined.index
-                    # Create a boolean array indicating whether each point is within the shapefile
-                    out_of_bounds.append([index in indices_within for index in range(len(geometry))])
-                # Convert the list of boolean arrays to a NumPy array
-                out_of_bounds = np.array([np.array(arr) for arr in out_of_bounds])
-                adv_out = out_of_bounds & elements
-            elif deactivate_coords is True:
-                print("deactivate_north_of/south_of/_east_of/_west_of parameters used")
-                if ('outside' in status_categories):
-                # advection out of the domain is determined by the use of 
-                # deactivate_north_of/south_of/_east_of/_west_of parameters
-                    adv_out = (status == out_of_bounds_index)
-                else:
-                    adv_out = np.zeros_like(mass, dtype=bool)
-                    print("No elements advected out of domain")
-            elif any([element is None for element in [lat_min, lat_max, lon_max, lon_min]]) is False:
-                # advection out of the domain is determined by the extent of uo/vo velocity field
-                if ('outside' not in status_categories) and ('missing_data' in status_categories): 
-                    print("missing_data used")
-                    out_of_bounds_lat = np.any((lat < lat_min,
-                                                lat > lat_max), axis=0)
-                    out_of_bounds_lon = np.any((lon < lon_min,
-                                                lon > lon_max), axis=0)
-                    # out_of_bounds = (out_of_bounds_lat.astype(int) + out_of_bounds_lon.astype(int)) > 0
-                    out_of_bounds = (out_of_bounds_lat | out_of_bounds_lon)
-                    del(out_of_bounds_lat, out_of_bounds_lon)
-                    # Shift array up one line, the last timestep with the element in the domain is TRUE instead on the first
-                    # timestep with the element outside
-                    out_of_bounds = np.roll(out_of_bounds, -1, axis=0)
-                    out_of_bounds[-1] = out_of_bounds[-2]
-                    missing_var = (status == missing_data_index)
-                    adv_out = out_of_bounds & missing_var & elements
-                else:
-                    adv_out = np.zeros_like(mass, dtype=bool)
-                    print("No elements advected out of domain")
-            else:
-                error = ("shp_file_path and lat/lon limits not specified when " +
-                         "deactivate_north_of/south_of/_east_of/_west_of parameters " +
-                         "were not used")
-                raise ValueError(error)
-
-            # Get mass associated to each specie for each timestep, considering only active elements that are inside 
-            # the simulation domain
-            print("Calculating timeseries from simulation")
-            mass_by_specie=np.zeros((steps,5))
-            for i in range(steps):
-                mass_by_specie[i]=[np.sum(mass[i,:]*(sp[i,:]==0)*(status[i,:]==0)* (~adv_out[i,:]))*mass_conversion_factor,
-                         np.sum(mass[i,:]*(sp[i,:]==1)*(status[i,:]==0)* (~adv_out[i,:]))*mass_conversion_factor,
-                         np.sum(mass[i,:]*(sp[i,:]==2)*(status[i,:]==0)* (~adv_out[i,:]))*mass_conversion_factor,
-                         np.sum(mass[i,:]*(sp[i,:]==3)*(status[i,:]==0)* (~adv_out[i,:]))*mass_conversion_factor,
-                         np.sum(mass[i,:]*(sp[i,:]==4)*(status[i,:]==0)* (~adv_out[i,:]))*mass_conversion_factor]
-
-            time_steps =np.array(range(0, steps))*time_conversion_factor
-            mass_by_specie_df = pd.DataFrame(mass_by_specie)
-
-            for chem_specie in range(0,5):
-                if (chem_specie not in mass_by_specie_df.columns):
-                    mass_by_specie_df[chem_specie] = np.zeros_like(time_steps)
-
-            # Insert time as new columns
-            mass_by_specie_df.insert(0,('time'+"-["+ time_unit +"]"), time_steps)
-            start_date = pd.Timestamp(self.start_time.year, 
-                                      self.start_time.month, 
-                                      self.start_time.day) 
-            time_date_serie = pd.date_range(start=start_date, periods=steps, freq=self.time_step_output)
-            mass_by_specie_df.insert(0,('date_of_timestep'), time_date_serie)
-            del mass_by_specie
-
-            # Change name of dataframe columns
-            Col_names_res = list(mass_by_specie_df.columns)
-            names_to_replace = ({0: "dissolved" + "-["+ mass_unit +"]",
-                                1: "DOC" + "-["+ mass_unit +"]",
-                                2: "SPM" + "-["+ mass_unit +"]",
-                                3: "sed_rev" + "-["+ mass_unit +"]",
-                                4: "sed_buried" + "-["+ mass_unit +"]"
-                                })
-            Col_names_res = [names_to_replace.get(e, e) for e in Col_names_res]
-            mass_by_specie_df.columns = Col_names_res
-
-            # Mass present in the system at each timestep considering only active elements 
-            # that are inside the simulation domain
-            mass_water = (np.sum(mass*in_water_column * active_elements * (~adv_out),1)*mass_conversion_factor)
-            mass_sed = (np.sum(mass*in_sediment_layer * active_elements * (~adv_out),1)*mass_conversion_factor)
-            # mass_sed_buried is outside the domain
-            mass_sed_buried = (np.sum(mass*in_buried_sed,1)*mass_conversion_factor)
-            mass_actual = mass_water + mass_sed
-
-            # Mass of all elements present in simulation during each timestep
-            mass_tot_timestep = (np.sum(mass * elements,1)*mass_conversion_factor)
-            # Mass that has been degraded up to the end of each timestep considering all elements
-            mass_degraded = (np.sum(mass_d*elements,1)*mass_conversion_factor)
-            # Mass that has been degraded (wat and sed) and volatilized up to the end of each timestep
-            # considering considering all elements
-            mass_volatilized = (np.sum((mass_v)*elements,1)*mass_conversion_factor)
-            mass_degraded_w = (np.sum(mass_d_W*elements,1)*mass_conversion_factor)
-            mass_degraded_s = (np.sum(mass_d_S*elements,1)*mass_conversion_factor)
-
-            # Calculate mass of  elements that are advected out of the domain
-            if ('missing_data' in status_categories) or ('outside' in status_categories):
-                # adv_out = out_of_bounds
-                # Mass advected out of the system during each time step
-                mass_adv_out = (np.sum((mass*adv_out),1)*mass_conversion_factor)
-                # Mass advected out of the system from start of simulation, until that time step
-                if deactivate_coords is True:
-                    # mass_adv_out_cumulative = mass_adv_out
-                    mass_adv_out_cumulative = np.cumsum(mass_adv_out)
-                else:
-                    mass_adv_out_cumulative = np.cumsum(mass_adv_out)
-            else:
-                mass_adv_out = np.zeros_like(mass_water)
-                mass_adv_out_cumulative = np.zeros_like(mass_water)
-
-            # Mass emitted into the system up to the end of each timestep
-            mass_emitted = (mass_tot_timestep + mass_degraded + mass_volatilized)
-
-            # Mass that has been degraded (wat and sed) and volatilized of elements
-            # advected out of the system
-            mass_volatilized_adv = (np.sum((mass_v)* adv_out,1)*mass_conversion_factor)
-            mass_degraded_w_adv = (np.sum(mass_d_W* adv_out,1)*mass_conversion_factor)
-            mass_degraded_s_adv = (np.sum(mass_d_S* adv_out,1)*mass_conversion_factor)
-            # Mass removed from the system until the end of each timestep
-            mass_removed = (mass_volatilized - mass_volatilized_adv) + \
-                           (mass_degraded_w - mass_degraded_w_adv) +\
-                           (mass_degraded_s - mass_degraded_s_adv) + \
-                           (mass_adv_out_cumulative + mass_sed_buried)
-            # Contribtion of each mechanism to the elimination of the chemical in the simulation
-            perc_volatilized = ((mass_volatilized - mass_volatilized_adv)/mass_removed)*100
-            perc_degraded_w = ((mass_degraded_w - mass_degraded_w_adv)/mass_removed)*100
-            perc_degraded_s = ((mass_degraded_s - mass_degraded_s_adv)/mass_removed)*100
-            perc_adv = ((mass_adv_out_cumulative)/mass_removed)*100
-            perc_sed_buried = ((mass_sed_buried)/mass_removed)*100
-
-            mass_df = pd.DataFrame({
-                'mass_wat'+ "-["+ mass_unit +"]": mass_water,
-                'mass_sed_rev'+ "-["+ mass_unit +"]": mass_sed,
-                'mass_sed_buried'+ "-["+ mass_unit +"]": mass_sed_buried,
-                'mass_current'+ "-["+ mass_unit +"]": mass_actual,
-                'mass_emitted'+ "-["+ mass_unit +"]": mass_emitted,
-                'mass_degr_tot'+ "-["+ mass_unit +"]": mass_degraded,
-                'mass_degr_wat'+ "-["+ mass_unit +"]": mass_degraded_w,
-                'mass_degr_sed'+ "-["+ mass_unit +"]": mass_degraded_s,
-                'mass_vol'+ "-["+ mass_unit +"]": mass_volatilized,
-                'adv_out_ts'+"-["+ mass_unit +"]": mass_adv_out,
-                'adv_out_cumul'+"-["+ mass_unit +"]": mass_adv_out_cumulative,
-                'perc_vol-["%"]': perc_volatilized,
-                'perc_deg_w-["%"]': perc_degraded_w,
-                'perc_deg_s-["%"]': perc_degraded_s,
-                'perc_adv-["%"]': perc_adv,
-                'perc_sed_buried-["%"]': perc_sed_buried,
-                'mass_removed'+ "-["+ mass_unit +"]": mass_removed,
-                'mass_vol_adv'+ "-["+ mass_unit +"]": mass_volatilized_adv,
-                'mass_degr_wat_adv'+ "-["+ mass_unit +"]": mass_degraded_w_adv,
-                'mass_degr_sed_adv'+ "-["+ mass_unit +"]": mass_degraded_s_adv
-                }).astype(np.float64)
-
-            mass_fin_df = pd.concat([mass_by_specie_df, mass_df], axis=1)
-            mass_fin_df[('convertion_factors-[time_mass]')] = np.zeros_like(mass_emitted)
-            mass_fin_df.loc[0, ('convertion_factors-[time_mass]')]= time_conversion_factor
-            mass_fin_df.loc[1, ('convertion_factors-[time_mass]')]= np.float32(mass_conversion_factor)
-            print(f"save .csv file to {file_out_path + csv_file_name}")
-            mass_fin_df.to_csv(file_out_path + csv_file_name)
-
-        elif load_timeseries_from_file is True and timeseries_file_path is not None:
-            mass_fin_df = pd.read_csv(timeseries_file_path + csv_file_name)
-            # Specify mass_unit and time_unit from loaded dataframe
-            mass_col_ind = int(np.where(mass_fin_df.columns.str.contains("dissolved-"))[0])
-            mass_unit = mass_fin_df.columns[mass_col_ind][11:-1]
-            time_col_ind = int(np.where(mass_fin_df.columns.str.contains("time-"))[0])
-            time_unit = mass_fin_df.columns[time_col_ind][6:-1]
-            mass_fin_df = mass_fin_df.dropna(subset = ['date_of_timestep'])
-
-        else:
-            raise ValueError("timeseries_file_path must be specified")
-
-        time_conversion_factor = np.float32(mass_fin_df.loc[0, ('convertion_factors-[time_mass]')])
-        mass_conversion_factor = np.float32(mass_fin_df.loc[1, ('convertion_factors-[time_mass]')])
-
-        # Filter dataframe based on date
-        mass_fin_df = self.filter_dataframe(df = mass_fin_df,
-                                       time_unit = time_unit,
-                                       start_date = start_date, end_date = end_date)
-
-        # Create timeseries to plot
-        time_steps = self._select_df_column(col_name = "time-", dataframe = mass_fin_df)
-        mass_emitted = self._select_df_column(col_name = 'mass_emitted-', dataframe = mass_fin_df)
-        mass_actual = self._select_df_column(col_name = 'mass_current-', dataframe = mass_fin_df)
-        mass_water = self._select_df_column(col_name = 'mass_wat-', dataframe = mass_fin_df)
-        mass_sed = self._select_df_column(col_name = 'mass_sed_rev-', dataframe = mass_fin_df)
-        mass_degraded = self._select_df_column(col_name = 'mass_degr_tot-', dataframe = mass_fin_df)
-        mass_degraded_s = self._select_df_column(col_name = 'mass_degr_sed-', dataframe = mass_fin_df)
-        mass_degraded_w = self._select_df_column(col_name = 'mass_degr_wat-', dataframe = mass_fin_df)
-        mass_adv_out_cumulative = self._select_df_column(col_name = 'adv_out_cumul-', dataframe = mass_fin_df)
-        mass_adv_out = self._select_df_column(col_name = 'adv_out_ts-', dataframe = mass_fin_df)
-        mass_volatilized = self._select_df_column(col_name = 'mass_vol-', dataframe = mass_fin_df)
-        mass_sed_buried = self._select_df_column(col_name = 'mass_sed_buried-', dataframe = mass_fin_df)
-
-        perc_adv = self._select_df_column(col_name = 'perc_adv-', dataframe = mass_fin_df)
-        perc_degraded_s = self._select_df_column(col_name = 'perc_deg_s-', dataframe = mass_fin_df)
-        perc_degraded_w = self._select_df_column(col_name = 'perc_deg_w-', dataframe = mass_fin_df)
-        perc_volatilized = self._select_df_column(col_name = 'perc_vol-', dataframe = mass_fin_df)
-        perc_sed_buried = self._select_df_column(col_name ='perc_sed_buried-', dataframe = mass_fin_df)
-
-        if plot_figures is True:
-            print("Plotting figures")
-            if title_fig_tserie is None and chemical_compound is not None:
-                title_fig_tserie = (chemical_compound + ' mass')
-            if title_fig_mass is None and chemical_compound is not None:
-                title_fig_mass = (chemical_compound + ' mass')
-            if title_fig_deg is None and chemical_compound is not None:
-                title_fig_deg = (chemical_compound + ' removal')
-
-            mass_dissolved = (mass_fin_df[mass_fin_df.columns[mass_fin_df.columns.str.contains("dissolved-")]])
-            mass_DOC = (mass_fin_df[mass_fin_df.columns[mass_fin_df.columns.str.contains("DOC-")]])
-            mass_SPM = (mass_fin_df[mass_fin_df.columns[mass_fin_df.columns.str.contains("SPM-")]])
-            mass_sed_rev = (mass_fin_df[mass_fin_df.columns[mass_fin_df.columns.str.contains("mass_sed_rev-")]])
-            mass_sed_buried = (mass_fin_df[mass_fin_df.columns[mass_fin_df.columns.str.contains("mass_sed_buried-")]])
-
-            # Plot mass present/degraded/volatilized in the system
-            xlabel = "time" + " ["+ time_unit +"]"
-            fig_width = 2.5 * subplot_width
-            fig_height = 3.7 * subplot_height
-
-            fig1,((ax1,ax2),(ax3,ax4), (ax5, ax6), (ax7, ax8))=plt.subplots(nrows=4, ncols=2, figsize=(fig_width, fig_height))
-            fig1.suptitle(title_fig_tserie)
-
-            ax1.plot(time_steps, mass_emitted)
-            ax1.set_xlabel(xlabel)
-            ax1.set_ylabel('emitted mass'+ " ["+ mass_unit +"]")
-
-            ax2.plot(time_steps, mass_actual, 'k',
-                     time_steps, mass_water, 'b',
-                     time_steps, mass_sed, 'y')
-            ax2.set_xlabel(xlabel)
-            ax2.set_ylabel('current mass'+ " ["+ mass_unit +"]")
-            ax2.legend(['total mass','mass in wat','mass in sed'],prop={'size': 8})
-
-            ax3.plot(time_steps, mass_degraded,'k',
-                     time_steps, mass_degraded_s,'y',
-                     time_steps, mass_degraded_w,'b')
-
-            ax3.set_xlabel(xlabel)
-            ax3.set_ylabel('degraded mass'+ " ["+ mass_unit +"]")
-            ax3.legend(['degr. total','degr. in sed','degr. in wat'],prop={'size': 8})
-
-            ax4.plot(time_steps, mass_adv_out_cumulative, 'lime')
-            if deactivate_coords is False:
-                ax4.plot(time_steps, mass_adv_out, 'm')
-                ax4.legend(['adv. out cumulative','adv. out timestep'],prop={'size': 8})
-            else:
-                ax4.legend(['adv. out'],prop={'size': 8})
-            ax4.set_xlabel(xlabel)
-            ax4.set_ylabel('advected out mass' + " ["+ mass_unit +"]")
-
-            ax5.plot(time_steps, mass_volatilized, 'orange')
-            ax5.set_xlabel(xlabel)
-            ax5.set_ylabel('volatilized mass' + " ["+ mass_unit +"]")
-
-            ax6.plot(time_steps, mass_sed_buried, 'purple')
-            ax6.set_xlabel(xlabel)
-            ax6.set_ylabel('buried in sed mass' + " ["+ mass_unit +"]")
-            
-            mass_dissolved_arr = mass_dissolved.to_numpy().flatten()
-            mass_DOC_arr = mass_DOC.to_numpy().flatten()
-            mass_SPM_arr = mass_SPM.to_numpy().flatten()
-            mass_sed_rev_arr = mass_sed_rev.to_numpy().flatten()
-            mass_actual_arr = mass_actual.to_numpy().flatten()
-
-            ax7.plot(time_steps, (mass_dissolved_arr/mass_actual_arr)*100, 'midnightblue',
-                     time_steps, (mass_DOC_arr/mass_actual_arr)*100, 'royalblue',
-                     time_steps, (mass_SPM_arr/mass_actual_arr)*100, 'palegreen',
-                     time_steps,(mass_sed_rev_arr/mass_actual_arr)*100, 'orange')
-            ax7.set_xlabel(xlabel)
-            ax7.set_ylabel('mass distribution [%]')
-            ax7.legend(['dissolved','DOC', 'SPM', 'sed'],prop={'size': 8})
-
-            ax8.plot(time_steps, perc_volatilized, 'orange',
-                     time_steps, perc_degraded_w, 'b',
-                     time_steps, perc_degraded_s, 'y',
-                     time_steps, perc_adv, 'm',
-                     time_steps, perc_sed_buried, 'saddlebrown',
-                     )
-            ax8.set_xlabel(xlabel)
-            ax8.set_ylabel('contribution to elimination [%]')
-            ax8.legend(['vol','deg_w', 'deg_s', 'adv', 'sed_burial'],prop={'size': 8})
-            
-            fig1.tight_layout()
-            fig1.savefig(file_out_path+"/"+sim_name+"-time_series"+".png")
-
-            # Plot mass distribution among environmental media
-            bars=np.zeros((len(time_steps),5))
-
-            for i in range(0, len(time_steps)):
-                bars[i]=[mass_dissolved.iloc[i, 0],
-                         mass_DOC.iloc[i, 0],
-                         mass_SPM.iloc[i, 0],
-                         mass_sed_rev.iloc[i, 0],
-                         mass_sed_buried.iloc[i, 0]]
-
-            bottom=np.zeros_like(bars[:,0])
-
-            fig2, ax = plt.subplots()
-            fig2.suptitle(title_fig_mass)
-            ax.bar(np.arange((len(time_steps))),bars[:,0],width=1.25,color='midnightblue')
-            bottom=bars[:,0]
-            ax.bar(np.arange((len(time_steps))),bars[:,1],bottom=bottom,width=1.25,color='royalblue')
-            bottom=bottom+bars[:,1]
-            ax.bar(np.arange((len(time_steps))),bars[:,2],bottom=bottom,width=1.25,color='palegreen')
-            bottom=bottom+bars[:,2]
-            ax.bar(np.arange((len(time_steps))),bars[:,3],bottom=bottom,width=1.25,color='orange')
-            bottom=bottom+bars[:,3]
-
-            print(f'dissolved: {str(bars[-1,0])} {mass_unit} ({str(100*bars[-1,0]/np.sum(bars[-1,:]))} %)')
-            print(f'DOC: {str(bars[-1,1])} {mass_unit} ({str(100*bars[-1,1]/np.sum(bars[-1,:]))} %)')
-            print(f'SPM: {str(bars[-1,2])} {mass_unit} ({str(100*bars[-1,2]/np.sum(bars[-1,:]))} %)')
-            print(f'sediment: {str(bars[-1,3])} {mass_unit} ({str(100*bars[-1,3]/np.sum(bars[-1,:]))} %)')
-
-
-            ax.legend(['dissolved', 'DOC', 'SPM','sediment'])
-            ax.set_ylabel('mass (' + mass_unit + ')')
-            # Get current tick positions
-            xticks = ax.get_xticks()
-            # Set the ticks explicitly before setting labels
-            ax.set_xticks(xticks)
-            ax.set_xticklabels(np.round(xticks * time_conversion_factor))
-            ax.set_xlabel('time (' + time_unit + ')')
-
-            plt.savefig(file_out_path+"/"+sim_name+"-mass_specie"+".png", bbox_inches="tight", dpi=300)
-
-            # Plot degradatin mecanisms during simulations
-            bars_deg=np.zeros((len(time_steps),5))
-            for i in range(0, len(time_steps)):
-                bars_deg[i]=[perc_volatilized.iloc[i, 0],
-                         perc_degraded_w.iloc[i, 0],
-                         perc_degraded_s.iloc[i, 0],
-                         perc_adv.iloc[i, 0],
-                         perc_sed_buried.iloc[i, 0]]
-
-            bottom_deg=np.zeros_like(bars_deg[:,0])
-
-            fig3, ax = plt.subplots()
-            fig3.suptitle(title_fig_deg)
-            ax.bar(np.arange((len(time_steps))),bars_deg[:,0],width=1.25,color='orange')
-            bottom_deg=bars_deg[:,0]
-            ax.bar(np.arange((len(time_steps))),bars_deg[:,1],bottom=bottom_deg,width=1.25,color='b')
-            bottom_deg = bottom_deg+bars_deg[:,1]
-            ax.bar(np.arange((len(time_steps))),bars_deg[:,2],bottom=bottom_deg,width=1.25,color='y')
-            bottom_deg = bottom_deg + bars_deg[:,2]
-            ax.bar(np.arange((len(time_steps))),bars_deg[:,3],bottom=bottom_deg,width=1.25,color='royalblue')
-            bottom_deg = bottom_deg+bars_deg[:,3]
-            ax.bar(np.arange((len(time_steps))),bars_deg[:,4],bottom=bottom_deg,width=1.25,color='saddlebrown')
-            
-            ax.legend(['vol','deg_w', 'deg_s', 'adv', 'sed_burial'])
-            ax.set_ylabel('percentage (%)')
-            # Get current tick positions
-            xticks = ax.get_xticks()
-            # Set the ticks explicitly before setting labels
-            ax.set_xticks(xticks)
-            ax.set_xticklabels(np.round(xticks * time_conversion_factor))
-            ax.set_xlabel('time (' + time_unit + ')')
-
-            plt.savefig(file_out_path+"/"+sim_name+"-degrad"+".png", bbox_inches="tight", dpi=300)
-            print("save figures to ", file_out_path)
-
-            if check_mass is True:
-                print(f"mass_vol extracted: {mass_volatilized.to_numpy()[-1]}")
-                vol_active = (sum(self.elements.mass_volatilized)*mass_conversion_factor)
-                vol_inactive = (sum(self.elements_deactivated.mass_volatilized)*mass_conversion_factor)
-                print(f"mass_vol active: {vol_active}")
-                print(f"mass_vol inactive: {vol_inactive}")
-                print(f"mass_vol active + inactive : {vol_inactive + vol_active}")
-                print("####")
-
-                print(f"mass_degraded extracted {mass_degraded.to_numpy()[-1]}")
-                degraded_active = (sum(self.elements.mass_degraded)*mass_conversion_factor)
-                degraded_inactive = (sum(self.elements_deactivated.mass_degraded)*mass_conversion_factor)
-                print(f"mass_degraded active: {degraded_active}")
-                print(f"mass_degraded inactive: {degraded_inactive}")
-                print(f"mass_degraded active + inactive: {degraded_active + degraded_inactive}")
-                print("####")
-
-                print(f"mass_tot_ts extracted: {np.array(mass_tot_timestep[-1]).sum()}")
-                print("####")
-                mass_active = (sum(self.elements.mass)*mass_conversion_factor)
-                mass_inactive = (sum(self.elements_deactivated.mass)*mass_conversion_factor)
-                print(f"mass_tot_ts active: {mass_active}")
-                print(f"mass_tot_ts inactive: {mass_inactive}")
-                print(f"mass_tot_ts active + inactive: {mass_active + mass_inactive}")
-                print("####")
-
-                print(f"mass emitted extracted: {mass_emitted.to_numpy()[-1]}")
-                print("mass emitted check: ",
-                      f"{(mass_active + mass_inactive)+ (degraded_active + degraded_inactive)+ (vol_inactive + vol_active)}")
-                print("####")
-
-    @staticmethod
-    def _find_date_row(data_frame,
-                      specified_date):
-        '''
-        Select the row of each dataframe nearest to the specified date. If the date is before the first 
-        date in the dataframe returns a row of 0
-
-        Parameters
-        ----------
-        data_frame:            pandas dataframe
-        specified_date:        Timestamp('%Y-%m-%d %H:%M:%S')
-        '''
-        import pandas as pd
-
-        date_column = pd.to_datetime(data_frame['date_of_timestep'], format='%Y-%m-%d %H:%M:%S')
-        # 'date_of_timestep' column must be ordered increasingly
-        if specified_date < date_column.min():
-            date_row = pd.DataFrame([[0] * len(data_frame.columns)], columns=data_frame.columns)
-        else:
-            row_index = (date_column <= specified_date)[::-1].idxmax()
-            date_row =data_frame.loc[[row_index]]
-        return date_row
-
-    @staticmethod
-    def _correct_percentages_ts(merged_df):
-        '''
-        Recalculate percentages of chemical eliminated by each precess considered
-
-        Parameters
-        ----------
-        merged_df : pandas dataframe within sum_summary_timeseries function
-
-        '''
-
-        def find_col_name(col_name, data_frame = merged_df):
-            return [col for col in data_frame.columns if col.startswith(col_name)]
-
-        col_index_dict = {
-            "dissolved": find_col_name(col_name = "dissolved-["),
-            "DOC": find_col_name(col_name = "DOC-["),
-            "SPM": find_col_name(col_name = "SPM-["),
-            "sed_rev": find_col_name(col_name = "sed_rev-["),
-            "sed_buried": find_col_name(col_name = "sed_buried-["),
-            "mass_wat": find_col_name(col_name = "mass_wat-["),
-            "mass_sed_rev": find_col_name(col_name = "mass_sed_rev-["),
-            "mass_sed_buried": find_col_name(col_name = "mass_sed_buried-["),
-            "mass_current": find_col_name(col_name = "mass_current-["),
-            "mass_emitted": find_col_name(col_name = "mass_emitted-["),
-            "mass_degr_tot": find_col_name(col_name = "mass_degr_tot-["),
-            "mass_degr_wat": find_col_name(col_name = "mass_degr_wat-["),
-            "mass_degr_sed": find_col_name(col_name = "mass_degr_sed-["),
-            "mass_vol": find_col_name(col_name = "mass_vol-["),
-            "adv_out_ts": find_col_name(col_name = "adv_out_ts-["),
-            "adv_out_cumul": find_col_name(col_name = "adv_out_cumul-["),
-            "perc_vol": find_col_name(col_name = "perc_vol-["),
-            "perc_deg_w": find_col_name(col_name = "perc_deg_w-["),
-            "perc_deg_s": find_col_name(col_name = "perc_deg_s-["),
-            "perc_adv": find_col_name(col_name = "perc_adv-["),
-            "perc_sed_buried": find_col_name(col_name = "perc_sed_buried-["),
-            "mass_removed": find_col_name(col_name = "mass_removed-["),
-            "mass_vol_adv": find_col_name(col_name = "mass_vol_adv-["),
-            "mass_degr_wat_adv": find_col_name(col_name = "mass_degr_wat_adv-["),
-            "mass_degr_sed_adv": find_col_name(col_name = "mass_degr_sed_adv-[")}
-
-        mass_removed = np.array(merged_df.loc[:, col_index_dict["mass_removed"]])
-        mass_volatilized = np.array(merged_df.loc[:, col_index_dict["mass_vol"]])
-        mass_volatilized_adv = np.array(merged_df.loc[:, col_index_dict["mass_vol_adv"]])
-        mass_degraded_w = np.array(merged_df.loc[:, col_index_dict["mass_degr_wat"]])
-        mass_degraded_w_adv = np.array(merged_df.loc[:, col_index_dict["mass_degr_wat_adv"]])
-        mass_degraded_s = np.array(merged_df.loc[:, col_index_dict["mass_degr_sed"]])
-        mass_degraded_s_adv = np.array(merged_df.loc[:, col_index_dict["mass_degr_sed_adv"]])
-        mass_adv_out_cumulative = np.array(merged_df.loc[:, col_index_dict["adv_out_cumul"]])
-        mass_sed_buried = np.array(merged_df.loc[:, col_index_dict["mass_sed_buried"]])
-
-        # Contribtion of each mechanism to the elimination of the chemical in the simulation
-        perc_volatilized = ((mass_volatilized - mass_volatilized_adv)/mass_removed)*100
-        perc_degraded_w = ((mass_degraded_w - mass_degraded_w_adv)/mass_removed)*100
-        perc_degraded_s = ((mass_degraded_s - mass_degraded_s_adv)/mass_removed)*100
-        perc_adv = ((mass_adv_out_cumulative)/mass_removed)*100
-        perc_sed_buried = ((mass_sed_buried)/mass_removed)*100
-
-        merged_df[col_index_dict["perc_vol"]] = perc_volatilized
-        merged_df[col_index_dict["perc_deg_w"]] = perc_degraded_w
-        merged_df[col_index_dict["perc_deg_s"]] = perc_degraded_s
-        merged_df[col_index_dict["perc_adv"]] = perc_adv
-        merged_df[col_index_dict["perc_sed_buried"]] = perc_sed_buried
-        merged_df = merged_df.fillna(0)
-        return merged_df
-
-
-    def sum_summary_timeseries(self,
-                               ts_file_path,
-                               sim_name = None,
-                               csv_suffix = None,
-                               start_date = None,
-                               end_date = None,
-                               freq_time = None,
-                               mass_unit_out = "g"):
-        '''
-        Sum all .csv files produced by extract_summary_timeseries with the same suffix present in a folder and return a 
-        .csv file
-
-        Parameters
-        ----------
-        timeseries_file_path:         string, folder path .csv files produced by extract_summary_timeseries. Must end with /
-        sim_name:                     string, name of simulation that will be included in sum .csv file name
-        csv_suffix:                   string, suffix of .csv file names that will be summed
-        start_date:                   pd.Datetime, start of reconstructed timeseries when .csv have different timesteps
-                                      (e.g., ("2018-01-01 00:00:00", format = '%Y-%m-%d %H:%M:%S'))
-        end_date:                     pd.Datetime, end of reconstructed timeseries when .csv have different timesteps
-        freq_time:                    string, frequency of reconstructed timeseries when .csv have different timesteps expressed as hours (e.g., "6H")
-        mass_unit_out:                string, mass unit of uotput .csv file ('kg' 'g','mg','ug')
-
-        Returns a Pandas Dataframe equal to extract_summary_timeseries
-        '''
-
-        import pandas as pd
-        from datetime import datetime
-        import os
-
-        if csv_suffix is None:
-            csv_suffix = "_extracted_timeseries.csv"
-
-        # list of timeseries filenames
-        ts_file_name_ls = []
-        for filename in os.listdir(ts_file_path):
-            if filename.endswith(csv_suffix):
-                ts_file_name_ls.append(filename)
-
-        if len(ts_file_name_ls) == 0:
-            raise ValueError("No .csv files were loaded, check csv_suffix")
-
-        if sim_name is None:
-            sim_name = ts_file_name_ls[0][:-3]
-        csv_file_name_fin = sim_name + "_extracted_sum_timeseries.csv"
-
-        # list of timeseries Pandas Dataframe imported
-        mass_fin_df_ls = []
-        for csv_file_name in ts_file_name_ls:
-            df = pd.read_csv(ts_file_path + csv_file_name).fillna(0)
-            # Correction for naming mistake. to be removed
-            if any(name == "mass_degr_sed" for name in df.columns):
-                df = df.rename(columns={"mass_degr_sed":"mass_degr_sed_adv-[g]"})
-            if any("Unnamed" in column_name for column_name in df.columns):
-                df = df.filter(regex='^(?!Unnamed).*$')
-            mass_fin_df_ls.append(df)
-
-        check_time_conv_factor = []
-        check_mass_conv_factor = []
-        check_time_step = []
-        for df_mass in mass_fin_df_ls:
-            check_time_conv_factor.append(df_mass.loc[0, ('convertion_factors-[time_mass]')])
-            check_mass_conv_factor.append(df_mass.loc[1, ('convertion_factors-[time_mass]')])
-            time_col_ind = int(np.where(df_mass.columns.str.contains("time-"))[0])
-            check_time_step.append(df_mass.iloc[1, time_col_ind] - df_mass.iloc[0, time_col_ind])
-
-        check_time_convertion_factor = all(element == check_time_conv_factor[0] for element in check_time_conv_factor)
-        check_mass_convertion_factor = all(element == check_mass_conv_factor[0] for element in check_mass_conv_factor)
-        check_time_step = all(element == check_time_step[0] for element in check_time_step)
-
-        if check_time_step is True:
-            if (check_time_convertion_factor and check_mass_convertion_factor) is False:
-                raise ValueError("time/mass_conversion_factor is not equal for all extracted timeseries")
-            time_conv_factor = mass_fin_df_ls[0].loc[0, ('convertion_factors-[time_mass]')]
-            mass_conv_factor = mass_fin_df_ls[0].loc[1, ('convertion_factors-[time_mass]')]
-
-            # Merge pd.Dataframes and sort by time
-            merged_df = pd.concat(mass_fin_df_ls, axis = 0)
-            merged_df.reset_index(drop = True, inplace = True)
-            merged_df["date_of_timestep"] = pd.to_datetime(merged_df["date_of_timestep"])
-            merged_df = merged_df.sort_values(by = ["date_of_timestep"])
-            # Sum rows of the same timestep
-            merged_df = pd.DataFrame(merged_df.groupby("date_of_timestep").sum())
-            merged_df.insert(0,('date_of_timestep'), merged_df.index)
-            merged_df["date_of_timestep"] = merged_df.index
-
-            # Reconstruct ["date_of_timestep"] column
-            time_start = (pd.to_datetime(merged_df["date_of_timestep"][0])).to_pydatetime()
-            time_delta_ls = []
-            for time_ind in range(1, len(merged_df["date_of_timestep"])):
-                time_delta_ls.append(merged_df["date_of_timestep"][time_ind] - time_start)
-
-            list_dates_fin = []
-            list_dates_fin.append(time_start)
-            for time_ind in time_delta_ls:
-                list_dates_fin.append((time_start) + time_ind)
-            merged_df["date_of_timestep"] = (list_dates_fin)
-
-            # Reconstruct ["time-[]"] column
-            new_time  = time_conv_factor * (range(0, len(merged_df["date_of_timestep"])))
-            time_col = [col for col in merged_df.columns if "time-[" in col]
-            merged_df.loc[:, time_col] = new_time
-            merged_df.reset_index(drop = True, inplace = True)
-
-            # Correct time/mass convertion factors
-            merged_df.loc[0, ('convertion_factors-[time_mass]')] = time_conv_factor
-            merged_df.loc[1, ('convertion_factors-[time_mass]')] = mass_conv_factor
-            # Recalculate percentages
-            merged_df_fin = self._correct_percentages_ts(merged_df)
-
-        elif ((check_time_step is False) and (start_date is not None) and\
-            (end_date is not None) and (freq_time is not None)):
-
-            # Set mass_conv_factor to NaN if df have different mass units
-            if all (element == check_mass_conv_factor[0] for element in check_mass_conv_factor):
-                mass_conv_factor = check_mass_conv_factor[0]
-            else:
-                mass_conv_factor = np.nan
-
-            # final row for each timestep that will be concatenated
-            ts_sum_ls = []
-            time_date_serie = pd.date_range(start=start_date, end = end_date, freq=freq_time)
-
-            for df_index in range(0, len(mass_fin_df_ls)):
-                df_mass = mass_fin_df_ls[df_index]
-
-                # Check format of ['date_of_timestep']
-                date_of_timestep_ls = []
-                for element in df_mass['date_of_timestep']:
-                    date_of_timestep_ls.append(self._change_datetime_format(datetime_str = element,
-                                                new_format = "%Y-%m-%d %H:%M:%S"))
-                df_mass['date_of_timestep'] = date_of_timestep_ls
-
-                # Remove mass degraded or removed before start_date 
-                df_mass_date_column = pd.to_datetime(df_mass['date_of_timestep'], format='%Y-%m-%d %H:%M:%S')
-                # 'date_of_timestep' column must be ordered increasingly
-                df_mass_date_column = df_mass_date_column.sort_values(ascending=True)
-                if start_date < df_mass_date_column.min():
-                    start_date_index = df_mass.index[0]
-                else:
-                    start_date_index = (df_mass_date_column <= start_date)[::-1].idxmax()
-
-                filtered_df = df_mass[df_mass.index >= start_date_index]
-                # Select mass to remove
-                first_ts_to_remove = pd.DataFrame(filtered_df.iloc[0]).T
-                mass_col_ind = int(np.where(filtered_df.columns.str.contains("dissolved-"))[0])
-                mass_unit =  filtered_df.columns[mass_col_ind][11:-1]
-
-                degr_columns_names_ls = ['mass_sed_buried'+ "-["+ mass_unit +"]", 'mass_degr_tot'+ "-["+ mass_unit +"]",
-                'mass_degr_wat'+ "-["+ mass_unit +"]", 'mass_degr_sed'+ "-["+ mass_unit +"]", 'mass_vol'+ "-["+ mass_unit +"]", 
-                'adv_out_ts'+"-["+ mass_unit +"]", 'adv_out_cumul'+"-["+ mass_unit +"]", 'mass_removed'+ "-["+ mass_unit +"]",
-                'mass_vol_adv'+ "-["+ mass_unit +"]", 'mass_degr_wat_adv'+ "-["+ mass_unit +"]",'mass_degr_sed_adv'+ "-["+ mass_unit +"]"]
-
-                for degr_columns_name in degr_columns_names_ls:
-                    filtered_df[degr_columns_name] = np.array(filtered_df[degr_columns_name]) - np.array(first_ts_to_remove[degr_columns_name])
-
-                mass_emitted_delta = (filtered_df["mass_emitted"+ "-["+ mass_unit +"]"].iloc[0] -
-                                      filtered_df["mass_current" + "-["+ mass_unit +"]"].iloc[0])
-                filtered_df["mass_emitted"+ "-["+ mass_unit +"]"] = np.array(filtered_df["mass_emitted"+ "-["+ mass_unit +"]"]) - mass_emitted_delta
-
-                time_col_ind = int(np.where(filtered_df.columns.str.contains("time-"))[0])
-                time_unit = filtered_df.columns[time_col_ind][6:-1]
-                time_delta = (filtered_df["time"+ "-["+ time_unit +"]"].iloc[0])
-                filtered_df["time"+ "-["+ time_unit +"]"] = np.array(filtered_df["time"+ "-["+ time_unit +"]"]) - time_delta
-
-                if mass_unit_out != mass_unit:
-                    print(f"converted mass from {mass_unit} to {mass_unit_out}")
-                    if mass_unit_out == "ug":
-                        if mass_unit=='kg':
-                            mass_conversion_factor= 1e-9
-                        if mass_unit=='g':
-                            mass_conversion_factor= 1e-6
-                        if mass_unit=='mg':
-                            mass_conversion_factor= 1e-3
-                        if mass_unit=='ug':
-                            mass_conversion_factor= 1
-                    elif mass_unit_out == "mg":
-                        if mass_unit=='kg':
-                            mass_conversion_factor= 1e-6
-                        if mass_unit=='g':
-                            mass_conversion_factor= 1e3
-                        if mass_unit=='mg':
-                            mass_conversion_factor= 1
-                        if mass_unit=='ug':
-                            mass_conversion_factor= 1e-3
-                    elif mass_unit_out == "g":
-                        if mass_unit=='kg':
-                            mass_conversion_factor= 1e3
-                        if mass_unit=='g':
-                            mass_conversion_factor= 1
-                        if mass_unit=='mg':
-                            mass_conversion_factor=1e-3
-                        if mass_unit=='ug':
-                            mass_conversion_factor= 1e-6
-                    elif mass_unit_out == "kg":
-                        if mass_unit=='kg':
-                            mass_conversion_factor= 1
-                        if mass_unit=='g':
-                            mass_conversion_factor= 1e-3
-                        if mass_unit=='mg':
-                            mass_conversion_factor=1e-6
-                        if mass_unit=='ug':
-                            mass_conversion_factor= 1e-9
-                    else:
-                        raise ValueError("wrong mass_unit_out specified")
-
-                    # Update column names with mass_unit_out
-                    new_column_names = list(filtered_df.columns)
-                    for i in range(len(new_column_names)):
-                       new_column_names[i] = new_column_names[i].replace(("-["+ mass_unit +"]"), "-["+ mass_unit_out +"]")
-                    filtered_df.columns =  new_column_names
-        
-                    for col_name in list(filtered_df.columns):
-                        if col_name.endswith ("-["+ mass_unit_out +"]"):
-                            # Multiply mass columns by mass_conversion_factor
-                            filtered_df[col_name] = np.array(filtered_df[col_name]) * mass_conversion_factor
-                        else:
-                            pass
-                else:
-                    pass
-
-                # Update df in mass_fin_df_ls
-                # print(df_index)
-                mass_fin_df_ls[df_index] = filtered_df
-
-            for time_step in time_date_serie:
-                # rows for each timestep
-                mass_row_ls = []
-                for df_mass in mass_fin_df_ls:
-                    # df_mass = mass_fin_df_ls[2]
-                    date_row = self._find_date_row(data_frame=df_mass,
-                                                specified_date = pd.to_datetime(time_step))
-                    mass_row_ls.append(date_row)
-                # Concatenate the row of each df and sum
-                concat_df = pd.concat(mass_row_ls)
-                concat_df['date_of_timestep'] = 0
-                concat_df['convertion_factors-[time_mass]'] = np.nan
-                concat_df_sum = concat_df.sum(axis=0)
-                concat_df_sum = pd.DataFrame(np.array(concat_df_sum)).T
-                concat_df_sum.columns = concat_df.columns
-                concat_df_sum.loc[0, 'date_of_timestep'] = time_step
-
-                ts_sum_ls.append(concat_df_sum)
-
-            # Concatenate all timesteps
-            mass_df_fin = pd.concat(ts_sum_ls)
-            # Correct time-[] column 
-            time_col_ind = int(np.where(mass_df_fin.columns.str.contains("time-"))[0])
-            time_unit = mass_df_fin.columns[time_col_ind][6:-1]
-
-            if time_unit=='seconds':
-                time_conversion_factor_ls = [(60*60*24), (1)]
-                time_conv_factor = pd.Timedelta(freq_time).seconds
-            if time_unit=='minutes':
-                time_conversion_factor_ls = [(60*24), (60)]
-                time_conv_factor = pd.Timedelta(freq_time).seconds / (60)
-            if time_unit=='hours':
-                time_conversion_factor_ls = [(24), (60*60)]
-                time_conv_factor = pd.Timedelta(freq_time).seconds / (60*60)
-            if time_unit=='days':
-                time_conversion_factor_ls = [(1), (60*60*24)]
-                time_conv_factor = pd.Timedelta(freq_time).seconds / (60*60*24)
-
-            time_series = mass_df_fin['date_of_timestep']
-            time_series_diff = np.array(time_series) - np.array(time_series.iloc[0])
-
-            time_unit_col_ls = []
-            for time_d in time_series_diff:
-                n_days = time_d.days*time_conversion_factor_ls[0]
-                n_seconds = time_d.seconds/time_conversion_factor_ls[1]
-                time_unit_col_ls.append(n_days + n_seconds)
-
-            time_unit_col = np.array(time_unit_col_ls)
-
-            mass_df_fin.iloc[:, time_col_ind] = time_unit_col
-            # Recalculate percentages
-            merged_df_fin = self._correct_percentages_ts(mass_df_fin)
-            merged_df_fin.loc[0, ('convertion_factors-[time_mass]')] = time_conv_factor
-            merged_df_fin.loc[1, ('convertion_factors-[time_mass]')] = mass_conv_factor
-        else:
-            raise ValueError("start_date, end_date, and freq_time must be specified")
-
-        merged_df_fin.to_csv(ts_file_path + csv_file_name_fin)
-        print(f"saved sum file to {ts_file_path + csv_file_name_fin}")
 
 
     @staticmethod
@@ -7258,7 +6339,8 @@ class ChemicalDrift(OceanDrift):
                            start_date = None,
                            end_date = None,
                            freq_time = None,
-                           time_name = "time"
+                           time_name = "time",
+                           sim_description = None
                            ):
         '''
         Sum a list of xarray DataArrays, with the same or different time step
@@ -7269,9 +6351,17 @@ class ChemicalDrift(OceanDrift):
         end_date:            np.datetime64, start of reconstructed time dimention
         time_step:           np.timedelta64, frequency of reconstructed time dimention
         time_name:           string, name of time dimention of all DataArray present in DataArray_ls
+        sim_description:     string, descrition of simulation to be included in netcdf attributes
         '''
         import xarray as xr
         from datetime import datetime
+        
+        if len(DataArray_ls) < 2:
+            if len(DataArray_ls) == 1:
+                print("len(DataArray_ls) is 1, returning DataArray_ls[0]")
+                return DataArray_ls[0]
+            else:
+                raise ValueError("Empty DataArray_ls")
 
         print("Checking input DataArray dimentions")
         ### Check if uncommon dimentions are present
@@ -7331,14 +6421,14 @@ class ChemicalDrift(OceanDrift):
 
             print("Time dimentions are all equal in DataArray_ls, set up of time_date_serie was skipped")
             print("Running sum of DataArray_ls")
-            Final_sum = DataArray_ls[0].compute()
+            Final_sum = DataArray_ls[0].fillna(0)
+            mask = ~DataArray_ls[0].isnull()
 
-            for index in range(1, len(DataArray_ls)):
-                DataArray = DataArray_ls[index]
-                values = DataArray.compute()
-                del DataArray
-                Final_sum += values
-                del values
+            for da in DataArray_ls[1:]:
+                da_filled = da.fillna(0)
+                Final_sum += da_filled
+            # Preserve landmask at different depth
+            Final_sum = Final_sum.where(mask)
         else:
             print("Time dimentions are not equal in DataArray_ls, set up time_date_serie")
             ### Set up time_date_serie array from input or from DataArray_ls
@@ -7399,17 +6489,19 @@ class ChemicalDrift(OceanDrift):
                     pass
                 else:
                     if len(sum_tstep_ls) > 1:
-                        sum_tstep = sum_tstep_ls[0].compute()
-                        for ts in range(1, len (sum_tstep_ls)):
-                            tstep = sum_tstep_ls[ts]
-                            values = tstep.compute()
-                            del tstep
-                            sum_tstep += values.compute()
-                            del values
+                        sum_tstep = sum_tstep_ls[0].fillna(0)
+                        mask = ~sum_tstep_ls[0].isnull()
+
+                        for da in sum_tstep_ls[1:]:
+                            da_filled = da.fillna(0)
+                            sum_tstep += da_filled
+                        # Preserve landmask at different depth
+                        sum_tstep = sum_tstep.where(mask)
                     elif len(sum_tstep_ls) == 1:
                         sum_tstep = sum_tstep_ls[0]
 
-                    sum_tstep.__setitem__(time_name, time_step)
+                    # sum_tstep.__setitem__(time_name, time_step)
+                    sum_tstep = sum_tstep.expand_dims(dim={time_name: [time_step]})
                     Final_ts_sum_ls.append(sum_tstep)
                     del sum_tstep
             sum_time = (time_end - time_start_0)
@@ -7421,6 +6513,8 @@ class ChemicalDrift(OceanDrift):
             print(f"Concat_time (h:min:s): {Concat_time_end - Concat_time_start}")
 
         Final_sum.attrs.update(common_attrs)
+        if not hasattr(Final_sum, 'sim_description') and sim_description is not None:
+            Final_sum.attrs['sim_description'] = str(sim_description)
 
         return Final_sum
 
@@ -7436,7 +6530,7 @@ class ChemicalDrift(OceanDrift):
                             file_output_name = None
                             ):
         '''
-        Calculate the weighted average over "depth" for a cancentration dataarray using the bathimerty to calculate average weights.
+        Calculate the weighted average over "depth" for a concentration dataarray using the bathimerty to calculate average weights.
         Use with outputs of "calculate_water_sediment_conc" and " write_netcdf_chemical_density_map" functions
         Depth must contain 0, and its value indicate the upper limit of the vertical level
 
@@ -7451,7 +6545,7 @@ class ChemicalDrift(OceanDrift):
             * longitude     (longitude) float32
         time_name:         string, name of time dimention of Dataset
         variable_name:     string, name of variable in DataSet to be averaged
-        topograpy_name:    string, name of topograpy variable in DataSetTYPE, optional
+        topograpy_name:    string, name of topograpy variable in Dataset
         save_file:         boolean, select if averege file is saved
         file_output_path:  string, path of the file to be saved. Must end with /
         file_output_name:  string, name of the average DataArray output file (.nc)
@@ -7661,11 +6755,37 @@ class ChemicalDrift(OceanDrift):
 
         return sub_lists
     
+    @staticmethod
+    def _is_compressed_at_level_6(nc_file):
+        '''
+        Check if simulation files to be concatenated are already compressed.
+        If true, files are only stored in .zip archive
+        '''
+        import h5py
+        compression_status = []
+        with h5py.File(nc_file, 'r') as f:
+            for var_name in f.keys():
+                if var_name in ['time', 'trajectory']:
+                    continue  # Skip 'time' and 'trajectory'
+
+                dataset = f[var_name]
+                compression = dataset.compression
+                compression_opts = dataset.compression_opts
+
+                if compression != 'gzip' or compression_opts != 6:
+                    compression_status.append(False)
+                else:
+                    compression_status.append(True)
+        if all(compression_status):
+            return True
+        else:
+            return False
+
 
     def concat_simulation(self,
                           sim_file_list,
-                          sim_name,
                           simoutputpath,
+                          sim_name = "sim",
                           max_size_GB = 16,
                           zip_files = True):
         '''
@@ -7686,8 +6806,12 @@ class ChemicalDrift(OceanDrift):
 
         # Remove files that are not ".nc" or ".zip"
         sim_file_list = [file for file in sim_file_list if file.endswith((".zip", ".nc"))]
+        if len(sim_file_list) == 0:
+            raise ValueError("No files to be concatenated")
         if not simoutputpath.endswith("/"):
             simoutputpath = simoutputpath + "/"
+        if sim_name is None:
+            sim_name = "sim"
 
         # Check if any zip archive of simulation to concatenate is in sim_file_list
         zip_ls = []
@@ -7745,14 +6869,22 @@ class ChemicalDrift(OceanDrift):
                 file.write(sim_name + f"_concatenated_{i}.nc:\n")
                 for item in sublist:
                     item_size = "{:.2f}".format((self._get_dataset_size(item)/1024**3))
+                    file_name_size_um = "GB"
+                    if float(item_size) < 0.01:
+                        item_size = str(float(item_size)*1000)
+                        file_name_size_um = "MB"
                     item = item.replace(simoutputpath, "")
-                    file.write(f"{item}, {item_size} GB\n")
+                    file.write(f"{item}, {item_size} {file_name_size_um}\n")
                 file.write("\n")
             file.write("Files not concatenated:\n")
             for file_name in files_not_concat:
                 file_name_size = "{:.2f}".format((self._get_dataset_size(file_name)/1024**3))
+                file_name_size_um = "GB"
+                if float(file_name_size) < 0.01:
+                    file_name_size = str(float(file_name_size)*1000)
+                    file_name_size_um = "MB"
                 file_name = file_name.replace(simoutputpath, "")
-                file.write(f"{file_name}, {file_name_size} GB\n")
+                file.write(f"{file_name}, {file_name_size} {file_name_size_um}\n")
         # Load and concatenate slices 
         concatenated_files = []
         for index_concat, concat_ls in enumerate(concat_parts_ls):
@@ -7768,7 +6900,9 @@ class ChemicalDrift(OceanDrift):
             if len(ds) > 1:
                 print("Concatenate slices")
                 dsconc=xr.concat(ds,dim="trajectory")
-                dsconc.attrs['steps_exported']=max([ds[i].attrs['steps_exported'] for i in range(len(ds))])
+                dsconc.attrs['steps_exported'] = max([ds[i].attrs['steps_exported'] if 'steps_exported' in ds[i].attrs 
+                             else ds[i].attrs.get('steps_output', 0) 
+                             for i in range(len(ds))])
                 print("Save concatenated file")
                 dsconc.to_netcdf(simoutputpath+concat_output_name)
                 concatenated_files.append((simoutputpath+concat_output_name))
@@ -7777,15 +6911,19 @@ class ChemicalDrift(OceanDrift):
                     os.remove(nc_file)
         end=datetime.now()
         print(f"Concatenating time : {end-start}")
-        
+
         if len(files_not_concat) > 0:
             for nc_file in files_not_concat:
                 concatenated_files.append(nc_file)
         if zip_files is True:
             print("Zip concatenated files")
-            with zipfile.ZipFile(simoutputpath + sim_name+"_concatenated_files.zip", mode ='a', compression=zipfile.ZIP_DEFLATED) as myzip:
+            compress_type = zipfile.ZIP_STORED if self._is_compressed_at_level_6(concatenated_files[0]) else zipfile.ZIP_DEFLATED
+
+            zip_path = os.path.join(simoutputpath, sim_name + "_concatenated_files.zip")
+
+            with zipfile.ZipFile(zip_path, mode='w', compression=compress_type) as myzip:
                 for index_zip, f in enumerate(concatenated_files):
-                    print(f"Zipping file {index_zip +1} out of {len(concatenated_files)}")
+                    print(f"Zipping file {index_zip + 1} out of {len(concatenated_files)}")
                     arcname_f = f.replace(simoutputpath, "")
                     myzip.write(f, arcname=arcname_f)
 
