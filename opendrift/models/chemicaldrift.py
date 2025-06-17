@@ -2064,8 +2064,7 @@ class ChemicalDrift(OceanDrift):
                 Tref_kWt = self.get_config('chemical:transformations:Tref_kWt')
                 DH_kWt = self.get_config('chemical:transformations:DeltaH_kWt')
 
-                W =   (self.elements.specie == self.num_lmm) \
-                    + (self.elements.specie == self.num_humcol)
+                W = (self.elements.specie == self.num_lmm) | (self.elements.specie == self.num_humcol)
 
                 if np.any(W):
                     TW=self.environment.sea_water_temperature[W]
@@ -2074,8 +2073,10 @@ class ChemicalDrift(OceanDrift):
                     #     logger.debug("Temperature in degradation was 0, set to median value")
 
                     k_W_fin = k_W_tot * self.tempcorr("Arrhenius",DH_kWt,TW,Tref_kWt)
+                    k_W_fin = np.maximum(k_W_fin, 0.0)
 
-                    degraded_now[W] = self.elements.mass[W] * (1-np.exp(-k_W_fin * self.time_step.total_seconds()))
+                    degraded_now[W] = np.minimum(self.elements.mass[W], 
+                                    self.elements.mass[W] * (1-np.exp(-k_W_fin * self.time_step.total_seconds()))) # avoid degradation of more mass than is present in element
 
                 # Degradation in the sediments
 
@@ -2083,22 +2084,24 @@ class ChemicalDrift(OceanDrift):
                 Tref_kSt = self.get_config('chemical:transformations:Tref_kSt')
                 DH_kSt = self.get_config('chemical:transformations:DeltaH_kSt')
 
-                S =   (self.elements.specie == self.num_srev) \
-                    + (self.elements.specie == self.num_ssrev)
+                S =   (self.elements.specie == self.num_srev) | (self.elements.specie == self.num_ssrev)
 
                 if np.any(S):
                     TS=self.environment.sea_water_temperature[S]
                     #TS[TS==0]=np.median(TS)
 
                     k_S_fin = k_S_tot * self.tempcorr("Arrhenius",DH_kSt,TS,Tref_kSt)
+                    k_S_fin = np.maximum(k_S_fin, 0.0)
 
-                    degraded_now[S] = self.elements.mass[S] * (1-np.exp(-k_S_fin * self.time_step.total_seconds()))
+                    degraded_now[S] = np.minimum(self.elements.mass[S], 
+                                    self.elements.mass[S] * (1-np.exp(-k_S_fin * self.time_step.total_seconds()))) # avoid degradation of more mass than is present in element
 
-                self.elements.mass_degraded_water[W] = self.elements.mass_degraded_water[W] + degraded_now[W]
-                self.elements.mass_degraded_sediment[S] = self.elements.mass_degraded_sediment[S] + degraded_now[S]
-    
-                self.elements.mass_degraded = self.elements.mass_degraded + degraded_now
-                self.elements.mass = self.elements.mass - degraded_now
+                self.elements.mass_degraded_water[W] += degraded_now[W]
+                self.elements.mass_degraded_sediment[S] += degraded_now[S]
+
+                self.elements.mass_degraded += degraded_now
+                self.elements.mass -= degraded_now
+                np.maximum(self.elements.mass, 0.0, out=self.elements.mass)
                 self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/500,
                                          reason='removed')
 
@@ -2121,14 +2124,8 @@ class ChemicalDrift(OceanDrift):
                 # biodegradation, photodegradation, and hydrolysys
 
                 # Only "dissolved" and "DOC" elements will degrade
-
-                # Define parameters
-                W =   (self.elements.specie == self.num_lmm) \
-                    + (self.elements.specie == self.num_humcol)
-
-                S =   (self.elements.specie == self.num_srev) \
-                    + (self.elements.specie == self.num_ssrev)
-
+                W = (self.elements.specie == self.num_lmm) | (self.elements.specie == self.num_humcol)
+                S =   (self.elements.specie == self.num_srev) | (self.elements.specie == self.num_ssrev)
                 W_deg = np.any(W)
                 S_deg = np.any(S)
 
@@ -2270,6 +2267,7 @@ class ChemicalDrift(OceanDrift):
                         k_W_bio = k_W_bio * self.calc_pHCorr(pH_min_bio, pH_max_bio, pH_water)
                         k_W_bio = k_W_bio * self.calc_TCorr(T_Max_bio, T_Opt_bio, T_Adp_bio, Max_Accl_bio,
                                                             Dec_Accl_bio, Q10_bio, TW)
+                        k_W_bio = np.maximum(k_W_bio, 0.0)
                     else:
                         k_W_bio = np.zeros_like(TW)
 
@@ -2279,12 +2277,14 @@ class ChemicalDrift(OceanDrift):
                                                                           ExtCoeffDOM, ExtCoeffSPM, ExtCoeffPHY, C2PHYC, concDOC, 
                                                                           concSPM, Conc_Phyto_water, Depth, MLDepth)
                         k_W_photo = k_W_photo * self.tempcorr("Arrhenius",DH_kWt,TW,Tref_kWt)
+                        k_W_photo = np.maximum(k_W_photo, 0.0)
                     else:
                         k_W_photo = np.zeros_like(TW)
 
                     if Hydro_degr is True:
                         k_W_hydro = self.calc_k_hydro_water(k_Acid, k_Base, k_Hydr_Uncat, pH_water)
                         k_W_hydro = k_W_hydro * self.tempcorr("Arrhenius",DH_kWt,TW,Tref_kWt)
+                        k_W_hydro = np.maximum(k_W_hydro, 0.0)
                     else:
                         k_W_hydro = np.zeros_like(TW)
 
@@ -2294,7 +2294,7 @@ class ChemicalDrift(OceanDrift):
                     if k_W_fin_sum > 0:
                         degraded_now[W] = np.minimum(self.elements.mass[W], 
                                         self.elements.mass[W] * (1 - np.exp(-k_W_fin * self.time_step.total_seconds())))
-                        self.elements.mass_degraded_water[W] = self.elements.mass_degraded_water[W] + degraded_now[W]
+                        self.elements.mass_degraded_water[W] += degraded_now[W]
                 else:
                     k_W_bio = 0
                     k_W_hydro = 0
@@ -2338,10 +2338,10 @@ class ChemicalDrift(OceanDrift):
                     if k_S_fin_sum > 0:
                         degraded_now[S] = np.minimum(self.elements.mass[S], 
                                         self.elements.mass[S] * (1 - np.exp(-k_S_fin * self.time_step.total_seconds())))
-                        self.elements.mass_degraded_sediment[S] = self.elements.mass_degraded_sediment[S] + degraded_now[S]
+                        self.elements.mass_degraded_sediment[S] += degraded_now[S]
 
                     if (k_S_fin_sum > 0) or (k_W_fin_sum > 0):
-                        self.elements.mass_degraded = self.elements.mass_degraded + degraded_now
+                        self.elements.mass_degraded += degraded_now
                 else:
                     k_S_bio = 0
                     k_S_hydro = 0
@@ -2354,59 +2354,72 @@ class ChemicalDrift(OceanDrift):
                         if k_W_fin_sum > 0:
                             if np.sum(k_W_photo) > 0:
                                 photo_degraded_now = np.zeros(self.num_elements_active())
-                                k_W_photo_fraction = (k_W_photo/(60*60))/k_W_fin # from 1/h to 1/s
+                                k_W_photo_fraction = np.minimum((k_W_photo / 3600) / np.maximum(k_W_fin, 1e-12), 1.0) # from 1/h to 1/s, clamp fraction to 1 to avoid breaking mass conservation
                                 photo_degraded_now[W] = degraded_now[W] * k_W_photo_fraction
                                 if Save_degr_now is True:
                                     self.elements.mass_photodegraded[W] = photo_degraded_now[W]
                                 else:
                                     self.elements.mass_photodegraded[W] = self.elements.mass_photodegraded[W] + photo_degraded_now[W]
+                    else:
+                        k_W_photo_fraction = 0
 
                     if Bio_degr is True and k_DecayMax_water > 0:
                         if np.sum(k_W_bio) > 0 or np.sum(k_S_bio) > 0:
                             bio_degraded_now = np.zeros(self.num_elements_active())
                             if np.sum(k_W_bio) > 0:
-                                k_W_bio_fraction = (k_W_bio / (60 * 60)) / k_W_fin  # Convert from 1/h to 1/s
+                                k_W_bio_fraction = np.minimum((k_W_bio / 3600) / np.maximum(k_W_fin, 1e-12), 1.0) # from 1/h to 1/s, clamp fraction to 1 to avoid breaking mass conservation
                                 bio_degraded_now[W] = degraded_now[W] * k_W_bio_fraction
                                 if Save_degr_now is True:
                                     self.elements.mass_biodegraded[W] = bio_degraded_now[W]
                                     self.elements.mass_biodegraded_water[W] = bio_degraded_now[W]
                                 else:
-                                    self.elements.mass_biodegraded[W] = self.elements.mass_biodegraded[W] + bio_degraded_now[W]
-                                    self.elements.mass_biodegraded_water[W] = self.elements.mass_biodegraded_water[W] + bio_degraded_now[W]
+                                    self.elements.mass_biodegraded[W] += bio_degraded_now[W]
+                                    self.elements.mass_biodegraded_water[W] += bio_degraded_now[W]
                             if np.sum(k_S_bio) > 0:
-                                k_S_bio_fraction = (k_S_bio / (60 * 60)) / k_S_fin  # Convert from 1/h to 1/s
+                                k_S_bio_fraction = np.minimum((k_S_bio / 3600) / np.maximum(k_S_fin, 1e-12), 1.0) # from 1/h to 1/s, clamp fraction to 1 to avoid breaking mass conservation
                                 bio_degraded_now[S] = degraded_now[S] * k_S_bio_fraction
                                 if Save_degr_now is True:
                                     self.elements.mass_biodegraded[S] = bio_degraded_now[S]
                                     self.elements.mass_biodegraded_sediment[S] = bio_degraded_now[S]
                                 else:
-                                    self.elements.mass_biodegraded[S] = self.elements.mass_biodegraded[S] + bio_degraded_now[S]
-                                    self.elements.mass_biodegraded_sediment[S] = self.elements.mass_biodegraded_sediment[S] + bio_degraded_now[S]
+                                    self.elements.mass_biodegraded[S] += bio_degraded_now[S]
+                                    self.elements.mass_biodegraded_sediment[S] += bio_degraded_now[S]
+                    else:
+                        k_W_bio_fraction = 0
+                        k_S_bio_fraction = 0
 
                     if Hydro_degr is True:
                         if np.sum(k_W_hydro) > 0 or np.sum(k_S_hydro) > 0:
                             hydro_degraded_now = np.zeros(self.num_elements_active())
                             if np.sum(k_W_hydro) > 0:
-                                k_W_hydro_fraction = (k_W_hydro/(60*60))/k_W_fin # from 1/h to 1/s
+                                k_W_hydro_fraction = np.minimum((k_W_hydro / 3600) / np.maximum(k_W_fin, 1e-12), 1.0) # from 1/h to 1/s, clamp fraction to 1 to avoid breaking mass conservation
                                 hydro_degraded_now[W] = degraded_now[W] * k_W_hydro_fraction
                                 if Save_degr_now is True:
                                     self.elements.mass_hydrolyzed[W] = hydro_degraded_now[W]
                                     self.elements.mass_hydrolyzed_water[W] = hydro_degraded_now[W]
                                 else:
-                                    self.elements.mass_hydrolyzed[W] = self.elements.mass_hydrolyzed[W] + hydro_degraded_now[W]
-                                    self.elements.mass_hydrolyzed_water[W] = self.elements.mass_hydrolyzed_water[W] + hydro_degraded_now[W]
+                                    self.elements.mass_hydrolyzed[W] += hydro_degraded_now[W]
+                                    self.elements.mass_hydrolyzed_water[W] += hydro_degraded_now[W]
+                                    
                             if np.sum(k_S_hydro) > 0:
-                                k_S_hydro_fraction = (k_S_hydro/(60*60))/k_S_fin # from 1/h to 1/s
+                                k_S_hydro_fraction = np.minimum((k_S_hydro / 3600) / np.maximum(k_S_fin, 1e-12), 1.0) # from 1/h to 1/s, clamp fraction to 1 to avoid breaking mass conservation
                                 hydro_degraded_now[S] = degraded_now[S] * k_S_hydro_fraction
                                 if Save_degr_now is True:
                                     self.elements.mass_hydrolyzed[S] = hydro_degraded_now[S]
                                     self.elements.mass_hydrolyzed_sediment[S] = hydro_degraded_now[S]
                                 else:
-                                    self.elements.mass_hydrolyzed[S] = self.elements.mass_hydrolyzed[S] + hydro_degraded_now[S]
-                                    self.elements.mass_hydrolyzed_sediment[S] = self.elements.mass_hydrolyzed_sediment[S] + hydro_degraded_now[S]
+                                    self.elements.mass_hydrolyzed[S] += hydro_degraded_now[S]
+                                    self.elements.mass_hydrolyzed_sediment[S] += hydro_degraded_now[S]
+                    else:
+                        k_W_hydro_fraction = 0
+                        k_S_hydro_fraction = 0
+
+                    total_fraction = k_W_photo_fraction + k_W_bio_fraction + k_W_hydro_fraction
+                    assert np.all(total_fraction <= 1.0 + 1e-6), "Degradation fractions exceed 100%"
 
                 if (k_S_fin_sum > 0) or (k_W_fin_sum > 0):
-                    self.elements.mass = self.elements.mass - degraded_now
+                    self.elements.mass -= degraded_now
+                    np.maximum(self.elements.mass, 0.0, out=self.elements.mass)
                 self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/500,
                                          reason='removed')
 
