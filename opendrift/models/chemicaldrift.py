@@ -5307,6 +5307,7 @@ class ChemicalDrift(OceanDrift):
         from mpl_toolkits.axes_grid1 import make_axes_locatable, axes_size
         import geopandas as gpd
         from datetime import datetime as dt
+        import gc
 
         if all([not e for e in [save_figures, make_animation, concat_animation]]) is True:
             raise ValueError("No output (save_figures/make_animation/concat_animation) was selected ")
@@ -5334,7 +5335,7 @@ class ChemicalDrift(OceanDrift):
                 '''
                 Define scientific notation for colorbar if scientific_colorbar is True
                 '''
-                a, b = '{:.1e}'.format(x).split('e')
+                a, b = '{:.2e}'.format(x).split('e')
                 b = int(b)
                 return r'${} \times 10^{{{}}}$'.format(a, b)
 
@@ -5456,7 +5457,8 @@ class ChemicalDrift(OceanDrift):
             fig_num = []
             figure_ls = []
             figure_name_ls = []
-            figures_number = ((Conc_DataArray.time.to_numpy()).size)
+            Conc_DataArray_time_size = (Conc_DataArray.time.to_numpy()).size
+            figures_number = (Conc_DataArray_time_size)
             if fig_numbers is not None:
                 if fig_numbers[-1][1] > figures_number:
                     raise ValueError(f"fig_numbers selects more figures ({fig_numbers[-1][1] + 1}) that were created ({figures_number})")
@@ -5485,17 +5487,19 @@ class ChemicalDrift(OceanDrift):
             else:
                 pass
 
+            start = dt.now()
+
             for timestep in range(0, figures_number):
                 if timestep in list_index_print:
                      print(f"creating image n° {str(timestep+1)} out of {str(figures_number)}")
 
-                if (Conc_DataArray.time.to_numpy()).size > 1 and "depth" in Conc_DataArray.dims:
+                if Conc_DataArray_time_size > 1 and "depth" in Conc_DataArray.dims:
                     Conc_DataArray_selected = Conc_DataArray.isel(time = timestep, depth = selected_depth_index)
-                elif (Conc_DataArray.time.to_numpy()).size > 1 and "depth" not in Conc_DataArray.dims:
+                elif Conc_DataArray_time_size > 1 and "depth" not in Conc_DataArray.dims:
                     Conc_DataArray_selected = Conc_DataArray.isel(time = timestep)
-                elif (Conc_DataArray.time.to_numpy()).size <= 1 and "depth" in Conc_DataArray.dims:
+                elif Conc_DataArray_time_size <= 1 and "depth" in Conc_DataArray.dims:
                     Conc_DataArray_selected = Conc_DataArray.isel(depth = selected_depth_index)
-                elif (Conc_DataArray.time.to_numpy()).size <= 1 and "depth" not in Conc_DataArray.dims:
+                elif Conc_DataArray_time_size <= 1 and "depth" not in Conc_DataArray.dims:
                     Conc_DataArray_selected = Conc_DataArray
 
                 fig, ax = plt.subplots(figsize = (width_fig, high_fig), dpi=fig_dpi)
@@ -5526,6 +5530,7 @@ class ChemicalDrift(OceanDrift):
                                              vmin = vmin, vmax = vmax,
                                              shading = shading,
                                              zorder = 0)
+                        del X, Y
                 ax.set_xlim(long_min, long_max)
                 ax.set_ylim(lat_min, lat_max)
                 ax.set_xlabel("Longitude", fontsize = x_label_font_size, labelpad = high_fig*2) # Change here size of ax labels
@@ -5534,11 +5539,11 @@ class ChemicalDrift(OceanDrift):
                 if full_title is not None:
                     fig_title = full_title
                 else:
-                    if (Conc_DataArray.time.to_numpy()).size > 1:
+                    if Conc_DataArray_time_size > 1:
                         fig_title = (title_caption + " " + str((np.array(Conc_DataArray.time[timestep])))[0:date_str_lenght] +\
-                                     " " +unit_measure)
+                                     " " + unit_measure)
                     else:
-                        fig_title = (title_caption + " " +unit_measure)
+                        fig_title = (title_caption + " " + unit_measure)
 
                 ax.set_title(fig_title, pad=high_fig*1.5, fontsize = title_font_size, weight = "bold", wrap= True)
                 # from https://stackoverflow.com/questions/18195758/set-matplotlib-colorbar-size-to-match-graph
@@ -5556,40 +5561,45 @@ class ChemicalDrift(OceanDrift):
                     cbar = plt.colorbar(ax2, cax=cax, label=colorbar_title)
 
                 cbar.set_label(colorbar_title, fontsize=cbar_label_font_size, labelpad = 20, fontweight ="bold")
-                if trim_images == True:
+
+                fig_path = file_out_path + file_out_sub_folder + figure_name_ls[timestep]
+                if trim_images:
                     fig.canvas.draw()
-                    # Get the pixel buffer as an RGB array
                     width, height = fig.canvas.get_width_height()
-                    rgb = (np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape((height, width, 3))).astype(np.float32) / 255.0
-                    rgb = self._remove_white_borders(rgb, padding_r = padding_r, padding_c = padding_c)
-                    figure_ls.append(rgb)
+                    rgba = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8).reshape((height, width, 4))
+                    # Convert RGBA to RGB by removing the alpha channel
+                    rgb = rgba[..., :3].astype(np.float32) / 255.0
+                    # rgb = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape((height, width, 3)).astype(np.float32) / 255.0
+                    rgb = self._remove_white_borders(rgb, padding_r=padding_r, padding_c=padding_c)
+                    fig_trim, ax_trim = plt.subplots(figsize=(width_fig, high_fig))
+                    ax_trim.set_axis_off()
+                    if save_figures:
+                        plt.imsave(fig_path, rgb, cmap=selected_colormap)
+                        plt.close(fig_trim)
+                        plt.close(fig)
+                        # Explicitly delete and garbage collect
+                        del fig, fig_trim, ax, ax_trim, cax, cbar, ax2, Conc_DataArray_selected, rgba, rgb
+                        gc.collect()
+                    elif make_animation is True:
+                        figure_ls.append(rgb)
+                        del fig, fig_trim, ax, ax_trim, cax, cbar, ax2, Conc_DataArray_selected, rgba, rgb
                 else:
-                    figure_ls.append(fig)
-                plt.close('all')
+                    if save_figures:
+                        fig, ax = plt.subplots(figsize = (width_fig,high_fig))
+                        ax.set_axis_off()
+                        plt.savefig(file_out_path + file_out_sub_folder + figure_name_ls[timestep])
+                        plt.close('all')
+                        # Explicitly delete and garbage collect
+                        del fig, ax, cax, cbar, ax2, Conc_DataArray_selected
+                        gc.collect()
+                    elif make_animation is True:
+                        figure_ls.append(fig)
+                        # Explicitly delete and garbage collect
+                        del fig, ax, cax, cbar, ax2, Conc_DataArray_selected
+                        gc.collect()
 
             print(f"Time to create figures (hr:min:sec): {dt.now()-start}")
 
-            # Save figures
-            if save_figures == True:
-                start = dt.now()
-                if trim_images == True:
-                    for img_index in range(0, len(figure_ls)):
-                        if img_index in list_index_print:
-                             print(f"saving image n° {str(img_index+1)} out of {str(figures_number)}")
-                        fig_path = (file_out_path + file_out_sub_folder + figure_name_ls[img_index])
-                        fig, ax = plt.subplots(figsize = (width_fig,high_fig))
-                        ax.set_axis_off()
-                        plt.imsave(fig_path, figure_ls[img_index], cmap=selected_colormap)
-                        plt.close('all')
-                else:
-                    for img_index in range(0, len(figure_ls)):
-                        if img_index in list_index_print:
-                            print(f"saving image n° {str(img_index+1)} out of {str(figures_number)}")
-                        figure_ls[img_index].savefig(file_out_path + file_out_sub_folder + figure_name_ls[img_index])
-                print(f"Time to save figures (hr:min:sec): {dt.now()-start}")
-            else:
-                print("Figures were not saved")
-                
             if make_animation is True:
                 if fig_numbers is None:
 
