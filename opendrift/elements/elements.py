@@ -15,6 +15,7 @@
 # Copyright 2015, Knut-Frode Dagestad, MET Norway
 
 import logging; logger = logging.getLogger(__name__)
+import copy
 from collections import OrderedDict
 import numpy as np
 
@@ -72,12 +73,18 @@ class LagrangianArray:
                  'standard_name': 'longitude',
                  'long_name': 'longitude',
                  'seed': False,
+                 'store_previous_if': (
+                    ('general:coastline_action', 'in', ['stranding', 'previous']), 'or',
+                    ('general:seafloor_action', 'in', ['previous'])),
                  'axis': 'X'}),
         ('lat', {'dtype': np.float32,
                  'units': 'degrees_north',
                  'standard_name': 'latitude',
                  'long_name': 'latitude',
                  'seed': False,
+                 'store_previous_if': (
+                    ('general:coastline_action', 'in', ['stranding', 'previous']), 'or',
+                    ('general:seafloor_action', 'in', ['previous'])),
                  'axis': 'Y'}),
         ('z', {'dtype': np.float32,
                    'units': 'm',
@@ -98,6 +105,8 @@ class LagrangianArray:
             is specified in the OrderedDict 'variables'
             An empty object may be created by giving no input.
         """
+
+        self.variables = copy.deepcopy(self.variables)  # Make self.variables dictionary immutable
 
         # Collect default values in separate dict, for easier access
         default_values = {variable: self.variables[variable]['dtype'](
