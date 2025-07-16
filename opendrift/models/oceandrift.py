@@ -70,7 +70,8 @@ class OceanDrift(OpenDriftSimulation):
     required_variables = {
         'x_sea_water_velocity': {'fallback': 0},
         'y_sea_water_velocity': {'fallback': 0},
-        'sea_surface_height': {'fallback': 0},
+        'sea_surface_height': {'fallback': 0,
+            'store_previous_if': ['drift:vertical_advection', 'is', True]},
         'x_wind': {'fallback': 0},
         'y_wind': {'fallback': 0},
         'upward_sea_water_velocity': {'fallback': 0,
@@ -119,6 +120,12 @@ class OceanDrift(OpenDriftSimulation):
                 'level': CONFIG_LEVEL_BASIC},
             'drift:vertical_advection_at_surface': {'type': 'bool', 'default': False, 'description':
                 'If vertical advection is activated, surface elements (z=0) can only be advected (downwards) if this setting it True.',
+                'level': CONFIG_LEVEL_ADVANCED},
+            'drift:water_column_stretching': {'type': 'bool', 'default': False, 'description':
+                'If sea surface elevation changes, vertical particle position (element property "z" is relative to surface, and not absolute zero-level) is adjusted so that elements at surface and seafloor remains at resp surface and seafloor.',
+                'level': CONFIG_LEVEL_ADVANCED},
+            'drift:vertical_advection_correction': {'type': 'bool', 'default': False, 'description':
+                'The vertical velocity from ocean model is partly due to sea level changes. But since element depth in OpenDrift (elements.z) is relative to actual surface, this part should be subtracted.',
                 'level': CONFIG_LEVEL_ADVANCED},
             'drift:vertical_mixing': {'type': 'bool', 'default': False, 'level': CONFIG_LEVEL_BASIC,
                 'description': 'Activate vertical mixing scheme with inner loop'},
@@ -177,6 +184,8 @@ class OceanDrift(OpenDriftSimulation):
     def update(self):
         """Update positions and properties of elements."""
 
+        self.water_column_stretching()
+
         # Simply move particles with ambient current
         self.advect_ocean_current()
 
@@ -223,7 +232,6 @@ class OceanDrift(OpenDriftSimulation):
             if np.isnan(lo):
                 continue
             self.seed_elements(lon=lo, lat=la, time=time, number=number, **kwargs)
-        print(self)
         self.run(outfile=outfile, end_time=start_times[-1]+simulation_duration)
         # Simulate and save to file
 
@@ -287,6 +295,17 @@ class OceanDrift(OpenDriftSimulation):
     def prepare_run(self):
         super(OceanDrift, self).prepare_run()
 
+    def water_column_stretching(self):
+        """If sea_water_level changes, adjust z for continuity"""
+
+        if self.get_config('drift:water_column_stretching') is False:
+            return
+
+        delta_zeta = self.environment.sea_surface_height - self.environment_previous.sea_surface_height
+        logger.info('Compensating for change in surface elevation')
+        self.elements.z = self.elements.z + delta_zeta*(self.elements.z/self.environment.sea_floor_depth_below_sea_level)
+        self.elements.z = self.elements.z.data
+
     def vertical_advection(self):
         """Move particles vertically according to vertical ocean current
 
@@ -306,8 +325,19 @@ class OceanDrift(OpenDriftSimulation):
 
         if len(applicable) > 0:
             w = self.environment.upward_sea_water_velocity[applicable]
+
+            if self.get_config('drift:vertical_advection_correction', None) is True:
+                logger.debug('Subtracting motion due to elevation change from vertical water velocity')
+                delta_zeta = self.environment.sea_surface_height[applicable] - self.environment_previous.sea_surface_height[applicable]
+                w_surface = delta_zeta / self.time_step.total_seconds()
+                total_depth = self.environment.sea_surface_height[applicable] + \
+                     self.environment.sea_floor_depth_below_sea_level[applicable]
+                w_elevation = w_surface * (self.elements.z[applicable] + total_depth) / total_depth
+                w = w - w_elevation
+
             self.elements.z[applicable] = np.minimum(0,
-                self.elements.z[applicable] + self.elements.moving[applicable] * w * self.time_step.total_seconds())
+                self.elements.z[applicable] + self.elements.moving[applicable] * w *
+                self.time_step.total_seconds())
 
     def vertical_buoyancy(self):
         """Move particles vertically according to their buoyancy"""
