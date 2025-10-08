@@ -5393,6 +5393,7 @@ class ChemicalDrift(OceanDrift):
                       vmin = None, 
                       vmax = None,
                       selected_colormap = None,
+                      colormap_norm = None,
                       levels_colormap = None,
                       simmetrical_cmap = False,
                       scientific_colorbar = False,
@@ -5579,6 +5580,9 @@ class ChemicalDrift(OceanDrift):
                     colorbar_title = variable_name
                 else:
                     raise ValueError("colorbar_title or variable_name are not specified")
+                    
+            if colormap_norm is not None:
+                vmax = colormap_norm.boundaries[-1]
 
             if 'time' not in Conc_DataArray.dims:
                 if "year" in Conc_DataArray.dims:
@@ -5683,6 +5687,7 @@ class ChemicalDrift(OceanDrift):
                                                 x = 'longitude', 
                                                 y = 'latitude',
                                                 cmap = selected_colormap,
+                                                norm = colormap_norm,
                                                 vmin = vmin, vmax = vmax,
                                                 levels = levels_colormap,
                                                 shading = shading,
