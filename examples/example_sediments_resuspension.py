@@ -24,7 +24,7 @@ if True:
     o.set_config('environment:fallback:sea_floor_depth_below_sea_level', 30)  # 100m depth
 else:  # Using live data from Thredds instead of oscillating currents
     o.add_readers_from_list([
-        'https://thredds.met.no/thredds/dodsC/sea/norkyst800m/1h/aggregate_be'])
+        'https://thredds.met.no/thredds/dodsC/fou-hi/norkystv3_800m_m00_be'])
 
 #%%
 # Set threshold for bottom resuspension
@@ -50,7 +50,8 @@ o.plot_property('z')
 
 #%%
 # Animate sediment particles
-o.animation(color='moving', colorbar=False, legend=['Sedimented', 'Moving'], fast=True, buffer=.01)
+o.animation(color='moving', colorbar=False, legend=['Sedimented', 'Moving'],
+            fast=True, buffer=.01, vmin=0, vmax=1)
 #o.animation_profile()
 
 #%%

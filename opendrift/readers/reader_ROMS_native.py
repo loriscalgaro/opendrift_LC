@@ -113,6 +113,7 @@ class Reader(BaseReader, StructuredReader):
             'gls': 'turbulent_generic_length_scale',
             'tke': 'turbulent_kinetic_energy',
             'AKs': 'ocean_vertical_diffusivity',
+            'ln_AKs': 'ocean_vertical_diffusivity',
             'sustr': 'surface_downward_x_stress',
             'svstr': 'surface_downward_y_stress',
             'tair': 'air_temperature',
@@ -156,7 +157,22 @@ class Reader(BaseReader, StructuredReader):
 
         if gridfile is not None:  # Merging gridfile dataset with main dataset
             gf = xr.open_dataset(gridfile)
-            self.Dataset = xr.merge([self.Dataset, gf])
+            for var in gf:
+                if var in self.Dataset:
+                    logger.warning(f'Skipping duplicate variable {var} from grdfile')
+                    gf = gf.drop_vars(var)
+            self.Dataset = xr.merge([self.Dataset, gf], compat='override')
+
+        for var in self.Dataset:  # Check for mis-named Croco-dimensions
+            dims = self.Dataset[var].dims
+            if 'eta_rho' in dims and 'xi_u' in dims:
+                logger.warning(f'Wrongly named dimensions of {var} in Croco output: ' +
+                               'Renaming dimensions (eta_rho, xi_u) to (eta_u, xi_u)')
+                self.Dataset[var] = self.Dataset[var].rename({'eta_rho': 'eta_u'})
+            elif 'eta_v' in dims and 'xi_rho' in dims:
+                logger.warning(f'Wrongly named dimensions of {var} in Croco output: ' +
+                               'Renaming dimensions (eta_v, xi_rho) to (eta_v, xi_v)')
+                self.Dataset[var] = self.Dataset[var].rename({'xi_rho': 'xi_v'})
 
         if 'Vtransform' in self.Dataset.variables:
             self.Vtransform = self.Dataset.variables['Vtransform'].data  # scalar
@@ -200,9 +216,14 @@ class Reader(BaseReader, StructuredReader):
             try:
                 self.hc = self.Dataset.variables['hc'][:]
             except:
-                self.hc = self.Dataset.variables['hc'].data  # scalar
-            else:
-                self.hc = None
+                try:
+                    self.hc = self.Dataset.variables['hc'].data  # scalar
+                except:
+                    self.hc = None
+            try:
+                self.hc = self.hc.values
+            except:
+                pass
 
             self.num_layers = len(self.sigma)
         else:
@@ -752,6 +773,9 @@ class Reader(BaseReader, StructuredReader):
                         variables['y_wind'], rad)
                 logger.debug('Rotated x_wind and y_wind')
 
+        if 'ocean_vertical_diffusivity' in variables.keys() and 'AKs' not in self.Dataset.variables:
+            variables['ocean_vertical_diffusivity'] = np.exp(variables['ocean_vertical_diffusivity'])
+            logger.info("Using AKs from ln_AKs.")
         # Masking NaN
         for var in requested_variables:
             variables[var] = np.ma.masked_invalid(variables[var])
