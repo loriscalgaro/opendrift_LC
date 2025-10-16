@@ -6679,6 +6679,7 @@ class ChemicalDrift(OceanDrift):
         import opendrift
         import matplotlib.pyplot as plt
         import pandas as pd
+        import xarray as xr
 
         if shp_file_path is not None:
             import geopandas as gpd
@@ -6742,6 +6743,35 @@ class ChemicalDrift(OceanDrift):
                 time_conversion_factor = self.time_step_output.total_seconds() / (24*60*60)
             print("Extracting data from simulation")
             # Extract properties from simulation
+            
+            ds = self.result
+            vars_time = [v for v in ds.data_vars if ds[v].dims == ("trajectory", "time")]
+            if not vars_time:
+                raise ValueError("No (trajectory, time) variables found.")
+
+            # Check all variables
+            # stack them on a new dim so we can test all at once
+            # stacked = xr.concat([ds[v] for v in vars_time], dim="var")   # dims: var, trajectory, time
+            # valid_traj = stacked.notnull().any(dim="time").any(dim="var")   # dim: trajectory (bool)
+
+            # Check only lat/lon
+            valid_traj = (
+                ds["lon"].notnull().any("time") | ds["lat"].notnull().any("time")
+                )
+            removed = ds.trajectory.where(~valid_traj, drop=True).values
+            if len(removed) > 0:
+                print(f"Removed IDs {removed} from self.result  as lat/lon were NaN")
+            
+            # keep only valid trajectories
+            ds_clean = ds.isel(trajectory=valid_traj)
+            self.result = ds_clean
+            del ds_clean
+            del ds
+
+            # vars_time = [v for v in ds.data_vars if ds[v].dims == ("trajectory", "time")]
+            # tr = ds[vars_time].sel(trajectory=141)   # xarray DataSet for trajectory 141
+            # tr = self.result[["lon","lat","z","status","specie"]].sel(trajectory=141)
+            # df = tr.to_dataframe().reset_index().drop(columns=["trajectory"])
 
             status = self.result.status.T.values
             sp = self.result.specie.T.values
@@ -6771,7 +6801,7 @@ class ChemicalDrift(OceanDrift):
             else:
                 elements_deactivated_df['stranded'] = [False] * len(self.elements_deactivated.ID)
             del elements_deactivated_dict
-            
+
             # Remove rows with NaN from elements_deactivated_df
             rows_with_nan = elements_deactivated_df[elements_deactivated_df.isna().any(axis=1)]
             if len(rows_with_nan) > 0:
