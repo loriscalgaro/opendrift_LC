@@ -8215,6 +8215,7 @@ class ChemicalDrift(OceanDrift):
         import xarray as xr
         import os
         import zipfile
+        import warnings
 
         # Remove files that are not ".nc" or ".zip"
         sim_file_list = [file for file in sim_file_list if file.endswith((".zip", ".nc"))]
@@ -8320,9 +8321,18 @@ class ChemicalDrift(OceanDrift):
                 concatenated_files.append((simoutputpath+concat_output_name))
                 print("Remove concatenated slices")
                 for nc_file in concat_ls:
-                    os.remove(nc_file)
-        end=datetime.now()
-        print(f"Concatenating time : {end-start}")
+                    try:
+                        os.remove(nc_file)
+                    except FileNotFoundError:
+                        warnings.warn(f"File not found (nothing to delete): {nc_file}")
+                    except IsADirectoryError:
+                        warnings.warn(f"Expected a file but found a directory: {nc_file}")
+                    except PermissionError as e:
+                        warnings.warn(f"Permission denied deleting {nc_file}: {e}")
+                    except Exception as e:
+                        warnings.warn(f"Could not remove {nc_file}: {e}") 
+                        end=datetime.now()
+                        print(f"Concatenating time : {end-start}")
 
         if len(files_not_concat) > 0:
             for nc_file in files_not_concat:
