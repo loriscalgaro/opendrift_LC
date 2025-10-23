@@ -8244,9 +8244,9 @@ class ChemicalDrift(OceanDrift):
                 print(f"Extracting zip_file {index_zip + 1} out of {len(zip_ls)}")
                 # Extract each file to concatenate
                 for index_nc, nc_file in enumerate(files_in_archive):
+                    sim_file_list.append(nc_file)
                     # Control if nc_file was already present in simoutputpath
                     if not os.path.exists(simoutputpath + nc_file):
-                        sim_file_list.append(nc_file)
                         print(f"Extracting nc_file {index_nc + 1} out of {len(files_in_archive)}")
                         zip_file_path = (simoutputpath + zipfilename)
                         with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
@@ -8299,7 +8299,12 @@ class ChemicalDrift(OceanDrift):
                 file_name = file_name.replace(simoutputpath, "")
                 file.write(f"{file_name}, {file_name_size} {file_name_size_um}\n")
         # Load and concatenate slices 
+        if zip_files is True:
+            if os.path.exists(file_paths[0]):
+                compress_type = zipfile.ZIP_STORED if self._is_compressed_at_level_6(file_paths[0]) else zipfile.ZIP_DEFLATED
+
         concatenated_files = []
+        
         for index_concat, concat_ls in enumerate(concat_parts_ls):
             concat_output_name = (sim_name + f"_concatenated_{index_concat}.nc")
             ds=[]
@@ -8331,15 +8336,15 @@ class ChemicalDrift(OceanDrift):
                         warnings.warn(f"Permission denied deleting {nc_file}: {e}")
                     except Exception as e:
                         warnings.warn(f"Could not remove {nc_file}: {e}") 
-                        end=datetime.now()
-                        print(f"Concatenating time : {end-start}")
+            end=datetime.now()
+            print(f"Concatenating time : {end-start}")
 
         if len(files_not_concat) > 0:
             for nc_file in files_not_concat:
                 concatenated_files.append(nc_file)
         if zip_files is True:
             print("Zip concatenated files")
-            compress_type = zipfile.ZIP_STORED if self._is_compressed_at_level_6(concatenated_files[0]) else zipfile.ZIP_DEFLATED
+            
 
             zip_path = os.path.join(simoutputpath, sim_name + "_concatenated_files.zip")
 
