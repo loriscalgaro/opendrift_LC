@@ -3088,7 +3088,8 @@ class ChemicalDrift(OceanDrift):
             if time_end is not None:
                 tmask &= np.array(all_times) <= time_end
             if not tmask.any():
-                raise ValueError("No timesteps fall within [time_start, time_end].")
+                logger.warning("No timesteps fall within [time_start, time_end].")
+                return
             # Save for later use when writing 'time' coords and averaging
             filtered_times = np.array(all_times)[tmask]
         else:
@@ -3196,7 +3197,6 @@ class ChemicalDrift(OceanDrift):
                     if horizontal_smoothing:
                         Hsm[ti,sp,:,:,:] = Hsm[ti,sp,:,:,:] / pixel_sed_mass
 
-        # times = pd.to_datetime(self.result.time).to_pydatetime()
         times = filtered_times
 
         if time_avg_conc:
