@@ -2847,6 +2847,7 @@ class ChemicalDrift(OceanDrift):
                                               time_avg_conc=False,
                                               time_start=None,
                                               time_end=None,
+                                              time_chunk_size=50,
                                               horizontal_smoothing=False,
                                               smoothing_cells=0,
                                               reader_sea_depth=None,
@@ -2875,8 +2876,9 @@ class ChemicalDrift(OceanDrift):
             urcrnrlat:             float32, max latitude of grid (in degrees using EPSG 4326)
             mass_unit:             string, mass unit of output concentration (ug/mg/g/kg)
             time_avg_conc:         boolean, calculate concentration averaged each deltat
-            time_start:            datetime64[ns], start time of concentration map
-            time_end:              datetime64[ns], end time of concentration map
+            time_start:            string, datetime64[ns] string for start time of concentration map
+            time_end:              string, datetime64[ns] string for end time of concentration map
+            time_chunk_size        int, number of timesteps computed per chunk
             horizontal_smoothing:  boolean, smooth concentration horizontally
             smoothing_cells:       int, number of cells for horizontal smoothing,
             reader_sea_depth:      string, path of bathimethy .nc file,
@@ -2892,6 +2894,7 @@ class ChemicalDrift(OceanDrift):
         import opendrift
         from pyproj import CRS, Proj, Transformer
         import pandas as pd
+        import gc
 
 
         def is_valid_proj4(density_proj):
@@ -3127,7 +3130,8 @@ class ChemicalDrift(OceanDrift):
                                            active_status=active_status,
                                            elements_density=elements_density,
                                            time_start=time_start,
-                                           time_end=time_end)
+                                           time_end=time_end,
+                                           time_chunk_size = time_chunk_size)
 
         # calculating center point for each pixel
         lon_array = (lon_array[:-1,:-1] + lon_array[1:,1:])/2
@@ -3157,6 +3161,18 @@ class ChemicalDrift(OceanDrift):
         pixel_mean_depth, pixel_area  =  self.get_pixel_mean_depth(lon_array, lat_array,
                                                       density_proj_str,
                                                       lat_resol, lon_resol)
+
+        def _remove_reader_by_object(self, rdr_obj):
+            for key, rdr in list(self.env.readers.items()):
+                if rdr is rdr_obj:
+                    self.env.readers.pop(key, None)
+                    if hasattr(rdr, "close"):
+                        try: rdr.close()
+                        except: pass
+                    break
+        _remove_reader_by_object(self, 'shape')
+        _remove_reader_by_object(self, 'global_landmask')
+        _remove_reader_by_object(self, 'reader_sea_depth')
 
         pixel_volume = np.zeros_like(H[0,0,:,:,:])
 
@@ -3456,6 +3472,22 @@ class ChemicalDrift(OceanDrift):
         nc.close()
         logger.info('Wrote to '+filename)
 
+        del H, pixel_volume, pixel_mean_depth
+        if time_avg_conc is True:
+            del mean_conc
+        if elements_density is True:
+            del H_count
+            if time_avg_conc is True:
+                del mean_dens
+        if horizontal_smoothing is True:
+            if time_avg_conc is True:
+                del mean_Hsm
+            else:
+                del Hsm
+
+        del lon_array, lat_array, landmask, Landmask
+        gc.collect()
+
 
     def get_chemical_density_array(self, pixelsize_m, z_array, z,
                                    lat_resol=None, lon_resol=None,
@@ -3464,7 +3496,8 @@ class ChemicalDrift(OceanDrift):
                                    weight=None, origin_marker=None,
                                    active_status = False,
                                    elements_density = False,
-                                   time_start=None, time_end=None):
+                                   time_start=None, time_end=None,
+                                   time_chunk_size = 50):
         '''
         compute a particle concentration map from particle positions
         Use user defined projection (density_proj=<proj4_string>)
@@ -3474,19 +3507,7 @@ class ChemicalDrift(OceanDrift):
 
         from pyproj import Proj, Transformer
         import pandas as  pd
-
-        lon    = (self.result.lon.T).values
-        lat    = (self.result.lat.T).values
-        z      = (self.result.z.T).values
-        specie = (self.result.specie.T).values
-
-        # Keep only valid lon/lat ranges
-        valid_lon_mask = (lon >= -180) & (lon <= 180)
-        valid_lat_mask = (lat >= -90) & (lat <= 90)
-        valid_mask = valid_lon_mask & valid_lat_mask
-        lon = np.where(valid_mask, lon, np.nan)
-        lat = np.where(valid_mask, lat, np.nan)
-        del valid_lon_mask, valid_lat_mask, valid_mask
+        import gc
 
         # Time window (inclusive)
         times_1d = pd.to_datetime(self.result.time.values)  # (n_time,)
@@ -3502,25 +3523,29 @@ class ChemicalDrift(OceanDrift):
         else:
             tmask = slice(None)
 
-        # Apply time mask on axis=0 (time axis)
-        lon    = lon[tmask,:]
-        lat    = lat[tmask,:]
-        z      = z[tmask,:]
-        specie = specie[tmask,:]
+        lon_2d    = (self.result.lon.T).values[tmask, :]
+        lat_2d    = (self.result.lat.T).values[tmask, :]
+        z_2d      = (self.result.z.T).values[tmask, :]
+        specie_2d = (self.result.specie.T).values[tmask, :]
 
-        # Optional filters for origin_marker and active_status
+        # In-place validity mask (no extra array allocations)
+        valid_lon = (lon_2d >= -180) & (lon_2d <= 180)
+        valid_lat = (lat_2d >= -90)  & (lat_2d <= 90)
+        valid_mask = valid_lon & valid_lat
+        lon_2d[~valid_mask] = np.nan
+        lat_2d[~valid_mask] = np.nan
+        del valid_lon, valid_lat, valid_mask
+        gc.collect()
+
         if weight is not None:
-            weight_2d = (self.result[weight].T).values
-            weight_2d = weight_2d[tmask,:]
+            weight_2d = (self.result[weight].T).values[tmask, :]
         if origin_marker is not None:
-            originmarker_2d = (self.result.origin_marker.T).values
-            originmarker_2d = originmarker_2d[tmask,:]
+            originmarker_2d = (self.result.origin_marker.T).values[tmask, :]
         if active_status:
-            status_2d = (self.result.status.T).values
-            status_2d = status_2d[tmask,:]
+            status_2d = (self.result.status.T).values[tmask, :]
 
         # Keep mask in (n_timef, n_elem)
-        n_timef, n_elem  = lon.shape
+        n_timef, n_elem = lon_2d.shape
         keep_mask = np.ones((n_timef, n_elem), dtype=bool)
 
         if origin_marker is not None:
@@ -3530,6 +3555,7 @@ class ChemicalDrift(OceanDrift):
                 origin_mask = (originmarker_2d == origin_marker)
             keep_mask &= origin_mask
             logger.warning(f'only active elements with origin_marker: {origin_marker} were considered for concentration')
+            del origin_mask
 
         if active_status:
             status_categories = self.status_categories
@@ -3539,49 +3565,20 @@ class ChemicalDrift(OceanDrift):
             keep_mask &= (status_2d == active_index)
             logger.warning(f'only active elements were considered for concentration, status: {active_index}')
 
-        #Build time bins from filtered time series
-        times_series = times_1d[tmask]
-        if times_series.size > 1:
-            dt_half = (times_series[1] - times_series[0]) / 2
-        else:
-            dt_half = np.timedelta64(1, 's')
-        t_array = np.append(times_series - dt_half, times_series[-1] + dt_half)
-        times_np = np.asarray(times_series.values if hasattr(times_series, "values") else times_series,
-                      dtype="datetime64[ns]")
-
-        # Reference epoch = first kept time
-        t0 = times_np[0]
-        # Convert to seconds since t0 (float64)
-        times_num = (times_np - t0).astype("timedelta64[s]").astype(np.float64)
-
-        # Half-step padding for edges
-        if times_np.size > 1:
-            dt_half_s = ((times_np[1] - times_np[0]).astype("timedelta64[s]").astype(np.float64)) / 2.0
-        else:
-            dt_half_s = 0.5  # arbitrary small pad if single time
-
-        # Final 1D edges for time histogram: length n_timef + 1
-        t_edges = np.empty(times_num.size + 1, dtype=np.float64)
-        t_edges[:-1] = times_num - dt_half_s
-        t_edges[-1]  = times_num[-1] + dt_half_s
-
-        # 2D times aligned with lon/lat/specie/z
-        times_2d = np.broadcast_to(times_num, (n_elem, n_timef)).T
-
         # Create a grid in the specified projection
         if llcrnrlon is not None:
             llcrnrx,llcrnry = density_proj(llcrnrlon,llcrnrlat)
             urcrnrx,urcrnry = density_proj(urcrnrlon,urcrnrlat)
         else:
-            x,y = density_proj(lon, lat)
+            x,y = density_proj(lon_2d, lat_2d)
             if density_proj == pyproj.Proj('+proj=moll +ellps=WGS84 +lon_0=0.0'):
                 llcrnrx,llcrnry = x.min()-pixelsize_m, y.min()-pixelsize_m
                 urcrnrx,urcrnry = x.max()+pixelsize_m, y.max()+pixelsize_m
-                del x,y
             else:
                 llcrnrx,llcrnry = x.min()-lon_resol, y.min()-lat_resol
                 urcrnrx,urcrnry = x.max()+lon_resol, y.max()+lat_resol
-                del x,y
+            del x,y
+            gc.collect()
 
         if density_proj == pyproj.Proj('+proj=moll +ellps=WGS84 +lon_0=0.0'):
             if pixelsize_m == None:
@@ -3593,78 +3590,108 @@ class ChemicalDrift(OceanDrift):
             x_array = np.arange(llcrnrx,urcrnrx, lon_resol)
             y_array = np.arange(llcrnry,urcrnry, lat_resol)
 
-        # Flatten everything in the same order
-        lon_flat    = lon.ravel(order='C')
-        lat_flat    = lat.ravel(order='C')
-        z_flat      = z.ravel(order='C')
-        specie_flat = specie.ravel(order='C')
-        times_flat  = times_2d.ravel(order='C')
-        keep_flat   = keep_mask.ravel(order='C')
+        x_array = np.asarray(x_array, dtype=np.float32)
+        y_array = np.asarray(y_array, dtype=np.float32)
+        z_array = np.asarray(z_array, dtype=np.float32)
 
-        # Project coordinates to keep alignment
-        if density_proj != pyproj.Proj("+proj=longlat +datum=WGS84 +no_defs"):
+        # Prepare projection once
+        need_proj = (density_proj != pyproj.Proj("+proj=longlat +datum=WGS84 +no_defs"))
+        if need_proj:
             source_proj = Proj("+proj=longlat +datum=WGS84 +no_defs")
             transformer = Transformer.from_proj(source_proj, density_proj)
-            lon_flat, lat_flat = transformer.transform(lon_flat, lat_flat)
 
-        # Optional: zero weight for masked samples
-        weights_flat = None
-        if weight is not None:
-            w_flat = weight_2d.ravel(order='C')
-            # Zero out samples we don't want
-            w_flat = np.where(keep_flat, w_flat, 0.0)
-            weights_flat = w_flat
-            del w_flat
-
-        if weights_flat is not None:
-            weights_flat = np.where(keep_flat, weights_flat, 0.0)
-
-        # Histogram (time, x, y) per specie/depth
+        # Allocate outputs
         Nspecies = self.nspecies
-        H = np.zeros((t_array.size - 1,
-                      Nspecies,
-                      len(z_array) - 1,
-                      len(x_array) - 1,
-                      len(y_array) - 1))
+        Tx = n_timef
+        Zx = len(z_array) - 1
+        Xx = len(x_array) - 1
+        Yx = len(y_array) - 1
 
-        for sp in range(Nspecies):
-            specie_mask = (specie_flat == sp)
-            for zi in range(len(z_array) - 1):
-                depth_mask = (z_flat > z_array[zi]) & (z_flat <= z_array[zi + 1])
-                mask = keep_flat & specie_mask & depth_mask
-                w = None if weights_flat is None else weights_flat[mask]
-                H[:, sp, zi, :, :], _ = np.histogramdd(
-                    (times_flat[mask], lon_flat[mask], lat_flat[mask]),
-                    bins=(t_edges, x_array, y_array),
-                    weights=w
-                )
+        H = np.zeros((Tx, Nspecies, Zx, Xx, Yx), dtype=np.float32)
+        H_count = None
         if elements_density is True:
             logger.info('Calculating element density')
-            H_count = np.zeros_like(H)
+            H_count = np.zeros_like(H, dtype=np.uint32)
 
+        # Chunk over time
+        for t0i in range(0, n_timef, time_chunk_size):
+            t1i = min(t0i + time_chunk_size, n_timef)
+            blk_T = t1i - t0i
+            logger.debug(f"Computing time_chunk {t0i} - {t1i}")
+
+            # views (no copies) for this time block
+            lon_blk    = lon_2d[t0i:t1i, :]           # (blk_T, n_elem)
+            lat_blk    = lat_2d[t0i:t1i, :]
+            z_blk      = z_2d[t0i:t1i, :]
+            specie_blk = specie_2d[t0i:t1i, :]
+            keep_blk   = keep_mask[t0i:t1i, :]
+
+            w_blk = None
+            if weight is not None:
+                w_blk = weight_2d[t0i:t1i, :]
+
+            # prefilter NaNs early
+            finite_blk = np.isfinite(lon_blk) #& np.isfinite(lat_blk) & np.isfinite(z_blk)
+            keep_blk &= finite_blk
+            del finite_blk
+
+            # project the entire chunk once where needed
+            if need_proj:
+                # Flatten → project → reshape back to (blk_T, n_elem)
+                lonp, latp = transformer.transform(lon_blk.reshape(-1), lat_blk.reshape(-1))
+                lon_blk_p = lonp.reshape(blk_T, n_elem)
+                lat_blk_p = latp.reshape(blk_T, n_elem)
+                del lonp, latp
+            else:
+                lon_blk_p = lon_blk
+                lat_blk_p = lat_blk
+
+            # inner loops: small discrete sets (species) and timesteps in the block
             for sp in range(Nspecies):
-                specie_mask = (specie_flat == sp)
-                for zi in range(len(z_array) - 1):
-                    depth_mask = (z_flat > z_array[zi]) & (z_flat <= z_array[zi + 1])
-                    mask = keep_flat & specie_mask & depth_mask
-                    w = None if weights_flat is None else weights_flat[mask]
-                    H_count[:, sp, zi, :, :], _ = np.histogramdd(
-                        (times_flat[mask], lon_flat[mask], lat_flat[mask]),
-                        bins=(t_edges, x_array, y_array),
-                        weights=None
-                    )
-        else:
-            H_count = None
+                # time-slice loop inside the block (≤ 50 iterations)
+                for t_rel in range(blk_T):
+                    ti = t0i + t_rel  # absolute time index in H
 
+                    # select surviving samples for this (time, species)
+                    mask = keep_blk[t_rel, :] & (specie_blk[t_rel, :] == sp)
+                    if not mask.any():
+                        continue
+
+                    xs = lon_blk_p[t_rel, mask]
+                    ys = lat_blk_p[t_rel, mask]
+                    zs = z_blk[t_rel, mask]
+                    ws = None if w_blk is None else w_blk[t_rel, mask]
+
+                    # histogram over (x, y, z) only
+                    if ws is None:
+                        H_xyz, _ = np.histogramdd((xs, ys, zs), bins=(x_array, y_array, z_array))
+                        # histogramdd returns (X, Y, Z) → transpose to (Z, X, Y)
+                        H[ti, sp, :, :, :] += H_xyz.transpose(2, 0, 1)
+
+                        if H_count is not None:
+                            H_count[ti, sp, :, :, :] += H_xyz.transpose(2, 0, 1).astype(H_count.dtype, copy=False)
+
+                    else:
+                        # weighted sum in H
+                        H_xyz_w, _ = np.histogramdd((xs, ys, zs), bins=(x_array, y_array, z_array), weights=ws)
+                        H[ti, sp, :, :, :] += H_xyz_w.transpose(2, 0, 1)
+
+                        if H_count is not None:
+                            # counts (unweighted pass) for the same slice
+                            H_xyz_c, _ = np.histogramdd((xs, ys, zs), bins=(x_array, y_array, z_array))
+                            H_count[ti, sp, :, :, :] += H_xyz_c.transpose(2, 0, 1).astype(H_count.dtype, copy=False)
+
+        # Grid lon/lat arrays for output
         if density_proj is not None:
-            Y,X = np.meshgrid(y_array, x_array)
-            lon_array, lat_array = density_proj(X,Y,inverse=True)
+            Y, X = np.meshgrid(y_array, x_array)
+            lon_array, lat_array = density_proj(X, Y, inverse=True)
 
         return H, lon_array, lat_array, H_count
 
 
     def get_pixel_mean_depth(self,lons,lats,density_proj_str,lat_resol,lon_resol):
         from scipy import interpolate
+        import gc
         # Ocean model depth and lat/lon
         h_grd = self.conc_topo
         h_grd[np.isnan(h_grd)] = 0.
@@ -3674,8 +3701,15 @@ class ChemicalDrift(OceanDrift):
         lat_grd = self.conc_lat[:nx,:ny]
         lon_grd = self.conc_lon[:nx,:ny]
 
+        for attr in ('conc_lon', 'conc_lat', 'conc_topo'):
+            if hasattr(self, attr):
+                setattr(self, attr, None)
+        gc.collect()
+
         # Interpolate topography to new grid
         h = interpolate.griddata((lon_grd.flatten(),lat_grd.flatten()), h_grd.flatten(), (lons, lats), method='linear')
+
+
 
         if density_proj_str != ('+proj=moll +ellps=WGS84 +lon_0=0.0'):
         # Calculate the area of each grid cell in square meters (m²)
