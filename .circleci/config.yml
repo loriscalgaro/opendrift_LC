@@ -116,7 +116,7 @@ jobs:
     docker:
       - image: condaforge/miniforge3
     environment:
-      - PYTHON_VERSION=3.13
+      - PYTHON_VERSION=3.14
 
     steps:
       - checkout
@@ -144,7 +144,7 @@ jobs:
     docker:
       - image: condaforge/miniforge3
     environment:
-      - PYTHON_VERSION=3.13
+      - PYTHON_VERSION=3.14
 
     steps:
       - checkout
@@ -167,6 +167,13 @@ jobs:
               twine upload --verbose --skip-existing -u __token__ -p ${PYPI_TOKEN} dist/*
             fi
 
+  python_314:
+    <<: *test-template
+    parallelism: 5
+    environment:
+      - COVERALLS_UPLOAD=1
+      - PYTHON_VERSION=3.14
+
   python_313:
     <<: *test-template
     parallelism: 5
@@ -185,25 +192,12 @@ jobs:
     environment:
       - PYTHON_VERSION=3.11
 
-  python_310:
-    <<: *test-template
-    parallelism: 5
-    environment:
-      - COVERALLS_UPLOAD=1
-      - PYTHON_VERSION=3.10
-
-  # python_39:
-  #   <<: *test-template
-  #   parallelism: 5
-  #   environment:
-  #     - PYTHON_VERSION=3.9
-
   docs-build-examples:
     docker:
       - image: condaforge/miniforge3
     parallelism: 20
     environment:
-      - PYTHON_VERSION=3.13
+      - PYTHON_VERSION=3.14
     steps:
       - checkout
       - run:
@@ -212,17 +206,6 @@ jobs:
       - run:
           name: Install packages
           command: DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential jq curl
-
-      - run:
-          name: Get PR title
-          command: |
-            if [[ -v CIRCLE_PULL_REQUEST ]]; then
-              PR_NUMBER=$(echo "$CIRCLE_PULL_REQUEST" | sed "s/.*\/pull\///")
-              GITHUB_PR_TITLE=$(curl "https://api.github.com/repos/OpenDrift/OpenDrift/pulls/${PR_NUMBER}" | jq -e '.title')
-              echo "export GITHUB_PR_NO=${PR_NUMBER}" >> ${BASH_ENV}
-              echo "export GITHUB_PR_TITLE=${GITHUB_PR_TITLE}" >> ${BASH_ENV}
-              echo "PR: ${GITHUB_PR_TITLE}"
-            fi
 
       - install_conda_environment
 
@@ -264,7 +247,7 @@ jobs:
       - run:
           name: Clean cache if docs should be re-built
           command: |
-            if [[ "${GITHUB_PR_TITLE}" == *"[run-ex]"* || "${BUILD_EXAMPLES}" -eq 1 ]]; then
+            if [[ "${BUILD_EXAMPLES}" -eq 1 ]]; then
               echo "Clearing out examples.."
               source activate opendrift
               cd docs/
@@ -300,7 +283,7 @@ jobs:
     docker:
       - image: condaforge/miniforge3
     environment:
-      - PYTHON_VERSION=3.13
+      - PYTHON_VERSION=3.14
     steps:
       - checkout
 
@@ -313,17 +296,6 @@ jobs:
       - run:
           name: Install packages
           command: DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential gfortran libgeos-dev gdal-bin imagemagick jq curl
-
-      - run:
-          name: Get PR title
-          command: |
-            if [[ -v CIRCLE_PULL_REQUEST ]]; then
-              PR_NUMBER=$(echo "$CIRCLE_PULL_REQUEST" | sed "s/.*\/pull\///")
-              GITHUB_PR_TITLE=$(curl "https://api.github.com/repos/OpenDrift/OpenDrift/pulls/${PR_NUMBER}" | jq -e '.title')
-              echo "export GITHUB_PR_NO=${PR_NUMBER}" >> ${BASH_ENV}
-              echo "export GITHUB_PR_TITLE=${GITHUB_PR_TITLE}" >> ${BASH_ENV}
-              echo "PR: ${GITHUB_PR_TITLE}"
-            fi
 
       - run:
           name: Check if examples should be built
@@ -424,16 +396,15 @@ workflows:
 
   test-and-package:
     jobs:
+      - python_314
       - python_313
       - python_312
       - python_311
-      - python_310
-      # - python_39
       - build_package
       - publish_package:
           requires:
             - build_package
-            - python_311
+            - python_314
           filters:
             tags:
               only: /^v.*/
