@@ -400,7 +400,8 @@ class ChemicalDrift(OceanDrift):
                          'Benzo-k-fluoranthene','Benzo-ghi-perylene','Indeno-123cd-pyrene',
                          'Copper','Cadmium','Chromium','Lead','Vanadium','Zinc','Nickel','Tralopyril','Econea',
                          'Nitrogen', 'Alkalinity','Azoxystrobin','Diflufenican','Metconazole','Penconazole','Tebuconazole', 'Metaflumizone',
-                         'Tetraconazole', 'Methiocarb','test', None],
+                         'Tetraconazole','Methiocarb','test', 'Sulfamethoxazole','Trimethoprim','Clindamycin',
+                         'Ofloxacin','Metformin','Venlafaxine',None],
                 'default': None,
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Name of modelled chemical'},
             # Single process degradation
