@@ -6930,32 +6930,6 @@ class ChemicalDrift(OceanDrift):
                 extracted_attrs_dict[attr] = (np.nan_to_num(getattr(self.result, attr).T.values)#, nan=0)
                                    if hasattr(self.result, attr) else None)
 
-
-            elements_deactivated_dict = { "ID": self.elements_deactivated.ID} # Use ID as index
-            for attr in ['status', 'age_seconds'] + attrs_ls:
-                if hasattr(self.elements, attr):  # Check if attribute exists
-                    elements_deactivated_dict[attr] = getattr(self.elements_deactivated, attr)
-                else:
-                    elements_deactivated_dict[attr] = [0] * len(self.elements_deactivated.ID)  # Fill missing attributes with zeros
-            elements_deactivated_df = pd.DataFrame(elements_deactivated_dict).set_index("ID")
-            elements_deactivated_df['output_step'] = np.digitize(elements_deactivated_df['age_seconds'], age_seconds_output, right = False)
-            if 'stranded' in status_categories:
-                elements_deactivated_df['stranded'] = elements_deactivated_df['status'] == stranded_index
-            else:
-                elements_deactivated_df['stranded'] = [False] * len(self.elements_deactivated.ID)
-            del elements_deactivated_dict
-
-            # Remove rows with NaN from elements_deactivated_df
-            rows_with_nan = elements_deactivated_df[elements_deactivated_df.isna().any(axis=1)]
-            if len(rows_with_nan) > 0:
-                removed_indexes = rows_with_nan.index.tolist()
-                elements_deactivated_df = elements_deactivated_df.dropna()
-                print("Removed IDs from elements_deactivated_df due to NaN presence:", removed_indexes)
-
-
-            # range(0, steps)
-            # elements_deactivated_df.groupby('output_step').sum()
-
             # Get mask for elements in water column and sedments for each timestep
             in_water_column_ls = []
             if hasattr(self, 'num_lmm'):
@@ -6969,9 +6943,8 @@ class ChemicalDrift(OceanDrift):
 
             in_sediment_layer = (sp==self.num_srev)
             in_buried_sed = (sp==self.num_ssrev)
+            # mask for elements active until the end of each timestep
             active_elements = (status==0)
-            # elements: mask for elements active until the end of each timestep
-            elements = ~(extracted_attrs_dict['mass'] == 0)
 
 
             # Find which elements are advected out of the domain
@@ -6998,33 +6971,25 @@ class ChemicalDrift(OceanDrift):
                     # Create a boolean array indicating whether each point is within the shapefile
                     out_of_bounds.append([index in indices_within for index in range(len(geometry))])
                 # Convert the list of boolean arrays to a NumPy array
-                out_of_bounds = np.array([np.array(arr) for arr in out_of_bounds])
-                adv_out = out_of_bounds & elements
-                ### Calculate if deactivated elements are outside shp domain
-                elements_deactivated_df["geometry"] = gpd.points_from_xy(elements_deactivated_df["lon"], elements_deactivated_df["lat"])
-                # Convert to GeoDataFrame
-                gdf_points = gpd.GeoDataFrame(elements_deactivated_df, geometry="geometry", crs=gdf_shapefile.crs)
-                # Perform spatial join
-                joined = gpd.sjoin(gdf_points, gdf_shapefile, predicate="within", how="left")
-                elements_deactivated_df['adv_out'] = ~joined.index_right.isna()
-                elements_deactivated_df = elements_deactivated_df.drop(["geometry"], axis = 1)
+                adv_out = np.array([np.array(arr) for arr in out_of_bounds])
+
             elif deactivate_coords is True:
                 shp_adv_out = False
-                print("deactivate_north_of/south_of/_east_of/_west_of parameters used: adv_out elements taken from self.elements_deactivated")
+                print("deactivate_north_of/south_of/_east_of/_west_of parameters used")
                 if ('outside' in status_categories):
-                    elements_deactivated_df['adv_out'] = elements_deactivated_df['status'] == out_of_bounds_index
+                    adv_out = (status == out_of_bounds_index)
                 else:
-                    elements_deactivated_df["adv_out"] = [False] * len(self.elements_deactivated.ID)
+                    adv_out = np.zeros_like(status)
                     print("No elements advected out of domain")
             elif any([element is None for element in [lat_min, lat_max, lon_max, lon_min]]) is False:
                 shp_adv_out = False
                 # advection out of the domain is determined by the extent of uo/vo velocity field
                 if ('missing_data' in status_categories):
                     print("missing_data used: : adv_out elements taken from self.elements_deactivated")
-                    elements_deactivated_df["adv_out"] = (~((elements_deactivated_df["lat"].between(lat_min, lat_max)) &\
-                                                           (elements_deactivated_df["lon"].between(lon_min, lon_max))) & elements_deactivated_df["status"] == missing_data_index)
+
+                    adv_out = (status == missing_data_index)
                 else:
-                    elements_deactivated_df["adv_out"] = [False] * len(self.elements_deactivated.ID)
+                    adv_out = np.zeros_like(status)
                     print("No elements advected out of domain")
             else:
                 error = ("shp_file_path and lat/lon limits not specified when " +
@@ -7036,20 +7001,12 @@ class ChemicalDrift(OceanDrift):
             # the simulation domain (not stranded or advected out)
             print("Calculating timeseries from simulation")
             mass_by_specie=np.zeros((steps,5))
-            if shp_adv_out == True:
-                # All active elements until the end of each timestep adv_out based on shp
-                for i in range(steps):
-                    mass_by_specie[i] = [
-                            np.sum(extracted_attrs_dict['mass'][i, :] * (sp[i, :] == j) * (~adv_out[i, :])) * mass_conversion_factor
-                            for j in range(5)
-                            ]
-            else:
-                # All active elements until the end of each timestep
-                for i in range(steps):
-                    mass_by_specie[i] = [
-                            np.sum(extracted_attrs_dict['mass'][i, :] * (sp[i, :] == j)) * mass_conversion_factor
-                            for j in range(5)
-                            ]
+
+            for i in range(steps):
+                mass_by_specie[i] = [
+                        np.sum(extracted_attrs_dict['mass'][i, :] * (sp[i, :] == j) * (~adv_out[i, :])*(active_elements[i, :])) * mass_conversion_factor
+                        for j in range(5)
+                        ]
 
             time_steps =np.array(range(0, steps))*time_conversion_factor
             mass_by_specie_df = pd.DataFrame(mass_by_specie)
@@ -7078,53 +7035,19 @@ class ChemicalDrift(OceanDrift):
             Col_names_res = [names_to_replace.get(e, e) for e in Col_names_res]
             mass_by_specie_df.columns = Col_names_res
 
+            mass_results_timestep = {}
             # Mass present in the system at each timestep considering only active elements
             # that are inside the simulation domain
-            if shp_adv_out == True:
-                mass_water = (np.sum(extracted_attrs_dict['mass']*in_water_column * (~adv_out),1) * mass_conversion_factor)
-                mass_sed = (np.sum(extracted_attrs_dict['mass']*in_sediment_layer * (~adv_out),1) * mass_conversion_factor)
-                # mass_sed_buried is outside the domain
-                mass_sed_buried = (np.sum(extracted_attrs_dict['mass']*in_buried_sed * (~adv_out),1) * mass_conversion_factor)
-                mass_actual = mass_water + mass_sed
-            else:
-                mass_water = (np.sum(extracted_attrs_dict['mass']*in_water_column,1) * mass_conversion_factor)
-                mass_sed = (np.sum(extracted_attrs_dict['mass']*in_sediment_layer,1) * mass_conversion_factor)
-                # mass_sed_buried is outside the domain
-                mass_sed_buried = (np.sum(extracted_attrs_dict['mass']*in_buried_sed,1) * mass_conversion_factor)
-                mass_actual = mass_water + mass_sed
 
-
-            mass_deact_stranded_df = elements_deactivated_df[elements_deactivated_df['stranded'] == True]
-
-            mass_deact_adv_out_df = elements_deactivated_df[(elements_deactivated_df['stranded'] == False) &
-                                                         (elements_deactivated_df['adv_out'] == True)]
-
-            mass_deact_other_df = elements_deactivated_df[(elements_deactivated_df['stranded'] == False) &
-                                                         (elements_deactivated_df['adv_out'] == False)]
-
-            excluded_columns = ['status', 'lat', 'lon', 'stranded', 'adv_out', 'age_seconds']
-            full_index_range = np.arange(0, len(age_seconds_output)-1)
-            mass_deact_stranded_df = (mass_deact_stranded_df
-                                      .drop(columns=excluded_columns)  # Drop unwanted columns
-                                      .groupby('output_step', as_index=True)
-                                      .sum()
-                                    ).reindex(full_index_range, fill_value=0)
-
-            mass_deact_adv_out_df = (mass_deact_adv_out_df
-                                     .drop(columns=excluded_columns)  # Drop unwanted columns
-                                     .groupby('output_step', as_index=True)
-                                     .sum()
-                                     ).reindex(full_index_range, fill_value=0)
-
-            mass_deact_other_df = (mass_deact_other_df
-                                   .drop(columns=excluded_columns)  # Drop unwanted columns
-                                   .groupby('output_step', as_index=True)
-                                   .sum()
-                                   ).reindex(full_index_range, fill_value=0)
+            mass_results_timestep["mass_water"] = (np.sum(extracted_attrs_dict['mass']*in_water_column * (~adv_out)*active_elements,1) * mass_conversion_factor)
+            mass_results_timestep["mass_sed"] = (np.sum(extracted_attrs_dict['mass']*in_sediment_layer * (~adv_out)*active_elements,1) * mass_conversion_factor)
+            # mass_sed_buried is outside the domain
+            mass_results_timestep["mass_sed_buried"] = (np.sum(extracted_attrs_dict['mass']*in_buried_sed * (~adv_out)*active_elements,1) * mass_conversion_factor)
+            mass_results_timestep["mass_actual"] = mass_results_timestep["mass_water"] + mass_results_timestep["mass_sed"]
 
 
             # Mass of all elements present in simulation during each timestep
-            mass_results_timestep = {}
+            
             timestep_attributes = ['mass', 'mass_degraded','mass_degraded_water', 'mass_degraded_sediment',
                     'mass_volatilized', 'mass_photodegraded', 'mass_biodegraded',
                     'mass_biodegraded_water', 'mass_biodegraded_sediment',
@@ -7133,9 +7056,9 @@ class ChemicalDrift(OceanDrift):
 
             for attr in timestep_attributes:
                 if extracted_attrs_dict[attr] is not None:
-                    mass_results_timestep[attr] = np.sum(extracted_attrs_dict[attr] * elements, axis=1) * mass_conversion_factor
+                    mass_results_timestep[attr] = np.sum(extracted_attrs_dict[attr] * active_elements, axis=1) * mass_conversion_factor
                 else:
-                    mass_results_timestep[attr] = np.zeros_like(mass_actual)
+                    mass_results_timestep[attr] = np.zeros_like(mass_results_timestep["mass_actual"])
 
 
 
@@ -7165,9 +7088,9 @@ class ChemicalDrift(OceanDrift):
                     mass_adv_out = (np.sum((extracted_attrs_dict['mass']*adv_out),1)*mass_conversion_factor)
                     # Mass advected out of the system from start of simulation, until that time step
                     mass_adv_out_cumulative = np.cumsum(mass_adv_out)
-                else:
-                    mass_adv_out = np.zeros_like(mass_water)
-                    mass_adv_out_cumulative = np.zeros_like(mass_water)
+            else:
+                mass_adv_out = np.zeros_like(mass_water)
+                mass_adv_out_cumulative = np.zeros_like(mass_water)
 
                 # Mass emitted into the system up to the end of each timestep
                 mass_emitted = (mass_results_timestep['mass'] + mass_results_timestep['mass_degraded'] + mass_results_timestep['mass_volatilized'])
