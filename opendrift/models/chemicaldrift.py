@@ -7868,26 +7868,33 @@ class ChemicalDrift(OceanDrift):
 
 
     @staticmethod
-    def _select_DataArray_ts(DataArray, time_step, time_name):
-        '''
-        Select the slice along "time_name" dimentions corresponding to time_step (or the one immediatly before)
-        If time_step is outside DataArray[time_name] returns None
+    def _reindex_da(DataArray,
+                  time_name, target_time,
+                  nearest_tol = None,
+                  align_mode = "pad"):
+        """
+        Reindex xr.DataArray along "time_name" dimention using "target_time" array
 
         DataArray:        xarray DataArray
-        time_step:        np.timedelta64, frequency of reconstructed time dimention
-        time_name:           string, name of time dimention of all DataArray present in DataArray_ls
+        time_name:        string, name of time dimention of all DataArray present in DataArray_ls
+        target_time:     np.array of np.datetime64[ns]
+        nearest_tol:      np.timedelta64, max distance for "nearest" (e.g., np.timedelta64(3,'h'))
+        align_mode:       string, mode of selecting timestamp in reconstructed sum ("pad"|"nearest"|"exact")
 
-        '''
-        # import xarray as xr
+        """
+        # sort for methods that need monotonic time
+        if align_mode in {"pad", "nearest"} and not DataArray[time_name].to_index().is_monotonic_increasing:
+            DataArray = DataArray.sortby(time_name)
 
-        if time_step >= DataArray[time_name].min() and time_step <= DataArray[time_name].max():
-            selected_ts = DataArray.sel(**{time_name: time_step}, method = "pad")
-            return selected_ts
-        else:
-            # ts_ref = DataArray[time_name].min()
-            # return xr.zeros_like(DataArray.sel(**{time_name: ts_ref}))
-            return None
-
+        if align_mode == "exact":
+            return DataArray.reindex({time_name: target_time}, method=None)
+        elif align_mode == "pad":
+            return DataArray.reindex({time_name: target_time}, method="pad")
+        else:  # "nearest"
+            kwargs = {}
+            if nearest_tol is not None:
+                kwargs["tolerance"] = nearest_tol
+            return DataArray.reindex({time_name: target_time}, method="nearest", **kwargs)
 
     def sum_DataArray_list(self,
                            DataArray_ls,
@@ -7895,7 +7902,10 @@ class ChemicalDrift(OceanDrift):
                            end_date = None,
                            freq_time = None,
                            time_name = "time",
-                           sim_description = None
+                           sim_description = None,
+                           align_mode ="pad",
+                           nearest_tol = None,
+                           mask_mode = "input0"
                            ):
         '''
         Sum a list of xarray DataArrays, with the same or different time step
@@ -7907,171 +7917,175 @@ class ChemicalDrift(OceanDrift):
         time_step:           np.timedelta64, frequency of reconstructed time dimention
         time_name:           string, name of time dimention of all DataArray present in DataArray_ls
         sim_description:     string, descrition of simulation to be included in netcdf attributes
+        align_mode:          string, mode of selecting timestamp in reconstructed sum ("pad"|"nearest"|"exact")
+        nearest_tol:         np.timedelta64, max distance for "nearest" (e.g., np.timedelta64(3,'h'))
+        mask_mode:         string, mode of masking finla sum ("input0"|"union"|"intersection")
         '''
         import xarray as xr
         from datetime import datetime
 
-        if len(DataArray_ls) < 2:
-            if len(DataArray_ls) == 1:
-                print("len(DataArray_ls) is 1, returning DataArray_ls[0]")
-                return DataArray_ls[0]
-            else:
-                raise ValueError("Empty DataArray_ls")
+        if len(DataArray_ls) < 1:
+            raise ValueError("Empty DataArray_ls")
+        if len(DataArray_ls) == 1:
+            print("len(DataArray_ls) is 1, returning DataArray_ls[0]")
+            return DataArray_ls[0]
 
-        print("Checking input DataArray dimentions")
-        ### Check if uncommon dimentions are present
-        all_dims = [set(DataArray.dims) for DataArray in DataArray_ls]
-        extra_dims = set().union(*all_dims) - set.intersection(*all_dims)
+        ### Convert time_name to string to allow indexing
+        if not isinstance(time_name, str):
+            time_name = str(time_name)
+
+        ### Check that input DataArrays have the same dimensions
+        print("Checking input DataArray dimensions")
+        all_dims_per_da = [set(da.dims) for da in DataArray_ls]
+        common_dims = set.intersection(*all_dims_per_da)
+        extra_dims = set.union(*all_dims_per_da) - common_dims
         if extra_dims:
-            for dim in extra_dims:
-                for index, DataArray in enumerate(DataArray_ls):
-                    if dim in DataArray.dims:
-                        print(f'Extra dimention "{dim}" in array {index}')
+            for dim in sorted(extra_dims):
+                for idx, da in enumerate(DataArray_ls):
+                    if dim in da.dims:
+                        print(f'Extra dimension "{dim}" in array {idx}')
+            raise ValueError("Uncommon dimensions are present in DataArray_ls")
 
-            raise ValueError("Uncommon dimentions are present in DataArray_ls")
+        ### Check that all DataArrays have the same variable name
 
-        all_dims = set.union(*all_dims)
+        names = [da.name for da in DataArray_ls]  # may contain None
+        if any(n is None for n in names):
+            raise ValueError(f"All DataArrays must have a name. Got: {names}")
+        ref_name = next((n for n in names if n is not None), "data")
 
-        ### Remove time dimention from check if all dimentions are equal
-        if not isinstance(time_name, set):
-            time_name = set(time_name.split())
-        all_dims = all_dims - time_name
-        if "time" in all_dims:
-            raise ValueError(f'time dimention has another name than "{time_name}" in at least one DataArray')
+        # fail if any non-None name differs from ref_name
+        mismatch = [n for n in names if (n is not None and n != ref_name)]
+        if mismatch:
+            raise ValueError(f"Mismatched DataArray names: {names}. Expected all '{ref_name}'.")
+        print(f"var_name: {ref_name}")
 
-        ### Check if common dimentions (except time) have the same values
-        dims_values = []
-        for DataArray in DataArray_ls:
-            # Initialize dict to store dimension values for this DataArray
-            DataArray_dims_values = {}
-            # Iterate through each dimension in all_dims
-            for dim in list(all_dims):
-                # Get the dimension values if the dimension exists in the DataArray
-                if dim in DataArray.dims:
-                    DataArray_dims_values[dim] = DataArray[dim].values
-                else:
-                    raise ValueError("Uncommon dimentions are present in DataArray_ls")
-            # Append the dimension values for this DataArray to the list
-            dims_values.append(DataArray_dims_values)
+        ### non-time dims must have identical coordinates
+        nontime_dims = set.union(*all_dims_per_da)
+        if time_name in nontime_dims:
+            nontime_dims.remove(time_name)
 
-        self._check_dims_values(dims_values)
+        for dim in sorted(nontime_dims):
+            ref = DataArray_ls[0][dim].values
+            for idx, da in enumerate(DataArray_ls[1:], start=1):
+                if dim not in da.dims:
+                    raise ValueError(f'Missing dimension "{dim}" in array {idx}')
+                if not np.array_equal(da[dim].values, ref):
+                    raise ValueError(f'Dimension "{dim}" values differ between arrays')
+
         ### Find common attributes to be added in Final_sum
         common_attrs = DataArray_ls[0].attrs.copy()
         for da in DataArray_ls[1:]:
             common_attrs = {key: value for key, value in common_attrs.items() if da.attrs.get(key) == value}
 
-        ### Convert time_name to string to allow indexing
-        if not isinstance(time_name, str):
-            if isinstance(time_name, set):
-                time_name = time_name.pop()
 
-        ### Check if time dimentions have the same values
-        time_dim_values = []
-        for DataArray in DataArray_ls:
-            time_dim_values.append(DataArray[time_name].values)
+        time_equal = False
+        if all(time_name in da.dims for da in DataArray_ls):
+            tvals = [da[time_name].values for da in DataArray_ls]
+            time_equal = all(np.array_equal(tv, tvals[0]) for tv in tvals)
 
-        time_check = time_dim_values[0]
-        if (all(np.array_equal(time_dim_values[index], time_check) for index in range(1, len(time_dim_values)))\
-            and start_date is None and end_date is None and freq_time is None):
+        time_start = datetime.now()
+        Final_sum = None
+        if time_equal and (start_date is None and end_date is None and freq_time is None):
+            print("Time dimentions are all equal in DataArray_ls, skipping set-up of target_time to sum directly")
+            print("Run sum of DataArray_ls")
 
-            print("Time dimentions are all equal in DataArray_ls, set up of time_date_serie was skipped")
-            print("Running sum of DataArray_ls")
             Final_sum = DataArray_ls[0].fillna(0)
-            mask = ~DataArray_ls[0].isnull()
-
             for da in DataArray_ls[1:]:
-                da_filled = da.fillna(0)
-                Final_sum += da_filled
-            # Preserve landmask at different depth
-            Final_sum = Final_sum.where(mask)
+                Final_sum = Final_sum + da.fillna(0)
         else:
-            print("Time dimentions are not equal in DataArray_ls, set up time_date_serie")
-            ### Set up time_date_serie array from input or from DataArray_ls
+            print("Time dimensions not all equal (or reconstruction requested)")
+
+            ### Infer start_date/end_date if missing
             if start_date is None:
-                start_date = np.array([DataArray[time_name].min().to_numpy() for DataArray in DataArray_ls]).min()
-                print("start_date set-up from DataArray_ls")
-
+                start_date = np.min([da[time_name].values.min() for da in DataArray_ls])
+                print("start_date set from DataArray_ls")
             if end_date is None:
-                end_date = np.array([DataArray[time_name].max().to_numpy() for DataArray in DataArray_ls]).max()
-                print("end_date set-up from DataArray_ls")
+                end_date = np.max([da[time_name].values.max() for da in DataArray_ls])
+                print("end_date set from DataArray_ls")
 
+            ### Prefer a regular grid if a minimal step can be inferred; otherwise use union of times
+            target_time = None
             if freq_time is None:
-                freq_time = []
-                for DataArray in DataArray_ls:
-                    if DataArray[time_name].size > 1:
-                        freq_time.append((DataArray[time_name][1] - DataArray[time_name][0]).to_numpy())
-                freq_time = np.array(freq_time).min()
-                print("freq_time set-up from DataArray_ls")
-
-            time_date_serie = np.arange(start_date, (end_date + freq_time), freq_time)
-
-            if start_date is not None:
-                print(f"start_date: {start_date}")
-            if end_date is not None:
-                print(f"end_date: {end_date}")
-            if freq_time is not None:
-                if int(np.array(freq_time)) >= 3.6e+12: # freq_time in hours
-                    print(f"freq_time: {int(np.array(freq_time)) / 3.6e+12} hours")
-                else: # freq_time in minutes
-                    print(f"freq_time: {int(np.array(freq_time)) / 6e+10} min")
-
-            print("Running sum of time_steps")
-            Final_ts_sum_ls = []
-            list_index_print = self._print_progress_list(len(time_date_serie))
-            for time_step in time_date_serie:
-                index_print = np.where(time_date_serie == time_step)[0]
-                if index_print == 0:
-                    time_start_0 = datetime.now()
-                if index_print == 1:
-                    time_start_1 = datetime.now()
-                    estimated_time = (time_start_1 - time_start_0)*(len(time_date_serie))
-                    print(f"Estimated time (h:min:s): {estimated_time}")
-                if index_print == (len(time_date_serie)-1):
-                    time_end = datetime.now()
-                # print(index_print)
-                if index_print in list_index_print:
-                    print(".", end="")
-
-                sum_tstep_ls = []
-                for DataArray in DataArray_ls:
-                    selected_ts = self._select_DataArray_ts(DataArray = DataArray,
-                                        time_step = time_step,
-                                        time_name = time_name)
-                    if selected_ts is not None:
-                        sum_tstep_ls.append(selected_ts)
-
-                if len(sum_tstep_ls) == 0:
-                    pass
+                steps = []
+                for da in DataArray_ls:
+                    t = da[time_name].values
+                    if t.size > 1:
+                        # np.diff keeps dtype (datetime64[...]); take minimal positive
+                        d = np.diff(t)
+                        # filter out non-positive diffs just in case of duplicates
+                        d = d[d > np.timedelta64(0, 'ns')]
+                        if d.size:
+                            steps.append(d.min())
+                if steps:
+                    freq_time = np.min(steps)
+                    print("freq_time set from DataArray_ls")
                 else:
-                    if len(sum_tstep_ls) > 1:
-                        sum_tstep = sum_tstep_ls[0].fillna(0)
-                        mask = ~sum_tstep_ls[0].isnull()
+                    # fallback: non-regular union of all timestamps
+                    target_time = np.unique(
+                        np.concatenate([da[time_name].values for da in DataArray_ls])
+                    )
+                    print("freq_time could not be inferred; using union of timestamps")
 
-                        for da in sum_tstep_ls[1:]:
-                            da_filled = da.fillna(0)
-                            sum_tstep += da_filled
-                        # Preserve landmask at different depth
-                        sum_tstep = sum_tstep.where(mask)
-                    elif len(sum_tstep_ls) == 1:
-                        sum_tstep = sum_tstep_ls[0]
+            if target_time is None:
+                #  inclusive of final timestamp adding a timestep at the end
+                target_time = np.arange(start_date, end_date + freq_time, freq_time)
 
-                    # sum_tstep.__setitem__(time_name, time_step)
-                    sum_tstep = sum_tstep.expand_dims(dim={time_name: [time_step]})
-                    Final_ts_sum_ls.append(sum_tstep)
-                    del sum_tstep
-            sum_time = (time_end - time_start_0)
+            ### Print start_date, end_date, and freq_time
+            try:
+                print(f"start_date: {np.datetime_as_string(start_date)}")
+                print(f"end_date:   {np.datetime_as_string(end_date)}")
+            except Exception:
+                pass
+            if freq_time is not None:
+                ns = np.timedelta64(freq_time, 'ns').astype('timedelta64[ns]').astype('int64')
+                if ns >= 3_600_000_000_000:
+                    print(f"freq_time:  {ns/3.6e12:.0f} hours")
+                else:
+                    print(f"freq_time:  {ns/6e10:.0f} min")
+
+            ### Reindex DataArrays using target_time
+            print("Reindex and align DataArrays using target_time")
+            reindexed = [self._reindex_da(DataArray = da,
+                          time_name = time_name,
+                          target_time = target_time,
+                          nearest_tol = nearest_tol,
+                          align_mode = align_mode) for da in DataArray_ls]
+
+            # Align reindexed DataArrays for sum
+            aligned = xr.align(*reindexed, join="exact", copy=False)
+
+            print("Run sum of DataArray_ls")
+            Final_sum = aligned[0].fillna(0)
+            for da in aligned[1:]:
+                Final_sum = Final_sum + da.fillna(0)
+
+        if Final_sum is not None:
+            ### Select mask to conserve landmask at different depths
+            masks = [~da.isnull() for da in aligned]
+            if mask_mode == "input0":
+                mask = masks[0]
+            elif mask_mode == "union":
+                mask = xr.concat(masks, dim="part").any(dim="part")
+            elif mask_mode == "intersection":
+                mask = xr.concat(masks, dim="part").all(dim="part")
+            else:
+                raise ValueError(f"mask_mode: {mask_mode} must be 'input0' | 'union' | 'intersection'")
+
+            ### Preserve landmask at different depth
+            print("Mask Final_sum")
+            Final_sum = Final_sum.where(mask)
+
+            ### Add common_attrs to Final_sum and add "sim_description" if not present
+            Final_sum.attrs.update(common_attrs)
+            if ("sim_description" not in Final_sum.attrs) and (sim_description is not None):
+                Final_sum.attrs["sim_description"] = str(sim_description)
+            time_end = datetime.now()
+            sum_time = (time_end - time_start)
             print(f"Sum_time (h:min:s): {sum_time}")
-            print("Concatenating Final_ts_sum_ls")
-            Concat_time_start = datetime.now()
-            Final_sum = xr.concat(Final_ts_sum_ls, dim = time_name)
-            Concat_time_end = datetime.now()
-            print(f"Concat_time (h:min:s): {Concat_time_end - Concat_time_start}")
+            return Final_sum
+        else:
+            raise ValueError("Final_sum is None")
 
-        Final_sum.attrs.update(common_attrs)
-        if not hasattr(Final_sum, 'sim_description') and sim_description is not None:
-            Final_sum.attrs['sim_description'] = str(sim_description)
-
-        return Final_sum
 
 
     def vertical_depth_mean(self,
