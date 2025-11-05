@@ -3092,7 +3092,7 @@ class ChemicalDrift(OceanDrift):
             if time_end is not None:
                 tmask &= np.array(all_times) <= time_end
             if not tmask.any():
-                logger.warning("No timesteps fall within [time_start, time_end].")
+                logger.warning(f"No timesteps fall within time_start: {time_start} and time_end: {time_end}.")
                 return
             # Save for later use when writing 'time' coords and averaging
             filtered_times = np.array(all_times)[tmask]
@@ -7047,7 +7047,7 @@ class ChemicalDrift(OceanDrift):
 
 
             # Mass of all elements present in simulation during each timestep
-            
+
             timestep_attributes = ['mass', 'mass_degraded','mass_degraded_water', 'mass_degraded_sediment',
                     'mass_volatilized', 'mass_photodegraded', 'mass_biodegraded',
                     'mass_biodegraded_water', 'mass_biodegraded_sediment',
@@ -7819,6 +7819,170 @@ class ChemicalDrift(OceanDrift):
                 kwargs["tolerance"] = nearest_tol
             return DataArray.reindex({time_name: target_time}, method="nearest", **kwargs)
 
+
+    # def snap_to_grid(self,
+    #                  vec, dim_res, anchor=None, decimals=None, return_index=False):
+    #     """
+    #     Snap values in `vec` to the nearest grid with spacing `res`.
+
+    #     vec       : array-like of floats
+    #     res       : grid resolution (e.g., 0.005)
+    #     anchor    : reference origin for the grid. If None, use the first value rounded to grid.
+    #     decimals  : final rounding for pretty output (e.g., 5). If None, infer from res.
+    #     return_index : if True, also return integer grid indices (k) such that snapped = anchor + k*res
+    #     """
+    #     v = np.asarray(vec, dtype=np.float64)
+
+    #     if anchor is None:
+    #         # Anchor at the first sample rounded to the grid
+    #         k0 = np.rint(v[0] / dim_res)
+    #         anchor = k0 * dim_res
+
+    #     k = np.rint((v - anchor) / dim_res)           # nearest integer grid index
+    #     snapped = anchor + k * dim_res
+
+    #     # optional pretty rounding to avoid 44.60249999998 style artifacts
+    #     if decimals is None:
+    #         # infer from res like 0.005 -> 3 decimals
+    #         # handle powers of ten: 1e-3, 5e-3 etc.
+    #         decimals = max(0, int(np.ceil(-np.log10(dim_res))) if dim_res < 1 else 0)
+    #     snapped = np.round(snapped, decimals=decimals)
+
+    #     return (snapped, k.astype(np.int64)) if return_index else snapped
+
+    def infer_decimals_from_res(res: float) -> int:
+        if res >= 1:
+            return 0
+        # e.g. 0.005 -> 3, 0.0005 -> 4
+        return max(0, int(np.ceil(-np.log10(res))))
+
+    def round_to_grid(self,
+            value: float, res: float, decimals=None, anchor=0.0) -> float:
+        """Round a single value to the nearest grid point defined by anchor + k*res."""
+        k = np.rint((value - anchor) / res)
+        v = anchor + k * res
+        if decimals is None:
+            decimals = self.infer_decimals_from_res(res)
+        return np.round(v, decimals=decimals)
+
+    def snap_series_to_grid(self,
+            vec, res, anchor=None, decimals=None, return_index=False):
+        """
+        Snap a whole 1D series to a perfectly regular grid:
+          canonical[i] = anchor + i*res  (or decreasing if input is descending)
+
+        - anchor: if None, chosen to best fit the series in least-squares sense,
+                  then snapped to the grid (prevents drift/dup bins).
+        - return_index: also return integer indices i such that canonical = anchor + i*res
+        """
+        v = np.asarray(vec, dtype=np.float64).copy()
+        n = v.size
+        if n == 0:
+            return (v, np.empty(0, dtype=np.int64)) if return_index else v
+
+        # Ascending or descending?
+        asc = v[-1] >= v[0]
+        i = np.arange(n, dtype=np.float64)
+        if not asc:
+            # keep i non-negative, but map decreasing order
+            i = -i
+
+        # If anchor not provided, pick the LS best-fit anchor for slope=res
+        # We want anchor that minimizes sum |(anchor + res*i) - v|^2
+        # Closed form: anchor_ls = mean(v - res*i)
+        anchor_ls = (v - res * i).mean()
+        # Snap the anchor to the grid so it itself lies on anchor + k*res
+        if anchor is None:
+            anchor = self.round_to_grid(anchor_ls, res, decimals=None, anchor=0.0)
+
+        # Build perfectly regular series
+        canonical = anchor + i * res
+
+        if decimals is None:
+            decimals = self.infer_decimals_from_res(res)
+        canonical = np.round(canonical, decimals=decimals)
+
+        if return_index:
+            # integer indices relative to chosen anchor
+            k = (i if asc else -i).astype(np.int64)  # monotonic non-negative if you need that form
+            return canonical, k
+        return canonical
+
+
+    def _check_and_snap_nontime_dims(self,
+                                  DataArray_ls, nontime_dims, dim_res_dict, coord_tolerance=None,
+                                  snap_mode="median"):  # "median" | "ref"
+        """
+        If coord_tolerance is None -> strict equality (np.array_equal).
+        If coord_tolerance is float -> allow per-index |diff| <= tolerance across arrays,
+        then snap all arrays' coords on each dim to a canonical vector.
+        """
+        print("wwed")
+
+        for dim in sorted(nontime_dims):
+            print(dim)
+            ref = np.asarray(DataArray_ls[0][dim].values)
+
+            # 1) length must match
+            for idx, da in enumerate(DataArray_ls[1:], start=1):
+                if dim not in da.dims:
+                    raise ValueError(f'Missing dimension "{dim}" in array {idx}')
+                if da.sizes[dim] != ref.size:
+                    raise ValueError(f'Dimension "{dim}" length differs: {da.sizes[dim]} vs {ref.size}')
+
+            if coord_tolerance is None:
+                # strict
+                for idx, da in enumerate(DataArray_ls[1:], start=1):
+                    if not np.array_equal(np.asarray(da[dim].values), ref):
+                        raise ValueError(f'Dimension "{dim}" values differ between arrays')
+                continue  # nothing more to do
+
+            # 2) tolerant compare: max abs diff to reference per index
+            identical_coord = []
+            ok = True
+            for idx, da in enumerate(DataArray_ls[1:], start=1):
+                vals = np.asarray(da[dim].values)
+                diff = np.abs(vals - ref)
+                identical_coord.append(diff==0)
+                if np.nanmax(diff) > coord_tolerance:
+                    ok = False
+                    break
+            if not ok:
+                raise ValueError(
+                    f'Dimension "{dim}" values differ by more than tolerance ({coord_tolerance}).'
+                )
+
+            if np.all(np.array(identical_coord)):
+                print("SSS")
+                continue # dim is identical across all DataArray_ls
+
+            # 3) build canonical coord vector
+            dim_res = dim_res_dict[dim]
+            if dim_res is None:
+                raise ValueError(f'dim_res for dimension "{dim}" not specified.')
+
+            if snap_mode == "ref":
+                canonical = ref.astype(np.float64)
+            else:  # "median" across arrays at each index
+                stack = np.stack([np.asarray(da[dim].values, dtype=np.float64) for da in DataArray_ls], axis=0)
+                canonical = np.nanmedian(stack, axis=0)
+
+            # Snap to regular grid (makes “more rounded” coords like 44.6025, 44.6075, …)
+            canonical = self.snap_series_to_grid(
+                            vec=canonical,
+                            res=dim_res,
+                            anchor=None,          # or 0.0 if you want a global 0-based grid
+                            decimals=None,
+                            return_index=False,
+                        )
+
+
+            # 4) assign canonical to all arrays
+            for i, da in enumerate(DataArray_ls):
+                DataArray_ls[i] = da.assign_coords({dim: canonical})
+
+        return DataArray_ls
+
     def sum_DataArray_list(self,
                            DataArray_ls,
                            start_date = None,
@@ -7828,8 +7992,10 @@ class ChemicalDrift(OceanDrift):
                            sim_description = None,
                            align_mode ="pad",
                            nearest_tol = None,
-                           mask_mode = "input0"
-                           ):
+                           mask_mode = "input0",
+                           coord_tolerance=None,
+                           snap_mode="median",
+                           dim_res_dict=None):
         '''
         Sum a list of xarray DataArrays, with the same or different time step
         If start_date, end_date, or freq_time are specified time dimention is reconstructed
@@ -7887,13 +8053,26 @@ class ChemicalDrift(OceanDrift):
         if time_name in nontime_dims:
             nontime_dims.remove(time_name)
 
-        for dim in sorted(nontime_dims):
-            ref = DataArray_ls[0][dim].values
-            for idx, da in enumerate(DataArray_ls[1:], start=1):
-                if dim not in da.dims:
-                    raise ValueError(f'Missing dimension "{dim}" in array {idx}')
-                if not np.array_equal(da[dim].values, ref):
-                    raise ValueError(f'Dimension "{dim}" values differ between arrays')
+        # for dim in sorted(nontime_dims):
+        #     ref = DataArray_ls[0][dim].values
+        #     for idx, da in enumerate(DataArray_ls[1:], start=1):
+        #         if dim not in da.dims:
+        #             raise ValueError(f'Missing dimension "{dim}" in array {idx}')
+        #         if not np.array_equal(da[dim].values, ref):
+        #             raise ValueError(f'Dimension "{dim}" values differ between arrays')
+
+        DataArray_ls = self._check_and_snap_nontime_dims(
+            DataArray_ls = DataArray_ls,
+            nontime_dims = nontime_dims,
+            coord_tolerance=coord_tolerance,
+            snap_mode=snap_mode,
+            dim_res_dict=dim_res_dict)
+
+
+        #     DataArray_ls, nontime_dims,
+        #     coord_tolerance=1e-5,   # <- pick your tolerance (e.g., 1e-6 deg ~ 0.11 m)
+        #     snap_policy="median"    # or "ref" to snap everyone to the first array's coords
+        # )
 
         ### Find common attributes to be added in Final_sum
         common_attrs = DataArray_ls[0].attrs.copy()
