@@ -7793,7 +7793,7 @@ class ChemicalDrift(OceanDrift):
     @staticmethod
     def _reindex_da(DataArray,
                   time_name, target_time,
-                  nearest_tol = None,
+                  nearest_tol_time= None,
                   align_mode = "pad"):
         """
         Reindex xr.DataArray along "time_name" dimention using "target_time" array
@@ -7801,7 +7801,7 @@ class ChemicalDrift(OceanDrift):
         DataArray:        xarray DataArray
         time_name:        string, name of time dimention of all DataArray present in DataArray_ls
         target_time:     np.array of np.datetime64[ns]
-        nearest_tol:      np.timedelta64, max distance for "nearest" (e.g., np.timedelta64(3,'h'))
+        nearest_tol_time:      np.timedelta64, max distance for "nearest" (e.g., np.timedelta64(3,'h'))
         align_mode:       string, mode of selecting timestamp in reconstructed sum ("pad"|"nearest"|"exact")
 
         """
@@ -7815,120 +7815,197 @@ class ChemicalDrift(OceanDrift):
             return DataArray.reindex({time_name: target_time}, method="pad")
         else:  # "nearest"
             kwargs = {}
-            if nearest_tol is not None:
-                kwargs["tolerance"] = nearest_tol
+            if nearest_tol_time is not None:
+                kwargs["tolerance"] = nearest_tol_time
             return DataArray.reindex({time_name: target_time}, method="nearest", **kwargs)
 
-
-    # def snap_to_grid(self,
-    #                  vec, dim_res, anchor=None, decimals=None, return_index=False):
-    #     """
-    #     Snap values in `vec` to the nearest grid with spacing `res`.
-
-    #     vec       : array-like of floats
-    #     res       : grid resolution (e.g., 0.005)
-    #     anchor    : reference origin for the grid. If None, use the first value rounded to grid.
-    #     decimals  : final rounding for pretty output (e.g., 5). If None, infer from res.
-    #     return_index : if True, also return integer grid indices (k) such that snapped = anchor + k*res
-    #     """
-    #     v = np.asarray(vec, dtype=np.float64)
-
-    #     if anchor is None:
-    #         # Anchor at the first sample rounded to the grid
-    #         k0 = np.rint(v[0] / dim_res)
-    #         anchor = k0 * dim_res
-
-    #     k = np.rint((v - anchor) / dim_res)           # nearest integer grid index
-    #     snapped = anchor + k * dim_res
-
-    #     # optional pretty rounding to avoid 44.60249999998 style artifacts
-    #     if decimals is None:
-    #         # infer from res like 0.005 -> 3 decimals
-    #         # handle powers of ten: 1e-3, 5e-3 etc.
-    #         decimals = max(0, int(np.ceil(-np.log10(dim_res))) if dim_res < 1 else 0)
-    #     snapped = np.round(snapped, decimals=decimals)
-
-    #     return (snapped, k.astype(np.int64)) if return_index else snapped
-
-    def infer_decimals_from_res(res: float) -> int:
-        if res >= 1:
-            return 0
-        # e.g. 0.005 -> 3, 0.0005 -> 4
-        return max(0, int(np.ceil(-np.log10(res))))
-
-    def round_to_grid(self,
-            value: float, res: float, decimals=None, anchor=0.0) -> float:
-        """Round a single value to the nearest grid point defined by anchor + k*res."""
-        k = np.rint((value - anchor) / res)
-        v = anchor + k * res
-        if decimals is None:
-            decimals = self.infer_decimals_from_res(res)
-        return np.round(v, decimals=decimals)
-
-    def snap_series_to_grid(self,
-            vec, res, anchor=None, decimals=None, return_index=False):
+    @staticmethod
+    def _infer_decimals_from_res(res,
+                              extra = 1):
         """
-        Snap a whole 1D series to a perfectly regular grid:
-          canonical[i] = anchor + i*res  (or decreasing if input is descending)
-
-        - anchor: if None, chosen to best fit the series in least-squares sense,
-                  then snapped to the grid (prevents drift/dup bins).
-        - return_index: also return integer indices i such that canonical = anchor + i*res
+        Infer decimals from the resolution: number of visible decimal places in |res| + `extra`.
+        Examples: 0.005 -> 4, 0.001 -> 4, 0.2 -> 2, 0.25 -> 3
         """
-        v = np.asarray(vec, dtype=np.float64).copy()
-        n = v.size
-        if n == 0:
-            return (v, np.empty(0, dtype=np.int64)) if return_index else v
+        r = abs(float(res))
+        s = f"{r:.12f}".rstrip("0").rstrip(".")
+        d = len(s.split(".")[1]) if "." in s else 0
+        return max(0, d + extra)
 
-        # Ascending or descending?
-        asc = v[-1] >= v[0]
-        i = np.arange(n, dtype=np.float64)
-        if not asc:
-            # keep i non-negative, but map decreasing order
-            i = -i
+    def build_regular_series(self, *,
+                          first_value,
+                          res,
+                          length,
+                          direction,  # "asc" | "desc" | None -> use sign of res
+                          decimals) -> np.ndarray:
+        """
+        Round the first_value to the desired decimals (derived from |res| if None),
+        then create: first_rounded + step * i  for i = 0..length-1,
+        where step = +|res| for ascending, -|res| for descending.
+        """
+        if length < 0:
+            raise ValueError("length must be >= 0")
+        if res == 0:
+            raise ValueError("res must be non-zero")
 
-        # If anchor not provided, pick the LS best-fit anchor for slope=res
-        # We want anchor that minimizes sum |(anchor + res*i) - v|^2
-        # Closed form: anchor_ls = mean(v - res*i)
-        anchor_ls = (v - res * i).mean()
-        # Snap the anchor to the grid so it itself lies on anchor + k*res
-        if anchor is None:
-            anchor = self.round_to_grid(anchor_ls, res, decimals=None, anchor=0.0)
+        # decide direction / step
+        base = abs(float(res))
+        if direction is None:
+            step = base if res > 0 else -base
+        elif direction.lower() == "asc":
+            step = base
+        elif direction.lower() == "desc":
+            step = -base
+        else:
+            raise ValueError("direction must be 'asc', 'desc', or None")
 
-        # Build perfectly regular series
-        canonical = anchor + i * res
-
+        # decimals for rounding
         if decimals is None:
-            decimals = self.infer_decimals_from_res(res)
-        canonical = np.round(canonical, decimals=decimals)
+            decimals = self._infer_decimals_from_res(base, extra=1)
 
-        if return_index:
-            # integer indices relative to chosen anchor
-            k = (i if asc else -i).astype(np.int64)  # monotonic non-negative if you need that form
-            return canonical, k
-        return canonical
+        first_rounded = round(float(first_value), decimals)
+        idx = np.arange(length, dtype=np.float64)
+        series = first_rounded + idx * step
+        return np.round(series, decimals=decimals)
+
+    def _canonical_nontime_dims(self, DataArray_ls, nontime_dims,
+                            dim_res_dict=None, coord_tolerance_dict=None,
+                            snap_mode=None):  # "ref" recommended
+        """
+        Return canonical 1-D coord arrays for each dim in nontime_dims.
+        Does *not* relabel inputs; it only computes the canonical vectors.
+        """
+        import numpy as np
+
+        def _is_regular(vec, tol):
+            v = np.asarray(vec, dtype=np.float64)
+            if v.size < 2:
+                return True, 0.0
+            diffs = np.diff(v)
+            step = np.median(np.abs(diffs))
+            err  = np.max(np.abs(diffs - np.sign(diffs.mean() if diffs.size else 1.0)*step))
+            return (err <= (tol if tol is not None else 1e-12)), step
+
+        def _min_decimals(x, max_dec=12):
+            x = float(abs(x));
+            for d in range(max_dec+1):
+                if np.isclose(x*(10**d), round(x*(10**d)), atol=1e-12):
+                    return d
+            return max_dec
+
+        canonical = {}
+        need_interpolation = {}
+
+        for dim in sorted(nontime_dims):
+            ref = np.asarray(DataArray_ls[0][dim].values)
+            # length check
+            for idx, da in enumerate(DataArray_ls[1:], start=1):
+                if dim not in da.dims:
+                    raise ValueError(f'Missing dimension "{dim}" in array {idx}')
+                if da.sizes[dim] != ref.size:
+                    raise ValueError(f'Dimension "{dim}" length differs: {da.sizes[dim]} vs {ref.size} for array {idx}')
+
+            tol = (coord_tolerance_dict or {}).get(dim) if coord_tolerance_dict is not None else None
+
+            # tolerance check
+            identical_coord = []
+            if tol is not None:
+                ok = True
+                for da in DataArray_ls[1:]:
+                    vals = np.asarray(da[dim].values)
+                    diff = np.abs(vals - ref)
+                    identical_coord.append(diff==0)
+                    if np.nanmax(diff) > tol:
+                        ok = False; break
+                if not ok:
+                    raise ValueError(f'Dimension "{dim}" values differ by > tolerance ({tol}).')
+            else:
+                # strict
+                for idx, da in enumerate(DataArray_ls[1:], start=1):
+                    equal = np.array_equal(np.asarray(da[dim].values), ref)
+                    if not equal:
+                        raise ValueError(f'Dimension "{dim}" values differ between arrays')
+                    else:
+                        identical_coord.append(equal)
+
+            if np.all(np.array(identical_coord)):
+                # dim is identical across all DataArray_ls
+                print(f"Identical dim {dim} among DataArray_ls was selected")
+                canonical[dim] = ref
+                need_interpolation[dim] = False
+                continue
+            else:
+                need_interpolation[dim] = True
+
+            # resolution
+            dim_res = (dim_res_dict or {}).get(dim) if dim_res_dict is not None else None
+            if dim_res is None:
+                regular, dim_res = _is_regular(ref, tol)
+                dim_res = float(np.round(dim_res, _min_decimals(dim_res)))
+                print(f"dim_res: {dim_res} inferred for dim: {dim}")
+                if not regular:
+                    raise ValueError(f'dim_res for "{dim}" not specified or inferred.')
+
+            # build canonical
+            if snap_mode == "ref":
+                can = ref.astype(np.float64)
+            else:  # "median"
+                stack = np.stack([np.asarray(da[dim].values, dtype=np.float64) for da in DataArray_ls], axis=0)
+                can0 = np.nanmedian(stack, axis=0)
+                inc  = (can0[-1] >= can0[0])
+                first = can0[0]
+                step  = abs(dim_res)
+                series = first + (np.arange(can0.size) * (step if inc else -step))
+                can = np.round(series, decimals=_min_decimals(step))
+                print(f"Rounded dim '{dim}' within tolerance ({tol}): {can0[0]} -> {can[0]}")
+
+            # normalize longitude system to match first array’s convention if present
+            if dim.lower() in ("lon","longitude"):
+                lon = can
+                if lon.min() < -10 and lon.max() <= 180:
+                    # already [-180,180]; leave
+                    pass
+                elif lon.min() >= 0 and lon.max() > 180:
+                    # [0,360]; leave
+                    pass
+                else:
+                    # snap to either system based on first array
+                    first_lon = np.asarray(DataArray_ls[0][dim].values)
+                    if first_lon.min() >= 0:
+                        lon = lon % 360.0
+                    else:
+                        lon = ((lon + 180.0) % 360.0) - 180.0
+                can = lon
+
+            canonical[dim] = can
+
+        return canonical, need_interpolation
 
 
     def _check_and_snap_nontime_dims(self,
-                                  DataArray_ls, nontime_dims, dim_res_dict, coord_tolerance=None,
+                                  DataArray_ls,
+                                  nontime_dims,
+                                  dim_res_dict,
+                                  coord_tolerance_dict={},
                                   snap_mode="median"):  # "median" | "ref"
         """
         If coord_tolerance is None -> strict equality (np.array_equal).
         If coord_tolerance is float -> allow per-index |diff| <= tolerance across arrays,
         then snap all arrays' coords on each dim to a canonical vector.
         """
-        print("wwed")
-
+        canonical_dims_dict = {}
         for dim in sorted(nontime_dims):
-            print(dim)
             ref = np.asarray(DataArray_ls[0][dim].values)
 
-            # 1) length must match
+            ### length must match
             for idx, da in enumerate(DataArray_ls[1:], start=1):
                 if dim not in da.dims:
                     raise ValueError(f'Missing dimension "{dim}" in array {idx}')
                 if da.sizes[dim] != ref.size:
                     raise ValueError(f'Dimension "{dim}" length differs: {da.sizes[dim]} vs {ref.size}')
+            if coord_tolerance_dict is not None:
+                coord_tolerance = coord_tolerance_dict.get(dim)
+            else:
+                coord_tolerance = None
 
             if coord_tolerance is None:
                 # strict
@@ -7937,7 +8014,7 @@ class ChemicalDrift(OceanDrift):
                         raise ValueError(f'Dimension "{dim}" values differ between arrays')
                 continue  # nothing more to do
 
-            # 2) tolerant compare: max abs diff to reference per index
+            ### tolerant compare: max abs diff to reference per index
             identical_coord = []
             ok = True
             for idx, da in enumerate(DataArray_ls[1:], start=1):
@@ -7948,54 +8025,144 @@ class ChemicalDrift(OceanDrift):
                     ok = False
                     break
             if not ok:
-                raise ValueError(
-                    f'Dimension "{dim}" values differ by more than tolerance ({coord_tolerance}).'
-                )
+                raise ValueError(f'Dimension "{dim}" values differ by more than tolerance ({coord_tolerance}).')
 
             if np.all(np.array(identical_coord)):
-                print("SSS")
-                continue # dim is identical across all DataArray_ls
+                # dim is identical across all DataArray_ls
+                canonical_dims_dict[dim] = ref
+                continue
 
-            # 3) build canonical coord vector
-            dim_res = dim_res_dict[dim]
+            ### build canonical coord vector
+            def is_regular(vec, tol=1e-5):
+                """
+                Check if a 1D series has (approximately) constant step.
+                Returns (regular: bool, step: float)
+                """
+                v = np.asarray(vec, dtype=np.float64)
+                if v.size < 2:
+                    return True, 0.0, 0.0, True
+                diffs = np.diff(v)
+                asc = v[-1] >= v[0]
+                step = np.median(np.abs(diffs))
+                step_signed = step if asc else -step
+                err = np.max(np.abs(diffs - step_signed))
+
+                return (err <= tol), step
+
+            def _min_decimals(x, max_dec=12):
+                x = float(abs(x))
+                for d in range(max_dec + 1):
+                    if np.isclose(x * (10**d), round(x * (10**d)), atol=1e-12):
+                        return d
+                return max_dec
+
+            if dim_res_dict is not None:
+                dim_res = dim_res_dict.get(dim)
+            else:
+                dim_res = None
+
             if dim_res is None:
-                raise ValueError(f'dim_res for dimension "{dim}" not specified.')
+                # infer dim_res from data if not specified
+                regular_dim, dim_res  =  is_regular(vec = ref,
+                           tol=coord_tolerance)
+
+                dim_res = np.round(dim_res, _min_decimals(dim_res))
+                print(f"dim_res: {dim_res} inferred for dim: {dim}")
+                if not regular_dim:
+                    raise ValueError(f'dim_res for dimension "{dim}" not specified or inferred.')
+
+            # check if dim has regular resolution
+            regular_dim, _ = is_regular(vec = ref,
+                       tol=coord_tolerance)
+            if not regular_dim:
+                raise ValueError(f'dim_res for dimension "{dim}" is not constant.')
 
             if snap_mode == "ref":
                 canonical = ref.astype(np.float64)
-            else:  # "median" across arrays at each index
+            else:
+                # "median" across arrays at each index
                 stack = np.stack([np.asarray(da[dim].values, dtype=np.float64) for da in DataArray_ls], axis=0)
                 canonical = np.nanmedian(stack, axis=0)
+                ref0=canonical[0]
 
-            # Snap to regular grid (makes “more rounded” coords like 44.6025, 44.6075, …)
-            canonical = self.snap_series_to_grid(
-                            vec=canonical,
-                            res=dim_res,
-                            anchor=None,          # or 0.0 if you want a global 0-based grid
-                            decimals=None,
-                            return_index=False,
-                        )
+                if canonical[-1] - canonical[0] > 0:
+                    direction = "asc"
+                else:
+                    direction = "desc"
 
+                canonical = self.build_regular_series(first_value = canonical[0],
+                                                       res=dim_res,
+                                                       length=len(canonical),
+                                                       direction = direction,
+                                                       decimals = None)
+                print(f"Rounded dim '{dim}' within tolerance ({coord_tolerance}): {ref0} -> {canonical[0]}")
 
-            # 4) assign canonical to all arrays
-            for i, da in enumerate(DataArray_ls):
-                DataArray_ls[i] = da.assign_coords({dim: canonical})
+                canonical_dims_dict[dim] = canonical
 
-        return DataArray_ls
+        return canonical_dims_dict
+
+    def _ensure_ascending(self, da, dim):
+        v = np.asarray(da[dim].values)
+        if v.size >= 2 and v[-1] < v[0]:
+            return da.isel({dim: slice(None, None, -1)})
+        return da
+
+    def _normalize_longitude(self, da, target_lon):
+        if "longitude" not in da.coords:
+            return da
+        lon = np.asarray(da["longitude"].values)
+        tgt = np.asarray(target_lon)
+        # put both into same 0..360 or -180..180 system
+        if lon.min() < 0 and tgt.min() >= 0:
+            da = da.assign_coords(longitude=(lon % 360))
+        elif lon.min() >= 0 and tgt.min() < 0:
+            # convert target instead (handled by caller typically),
+            # but if you prefer to convert source:
+            da = da.assign_coords(longitude=((lon + 180) % 360) - 180)
+        return da.sortby("longitude")
+
+    def _interp_spatial_to(self, da, target_lat, target_lon, target_depth,
+                       method_xy="linear", method_z="linear"):
+        """
+        Interpolate da onto (latitude, longitude, depth) = (target_lat, target_lon, target_depth).
+        Time (and any other dims) are carried along without interpolation.
+        """
+        # 1) ensure monotonic increasing for interp
+        for dim in ["latitude", "longitude", "depth"]:
+            if dim in da.dims:
+                da = self._ensure_ascending(da, dim)
+
+        # 2) periodic longitude handling
+        da = self._normalize_longitude(da, target_lon)
+
+        # 3) horizontal interp first (handles both 1D or 2D coords with xarray's label-based interp on dims)
+        kw = {"fill_value": np.nan}
+        if "latitude" in da.dims and "longitude" in da.dims:
+            da = da.interp(latitude=target_lat, longitude=target_lon,
+                           method=method_xy, kwargs=kw)
+
+        # 4) vertical interp with edge-safe fallback (nearest for the edges)
+        if "depth" in da.dims:
+            lin = da.interp(depth=target_depth, method=method_z, kwargs={"fill_value": np.nan})
+            near = da.interp(depth=target_depth, method="nearest")
+            da = lin.combine_first(near)  # fill linear edge NaNs with nearest
+
+        return da
 
     def sum_DataArray_list(self,
-                           DataArray_ls,
-                           start_date = None,
-                           end_date = None,
-                           freq_time = None,
-                           time_name = "time",
-                           sim_description = None,
-                           align_mode ="pad",
-                           nearest_tol = None,
-                           mask_mode = "input0",
-                           coord_tolerance=None,
-                           snap_mode="median",
-                           dim_res_dict=None):
+                         DataArray_ls,
+                         start_date = None,
+                         end_date = None,
+                         freq_time = None,
+                         time_name = "time",
+                         align_mode ="pad",
+                         nearest_tol_time = None,
+                         dim_res_dict = None,
+                         coord_tolerance_dict = {},
+                         snap_mode ="median",
+                         mask_mode = "input0",
+                         sim_description = None,
+                         topography_da=None):
         '''
         Sum a list of xarray DataArrays, with the same or different time step
         If start_date, end_date, or freq_time are specified time dimention is reconstructed
@@ -8003,12 +8170,13 @@ class ChemicalDrift(OceanDrift):
         DataArray_ls:        list of xarray DataArray
         start_date:          np.datetime64, start of reconstructed time dimention
         end_date:            np.datetime64, start of reconstructed time dimention
-        time_step:           np.timedelta64, frequency of reconstructed time dimention
+        freq_time:           np.timedelta64, frequency of reconstructed time dimention
         time_name:           string, name of time dimention of all DataArray present in DataArray_ls
-        sim_description:     string, descrition of simulation to be included in netcdf attributes
         align_mode:          string, mode of selecting timestamp in reconstructed sum ("pad"|"nearest"|"exact")
-        nearest_tol:         np.timedelta64, max distance for "nearest" (e.g., np.timedelta64(3,'h'))
-        mask_mode:         string, mode of masking finla sum ("input0"|"union"|"intersection")
+        nearest_tol_time:    np.timedelta64, max distance for "nearest" (e.g., np.timedelta64(3,'h'))
+        dim_res_dict:        dict {"dim" : float32} resolution of each dimention. Will be inferred if None or {}
+        mask_mode:           string, mode of masking finla sum ("input0"|"union"|"intersection")
+        sim_description:     string, descrition of simulation to be included in netcdf attributes
         '''
         import xarray as xr
         from datetime import datetime
@@ -8036,7 +8204,6 @@ class ChemicalDrift(OceanDrift):
             raise ValueError("Uncommon dimensions are present in DataArray_ls")
 
         ### Check that all DataArrays have the same variable name
-
         names = [da.name for da in DataArray_ls]  # may contain None
         if any(n is None for n in names):
             raise ValueError(f"All DataArrays must have a name. Got: {names}")
@@ -8053,32 +8220,663 @@ class ChemicalDrift(OceanDrift):
         if time_name in nontime_dims:
             nontime_dims.remove(time_name)
 
-        # for dim in sorted(nontime_dims):
-        #     ref = DataArray_ls[0][dim].values
-        #     for idx, da in enumerate(DataArray_ls[1:], start=1):
-        #         if dim not in da.dims:
-        #             raise ValueError(f'Missing dimension "{dim}" in array {idx}')
-        #         if not np.array_equal(da[dim].values, ref):
-        #             raise ValueError(f'Dimension "{dim}" values differ between arrays')
 
-        DataArray_ls = self._check_and_snap_nontime_dims(
+        sum_inputs1 = float(sum(da.fillna(0).sum().item() for da in DataArray_ls))
+
+        ### check equality of dimension within tolerance
+        # DataArray_ls = self._check_and_snap_nontime_dims(
+        #     DataArray_ls = DataArray_ls,
+        #     nontime_dims = nontime_dims,
+        #     coord_tolerance_dict=coord_tolerance_dict,
+        #     snap_mode=snap_mode,
+        #     dim_res_dict=dim_res_dict)
+
+        # canonical_dims_dict = self._check_and_snap_nontime_dims(
+        #     DataArray_ls = DataArray_ls,
+        #     nontime_dims = nontime_dims,
+        #     coord_tolerance_dict=coord_tolerance_dict,
+        #     snap_mode=snap_mode,
+        #     dim_res_dict=dim_res_dict)
+
+
+        canonical_dims_dict, need_interpolation = self._canonical_nontime_dims(
             DataArray_ls = DataArray_ls,
             nontime_dims = nontime_dims,
-            coord_tolerance=coord_tolerance,
+            coord_tolerance_dict=coord_tolerance_dict,
             snap_mode=snap_mode,
             dim_res_dict=dim_res_dict)
 
+        if any(need_interpolation.values()):
+            if "latitude" in canonical_dims_dict.keys():
+                lat_can = canonical_dims_dict["latitude"]
+            elif "lat" in canonical_dims_dict.keys():
+                lat_can = canonical_dims_dict["lat"]
+            else:
+                raise ValueError("No latitude/lat dimention present")
 
-        #     DataArray_ls, nontime_dims,
-        #     coord_tolerance=1e-5,   # <- pick your tolerance (e.g., 1e-6 deg ~ 0.11 m)
-        #     snap_policy="median"    # or "ref" to snap everyone to the first array's coords
-        # )
+            if "longitude" in canonical_dims_dict.keys():
+                lon_can = canonical_dims_dict["longitude"]
+            elif "lon" in canonical_dims_dict.keys():
+                lon_can = canonical_dims_dict["lon"]
+            elif "long" in canonical_dims_dict.keys():
+                lon_can = canonical_dims_dict["long"]
+            else:
+                raise ValueError("No longitude/lon/long dimention present")
 
+            depth_top_can = canonical_dims_dict["depth"]
+
+
+
+            import xesmf as xe
+            import numpy as np
+            import hashlib
+            import os
+
+            def _centers_to_edges_1d(c):
+                c = np.asarray(c, dtype=np.float64)
+                if c.size < 2:
+                    # fallback tiny cell
+                    half = 0.5 * (c[0] if c[0] != 0 else 1.0)
+                    return np.array([c[0]-half, c[0]+half], dtype=np.float64)
+                mid = 0.5*(c[:-1] + c[1:])
+                first = c[0]  - (mid[0] - c[0])
+                last  = c[-1] + (c[-1] - mid[-1])
+                return np.concatenate([[first], mid, [last]])
+
+            def _make_rect_grid(lon, lat):
+                lon = np.asarray(lon, dtype=np.float64)
+                lat = np.asarray(lat, dtype=np.float64)
+                lon_b = _centers_to_edges_1d(lon)
+                lat_b = _centers_to_edges_1d(lat)
+                # NB: dim names 'lon','lat','lon_b','lat_b' are what xESMF expects
+                return xr.Dataset(
+                    coords=dict(
+                        lon   = (["lon"],   lon),
+                        lat   = (["lat"],   lat),
+                        lon_b = (["lon_b"], lon_b),
+                        lat_b = (["lat_b"], lat_b),
+                    )
+                )
+
+            def _default_weights_name(lon_in, lat_in, lon_out, lat_out, method):
+                # stable cache filename based on grid shapes + a short hash of coords
+                h = hashlib.sha1()
+                for arr in (lon_in, lat_in, lon_out, lat_out):
+                    a = np.asarray(arr).astype(np.float64)
+                    h.update(a.tobytes())
+                stamp = h.hexdigest()[:10]
+                return f"xesmf_{method}_L{lat_in.size}x{lon_in.size}_to_L{lat_out.size}x{lon_out.size}_{stamp}.nc"
+
+
+            def regrid_topography_conservative(
+                H_src: xr.DataArray,
+                lat_out,
+                lon_out,
+                *,
+                periodic=False,
+                unmapped_to_nan=True,
+                weights_dir=None,
+                weights_path=None,
+            ):
+                """
+                Conservative remap of topography to (lat_out, lon_out).
+                H_src must have dims named ('latitude','longitude') (any order). Extra dims broadcast.
+                - Caches weights under weights_dir (default: system temp) unless weights_path is given.
+                - Returns DataArray on the same non-horizontal dims as H_src, but with
+                  coords named ('latitude','longitude') on output.
+                """
+                # ensure output coords are 1D numpy arrays
+                lat_out = np.asarray(lat_out, dtype=np.float64)
+                lon_out = np.asarray(lon_out, dtype=np.float64)
+
+                # move horizontal dims to the end and standardize names to ('lat','lon')
+                assert ("latitude" in H_src.dims) and ("longitude" in H_src.dims), \
+                    "H_src must have dims 'latitude' and 'longitude'"
+                other = [d for d in H_src.dims if d not in ("latitude","longitude")]
+                H_ord = H_src.transpose(*other, "latitude", "longitude", missing_dims="ignore")
+
+                # temporary rename to what xESMF expects
+                H_std = H_ord.rename({"latitude": "lat", "longitude": "lon"})
+
+                # src/dst grid Datasets with bounds (names must be lat, lon, lat_b, lon_b)
+                src_grid = _make_rect_grid(H_std["lon"].values, H_std["lat"].values)
+                dst_grid = _make_rect_grid(lon_out, lat_out)
+
+                # choose/cache weights path
+                method = "conservative"
+                if weights_dir is None:
+                    weights_dir = tempfile.gettempdir()
+                os.makedirs(weights_dir, exist_ok=True)
+                if weights_path is None:
+                    weights_path = os.path.join(
+                        weights_dir,
+                        _default_weights_name(
+                            src_grid["lon"].values, src_grid["lat"].values,
+                            dst_grid["lon"].values, dst_grid["lat"].values, method
+                        ),
+                    )
+
+                # build or reuse weights
+                if os.path.exists(weights_path):
+                    R = xe.Regridder(
+                        src_grid, dst_grid, method=method,
+                        periodic=periodic, reuse_weights=True,
+                        filename=weights_path, unmapped_to_nan=unmapped_to_nan
+                    )
+                else:
+                    R = xe.Regridder(
+                        src_grid, dst_grid, method=method,
+                        periodic=periodic, reuse_weights=False,
+                        filename=weights_path, unmapped_to_nan=unmapped_to_nan
+                    )
+                    R.to_netcdf(weights_path)
+
+                # apply: H_std must end with dims ('lat','lon')
+                H_regridded = R(H_std)
+
+                # rename back + restore original dim order; stamp canonical coords
+                H_back = H_regridded.rename({"lat": "latitude", "lon": "longitude"})
+                H_back = H_back.transpose(*other, "latitude", "longitude", missing_dims="ignore")
+                return H_back.assign_coords(latitude=("latitude", lat_out),
+                                            longitude=("longitude", lon_out))
+
+
+
+            import tempfile
+            import numpy as np
+            import xarray as xr
+            import xesmf as xe
+            from tempfile import mkdtemp
+            from pathlib import Path
+            with tempfile.TemporaryDirectory() as tmpdir:
+                H_can = regrid_topography_conservative(
+                    H_src=topography_da,       # dims include ('latitude','longitude')
+                    lat_out=lat_can, lon_out=lon_can,
+                    periodic=True,             # True for global; False for regional
+                    weights_dir="/media/admin-lc/Disk4/tmp_work", #tmpdir   # or omit to use the system temp
+                    weights_path=None
+                )
+
+                H_can = H_can.where(H_can>0, 0.0)
+
+                EARTH_R = 6371000.0  # meters
+
+                # -------- geometry helpers --------
+                def normalize_depth_tops(zt1d):
+                    """
+                    Accept tops given as ascending-positive-down (e.g. [0, 1, 50, 100]) OR
+                    descending-negative-up (e.g. [-1, 0]). Return strictly increasing, >=0.
+                    """
+                    z = np.asarray(zt1d, dtype=np.float64).copy()
+                    if z.size == 0:
+                        raise ValueError("depth_top array is empty")
+                    # If values are negative or descending, convert to positive-down, ascending
+                    if (z[0] > z[-1]) or np.any(z < 0):
+                        # common pattern like [-1, 0] (tops measured up): shift so 0 surface, positive down
+                        z = z - np.min(z)
+                    # enforce strictly increasing and non-negative
+                    if not np.all(np.diff(z) >= 0):
+                        z = np.sort(z)
+                    if z[0] < 0:
+                        z = z - z[0]
+                    return z
+
+                def _safe_assign_depth(da, depth_dim, coord_vals):
+                    """Force the depth coordinate to match the data length exactly."""
+                    coord_vals = np.asarray(coord_vals)
+                    if da.sizes[depth_dim] != coord_vals.size:
+                        raise ValueError(
+                            f"conflicting sizes for '{depth_dim}': data={da.sizes[depth_dim]} vs coord={coord_vals.size}"
+                        )
+                    return da.assign_coords({depth_dim: (depth_dim, coord_vals)})
+
+                def build_target_edges_from_tops(depth_tops_1d, H_can, *, depth_dim="depth", edge_dim="depth_edge"):
+                    """
+                    depth_tops_1d : 1-D array of layer TOPS (positive down, increasing)
+                    H_can         : 2-D bottom depth (lat,lon), positive down
+                    Returns: z_edges (edge,lat,lon), dz (depth,lat,lon)
+                    """
+                    zt = normalize_depth_tops(depth_tops_1d)
+                    nz = int(zt.size)
+
+                    # 1D DA for tops → broadcast over H_can
+                    zt1d = xr.DataArray(zt, dims=(depth_dim,), coords={depth_dim: np.arange(nz)})
+                    zt_b = zt1d.broadcast_like(H_can)  # (depth, lat, lon)
+
+                    # bottom plane at index nz
+                    bottom = H_can.astype(np.float64).expand_dims({depth_dim: [nz]})  # (1,lat,lon)
+
+                    # edges stack and rename depth->edge
+                    z_edges = xr.concat([zt_b, bottom], dim=depth_dim).rename({depth_dim: edge_dim}).astype(np.float64)
+
+                    # thickness
+                    dz = z_edges.diff(edge_dim).rename({edge_dim: depth_dim}).clip(min=0.0)
+                    # stamp nice depth coords = target tops
+                    dz = _safe_assign_depth(dz, depth_dim, zt)
+                    return z_edges, dz
+
+                def build_source_edges_on_canonical(depth_top_src_1d, H_can, *, depth_dim="depth", edge_dim="depth_edge"):
+                    """
+                    Build source column edges on the canonical (lat,lon) columns:
+                    (tops from source 1-D, bottom from H_can). Returns (edge,lat,lon).
+                    """
+                    zt = normalize_depth_tops(depth_top_src_1d)
+                    nz = int(zt.size)
+                    zt1d = xr.DataArray(zt, dims=(depth_dim,), coords={depth_dim: np.arange(nz)})
+                    tops = zt1d.broadcast_like(H_can)  # (depth,lat,lon)
+                    bottom = H_can.astype(np.float64).expand_dims({depth_dim: [nz]})
+                    z_edges_src = xr.concat([tops, bottom], dim=depth_dim).rename({depth_dim: edge_dim}).astype(np.float64)
+                    return z_edges_src
+
+                # -------- area helper (simple spherical rectangle) --------
+                def _cell_areas_from_1d(lat, lon, R=6371000.0):
+                    lat = np.asarray(lat, dtype=np.float64)
+                    lon = np.asarray(lon, dtype=np.float64)
+                    # edges (assume midpoints are provided)
+                    def centers_to_edges(v):
+                        v = np.asarray(v, dtype=np.float64)
+                        e = np.empty(v.size + 1, dtype=np.float64)
+                        e[1:-1] = 0.5 * (v[:-1] + v[1:])
+                        e[0]  = v[0]  - (e[1] - v[0])
+                        e[-1] = v[-1] + (v[-1] - e[-2])
+                        return e
+                    lat_e = np.deg2rad(centers_to_edges(lat))
+                    lon_e = np.deg2rad(centers_to_edges(lon))
+                    # areas on sphere
+                    dphi = np.diff(lat_e)[:, None]
+                    dlambda = np.diff(lon_e)[None, :]
+                    # area = R^2 * |sin(phi2)-sin(phi1)| * |dlambda|
+                    A = R**2 * np.abs(np.sin(lat_e[1:, None]) - np.sin(lat_e[:-1, None])) * np.abs(dlambda)
+                    return xr.DataArray(A, dims=("latitude", "longitude"),
+                                        coords={"latitude": lat, "longitude": lon})
+
+                # -------- horizontal conservative mass regrid (keeps depth) --------
+                def _regrid_horizontal_conservative_mass(mass_src, lon_out, lat_out, *, periodic=True, weights_dir=None):
+                    """
+                    mass_src: DataArray (..., depth, latitude, longitude)
+                    returns:  DataArray (..., depth, latitude, longitude) on (lat_out, lon_out)
+                    """
+                    # put depth last 3 dims in a known order
+                    dims = list(mass_src.dims)
+                    lat_name = "latitude"; lon_name = "longitude"; depth_dim = [d for d in dims if d not in (lat_name, lon_name)][-1]
+                    # Make sure trailing dims are (..., depth, latitude, longitude)
+                    front = [d for d in dims if d not in (depth_dim, lat_name, lon_name)]
+                    M = mass_src.transpose(*front, depth_dim, lat_name, lon_name, missing_dims="ignore")
+
+                    # Build xESMF grids with lat/lon naming it expects
+                    def make_grid(lon, lat):
+                        return xr.Dataset(
+                            {"lon": (("y","x"), np.meshgrid(lon, lat)[0]),
+                             "lat": (("y","x"), np.meshgrid(lon, lat)[1])}
+                        )
+
+                    def _edges_1d(x, periodic=False):
+                        x = np.asarray(x, dtype=np.float64)
+                        if x.ndim != 1 or x.size < 2:
+                            raise ValueError("x must be 1D with length >= 2")
+                        dx = np.diff(x)
+                        mids = x[:-1] + 0.5 * dx
+                        first = x[0]  - 0.5 * dx[0]
+                        last  = x[-1] + 0.5 * dx[-1]
+                        e = np.concatenate(([first], mids, [last]))
+                        if periodic:
+                            # ensure seamless wrap for longitudes
+                            span = x[-1] - x[0] + dx[-1]
+                            e[0]  = x[0]  - 0.5 * dx[0]
+                            e[-1] = e[0] + span
+                        return e
+
+                    def make_rect_grid(lon_1d, lat_1d, *, periodic=False):
+                        """
+                        Build a rectilinear grid for xESMF conservative regridding.
+                        Returns an xr.Dataset with coords: lon, lat, lon_b, lat_b (all 1D).
+                        Names must be exactly these for xESMF.
+                        """
+                        lon = np.asarray(lon_1d, dtype=np.float64)
+                        lat = np.asarray(lat_1d, dtype=np.float64)
+                        if lon.ndim != 1 or lat.ndim != 1:
+                            raise ValueError("lon_1d and lat_1d must be 1D arrays")
+
+                        ds = xr.Dataset(coords=dict(
+                            lon   = (("lon",), lon),
+                            lat   = (("lat",), lat),
+                            lon_b = (("lon_b",), _edges_1d(lon, periodic=periodic)),
+                            lat_b = (("lat_b",), _edges_1d(lat, periodic=False)),
+                        ))
+
+                        # (optional) CF attrs so cf-xarray can recognize them later
+                        ds["lon"  ].attrs.update(standard_name="longitude", units="degrees_east",  axis="X")
+                        ds["lat"  ].attrs.update(standard_name="latitude",  units="degrees_north", axis="Y")
+                        ds["lon_b"].attrs.update(standard_name="longitude", units="degrees_east",  axis="X")
+                        ds["lat_b"].attrs.update(standard_name="latitude",  units="degrees_north", axis="Y")
+                        return ds
+
+                    lon_name, lat_name = "longitude", "latitude"
+
+                    src_grid = make_rect_grid(np.asarray(M[lon_name]), np.asarray(M[lat_name]), periodic=True)
+                    dst_grid = make_rect_grid(np.asarray(lon_out),        np.asarray(lat_out),  periodic=True)
+
+
+                    # Prepare Regridder once per (front dims, depth), by flattening those dims if present
+                    # Here we loop over all leading indices (time, etc.) and depth in vectorized xESMF apply.
+                    # xESMF can apply directly to xarray DataArray with trailing (lat,lon).
+                    R = xe.Regridder(
+                        src_grid, dst_grid, method="conservative",
+                        periodic=periodic,
+                        filename=None if weights_dir is None else str(weights_dir) + "/mass_conserv",
+                        reuse_weights=(weights_dir is not None)
+                    )
+
+                    # Apply along the stacked leading dims + depth
+                    lead = front + [depth_dim]
+                    M_stacked = M.stack(_lead=lead)  # (_lead, latitude, longitude)
+
+                    out_stacked = R(M_stacked)  # (_lead, latitude, longitude) on canonical grid
+
+                    out = out_stacked.unstack("_lead").transpose(*front, depth_dim, lat_name, lon_name)
+                    # stamp canonical coordinates
+                    out = out.assign_coords({lat_name: (lat_name, lat_out), lon_name: (lon_name, lon_out)})
+                    # carry attrs
+                    out.attrs.update(mass_src.attrs)
+                    out.attrs["regrid_method"] = "conservative"
+                    return out
+
+
+
+
+                def remap_vertical_mass_overlap(
+                    mass_src: xr.DataArray,            # (..., depth, lat, lon), units = mass
+                    z_edges_src,                       # 1-D edges (nz+1,) OR 3-D (edge, lat, lon)
+                    z_edges_tgt: xr.DataArray,         # 3-D edges (edge, lat, lon), last edge is bottom
+                    *,
+                    depth_dim: str = "depth",
+                    edge_dim: str = "depth_edge",
+                    lat_name: str = "latitude",
+                    lon_name: str = "longitude",
+                ) -> xr.DataArray:
+                    """
+                    Redistribute mass columnwise from source layers to target layers by geometric
+                    overlap of layer thickness. Mass-conserving. Works with 1-D or 3-D source edges.
+                    """
+
+                    # ---- 0) Basic checks
+                    if lat_name not in mass_src.dims or lon_name not in mass_src.dims or depth_dim not in mass_src.dims:
+                        raise ValueError(f"`mass_src` must have dims (..., {depth_dim}, {lat_name}, {lon_name}). Got {mass_src.dims}")
+                    if edge_dim not in z_edges_tgt.dims:
+                        raise ValueError(f"`z_edges_tgt` must have edge dimension '{edge_dim}', got {z_edges_tgt.dims}")
+
+                    # Rename working dims to avoid conflicts
+                    k_src = f"{depth_dim}_src"
+                    k_tgt = f"{depth_dim}_tgt"
+
+                    # ---- 1) Build SOURCE tops/bottoms on (k_src, lat, lon)
+                    if isinstance(z_edges_src, xr.DataArray):
+                        if z_edges_src.ndim == 1:
+                            # broadcast 1-D edges onto target horizontal grid
+                            # use target grid just to obtain lat/lon shape
+                            latlon_ref = z_edges_tgt.isel({edge_dim: 0}).drop_vars([v for v in z_edges_tgt.coords if v not in (lat_name, lon_name)], errors="ignore")
+                            zS = z_edges_src.rename({z_edges_src.dims[0]: edge_dim})
+                            zS = zS.broadcast_like(latlon_ref)  # (edge, lat, lon)
+                        else:
+                            # already (edge, lat, lon) or compatible
+                            if edge_dim not in z_edges_src.dims:
+                                raise ValueError(f"3-D `z_edges_src` must include '{edge_dim}'. Got {z_edges_src.dims}")
+                            zS = z_edges_src
+                    else:
+                        # numpy 1-D vector
+                        zS = xr.DataArray(np.asarray(z_edges_src, dtype=np.float64), dims=(edge_dim,))
+                        latlon_ref = z_edges_tgt.isel({edge_dim: 0}).drop_vars([v for v in z_edges_tgt.coords if v not in (lat_name, lon_name)], errors="ignore")
+                        zS = zS.broadcast_like(latlon_ref)
+
+                    ztS = zS.isel({edge_dim: slice(0, -1)}).rename({edge_dim: k_src})             # (k_src, lat, lon) tops
+                    zbS = zS.isel({edge_dim: slice(1, None)}).rename({edge_dim: k_src})           # (k_src, lat, lon) bots
+                    dzS = (zbS - ztS).astype(np.float64)
+                    inv_dzS = xr.where(dzS > 0, 1.0 / dzS, 0.0)
+
+                    # ---- 2) TARGET tops/bottoms on (k_tgt, lat, lon)
+                    ztT = z_edges_tgt.isel({edge_dim: slice(0, -1)}).rename({edge_dim: k_tgt})    # (k_tgt, lat, lon)
+                    zbT = z_edges_tgt.isel({edge_dim: slice(1, None)}).rename({edge_dim: k_tgt})  # (k_tgt, lat, lon)
+                    dzT = (zbT - ztT).astype(np.float64)
+
+                    # ---- 3) Pairwise overlaps (k_src, k_tgt, lat, lon)
+                    ks = ztS.sizes[k_src]
+                    kt = ztT.sizes[k_tgt]
+
+                    # build canonical coordinates for temporary dims
+                    # use physical tops for clarity; fall back to simple indices if absent
+                    k_src_coord = ztS.isel({lat_name: 0, lon_name: 0}, drop=True).rename({k_src: k_src}).coords.get(k_src, None)
+                    if k_src_coord is None or k_src_coord.size != ks:
+                        k_src_coord = xr.DataArray(np.arange(ks), dims=(k_src,))
+
+                    k_tgt_coord = ztT.isel({lat_name: 0, lon_name: 0}, drop=True).rename({k_tgt: k_tgt}).coords.get(k_tgt, None)
+                    if k_tgt_coord is None or k_tgt_coord.size != kt:
+                        k_tgt_coord = xr.DataArray(np.arange(kt), dims=(k_tgt,))
+
+                    # expand to 4D with matching orders
+                    ztS4 = ztS.assign_coords({k_src: k_src_coord}).expand_dims({k_tgt: k_tgt_coord}).transpose(k_src, k_tgt, lat_name, lon_name)
+                    zbS4 = zbS.assign_coords({k_src: k_src_coord}).expand_dims({k_tgt: k_tgt_coord}).transpose(k_src, k_tgt, lat_name, lon_name)
+
+                    ztT4 = ztT.assign_coords({k_tgt: k_tgt_coord}).expand_dims({k_src: k_src_coord}).transpose(k_src, k_tgt, lat_name, lon_name)
+                    zbT4 = zbT.assign_coords({k_tgt: k_tgt_coord}).expand_dims({k_src: k_src_coord}).transpose(k_src, k_tgt, lat_name, lon_name)
+
+                    overlap = xr.ufuncs.maximum(0.0, xr.ufuncs.minimum(zbS4, zbT4) - xr.ufuncs.maximum(ztS4, ztT4))
+
+                    # weights from src layer to each target layer
+                    inv_dzS = inv_dzS.assign_coords({k_src: k_src_coord})
+                    w = overlap * inv_dzS.expand_dims({k_tgt: k_tgt_coord}).transpose(k_src, k_tgt, lat_name, lon_name)
+
+                    # ---- 4) Apply weights to MASS and sum over source layers
+                    M = mass_src.rename({depth_dim: k_src}).astype(np.float64)
+                    lead_dims = [d for d in M.dims if d not in (k_src, lat_name, lon_name)]
+                    M = M.transpose(*lead_dims, k_src, lat_name, lon_name).assign_coords({k_src: k_src_coord})
+
+                    # add k_tgt with the SAME coordinate as in weights
+                    M4 = M.expand_dims({k_tgt: k_tgt_coord})                  # (..., k_src, k_tgt, lat, lon)
+                    w4 = w.assign_coords({k_tgt: k_tgt_coord, k_src: k_src_coord})
+
+                    # now align works (identical coords & sizes on k_tgt/k_src)
+                    M4, w4 = xr.align(M4, w4, join="exact")
+
+                    M_tgt = (M4 * w4).sum(dim=k_src)  # (..., k_tgt, lat, lon)
+
+                    # ---- 5) Return with target depth dim and coords
+                    out = M_tgt.rename({k_tgt: depth_dim})
+                    out = out.assign_coords({depth_dim: k_tgt_coord})  # depth coord = target tops
+
+                    # print("kt (target layers):", z_edges_tgt.sizes["depth_edge"] - 1)
+                    # print("ks (source layers):", z_edges_src_can.sizes["depth_edge"] - 1)
+                    # print("mass_h dims:", mass_h.dims, {d: mass_h.sizes[d] for d in mass_h.dims})
+                    return out
+
+                # ---------- main pipeline ----------
+
+                def regrid3d_conservative_with_topo(
+                    da,                    # concentration [mass/volume], dims (..., depth, latitude, longitude)
+                    lat_can, lon_can,      # 1-D canonical lat/lon
+                    depth_top_can,         # 1-D canonical TOPS (m, positive down; include 0 if surface)
+                    H_can,                 # 2-D canonical bottom (lat,lon) in meters (positive down)
+                    topo_src=None,         # 2-D bottom on source; if None, H_can is interpolated to source grid
+                    *,
+                    periodic_lon=True,
+                    depth_dim="depth",
+                    weights_dir=None,
+                ):
+                    """
+                    Mass-conserving: conservative xESMF (horizontal) + 3-D thickness-overlap (vertical per column).
+                    """
+                    # ---- source geometry
+                    dd = depth_dim
+                    lat_src = np.asarray(da["latitude"].values)
+                    lon_src = np.asarray(da["longitude"].values)
+
+                    # source bottoms on source grid
+                    if topo_src is None:
+                        topo_src = H_can.interp(latitude=lat_src, longitude=lon_src)
+
+                    # source per-column thickness from (tops + bottom)
+                    depth_top_src = np.asarray(da[dd].values, dtype=np.float64)
+                    z_edges_src_col = xr.concat(
+                        [
+                            xr.DataArray(depth_top_src, dims=(dd,), coords={dd: np.arange(depth_top_src.size)}).broadcast_like(topo_src),
+                            topo_src.astype(np.float64).expand_dims({dd: [depth_top_src.size]}),
+                        ],
+                        dim=dd
+                    ).rename({dd: "depth_edge"}).transpose("depth_edge", "latitude", "longitude")
+
+                    dz_src = z_edges_src_col.diff("depth_edge").rename({"depth_edge": dd}).clip(min=0.0).astype(np.float64)
+                    dz_src = _safe_assign_depth(dz_src, dd, da[dd].values)   # <- ensure coord matches size
+
+                    # horizontal areas (source)
+                    A_src = xr.DataArray(
+                        _cell_areas_from_1d(lat_src, lon_src),
+                        dims=("latitude", "longitude"),
+                        coords={"latitude": da["latitude"], "longitude": da["longitude"]},
+                    )
+
+                    # MASS on source grid
+                    mass_src = da.fillna(0).astype(np.float64) * dz_src * A_src
+
+                    # ---- horizontal conservative regrid of MASS to canonical (lat,lon)
+                    mass_h = _regrid_horizontal_conservative_mass(
+                        mass_src= mass_src,
+                        lon_out=np.asarray(lon_can),
+                        lat_out=np.asarray(lat_can),
+                        periodic=periodic_lon,
+                        weights_dir=weights_dir,
+                    )
+                    mass_h = _safe_assign_depth(mass_h, dd, da[dd].values)
+                    # ---- build source & target edges on canonical columns (use canonical bottom H_can)
+                    depth_top_can = normalize_depth_tops(depth_top_can)
+                    z_edges_tgt, dz_tgt = build_target_edges_from_tops(
+                        depth_top_can, H_can, depth_dim=depth_dim, edge_dim="depth_edge"
+                    )
+
+                    z_edges_src_can = build_source_edges_on_canonical(
+                        depth_top_src_1d=np.asarray(da[depth_dim].values),
+                        H_can=H_can,
+                        depth_dim=depth_dim,
+                        edge_dim="depth_edge",
+                    )
+
+                    # Keep mass_h with the original depth labels
+                    mass_h = _safe_assign_depth(mass_h, depth_dim, da[depth_dim].values)
+                    dz_tgt = _safe_assign_depth(dz_tgt, depth_dim, depth_top_can)
+
+                    # Vertical remap (pass the 3-D source edges and the 3-D target edges)
+                    mass_v = remap_vertical_mass_overlap(
+                        mass_src=mass_h,
+                        z_edges_src=z_edges_src_can,
+                        z_edges_tgt=z_edges_tgt,
+                        depth_dim=depth_dim,
+                        edge_dim="depth_edge",
+                    )
+
+
+                    # ---- vertical mass remap (3-D overlap, columnwise)
+                    # mass_h = _safe_assign_depth(mass_h, dd, da[dd].values)
+                    # mass_h = _safe_assign_depth(mass_h, depth_dim, da[depth_dim].values)
+
+                    # mass_v = remap_vertical_mass_overlap(
+                    #     mass_src= mass_h,
+                    #     z_edges_src_1d=z_edges_src_can,
+                    #     z_edges_tgt=z_edges_tgt,   # edges DataArray with dims (depth_edge, latitude, longitude)
+                    #     depth_dim="depth",
+                    # )
+
+                    # ---- back to concentration: C = M / Volume
+                    A_tgt = xr.DataArray(
+                        _cell_areas_from_1d(np.asarray(lat_can), np.asarray(lon_can)),
+                        dims=("latitude", "longitude"),
+                        coords={"latitude": lat_can, "longitude": lon_can},
+                    )
+                    vol_tgt = dz_tgt * A_tgt
+                    conc_out = (mass_v / vol_tgt.where(vol_tgt > 0)).where(vol_tgt > 0)
+
+                    # tidy dims & attrs
+                    lead = [d for d in da.dims if d not in (dd, "latitude", "longitude")]
+                    conc_out = conc_out.transpose(*lead, dd, "latitude", "longitude", missing_dims="ignore")
+                    conc_out.name = getattr(da, "name", "concentration")
+                    conc_out.attrs.update(da.attrs)
+                    conc_out.attrs["regrid_note"] = (
+                        "mass-conserving: xESMF conservative (horizontal) + 3D thickness-overlap (vertical, columnwise); "
+                        "bottom from H_can"
+                    )
+                    return conc_out
+
+                da = DataArray_ls[0]
+                depth_dim = "depth"
+
+                # Conservative horizontal regrid of MASS
+                da_reg = regrid3d_conservative_with_topo(
+                    da=da,
+                    lat_can=lat_can,
+                    lon_can=lon_can,
+                    depth_top_can=depth_top_can,   # e.g., [-1, 0] → will be normalized to [0, 1]
+                    H_can=H_can,
+                    topo_src=None,
+                    periodic_lon=True,
+                    depth_dim=depth_dim,
+                    weights_dir=None,              # or a directory if you want persistent weights
+                )
+
+
+
+
+
+
+##################################################
+
+
+        ref = DataArray_ls[0]
+        target_lat   = np.asarray(ref["latitude"].values)
+        target_lon   = np.asarray(ref["longitude"].values)
+        target_depth = np.asarray(ref["depth"].values)
+
+        # optional: round to kill float noise
+        target_lat   = np.round(target_lat, 6)
+        target_lon   = np.round(target_lon, 6)
+        target_depth = np.round(target_depth, 6)
+
+        DataArray_ls = [self._interp_spatial_to(da, target_lat, target_lon, target_depth,
+                                                method_xy="linear", method_z="linear")
+                        for da in DataArray_ls]
+
+
+
+        # for dim in ["latitude", "longitude"]:
+        #     diffs = [np.diff(da[dim]).mean() for da in DataArray_ls]
+        #     print(dim, diffs)
+        #     print([float(da[dim][0]) for da in DataArray_ls])
+
+        # for dim in ["latitude","longitude"]:
+        #     ref = np.asarray(DataArray_ls[0][dim].values)
+        #     for k, da in enumerate(DataArray_ls[1:], start=1):
+        #         cur = np.asarray(da[dim].values)
+        #         print(dim, k, "max|Δ|:", float(np.nanmax(np.abs(cur - ref))))
+        #         print(dim, k, "allclose?:", np.allclose(cur, ref, rtol=0, atol=1e-9))
+
+        # refz = np.asarray(DataArray_ls[0]["depth"].values)
+        # for k, da in enumerate(DataArray_ls[1:], start=1):
+        #     curz = np.asarray(da["depth"].values)
+        #     print("depth", k, "max|Δ|:", float(np.nanmax(np.abs(curz - refz))))
+        #     print("depth allclose?:", np.allclose(curz, refz, rtol=0, atol=1e-6))
+
+
+        # # time_name = "time"
+        # t0, z0 = 10, 0  # pick the problem time/depth
+        # ms = [~da.isel({time_name: t0, "depth": z0}).isnull() for da in DataArray_ls]
+        # import xarray as xr
+        # xor = xr.zeros_like(ms[0])
+        # for m in ms[1:]:
+        #     xor = xr.where(xor ^ m, 1, 0)
+        # print("fraction cells with odd-count mask disagreement:", float(xor.mean(skipna=True)))
+
+        # for i, m in enumerate(ms):
+        #     print(i, "valid fraction:", float(m.mean()))
         ### Find common attributes to be added in Final_sum
         common_attrs = DataArray_ls[0].attrs.copy()
         for da in DataArray_ls[1:]:
             common_attrs = {key: value for key, value in common_attrs.items() if da.attrs.get(key) == value}
-
 
         time_equal = False
         if all(time_name in da.dims for da in DataArray_ls):
@@ -8150,7 +8948,7 @@ class ChemicalDrift(OceanDrift):
             reindexed = [self._reindex_da(DataArray = da,
                           time_name = time_name,
                           target_time = target_time,
-                          nearest_tol = nearest_tol,
+                          nearest_tol_time = nearest_tol_time,
                           align_mode = align_mode) for da in DataArray_ls]
 
             # Align reindexed DataArrays for sum
@@ -8163,19 +8961,35 @@ class ChemicalDrift(OceanDrift):
 
         if Final_sum is not None:
             ### Select mask to conserve landmask at different depths
-            masks = [~da.isnull() for da in aligned]
-            if mask_mode == "input0":
-                mask = masks[0]
-            elif mask_mode == "union":
-                mask = xr.concat(masks, dim="part").any(dim="part")
-            elif mask_mode == "intersection":
-                mask = xr.concat(masks, dim="part").all(dim="part")
-            else:
-                raise ValueError(f"mask_mode: {mask_mode} must be 'input0' | 'union' | 'intersection'")
 
-            ### Preserve landmask at different depth
-            print("Mask Final_sum")
-            Final_sum = Final_sum.where(mask)
+            # da0 = aligned[0]
+
+            # spatial_dims = [d for d in da0.dims if d != time_name]
+            # valid_any = (~da0.isnull()).any(dim=spatial_dims)
+            # if bool(valid_any.any()):
+            #     t_idx = int(valid_any.argmax().item())  # first non-empty slice
+
+            # # build a (lat, lon, depth, ...) mask with no time dimension
+            # landmask = ~da0.isel({time_name: t_idx}).isnull()
+
+            all_valid = xr.concat([~a.isnull() for a in aligned], dim="part").any("part").any(dim=time_name)
+            Final_sum = Final_sum.where(all_valid)
+            Final_sum.attrs["mask_source"] = "any-over-time, union across inputs"
+
+            sum_inputs2 = float(sum(da.fillna(0).sum().item() for da in aligned))
+            sum_output = float(Final_sum.fillna(0).sum().item())
+
+            print(f"sum_inputs1 {sum_inputs1}")
+            print(f"sum_inputs2 {sum_inputs2}")
+            print(f"sum_output {sum_output}")
+
+
+            # apply it to the final sum (it broadcasts over time automatically)
+            # print("Mask Final_sum")
+            # Final_sum = Final_sum.where(landmask)
+
+            # # (optional) record mask provenance
+            # Final_sum.attrs["mask_source"] = f"from aligned[0] at {time_name} index {t_idx}"
 
             ### Add common_attrs to Final_sum and add "sim_description" if not present
             Final_sum.attrs.update(common_attrs)
