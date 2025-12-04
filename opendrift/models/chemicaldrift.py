@@ -7789,15 +7789,17 @@ class ChemicalDrift(OceanDrift):
     def _reindex_da(DataArray,
                   time_name, target_time,
                   nearest_tol_time= None,
-                  align_mode = "pad"):
+                  align_mode = "pad",
+                  clip_to_original=True):
         """
         Reindex xr.DataArray along "time_name" dimention using "target_time" array
 
         DataArray:        xarray DataArray
         time_name:        string, name of time dimention of all DataArray present in DataArray_ls
-        target_time:     np.array of np.datetime64[ns]
-        nearest_tol_time:      np.timedelta64, max distance for "nearest" (e.g., np.timedelta64(3,'h'))
+        target_time:      np.array of np.datetime64[ns]
+        nearest_tol_time: np.timedelta64, max distance for "nearest" (e.g., np.timedelta64(3,'h'))
         align_mode:       string, mode of selecting timestamp in reconstructed sum ("pad"|"nearest"|"exact")
+        clip_to_original: bool, select if contribution of DataArray before the start and after the end of that array is set to 0
 
         """
         # sort for methods that need monotonic time
@@ -7805,14 +7807,23 @@ class ChemicalDrift(OceanDrift):
             DataArray = DataArray.sortby(time_name)
 
         if align_mode == "exact":
-            return DataArray.reindex({time_name: target_time}, method=None)
+            out = DataArray.reindex({time_name: target_time}, method=None)
         elif align_mode == "pad":
-            return DataArray.reindex({time_name: target_time}, method="pad")
+            out = DataArray.reindex({time_name: target_time}, method="pad")
         else:  # "nearest"
             kwargs = {}
             if nearest_tol_time is not None:
                 kwargs["tolerance"] = nearest_tol_time
-            return DataArray.reindex({time_name: target_time}, method="nearest", **kwargs)
+            out = DataArray.reindex({time_name: target_time}, method="nearest", **kwargs)
+
+        if clip_to_original:
+            t_orig = DataArray[time_name].values
+            t_min  = t_orig.min()
+            t_max  = t_orig.max()
+            valid  = (out[time_name] >= t_min) & (out[time_name] <= t_max)
+            out    = out.where(valid)
+
+        return out
 
 
     @staticmethod
@@ -7879,6 +7890,9 @@ class ChemicalDrift(OceanDrift):
         import numpy as np
 
         def _is_regular(vec, tol):
+            """
+            Check if a 1D coordinate vector is regularly spaced within tolerance.
+            """
             v = np.asarray(vec, dtype=np.float64)
             if v.size < 2:
                 return True, 0.0
@@ -7888,6 +7902,9 @@ class ChemicalDrift(OceanDrift):
             return (err <= (tol if tol is not None else 1e-12)), step
 
         def _min_decimals(x, max_dec=12):
+            """
+            Return minimum number of decimals to represent x as a clean decimal within tolerance.
+            """
             x = float(abs(x));
             for d in range(max_dec+1):
                 if np.isclose(x*(10**d), round(x*(10**d)), atol=1e-12):
@@ -7997,8 +8014,7 @@ class ChemicalDrift(OceanDrift):
                          coord_tolerance_dict = {},
                          snap_mode ="median",
                          mask_mode = "input0",
-                         sim_description = None,
-                         topography_da=None):
+                         sim_description = None):
         '''
         Sum a list of xarray DataArrays, with the same or different time step
         If start_date, end_date, or freq_time are specified time dimention is reconstructed
@@ -8028,10 +8044,16 @@ class ChemicalDrift(OceanDrift):
             if variable is None:
                 raise ValueError("key for extracting Dataarrays from DataArray_dict must be specified (variable)")
             if DataArray_ls is None:
+                for idx, content in DataArray_dict.items():
+                    da = content[variable]
+                    ### check if 'depth' is a dimension and if its size is 1 to drop it
+                    if "depth" in da.dims and da.sizes["depth"] == 1:
+                        print(f'Dropped "depth" ({da.depth.values}) with lenght of 1 from from DataArray {idx}')
+                        DataArray_dict[idx][variable] = da.squeeze('depth')
+
                 DataArray_ls = [inner[variable] for idx, inner in sorted(DataArray_dict.items()) if variable in inner and inner[variable] is not None]
             else:
-                raise ValueError("Both DataArray_dict and DataArray_ls were given. ")
-
+                raise ValueError("Both DataArray_dict and DataArray_ls were given.")
 
         if DataArray_dict is not None:
             nan_counts_inputs = {
@@ -8041,9 +8063,6 @@ class ChemicalDrift(OceanDrift):
             }
         else:
             nan_counts_inputs = {i: int(da.isnull().sum().item()) for i, da in enumerate(DataArray_ls)}
-
-
-
 
 
         if len(DataArray_ls) < 1:
@@ -8070,7 +8089,7 @@ class ChemicalDrift(OceanDrift):
             raise ValueError(f"All DataArrays must have a name. Got: {names}")
         ref_name = next((n for n in names if n is not None), "data")
 
-        # fail if any non-None name differs from ref_name
+        ### Fail if any non-None name differs from ref_name
         mismatch = [n for n in names if (n is not None and n != ref_name)]
         if mismatch:
             raise ValueError(f"Mismatched DataArray names: {names}. Expected all '{ref_name}'.")
@@ -8134,12 +8153,18 @@ class ChemicalDrift(OceanDrift):
 
             ### Helpers for "regrid_topography_conservative" ###
             def _maybe_depth_dim(da, candidates=("depth","z","lev","level")):
+                """
+                Return the first matching depth-like dimension name present in the DataArray.
+                """
                 for nm in candidates:
                     if nm in da.dims:
                         return nm
                 return None
 
             def _centers_to_edges_1d(c):
+                """
+                Convert 1D cell centers to edges along an axis (used for conservative grids).
+                """
                 c = np.asarray(c, dtype=np.float64)
                 if c.size < 2:
                     # fallback tiny cell
@@ -8151,7 +8176,9 @@ class ChemicalDrift(OceanDrift):
                 return np.concatenate([[first], mid, [last]])
 
             def _hash_grid(lon_in, lat_in, lon_out, lat_out, method="conservative"):
-                """Short, stable id for a (src,dst,method) grid pair."""
+                """
+                Compute a short hash identifier for a source/destination grid pair plus method.
+                """
                 h = hashlib.sha1()
                 for arr in (lon_in, lat_in, lon_out, lat_out):
                     a = np.asarray(arr, dtype=np.float64)
@@ -8160,6 +8187,9 @@ class ChemicalDrift(OceanDrift):
                 return h.hexdigest()[:10]
 
             def _make_rect_grid(lon, lat):
+                """
+                Build a rectilinear xarray Dataset with cell centers and edges for xESMF.
+                """
                 lon = np.asarray(lon, dtype=np.float64)
                 lat = np.asarray(lat, dtype=np.float64)
                 lon_b = _centers_to_edges_1d(lon)
@@ -8176,6 +8206,10 @@ class ChemicalDrift(OceanDrift):
 
             def get_regridder(src_lon, src_lat, dst_lon, dst_lat, *, method="conservative",
                               periodic=True, weights_dir=None, prefix="weights"):
+                """
+                Create (or reuse cached) xESMF Regridder for given src/dst grids and method.
+                Optionally cache weights on disk under weights_dir.
+                """
                 src_grid = _make_rect_grid(src_lon, src_lat)
                 dst_grid = _make_rect_grid(dst_lon, dst_lat)
                 cache_id = _hash_grid(src_lon, src_lat, dst_lon, dst_lat)
@@ -8193,7 +8227,6 @@ class ChemicalDrift(OceanDrift):
                 if (weights_path is not None) and (not reuse):
                     R.to_netcdf(weights_path)
                 return R, weights_path
-
 
             def regrid_topography_conservative(
                 H_src: xr.DataArray,
@@ -8295,7 +8328,10 @@ class ChemicalDrift(OceanDrift):
 
 
             def _safe_assign_depth(da, depth_dim, coord_vals):
-                """Force the depth coordinate to match the data length exactly."""
+                """
+                Assign depth coordinates to a DataArray, enforcing size consistency
+                between data along depth_dim and coord_vals.
+                """
                 coord_vals = np.asarray(coord_vals)
                 if da.sizes[depth_dim] != coord_vals.size:
                     raise ValueError(
@@ -8313,6 +8349,9 @@ class ChemicalDrift(OceanDrift):
                 tol: float = 1e-12
             ):
                 """
+
+                Build target vertical interfaces and layer thicknesses from 1D tops and canonical bottom.
+
                 depth_tops_1d : 1-D array of layer TOPS (positive down; will be cleaned/sorted by normalize_depth_tops)
                 H_can         : 2-D bottom depth (lat,lon), positive down
 
@@ -8391,10 +8430,21 @@ class ChemicalDrift(OceanDrift):
                   - Keep zero-thickness layers (size along edge = nz+1)
                 """
                 def _is_monotone_nondec_1d(a, tol=0.0):
+                    """Return True if 1-D array `a` is monotone non-decreasing within tolerance `tol`.
+
+                    Checks that each difference a[i+1] - a[i] ≥ −tol. Used to validate layer-top
+                    or interface sequences before constructing vertical edges.
+                    """
                     a = np.asarray(a, float)
                     return np.all(np.diff(a) >= -tol)
 
                 def _check_monotone_edges3d(z_edges, edge_dim, tol=0.0):
+                    """Verify that vertical interfaces in a 3-D array are monotone non-decreasing.
+
+                    Ensures that diff(z_edges, dim=edge_dim) ≥ −tol for every (lat, lon) column.
+                    Raises ValueError if any column violates monotonicity. Used after constructing
+                    vertical edges to guarantee physically meaningful layering.
+                    """
                     dec = (z_edges.diff(edge_dim) < -tol)
                     if dec.any():
                         # Optional: show where (lat, lon) fail
@@ -8464,10 +8514,20 @@ class ChemicalDrift(OceanDrift):
 
             # -------- area helper (simple spherical rectangle) --------
             def _cell_areas_from_1d(lat, lon, R=6371000.0):
+                """
+                Compute spherical cell areas from 1D lat/lon centers using a simple rectangle formula.
+                Returns DataArray with dims (latitude, longitude).
+                """
                 lat = np.asarray(lat, dtype=np.float64)
                 lon = np.asarray(lon, dtype=np.float64)
                 # edges (assume midpoints are provided)
                 def centers_to_edges(v):
+                    """Convert 1-D cell-center coordinates to cell-edge coordinates.
+
+                    Produces edges by midpoints between consecutive centers and extrapolating the
+                    first/last edges symmetrically. Used to build spherical cell boundaries for
+                    conservative area computations.
+                    """
                     v = np.asarray(v, dtype=np.float64)
                     e = np.empty(v.size + 1, dtype=np.float64)
                     e[1:-1] = 0.5 * (v[:-1] + v[1:])
@@ -8488,8 +8548,9 @@ class ChemicalDrift(OceanDrift):
                                          periodic=True, weights_dir=None,
                                          depth_dim=None):
                 """
-                Conservative horizontal regrid for either:
-                  (..., depth, latitude, longitude)  OR  (..., latitude, longitude)
+                Conservatively regrid mass (and volume) horizontally from src grid to (lat_out, lon_out),
+                preserving total mass; works for 2D or 3D (with depth) fields.
+                (..., depth, latitude, longitude)  OR  (..., latitude, longitude)
 
                 Returns same rank/shape (with lat/lon replaced by target coords).
                 """
@@ -8512,6 +8573,9 @@ class ChemicalDrift(OceanDrift):
 
                 # xESMF rect grid
                 def _edges_1d(x, periodic=False):
+                    """
+                    Convert 1D centers to edges, optionally periodic in longitude.
+                    """
                     x = np.asarray(x, dtype=np.float64)
                     dx = np.diff(x); mids = x[:-1] + 0.5*dx
                     first = x[0]-0.5*dx[0]; last = x[-1]+0.5*dx[-1]
@@ -8523,6 +8587,9 @@ class ChemicalDrift(OceanDrift):
                     return e
 
                 def make_rect_grid(lon_1d, lat_1d, *, periodic=False):
+                    """
+                    Create xESMF rectilinear grid Dataset from 1D lon/lat.
+                    """
                     lon = np.asarray(lon_1d, dtype=np.float64)
                     lat = np.asarray(lat_1d, dtype=np.float64)
                     return xr.Dataset(coords=dict(
@@ -8583,7 +8650,6 @@ class ChemicalDrift(OceanDrift):
 
 
             ### Horizontal and vertical interpolation ###
-            # ---------- main pipeline ----------
 
             def regrid3d_conservative_with_topo(
                 da,                    # concentration [mass/volume], dims (..., depth, latitude, longitude)
@@ -8599,10 +8665,10 @@ class ChemicalDrift(OceanDrift):
                 weights_path=None,
                 idx=None,
                 idx_tot=None
-
             ):
                 """
-                Mass-conserving: conservative xESMF (horizontal) + 3-D thickness-overlap (vertical per column).
+                Apply mass-conservative regrid to 3D/2D concentration field using topography:
+                conservative xESMF horizontally, thickness-based vertically (not yet supported).
                 """
                 print(f"Interpolating array {idx} out of {idx_tot-1}")
                 H_can = regrid_topography_conservative( # 2-D canonical bottom (lat,lon) in meters (positive down)
@@ -8667,7 +8733,7 @@ class ChemicalDrift(OceanDrift):
                         lat_out=np.asarray(lat_can),
                         periodic=periodic_lon,
                         weights_dir=weights_dir,
-                        depth_dim=dd,              # works for both None and depth name
+                        depth_dim=dd,
                     )
                     vol_h  = _regrid_horizontal_conservative_mass(
                         mass_src=vol_src,
@@ -8742,12 +8808,6 @@ class ChemicalDrift(OceanDrift):
                 return conc_out
 
             with tempfile.TemporaryDirectory() as tmpdir:
-                # da = DataArray_ls[0]
-                # depth_dim = "depth"
-                # topo_src=None
-                # periodic_lon=True
-                # weights_dir=None
-
                 # Conservative regrid of MASS
 
                 DataArray_ls = [
@@ -8926,9 +8986,31 @@ class ChemicalDrift(OceanDrift):
             sum_conc_DataArray_ls_output = float(sum(da.fillna(0).sum().item() for da in aligned))
             sum_conc_Final_sum = float(Final_sum.fillna(0).sum().item())
 
-            print(f"sum_conc_DataArray_ls_input {sum_conc_DataArray_ls_input}")
-            print(f"sum_conc_DataArray_ls_output {sum_conc_DataArray_ls_output}")
-            print(f"sum_conc_Final_sum {sum_conc_Final_sum}")
+            print(f"Sum of input DataArray_ls: {sum_conc_DataArray_ls_input}")
+            print(f"Sum of aligned DataArray_ls: {sum_conc_DataArray_ls_output}")
+            print(f"Sum of Final_sum: {sum_conc_Final_sum}")
+
+            tol_pct = 5.0  # percent
+
+            if sum_conc_DataArray_ls_input == 0:
+                # if there was no “mass” in the input, any nonzero output is an issue
+                if not np.isclose(sum_conc_Final_sum, 0.0):
+                    raise AssertionError(
+                        f"Sum check failed: input sum is 0, but Final_sum is {sum_conc_Final_sum} "
+                        f"(> {tol_pct:.1f}% change)."
+                    )
+            else:
+                rel_change = (sum_conc_Final_sum - sum_conc_DataArray_ls_input) / sum_conc_DataArray_ls_input
+                pct_change = rel_change * 100.0
+
+                print(f"Sum relative change: {pct_change:+.2f}%")
+
+                if abs(rel_change) > tol_pct / 100.0:
+                    raise AssertionError(
+                        f"Sum check failed: Final_sum={sum_conc_Final_sum}, "
+                        f"input={sum_conc_DataArray_ls_input}, "
+                        f"change={pct_change:+.2f}% (exceeds ±{tol_pct:.1f}%)."
+                    )
 
             ### Add common_attrs to Final_sum and add "sim_description" if not present
             Final_sum.attrs.update(common_attrs)
@@ -8942,12 +9024,12 @@ class ChemicalDrift(OceanDrift):
                 vals = [v for v in nan_counts_interp.values() if isinstance(v, (int, float))]
                 avg_nans = float(np.mean(vals)) if vals else 0.0
 
-                # 2) NaNs in the final result
+                ### NaNs in the final result
                 Final_sum_nan = int(np.count_nonzero(np.isnan(Final_sum.values)))
 
-                # 3) Compare with ±10% tolerance and raise if violated
+                ### Compare with ±10% tolerance and raise if violated
                 if avg_nans == 0.0:
-                    # If average is zero, any NaNs in the final is an immediate violation
+                    # If average is zero, any NaNs in Final_sum is an immediate violation
                     if Final_sum_nan != 0:
                         raise ValueError(
                             f"NaN count check failed: avg_nans=0, Final_sum has {Final_sum_nan} NaNs (>10% change)."
@@ -8965,7 +9047,6 @@ class ChemicalDrift(OceanDrift):
                             f"NaN count check OK: Final_sum_nans={Final_sum_nan}, "
                             f"avg_nans={avg_nans:.2f}, change={pct_change:+.2f}% (within ±10%)."
                         )
-
 
             if H_can_out is not None:
 
