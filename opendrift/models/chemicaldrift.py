@@ -4726,22 +4726,34 @@ class ChemicalDrift(OceanDrift):
             pass
         else:
             if "lat" in DataArray.dims:
-                DataArray = DataArray.rename({'lat': 'latitude','lon': 'longitude'})
-            elif "x" in DataArray.dims:
-                DataArray = DataArray.rename({'y': 'latitude','x': 'longitude'})
+                DataArray = DataArray.rename({'lat': 'latitude'})
+            elif "y" in DataArray.dims:
+                DataArray = DataArray.rename({'y': 'latitude'})
             else:
-                raise ValueError("Unknown spatial lat/lon coordinates")
+                raise ValueError("Unknown spatial lat coordinates")
 
-        DataArray['latitude'] = DataArray['latitude'].assign_attrs(standard_name='latitude')
-        DataArray['latitude'] = DataArray['latitude'].assign_attrs(long_name='latitude')
-        DataArray['latitude'] = DataArray['latitude'].assign_attrs(units='degrees_north')
-        DataArray['latitude'] = DataArray['latitude'].assign_attrs(axis='Y')
+        if "longitude" in DataArray.dims:
+            pass
+        else:
+            if "lon" in DataArray.dims:
+                DataArray = DataArray.rename({'lon': 'longitude'})
+            elif "x" in DataArray.dims:
+                DataArray = DataArray.rename({'x': 'longitude'})
+            else:
+                raise ValueError("Unknown spatial lat coordinates")
 
-        DataArray['longitude'] = DataArray['longitude'].assign_attrs(standard_name='longitude')
-        DataArray['longitude'] = DataArray['longitude'].assign_attrs(long_name='longitude')
-        DataArray['longitude'] = DataArray['longitude'].assign_attrs(units='degrees_east')
-        DataArray['longitude'] = DataArray['longitude'].assign_attrs(axis='X')
-
+        DataArray['latitude'] = DataArray['latitude'].assign_attrs(
+                                standard_name="latitude",
+                                long_name="latitude",
+                                units="degrees_north",
+                                axis="Y",
+                            )
+        DataArray['longitude'] = DataArray['longitude'].assign_attrs(
+                                standard_name="longitude",
+                                long_name="longitude",
+                                units="degrees_east",
+                                axis="X",
+                            )
         return(DataArray)
 
 
@@ -4759,7 +4771,7 @@ class ChemicalDrift(OceanDrift):
                            the beginning of the first simulation timestep, not to the next one
         """
 
-        if "longitude" not in DC_Conc_array.dims:
+        if (("longitude" not in DC_Conc_array.dims) or ("latitude" not in DC_Conc_array.dims)):
             DC_Conc_array = self._rename_dimensions(DC_Conc_array)
             if all(x is not None for x in [lon_coord, lat_coord]):
                 DC_Conc_array['latitude'] = ('latitude', lat_coord)
@@ -5038,6 +5050,7 @@ class ChemicalDrift(OceanDrift):
                               file_output_path,
                               file_output_name):
         import os
+        import xarray as xr
 
         if not os.path.exists(file_output_path):
             os.makedirs(file_output_path)
@@ -5050,12 +5063,13 @@ class ChemicalDrift(OceanDrift):
             del DataArray_masked.attrs['grid_mapping'] # delete grid_mapping attribute to avoid "ValueError in safe_setitem" from xarray
         else:
             pass
-
+        full_output_path = os.path.join(file_output_path, file_output_name)
         try:
-            DataArray_masked.to_netcdf(file_output_path + file_output_name)
-        except:
+            DataArray_masked.to_netcdf(full_output_path)
+        except Exception as e:
+            print(f"Error writing netcdf ({e}), trying fallback path...")
             # Change DataArray_masked to dataset if xarray.core.dataarray.DataArray
-            if str(type(DataArray_masked)) == "<class 'xarray.core.dataarray.DataArray'>":
+            if isinstance(DataArray_masked, xr.DataArray):
                 DataArray_masked = DataArray_masked.to_dataset()
                 print("Changed DataArray_masked from DataArray to DataSet")
             # Remove "_FillValue" = np.nan from data_vars and coordinates attributes
@@ -7999,6 +8013,49 @@ class ChemicalDrift(OceanDrift):
 
         return canonical, need_interpolation
 
+    @staticmethod
+    def _normalize_inputs(DataArray_dict, DataArray_ls, variable):
+        """
+        Ensure the correct format of DataArray_ls.
+
+        Returns
+        -------
+        DataArray_ls : list[xr.DataArray]
+            The list of DataArrays extracted or passed in.
+        index_keys : list or None
+            If DataArray_dict was provided, list index → dict key mapping.
+            Otherwise None.
+        """
+
+        if DataArray_dict is None and DataArray_ls is None:
+            raise ValueError("Either DataArray_dict or DataArray_ls must be provided.")
+
+        index_keys = None
+
+        if DataArray_dict is not None:
+            if variable is None:
+                raise ValueError(
+                    "Key for extracting DataArrays from DataArray_dict must be specified (variable)"
+                )
+            if DataArray_ls is not None:
+                raise ValueError("Both DataArray_dict and DataArray_ls were given.")
+
+            # Build list from dict, keep mapping list index → dict key
+            sorted_items = sorted(DataArray_dict.items())
+            index_keys = []
+            DataArray_ls = []
+
+            for idx_key, inner in sorted_items:
+                if variable in inner and inner[variable] is not None:
+                    DataArray_ls.append(inner[variable])
+                    index_keys.append(idx_key)
+
+        # If DataArray_dict is None, we just keep the passed DataArray_ls as-is
+        if DataArray_ls is None or len(DataArray_ls) == 0:
+            raise ValueError("Empty DataArray_ls")
+
+        return DataArray_ls, index_keys
+
 
     def sum_DataArray_list(self,
                          DataArray_dict,
@@ -8039,22 +8096,80 @@ class ChemicalDrift(OceanDrift):
         ### Convert time_name to string to allow indexing
         if not isinstance(time_name, str):
             time_name = str(time_name)
+        if DataArray_dict is None and DataArray_ls is None:
+            raise ValueError("Either DataArray_dict or DataArray_ls must be provided.")
 
-        if DataArray_dict is not None:
-            if variable is None:
-                raise ValueError("key for extracting Dataarrays from DataArray_dict must be specified (variable)")
-            if DataArray_ls is None:
-                for idx, content in DataArray_dict.items():
-                    da = content[variable]
-                    ### check if 'depth' is a dimension and if its size is 1 to drop it
-                    if "depth" in da.dims and da.sizes["depth"] == 1:
-                        print(f'Dropped "depth" ({da.depth.values}) with lenght of 1 from from DataArray {idx}')
-                        DataArray_dict[idx][variable] = da.squeeze('depth')
+        ### Build DataArray_ls from DataArray_dict if needed
+        DataArray_ls, index_keys = self._normalize_inputs(DataArray_dict, DataArray_ls, variable)
 
-                DataArray_ls = [inner[variable] for idx, inner in sorted(DataArray_dict.items()) if variable in inner and inner[variable] is not None]
-            else:
-                raise ValueError("Both DataArray_dict and DataArray_ls were given.")
+        ### CLEANUP + DEPTH CONSISTENCY CHECK ON DataArray_ls
+        depth_ref = None       # reference depth coordinate (full array)
+        depth_ref_idx = None   # index of the first array used as reference
+        has_depth_flags = []   # track which arrays have a depth coord
 
+        for i, da in enumerate(DataArray_ls):
+            # ---------------- DEPTH CONSISTENCY CHECK ----------------
+            has_depth = "depth" in da.coords
+            has_depth_flags.append(has_depth)
+
+            if has_depth:
+                depth_arr = da.coords["depth"].values
+
+                # First array with depth becomes reference
+                if depth_ref is None:
+                    depth_ref = depth_arr
+                    depth_ref_idx = i
+                else:
+                    # Check shape and values exactly
+                    if depth_arr.shape != depth_ref.shape or np.any(depth_arr != depth_ref):
+                        raise ValueError(
+                            f"Inconsistent depth coordinates between inputs {i} and {depth_ref_idx}:\n"
+                            f"  depth[{i}] = {depth_arr}\n"
+                            f"  depth[{depth_ref_idx}] = {depth_ref}\n"
+                            "All depth coordinate values must be identical."
+                        )
+
+            # ---------------- DROP SINGLETON DIMS / COORDS ----------------
+            to_squeeze = []      # dims of size 1 to squeeze
+            to_drop_coords = []  # coords of size 1 but not dims
+
+            for dim in ("depth", "specie"):
+                # Case 1: dim is a proper dimension
+                if dim in da.dims and da.sizes[dim] == 1:
+                    to_squeeze.append(dim)
+
+                # Case 2: dim is only a coordinate with length 1
+                elif dim in da.coords and da.coords[dim].size == 1:
+                    to_drop_coords.append(dim)
+
+            if to_squeeze or to_drop_coords:
+                # Logging
+                for dim in to_squeeze:
+                    print(f'Dropped DIM "{dim}" ({da.coords[dim].values}) of length 1 from DataArray index {i}')
+                for coord in to_drop_coords:
+                    print(f'Dropped COORD "{coord}" ({da.coords[coord].values}) of length 1 from DataArray index {i}')
+
+                # Apply changes
+                if to_squeeze:
+                    da = da.squeeze(to_squeeze)
+                if to_drop_coords:
+                    da = da.drop_vars(to_drop_coords)
+
+                DataArray_ls[i] = da
+
+                # If we have a backing dict, sync the cleaned DA back into it
+                if DataArray_dict is not None and index_keys is not None:
+                    dict_key = index_keys[i]
+                    DataArray_dict[dict_key][variable] = da
+
+        # Optional: enforce that either all have depth or none have depth
+        # if any(has_depth_flags) and not all(has_depth_flags):
+        #     raise ValueError(
+        #         "Some inputs have a 'depth' coordinate and others do not. "
+        #         "Either all or none of the inputs must define a 'depth' coordinate."
+        #     )
+
+        ### NaN counts  on cleaned arrays
         if DataArray_dict is not None:
             nan_counts_inputs = {
                 idx: int(inner[variable].isnull().sum().item())
@@ -8062,8 +8177,10 @@ class ChemicalDrift(OceanDrift):
                 if variable in inner
             }
         else:
-            nan_counts_inputs = {i: int(da.isnull().sum().item()) for i, da in enumerate(DataArray_ls)}
-
+            nan_counts_inputs = {
+                i: int(da.isnull().sum().item())
+                for i, da in enumerate(DataArray_ls)
+            }
 
         if len(DataArray_ls) < 1:
             raise ValueError("Empty DataArray_ls")
@@ -8117,6 +8234,13 @@ class ChemicalDrift(OceanDrift):
 
         H_can_out = None
         nan_counts_interp = None
+
+        if not any(need_interpolation.values()):
+            # Remove heavy DataArrays to free memory safely when interpolation is not needed
+            if DataArray_dict is not None:
+                DataArray_dict.clear()
+            DataArray_dict = None
+
         if any(need_interpolation.values()):
             if DataArray_dict is None:
                 raise ValueError("DataArray_dict {idx{'var','topo'}, ...} must be specified")
@@ -8842,6 +8966,10 @@ class ChemicalDrift(OceanDrift):
                     weights_path=None
                 ).where(lambda x: x > 0, 0.0)
 
+                if DataArray_dict is not None:
+                    DataArray_dict.clear()
+                DataArray_dict = None
+
 
         else:
             print("No Interpolation needed")
@@ -9037,15 +9165,15 @@ class ChemicalDrift(OceanDrift):
                 else:
                     rel_change = (Final_sum_nan - avg_nans) / avg_nans  # signed
                     pct_change = 100.0 * rel_change
-                    if abs(rel_change) > 0.10:
+                    if abs(rel_change) > 0.05:
                         raise ValueError(
                             f"NaN count check failed: Final_sum_nans={Final_sum_nan}, "
-                            f"avg_nans={avg_nans:.2f}, change={pct_change:+.2f}% (exceeds ±10%)."
+                            f"avg_nans={avg_nans:.2f}, change={pct_change:+.2f}% (exceeds ±5%)."
                         )
                     else:
                         print(
                             f"NaN count check OK: Final_sum_nans={Final_sum_nan}, "
-                            f"avg_nans={avg_nans:.2f}, change={pct_change:+.2f}% (within ±10%)."
+                            f"avg_nans={avg_nans:.2f}, change={pct_change:+.2f}% (within ±5%)."
                         )
 
             if H_can_out is not None:
@@ -9065,7 +9193,6 @@ class ChemicalDrift(OceanDrift):
     def vertical_depth_mean(self,
                             Dataset,
                             Topograpy_DA = None,
-                            time_name = "time",
                             variable_name = None,
                             topograpy_name = None,
                             save_file = True,
@@ -9080,13 +9207,11 @@ class ChemicalDrift(OceanDrift):
         Dataset:           xarray DataSet, containing concentration (and topography) dataarray
             * latitude      (latitude) float32
             * longitude     (longitude) float32
-            * time          (time) datetime64[ns]
-            * depth         (depth) float32
+            * depth         (depth) float32 (Expected like [-2, -1, 0])
             * other dims
-        Topograpy_DA :     xarray DataArray, with topograpy corresponding to Dataset
+        Topograpy_DA :     xarray DataArray, with topograpy corresponding to Dataset (positive downword)
             * latitude      (latitude) float32
             * longitude     (longitude) float32
-        time_name:         string, name of time dimention of Dataset
         variable_name:     string, name of variable in DataSet to be averaged
         topograpy_name:    string, name of topograpy variable in Dataset
         save_file:         boolean, select if averege file is saved
@@ -9104,15 +9229,17 @@ class ChemicalDrift(OceanDrift):
                 raise ValueError("file_output_path or file_output_name not specified")
 
         # Specify bathimetry if not included in Dataset
-        if topograpy_name not in Dataset.data_vars:
-            if (Topograpy_DA is not None) and isinstance(Topograpy_DA, xr.DataArray):
-                Bathymetry_DA = Topograpy_DA
-            else:
-                raise ValueError("topograpy array not in Dataset and not specified")
-        else:
+        if topograpy_name is not None:
+            if topograpy_name not in Dataset.data_vars:
+                raise ValueError(f"Topography variable '{topograpy_name}' not found in Dataset")
             Bathymetry_DA = Dataset[topograpy_name]
+        else:
+            if (Topograpy_DA is None) or (not isinstance(Topograpy_DA, xr.DataArray)):
+                raise ValueError("topograpy array not in Dataset and not specified")
+            Bathymetry_DA = Topograpy_DA
 
-        if (Bathymetry_DA >= 0).any():
+        # Bathimetry is expected positive downward
+        if (Bathymetry_DA <= 0).any():
             print("Changed <= 0 to np.nan in bathimetry")
             Bathymetry_DA = xr.where(Bathymetry_DA <= 0,
                                      np.nan,
@@ -9133,109 +9260,117 @@ class ChemicalDrift(OceanDrift):
                 if dim in DataArray.dims:
                     DataArray_dims_values[dim] = DataArray[dim].values
                 else:
-                    raise ValueError("Uncommon dimensions are present in DataArray_ls")
+                    raise ValueError("Uncommon dimensions are present in Conc_DA and Bathymetry_DA")
             # Append the dimension values for this DataArray to the list
             dims_values.append(DataArray_dims_values)
 
         self._check_dims_values(dims_values)
 
-        # Create array to store weights for average
-        if time_name in Conc_DA.dims:
-            ts_ref = Conc_DA[time_name].min()
-
-        Bathimetry_mask = ((Bathymetry_DA == 0) | np.isnan(Bathymetry_DA))
+        Bathymetry_mask = ((Bathymetry_DA == 0) | np.isnan(Bathymetry_DA))
         Landmask = (Conc_DA.sel(**{"depth": 0})).isnull()
         # Prepare weights for avarage
-        depth_levels = np.array(Conc_DA.depth)
-        depth_levels = depth_levels[np.argsort(-depth_levels)]
-        weights_array_ls = []
+        # Depth is expected like  [-2, -1, 0], then formatted to ascending positive [-1, 0] -> [0, 1]
+        Conc_DA = Conc_DA.assign_coords(
+            depth=("depth", np.abs(Conc_DA["depth"].values))
+        )
+        Conc_DA = Conc_DA.sortby("depth")
 
-        for depth_index in range(0, len(depth_levels)):
-            if time_name in Conc_DA.dims:
-                weights_array = xr.zeros_like(Conc_DA.sel(**{time_name: ts_ref, "depth": depth_levels[depth_index]}))
-            else:
-                weights_array = xr.zeros_like(Conc_DA.sel(**{"depth": depth_levels[depth_index]}))
+        depth_levels = np.array(Conc_DA.depth.values)
+        if depth_levels[0] != 0:
+            raise ValueError("Depth coordinate must end at 0 (surface level)")
 
-            if depth_levels[depth_index] == 0:
-                print(f"depth: {depth_levels[depth_index]}")
-                depth_range = (abs(depth_levels[depth_index + 1]))
-                weights_array = xr.where(Bathymetry_DA <= depth_range,
-                                1, # if bathimetry is lower than the surface layer, consider only surface layer in average
-                                depth_range/Bathymetry_DA)
-                weights_array = xr.where(Bathimetry_mask,
-                                0, # if bathimetry is 0 or np.nan change weight to 0
-                                weights_array)
-                # Change landmask gridcells to weight = 0 to avoid operations with NaN during average
-                weights_array = weights_array.fillna(0)
-                weights_array['depth'] =  float(depth_levels[depth_index])
-                weights_array_ls.append(weights_array)
+        ### Construct weights
+        # depth_levels: 1D numpy array, ascending, with 0 at the surface
+        depth_vals = np.asarray(depth_levels, dtype=float)
+        abs_depth = np.abs(depth_vals)
 
-            else:
-                if depth_index < (len(depth_levels) - 1):
-                    print(f"depth: {depth_levels[depth_index]}")
-                    depth_range = (abs(depth_levels[depth_index + 1]) - abs(depth_levels[depth_index]))
-                    # if bathimetry is within this layer
-                    Mask_1 = (Bathymetry_DA <= abs(depth_levels[depth_index + 1])) & (Bathymetry_DA > abs(depth_levels[depth_index]))
-                    #if bathimetry is higher than this level
-                    Mask_2 = (Bathymetry_DA > abs(depth_levels[depth_index + 1]))
+        if depth_vals[0] != 0:
+            raise ValueError("Depth coordinate must start at 0 for this weighting scheme.")
 
-                    weights_array = xr.where(Mask_1,
-                                            ((Bathymetry_DA - abs(depth_levels[depth_index]))/Bathymetry_DA),
-                                            # if bathimetry is within this layer, consider partial contribution of vertical layer to bathimetry
-                                            xr.where(Mask_2,
-                                            #if bathimetry is higher than this level, consider contribution of whole vertical layer to bathimetry
-                                                    (depth_range/Bathymetry_DA),
-                                                     0) # if bathimetry if lower than this vertical level, weight is 0
-                                            )
-                    weights_array = xr.where(Bathimetry_mask,
-                                    0, # if bathimetry is 0 or np.nan change weight to 0
-                                    weights_array)
+        # "top" of each layer (in absolute depth)
+        depth_top = xr.DataArray(
+            abs_depth,
+            dims=("depth",),
+            coords={"depth": depth_vals},
+        )
 
-                    weights_array['depth'] =  float(depth_levels[depth_index])
-                    weights_array_ls.append(weights_array)
+        # "bottom" of each layer is the next depth; last one left as NaN
+        depth_bottom_vals = np.empty_like(abs_depth)
+        depth_bottom_vals[:-1] = abs_depth[1:]
+        depth_bottom_vals[-1] = np.nan  # last layer handled separately
 
-                elif depth_index == (len(depth_levels) - 1):
-                    print(f"depth: {depth_levels[depth_index]}")
-                    Mask_3 = (Bathymetry_DA > abs(depth_levels[depth_index]))
-                    weights_array = xr.where(Mask_3,
-                                            ((Bathymetry_DA - abs(depth_levels[depth_index]))/Bathymetry_DA),
-                                            0)
+        depth_bottom = xr.DataArray(
+            depth_bottom_vals,
+            dims=("depth",),
+            coords={"depth": depth_vals},
+        )
 
-                    weights_array = xr.where(Bathimetry_mask,
-                                    0, # if bathimetry is 0 or np.nan change weight to 0
-                                    weights_array)
+        # Broadcast bathymetry to have a depth dimension
+        # Bathymetry_DA: (latitude, longitude)
+        H = Bathymetry_DA  # (latitude, longitude)
 
-                    weights_array['depth'] =  float(depth_levels[depth_index])
-                    weights_array_ls.append(weights_array)
+        # Broadcast to 3D (depth, latitude, longitude)
+        top3, H3 = xr.broadcast(depth_top, H)
+        bottom3, _ = xr.broadcast(depth_bottom, H)
 
-        # Concatenate weights_array slices and delete list of slices
-        weights_array_fin = xr.concat(weights_array_ls, dim = "depth")
-        del weights_array_ls
-        weights_array_check = weights_array_fin.sum(dim = "depth")
-        # Account for 0.999 periodic as sum of weights
-        weights_array_check = (weights_array_check  != 0) & (np.abs(weights_array_check - 1) > 1e-10)
+        # Layer thickness for all but last layer (last layer uses separate rule)
+        layer_thickness = bottom3 - top3
+
+        # Initialize weights array
+        weights_array_fin = xr.zeros_like(H3)
+
+        # Masks for "full" vs "partial" coverage for all but last layer
+        full = H3 > bottom3                      # bathymetry deeper than layer bottom
+        partial = (H3 > top3) & (H3 <= bottom3)  # bathymetry within layer
+
+        # For full layers: thickness / H
+        weights_array_fin = xr.where(
+            full,
+            layer_thickness / H3,
+            weights_array_fin
+        )
+
+        # For partial layers: (H - top) / H
+        weights_array_fin = xr.where(
+            partial,
+            (H3 - top3) / H3,
+            weights_array_fin
+        )
+
+        # Handle the last (deepest) layer: index -1
+        last_depth = depth_vals[-1]
+        top_last = abs_depth[-1]
+
+        H_last = H3.sel(depth=last_depth)
+        w_last = xr.where(
+            H_last > top_last, # Last depth layer is lower than bathymetry, so weight = 0
+            (H_last - top_last) / H_last,  # Last depth layer accounts for water until bathymetry
+            0.0
+        )
+
+        weights_array_fin.loc[dict(depth=last_depth)] = w_last
+
+        # Apply bathymetry mask (0 or NaN) and clean up
+        weights_array_fin = xr.where(
+            Bathymetry_mask,
+            0,          # bathymetry 0 or NaN -> weight 0
+            weights_array_fin
+        )
+
+        weights_array_fin = weights_array_fin.fillna(0)
+
+        # Check that weights sum to ~1 where non-zero
+        weights_array_check = weights_array_fin.sum(dim="depth")
+        weights_array_check = (weights_array_check != 0) & (np.abs(weights_array_check - 1) > 1e-10)
 
         if weights_array_check.sum() > 0:
             raise ValueError("weights_array sum higher >1 or <0")
 
-        if time_name in Conc_DA.dims:
-            time_date_serie = np.array(Conc_DA[time_name])
+        # Conc_DA can be (time, depth, lat, lon) or (depth, lat, lon)
+        # weights_array_fin has no time dimension and will broadcast over time automatically
+        weighted_avg = (Conc_DA * weights_array_fin).sum(dim="depth", skipna=True)
 
-            avg_tstep_ls = []
-            for time_step in time_date_serie:
-                time_step_DA = Conc_DA.sel(**{time_name: time_step})
-                ts_weighted_avg = time_step_DA * weights_array_fin
-                # weight is already normalized to 1
-                ts_weighted_avg = ts_weighted_avg.sum(dim = "depth", skipna = True)
-                ts_weighted_avg.__setitem__(time_name, time_step)
-                avg_tstep_ls.append(ts_weighted_avg)
-
-            weighted_avg = xr.concat(avg_tstep_ls, dim = time_name)
-        else:
-            weighted_avg = Conc_DA * weights_array_fin
-            weighted_avg = weighted_avg.sum(dim = "depth", skipna = True)
-
-        # Re-apply landamsk of original data and re-name variable
+        # Re-apply landmask and set name
         weighted_avg = weighted_avg.where(~Landmask)
         weighted_avg.name = variable_name
 
