@@ -2896,6 +2896,7 @@ class ChemicalDrift(OceanDrift):
         from pyproj import CRS, Proj, Transformer
         import pandas as pd
         import gc
+        from datetime import timedelta
 
 
         def is_valid_proj4(density_proj):
@@ -2918,6 +2919,27 @@ class ChemicalDrift(OceanDrift):
         if self.mode != opendrift.models.basemodel.Mode.Config:
             self.mode = opendrift.models.basemodel.Mode.Config
             logger.debug("Changed self.mode to Config")
+
+        all_times = pd.to_datetime(self.result.time).to_pydatetime()
+        if time_start is not None:
+            time_start = pd.to_datetime(time_start).to_pydatetime()
+        if time_end is not None:
+            time_end = pd.to_datetime(time_end).to_pydatetime()
+
+        if (time_start is not None) or (time_end is not None):
+            tmask = np.ones(len(all_times), dtype=bool)
+            if time_start is not None:
+                tmask &= np.array(all_times) >= time_start
+            if time_end is not None:
+                tmask &= np.array(all_times) <= time_end
+            if not tmask.any():
+                logger.warning(f"No timesteps fall within time_start: {time_start} and time_end: {time_end}.")
+                return
+            # Save for later use when writing 'time' coords and averaging
+            filtered_times = np.array(all_times)[tmask]
+        else:
+            tmask = None
+            filtered_times = all_times
 
         if landmask_shapefile is not None:
             if 'shape' in self.env.readers.keys():
@@ -3079,26 +3101,7 @@ class ChemicalDrift(OceanDrift):
         if mass_unit==None:
             mass_unit='microgram'  # default unit for chemicals
 
-        all_times = pd.to_datetime(self.result.time).to_pydatetime()
-        if time_start is not None:
-            time_start = pd.to_datetime(time_start).to_pydatetime()
-        if time_end is not None:
-            time_end = pd.to_datetime(time_end).to_pydatetime()
 
-        if (time_start is not None) or (time_end is not None):
-            tmask = np.ones(len(all_times), dtype=bool)
-            if time_start is not None:
-                tmask &= np.array(all_times) >= time_start
-            if time_end is not None:
-                tmask &= np.array(all_times) <= time_end
-            if not tmask.any():
-                logger.warning(f"No timesteps fall within time_start: {time_start} and time_end: {time_end}.")
-                return
-            # Save for later use when writing 'time' coords and averaging
-            filtered_times = np.array(all_times)[tmask]
-        else:
-            tmask = None
-            filtered_times = all_times
 
         z = (self.result.z.T).values
         # Move elements above sea level below the surface (-1 mm)
@@ -3223,7 +3226,13 @@ class ChemicalDrift(OceanDrift):
             if deltat==None:
                 ndt = 1
             else:
-                ndt = int( deltat / (mdt.total_seconds()/3600.) )
+                if not isinstance(mdt, timedelta):
+                    logger.warning(
+                        "Mean timestep is not a datetime.timedelta object "
+                        "(likely only one timestep available). Cannot calculate mean concentration.")
+                    return
+                else:
+                    ndt = int( deltat / (mdt.total_seconds()/3600.))
             times2 = times[::ndt]
             times2 = times2[1:]
             odt = int(cshape[0]/ndt)
@@ -4135,30 +4144,34 @@ class ChemicalDrift(OceanDrift):
         """Seed elements based on a dataarray with water/sediment concentration or direct emissions to water
 
             Arguments:
-                NETCDF_data:        dataarray with concentration or emission data, with coordinates
-                    * latitude      (latitude) float32
-                    * longitude     (longitude) float32
-                    * time          (time) datetime64[ns]
-                Bathimetry_data:    dataarray with bathimetry data, MUST have the same grid of NETCDF_data, no time dimension, and positive values
-                    * latitude      (latitude) float32
-                    * longitude     (longitude) float32
-                Bathimetry_seed_data:    dataarray with bathimetry data, MUST be the same used for running the simulation, no time dimension, and positive values
-                    * latitude      (latitude) float32
-                    * longitude     (longitude) float32
-                mode:               "water_conc" (seed from concentration in water colum, in ug/L), "sed_conc" (seed from sediment concentration, in ug/kg d.w.), "emission" (seed from direct discharge to water, in kg)
-                radius:             float32, unit: meters, elements will be created in a circular area around coordinates
-                lowerbound:         float32 elements with lower values are discarded
-                higherbound:        float32, elements with higher values are discarded
-                number_of_elements: int, number of elements created for each vertical layer at each gridpoint
-                mass_element_ug:    float32, maximum mass of elements if number_of_elements is not specificed
-                lon_resol:          float32, longitude resolution of the NETCDF dataset
-                lat_resol:          float32, latitude resolution of the NETCDF dataset
-                gen_mode:           string, "mass" (elements generated from mass), "fixed" (fixed number of elements for each data point)
+                NETCDF_data:          dataarray with concentration or emission data, with coordinates
+                    * latitude        (latitude) float32
+                    * longitude       (longitude) float32
+                    * time            (time) datetime64[ns]
+                Bathimetry_data:      dataarray with bathimetry data, MUST have the same grid of NETCDF_data, no time dimension, and positive values
+                    * latitude        (latitude) float32
+                    * longitude       (longitude) float32
+                Bathimetry_seed_data: dataarray with bathimetry data, MUST be the same used for running the simulation, no time dimension, and positive values
+                    * latitude        (latitude) float32
+                    * longitude       (longitude) float32
+                mode:                 "water_conc" (seed from concentration in water column, in ug/L),
+                                      "sed_conc" (seed from sediment concentration, in ug/kg d.w.),
+                                      "emission" (seed from direct discharge to water, in kg)
+                radius:               float32, unit: meters, elements will be created in a circular area around coordinates
+                lowerbound:           float32 elements with lower values are discarded
+                higherbound:          float32, elements with higher values are discarded
+                number_of_elements:   int, number of elements created for each vertical layer at each gridpoint
+                mass_element_ug:      float32, maximum mass of elements if number_of_elements is not specificed
+                lon_resol:            float32, longitude resolution of the NETCDF dataset
+                lat_resol:            float32, latitude resolution of the NETCDF dataset
+                gen_mode:             string, "mass" (elements generated from mass), "fixed" (fixed number of elements for each data point)
+                origin_marker:        int, or string "single", assign a marker to seeded elements. If "single" a different origin_marker will be assigned to each datapoint
                 last_depth_until_bathimetry: boolean, when depth is specified in NETCDF_data using "water_conc" mode
                                             the water column below the highest depth value is considered the same as the last
                                             available layer (True) or is consedered without chemical (False)
-                origin_marker:      int, or string "single", assign a marker to seeded elements. If "single" a different origin_marker will be assigned to each datapoint
+
             """
+        import opendrift
 
         # mass_element_ug=1e3     # 1e3 - 1 element is 1mg chemical
         # mass_element_ug=100e3   # 100e3 - 1 element is 100mg chemical
@@ -4267,8 +4280,11 @@ class ChemicalDrift(OceanDrift):
             sed_mixing_depth = np.array(self.get_config('chemical:sediment:mixing_depth')) # m
             sed_density      = np.array(self.get_config('chemical:sediment:density')) # density of sediment particles, in kg/m3 d.w.
             sed_porosity     = np.array(self.get_config('chemical:sediment:porosity') ) # fraction of sediment volume made of water, adimentional (m3/m3)
+            if self.mode != opendrift.models.basemodel.Mode.Config:
+                self.mode = opendrift.models.basemodel.Mode.Config
             self.init_species()
             self.init_transfer_rates()
+
 
         lat_grid_m = np.array([6.371e6 * lat_resol * (2 * np.pi) / 360])
 
@@ -8392,10 +8408,11 @@ class ChemicalDrift(OceanDrift):
 
             if to_squeeze or to_drop_coords:
                 # Logging
-                for dim in to_squeeze:
-                    print(f'Dropped DIM "{dim}" ({da.coords[dim].values}) of length 1 from DataArray index {i}')
-                for coord in to_drop_coords:
-                    print(f'Dropped COORD "{coord}" ({da.coords[coord].values}) of length 1 from DataArray index {i}')
+                dropped_info = {
+                    "dims": {dim: da.coords[dim].values for dim in to_squeeze},
+                    "coords": {coord: da.coords[coord].values for coord in to_drop_coords},
+                }
+                print(f"Dropped from DataArray index {i}: {dropped_info}")
 
                 # Apply changes
                 if to_squeeze:
