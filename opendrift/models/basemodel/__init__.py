@@ -27,7 +27,7 @@ try:
     from dotenv import load_dotenv
     load_dotenv()
 except:
-    logger.warning('Cound not load dotenv')
+    logger.debug('Cound not load dotenv')
 
 import sys
 import os
@@ -2526,6 +2526,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                 land_color = 'gray'
             else:
                 land_color = cfeature.COLORS['land']
+        land_zorder = kwargs.pop('land_zorder', 1.5)
 
         if 'text' in kwargs:
             if not isinstance(kwargs['text'], list):
@@ -2582,9 +2583,10 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                                   facecolor=facecolor,
                                   edgecolor='black')
             else:
-                reader_global_landmask.plot_land(ax, lonmin, latmin, lonmax,
-                                                 latmax, fast, ocean_color,
-                                                 land_color, lscale,
+                reader_global_landmask.plot_land(ax, lonmin, latmin, lonmax, latmax,
+                                                 fast=fast, ocean_color=ocean_color,
+                                                 land_color=land_color, land_zorder=land_zorder,
+                                                 lscale=lscale,
                                                  crs_plot=self.crs_plot,
                                                  crs_lonlat=self.crs_lonlat)
 
@@ -2674,6 +2676,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             compare_list, compare_args = self._get_comparison_xy_for_plots(
                 compare)
             kwargs.update(compare_args)
+
+        background_zorder = kwargs.pop('background_zorder', 0)
 
         start_time = datetime.now()
         if cmap is None:
@@ -2857,7 +2861,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                                map_y,
                                scalar,
                                alpha=bgalpha,
-                               zorder=1,
+                               zorder=background_zorder,
                                antialiased=True,
                                linewidth=0.0,
                                rasterized=True,
@@ -2871,7 +2875,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                                     u_component[::skip, ::skip],
                                     v_component[::skip, ::skip],
                                     scale=scale,
-                                    zorder=1,
+                                    zorder=background_zorder,
                                     transform=self.crs_lonlat)
 
         if lcs is not None:
@@ -2884,6 +2888,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                                  vmin=vmin,
                                  vmax=vmax,
                                  cmap=cmap,
+                                 zorder=background_zorder,
                                  transform=self.crs_lonlat)
 
         if show_elements is True:
@@ -3373,7 +3378,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
              show_initial=True,
              density_pixelsize_m=1000,
              lalpha=None,
-             bgalpha=1,
+             bgalpha=.8,
              clabel=None,
              cpad=.05,
              caspect=30,
@@ -3674,6 +3679,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                            color=self.plot_comparison_colors[i + 1],
                            transform=self.crs_lonlat)
 
+        background_zorder = kwargs.pop('background_zorder', 0)
         if background is not None:
             if hasattr(self, 'time'):
                 time = self.time - self.time_step_output
@@ -3708,7 +3714,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                                             map_y,
                                             scalar,
                                             alpha=bgalpha,
-                                            zorder=1,
+                                            zorder=background_zorder,
                                             vmin=vmin,
                                             vmax=vmax,
                                             cmap=cmap,
@@ -3739,7 +3745,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                       v_component[::skip, ::skip],
                       scale=scale,
                       transform=self.crs_lonlat,
-                      zorder=1)
+                      zorder=background_zorder)
 
         if lcs is not None:
             map_x_lcs, map_y_lcs = (lcs['lon'], lcs['lat'])
@@ -3749,7 +3755,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                           alpha=1,
                           vmin=vmin,
                           vmax=vmax,
-                          zorder=0,
+                          zorder=background_zorder,
                           cmap=cmap,
                           transform=self.crs_lonlat)
 
