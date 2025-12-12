@@ -8329,6 +8329,141 @@ class ChemicalDrift(OceanDrift):
         return DataArray_ls, index_keys
 
 
+    @staticmethod
+    def _normalize_depth_and_specie(DataArray_ls):
+        """
+        Normalize 'depth' and 'specie' across a list of DataArrays.
+
+        Rules:
+          - If no DataArray has 'depth': leave depth untouched (i.e. absent), just
+            drop 'specie' dim/coord where present.
+          - If some DataArrays have 'depth':
+              * All 'depth' coordinates among those must have the same length and values
+                (scalar vs [0.] is treated as equal).
+              * If depth is single-valued (length 1), every DataArray is converted to have
+                a 'depth' dimension of length 1 with that value and matching coord.
+              * If depth is multi-valued (length > 1), every DataArray must already have
+                'depth' present, and all must match; they are left multi-depth but their
+                depth coord is set to the common reference.
+          - In all cases, remove any 'specie' dimension and/or coordinate.
+        """
+        import numpy as np
+        import xarray as xr
+        depth_ref = None
+        depth_ref_idx = None
+        has_depth_flags = []
+
+        # Inspect & verify depth where present
+        for i, da in enumerate(DataArray_ls):
+            has_depth = ("depth" in da.coords) or ("depth" in da.dims)
+            has_depth_flags.append(has_depth)
+
+            if not has_depth:
+                continue
+
+            # Get depth values irrespective of dim vs coord
+            if "depth" in da.coords:
+                depth_vals = da.coords["depth"].values
+            else:
+                depth_vals = da["depth"].values
+
+            depth_arr_norm = np.atleast_1d(np.asarray(depth_vals))
+
+            if depth_ref is None:
+                depth_ref = depth_arr_norm
+                depth_ref_idx = i
+            else:
+                depth_ref_norm = np.atleast_1d(np.asarray(depth_ref))
+
+                # Require same shape and values for all with depth
+                if depth_arr_norm.shape != depth_ref_norm.shape or not np.allclose(
+                    depth_arr_norm, depth_ref_norm
+                ):
+                    raise ValueError(
+                        f"Inconsistent depth coordinates between inputs {i} and {depth_ref_idx}:\n"
+                        f"  depth[{i}] = {depth_arr_norm}\n"
+                        f"  depth[{depth_ref_idx}] = {depth_ref_norm}\n"
+                        "All depth coordinate values must be identical."
+                    )
+
+        # No depth anywhere
+        if depth_ref is None:
+            # Just drop 'specie' and return
+            normalized = []
+            for da in DataArray_ls:
+                aa = da
+                # Drop specie dimension if present
+                if "specie" in aa.dims:
+                    aa = aa.squeeze("specie", drop=True)
+                # Drop specie coord if present
+                if "specie" in aa.coords:
+                    aa = aa.drop_vars("specie")
+                normalized.append(aa)
+            return normalized
+
+        # There is a common depth
+        depth_ref_norm = np.atleast_1d(np.asarray(depth_ref))
+        n_depth = depth_ref_norm.size
+        any_missing_depth = not all(has_depth_flags)
+
+        # If multi-depth and some arrays have no depth at all, raise error.
+        if n_depth > 1 and any_missing_depth:
+            raise ValueError(
+                "Some DataArrays have multi-layer 'depth' while others have no 'depth'. "
+                "Cannot safely normalize in this case."
+            )
+
+        normalized = []
+
+        for i, da in enumerate(DataArray_ls):
+            aa = da
+
+            # Normalize depth to be a dim + coord with the common values
+            if n_depth == 1:
+                depth_value = float(depth_ref_norm[0])
+
+                if "depth" in aa.dims:
+                    # Ensure size==1
+                    if aa.sizes["depth"] != 1:
+                        raise ValueError(
+                            f"DataArray index {i} has 'depth' dim of size {aa.sizes['depth']} "
+                            "but reference depth is single-valued."
+                        )
+                    # Enforce coord
+                    aa = aa.assign_coords(depth=[depth_value])
+                    print(f"Normalized depth coord for array {i} → [{depth_value}]")
+                else:
+                    # Remove any scalar coord if present
+                    if "depth" in aa.coords:
+                        aa = aa.drop_vars("depth")
+                    # Add depth as a dimension with single coordinate
+                    aa = aa.expand_dims(dim={"depth": [depth_value]})
+                    print(f"Added depth=[{depth_value}] as dimension to array {i}")
+
+            else:
+                # Multi-depth: all must already have depth, and values were alredy checked
+                if "depth" not in aa.dims:
+                    raise ValueError(
+                        f"DataArray index {i} has no 'depth' dimension, but reference depth "
+                        "is multi-layer."
+                    )
+                # Enforce identical depth coord
+                aa = aa.assign_coords(depth=depth_ref_norm)
+                print(f"Normalized depth coord for array {i} → {depth_ref_norm.tolist()}")
+
+            # -Drop 'specie' dim & coord in all cases
+            if "specie" in aa.dims:
+                aa = aa.squeeze("specie", drop=True)
+                print(f"Removed 'specie' dimension from array {i}")
+            if "specie" in aa.coords:
+                aa = aa.drop_vars("specie")
+                print(f"Removed 'specie' coordinate from array {i}")
+
+            normalized.append(aa)
+
+        return normalized
+
+
     def sum_DataArray_list(self,
                          DataArray_dict,
                          DataArray_ls = None,
@@ -8373,74 +8508,8 @@ class ChemicalDrift(OceanDrift):
 
         ### Build DataArray_ls from DataArray_dict if needed
         DataArray_ls, index_keys = self._normalize_inputs(DataArray_dict, DataArray_ls, variable)
-
-        ### CLEANUP + DEPTH CONSISTENCY CHECK ON DataArray_ls
-        depth_ref = None       # reference depth coordinate (full array)
-        depth_ref_idx = None   # index of the first array used as reference
-        has_depth_flags = []   # track which arrays have a depth coord
-
-        for i, da in enumerate(DataArray_ls):
-            # ---------------- DEPTH CONSISTENCY CHECK ----------------
-            has_depth = "depth" in da.coords
-            has_depth_flags.append(has_depth)
-
-            if has_depth:
-                depth_arr = da.coords["depth"].values
-
-                # First array with depth becomes reference
-                if depth_ref is None:
-                    depth_ref = depth_arr
-                    depth_ref_idx = i
-                else:
-                    # Check shape and values exactly
-                    if depth_arr.shape != depth_ref.shape or np.any(depth_arr != depth_ref):
-                        raise ValueError(
-                            f"Inconsistent depth coordinates between inputs {i} and {depth_ref_idx}:\n"
-                            f"  depth[{i}] = {depth_arr}\n"
-                            f"  depth[{depth_ref_idx}] = {depth_ref}\n"
-                            "All depth coordinate values must be identical."
-                        )
-
-            # ---------------- DROP SINGLETON DIMS / COORDS ----------------
-            to_squeeze = []      # dims of size 1 to squeeze
-            to_drop_coords = []  # coords of size 1 but not dims
-
-            for dim in ("depth", "specie"):
-                # Case 1: dim is a proper dimension
-                if dim in da.dims and da.sizes[dim] == 1:
-                    to_squeeze.append(dim)
-
-                # Case 2: dim is only a coordinate with length 1
-                elif dim in da.coords and da.coords[dim].size == 1:
-                    to_drop_coords.append(dim)
-
-            if to_squeeze or to_drop_coords:
-                # Logging
-                dropped_info = {
-                    "dims": {dim: da.coords[dim].values for dim in to_squeeze},
-                    "coords": {coord: da.coords[coord].values for coord in to_drop_coords},
-                }
-                print(f"Dropped from DataArray index {i}: {dropped_info}")
-
-                # Apply changes
-                if to_squeeze:
-                    da = da.squeeze(to_squeeze)
-                if to_drop_coords:
-                    da = da.drop_vars(to_drop_coords)
-
-                DataArray_ls[i] = da
-
-                # If we have a backing dict, sync the cleaned DA back into it
-                if DataArray_dict is not None and index_keys is not None:
-                    dict_key = index_keys[i]
-                    DataArray_dict[dict_key][variable] = da
-
-        # Optional: enforce that either all have depth or none have depth
-        # if any(has_depth_flags) and not all(has_depth_flags):
-        #     raise ValueError(
-        #         "Some inputs have a 'depth' coordinate and others do not. "
-        #         "Either all or none of the inputs must define a 'depth' coordinate."
-        #     )
+        ### Ensure all DataArrays have consistent 'depth' semantics and Drop 'specie' dim/coord whenever it appears (size 1 or scalar).
+        DataArray_ls = self._normalize_depth_and_specie(DataArray_ls)
 
         ### NaN counts  on cleaned arrays
         if DataArray_dict is not None:
@@ -9243,7 +9312,6 @@ class ChemicalDrift(OceanDrift):
                     DataArray_dict.clear()
                 DataArray_dict = None
 
-
         else:
             print("No Interpolation needed")
 
@@ -9296,13 +9364,13 @@ class ChemicalDrift(OceanDrift):
             snap_mode=snap_mode,
             dim_res_dict=None)
 
-
         time_equal = False
         if all(time_name in da.dims for da in DataArray_ls):
             tvals = [da[time_name].values for da in DataArray_ls]
             time_equal = all(np.array_equal(tv, tvals[0]) for tv in tvals)
 
         time_start = datetime.now()
+
         Final_sum = None
         if time_equal and (start_date is None and end_date is None and freq_time is None):
             print("Time dimensions are all equal in DataArray_ls, skipping set-up of target_time to sum directly")
@@ -9380,6 +9448,7 @@ class ChemicalDrift(OceanDrift):
 
         if Final_sum is not None:
             ### Select mask to conserve landmask at different depths
+            print("Create landmask")
             all_valid = xr.concat([~a.isnull() for a in aligned], dim="part").any("part").any(dim=time_name)
             Final_sum = Final_sum.where(all_valid)
             Final_sum.attrs["mask_source"] = "any-over-time, union across inputs"
