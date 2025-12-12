@@ -6845,7 +6845,8 @@ class ChemicalDrift(OceanDrift):
 
         if load_timeseries_from_file is False:
             # Initialize init_species() and init_transfer_rates() if they were not stored in self.result
-            if not np.all([(hasattr(self.result, attr)) for attr in ['nspecies', 'name_species', 'transfer_rates', 'ntransformations']]):
+            if not np.all([(hasattr(self.result, attr)) for attr in ['nspecies', 'name_species', 'transfer_rates', 'ntransformations',
+                                                                     'num_srev', 'num_ssrev', 'num_prev', 'num_lmm', 'num_col']]):
                 # Init species and transfer rates
                 if self.mode != opendrift.models.basemodel.Mode.Config:
                     self.mode = opendrift.models.basemodel.Mode.Config
@@ -6863,16 +6864,37 @@ class ChemicalDrift(OceanDrift):
             deactivate_coords = any(bool(dic) for dic in deactivate_coords)
 
             # Define elimination processes
+            specie_ids_num = {"dissolved" : self.num_lmm,
+                              "DOC" : self.num_humcol,
+                              "SPM" : self.num_prev,
+                              "sed_rev" : self.num_srev,
+                              "buried": self.num_ssrev}
+            specie_ids_name = {self.num_lmm: "dissolved",
+                              self.num_humcol: "DOC",
+                              self.num_prev : "SPM" ,
+                              self.num_srev : "sed_rev" ,
+                              self.num_ssrev : "buried"}
+
+            Save_degr_now = self.get_config('chemical:transformations:Save_degr_now')
+
             status_categories = self.status_categories
-            active_index = status_categories.index('active') if 'active' in status_categories else None
-            removed_index = status_categories.index('removed') if 'removed' in status_categories else None
-            missing_data_index = status_categories.index('missing_data') if 'missing_data' in status_categories else None
-            out_of_bounds_index = status_categories.index('outside') if 'outside' in status_categories else None
-            stranded_index = status_categories.index('stranded') if 'stranded' in status_categories else None
+            active_idx        = status_categories.index('active')          if 'active'   in status_categories else None
+            outside_idx       = status_categories.index('outside')         if 'outside'  in status_categories else None
+            stranded_idx      = status_categories.index('stranded')        if 'stranded' in status_categories else None
+            removed_idx       = status_categories.index('removed')         if 'removed'  in status_categories else None
+            missing_data_idx  = status_categories.index('missing_data')    if 'missing_data'   in status_categories else None
+            seeded_on_land_idx = status_categories.index('seeded_on_land') if 'seeded_on_land' in status_categories else None
+
+
+
+            # active_index = status_categories.index('active') if 'active' in status_categories else None
+            # removed_index = status_categories.index('removed') if 'removed' in status_categories else None
+            # missing_data_index = status_categories.index('missing_data') if 'missing_data' in status_categories else None
+            # out_of_bounds_index = status_categories.index('outside') if 'outside' in status_categories else None
+            # stranded_index = status_categories.index('stranded') if 'stranded' in status_categories else None
             # Define time and mass convertions
-            steps=len(self.result.time)
+
             # age_seconds = np.arange(self.time_step.total_seconds(), self.steps_calculation * self.time_step.total_seconds(), self.time_step.total_seconds())
-            age_seconds_output = np.array(((self.result.time - self.result.time[0]) / np.timedelta64(1, 's')) + (self.result.time[1] - self.result.time[0]) / np.timedelta64(1, 's'))
 
             mass_conversion_factor=1e-6
             if mass_unit=='g' and self.elements.variables['mass']['units']=='ug':
@@ -6897,14 +6919,10 @@ class ChemicalDrift(OceanDrift):
             # Extract properties from simulation
 
             ds = self.result
+            steps=len(self.result.time)
             vars_time = [v for v in ds.data_vars if ds[v].dims == ("trajectory", "time")]
             if not vars_time:
                 raise ValueError("No (trajectory, time) variables found.")
-
-            # Check all variables
-            # stack them on a new dim so we can test all at once
-            # stacked = xr.concat([ds[v] for v in vars_time], dim="var")   # dims: var, trajectory, time
-            # valid_traj = stacked.notnull().any(dim="time").any(dim="var")   # dim: trajectory (bool)
 
             # Check only lat/lon
             valid_traj = (
@@ -6917,16 +6935,15 @@ class ChemicalDrift(OceanDrift):
             # keep only valid trajectories
             ds_clean = ds.isel(trajectory=valid_traj)
             self.result = ds_clean
-            del ds_clean
-            del ds
+            del ds_clean, ds
+
 
             # vars_time = [v for v in ds.data_vars if ds[v].dims == ("trajectory", "time")]
             # tr = ds[vars_time].sel(trajectory=141)   # xarray DataSet for trajectory 141
             # tr = self.result[["lon","lat","z","status","specie"]].sel(trajectory=141)
             # df = tr.to_dataframe().reset_index().drop(columns=["trajectory"])
 
-            status = self.result.status.T.values
-            sp = self.result.specie.T.values
+
             attrs_ls = ['lat', 'lon', 'mass',
                         'mass_degraded','mass_degraded_water', 'mass_degraded_sediment',
                         'mass_volatilized', 'mass_photodegraded', 'mass_biodegraded',
@@ -6934,12 +6951,17 @@ class ChemicalDrift(OceanDrift):
                         'mass_hydrolyzed', 'mass_hydrolyzed_water', 'mass_hydrolyzed_sediment'
                         ]
             # Dynamically create variables and assign values
-            extracted_attrs_dict = {}
+            result_ds=self.result
+            extracted_attrs_dict_2d = {}
             for attr in attrs_ls:
-                extracted_attrs_dict[attr] = (np.nan_to_num(getattr(self.result, attr).T.values)#, nan=0)
-                                   if hasattr(self.result, attr) else None)
+                extracted_attrs_dict_2d[attr] = ((getattr(result_ds, attr).T.values)
+                                   if hasattr(result_ds, attr) else None)
 
             # Get mask for elements in water column and sedments for each timestep
+
+            N_elem = extracted_attrs_dict_2d['mass'].shape[1]
+            status = result_ds.status.T.values                     # (T,N)
+            specie = result_ds.specie.T.values                     # (T,N)
             in_water_column_ls = []
             if hasattr(self, 'num_lmm'):
                 in_water_column_ls.append(self.num_lmm)
@@ -6948,13 +6970,11 @@ class ChemicalDrift(OceanDrift):
             if hasattr(self, 'num_prev'):
                 in_water_column_ls.append(self.num_prev)
 
-            in_water_column = np.any([sp == value for value in in_water_column_ls], axis=0)
-
-            in_sediment_layer = (sp==self.num_srev)
-            in_buried_sed = (sp==self.num_ssrev)
+            in_water_column = np.any([specie == value for value in in_water_column_ls], axis=0)
+            in_sediment_layer = (specie==self.num_srev)
+            in_buried_sed = (specie==self.num_ssrev)
             # mask for elements active until the end of each timestep
-            active_elements = (status==0)
-
+            active = (status == active_idx) if active_idx is not None else np.zeros_like(status, dtype=bool)
 
             # Find which elements are advected out of the domain
             print("Calculating mass advected out of the simulation")
@@ -6967,8 +6987,8 @@ class ChemicalDrift(OceanDrift):
                 gdf_shapefile = gpd.read_file(shp_file_path)
                 out_of_bounds = []
                 for t_step in range(0, steps):
-                    lon_ = extracted_attrs_dict['lon'][t_step]
-                    lat_ = extracted_attrs_dict['lat'][t_step]
+                    lon_ = extracted_attrs_dict_2d['lon'][t_step]
+                    lat_ = extracted_attrs_dict_2d['lat'][t_step]
                     # Create Point objects from latitude and longitude
                     geometry = [Point(long, latit) for long, latit in zip(lon_, lat_)]
                     gdf_points = gpd.GeoDataFrame(geometry=geometry, crs=gdf_shapefile.crs)
@@ -6986,7 +7006,7 @@ class ChemicalDrift(OceanDrift):
                 shp_adv_out = False
                 print("deactivate_north_of/south_of/_east_of/_west_of parameters used")
                 if ('outside' in status_categories):
-                    adv_out = (status == out_of_bounds_index)
+                    adv_out = (status == outside_idx)
                 else:
                     adv_out = np.zeros_like(status)
                     print("No elements advected out of domain")
@@ -6995,8 +7015,7 @@ class ChemicalDrift(OceanDrift):
                 # advection out of the domain is determined by the extent of uo/vo velocity field
                 if ('missing_data' in status_categories):
                     print("missing_data used: : adv_out elements taken from self.elements_deactivated")
-
-                    adv_out = (status == missing_data_index)
+                    adv_out = (status == missing_data_idx)
                 else:
                     adv_out = np.zeros_like(status)
                     print("No elements advected out of domain")
@@ -7006,398 +7025,627 @@ class ChemicalDrift(OceanDrift):
                          "were not used")
                 raise ValueError(error)
 
-            # Get mass associated to each specie for each timestep, considering only active elements that are inside
-            # the simulation domain (not stranded or advected out)
-            print("Calculating timeseries from simulation")
-            mass_by_specie=np.zeros((steps,5))
-
-            for i in range(steps):
-                mass_by_specie[i] = [
-                        np.sum(extracted_attrs_dict['mass'][i, :] * (sp[i, :] == j) * (~adv_out[i, :])*(active_elements[i, :])) * mass_conversion_factor
-                        for j in range(5)
-                        ]
+            age_seconds_output = np.array(((result_ds.time - result_ds.time[0]) / np.timedelta64(1, 's')) + (result_ds.time[1] - result_ds.time[0]) / np.timedelta64(1, 's'))
 
             time_steps =np.array(range(0, steps))*time_conversion_factor
-            mass_by_specie_df = pd.DataFrame(mass_by_specie)
-
-            for chem_specie in range(0,5):
-                if (chem_specie not in mass_by_specie_df.columns):
-                    mass_by_specie_df[chem_specie] = np.zeros_like(time_steps)
-
-            # Insert time as new columns
-            mass_by_specie_df.insert(0,('time'+"-["+ time_unit +"]"), time_steps)
             start_date = pd.Timestamp(self.start_time.year,
                                       self.start_time.month,
-                                      self.start_time.day)
+                                      self.start_time.day,
+                                      self.start_time.hour,
+                                      self.start_time.minute)
             time_date_serie = pd.date_range(start=start_date, periods=steps, freq=self.time_step_output)
-            mass_by_specie_df.insert(0,('date_of_timestep'), time_date_serie)
-            del mass_by_specie
-
-            # Change name of dataframe columns
-            Col_names_res = list(mass_by_specie_df.columns)
-            names_to_replace = ({0: "dissolved" + "-["+ mass_unit +"]",
-                                1: "DOC" + "-["+ mass_unit +"]",
-                                2: "SPM" + "-["+ mass_unit +"]",
-                                3: "sed_rev" + "-["+ mass_unit +"]",
-                                4: "sed_buried" + "-["+ mass_unit +"]"
-                                })
-            Col_names_res = [names_to_replace.get(e, e) for e in Col_names_res]
-            mass_by_specie_df.columns = Col_names_res
-
-            mass_results_timestep = {}
-            # Mass present in the system at each timestep considering only active elements
-            # that are inside the simulation domain
-
-            mass_results_timestep["mass_water"] = (np.sum(extracted_attrs_dict['mass']*in_water_column * (~adv_out)*active_elements,1) * mass_conversion_factor)
-            mass_results_timestep["mass_sed"] = (np.sum(extracted_attrs_dict['mass']*in_sediment_layer * (~adv_out)*active_elements,1) * mass_conversion_factor)
-            # mass_sed_buried is outside the domain
-            mass_results_timestep["mass_sed_buried"] = (np.sum(extracted_attrs_dict['mass']*in_buried_sed * (~adv_out)*active_elements,1) * mass_conversion_factor)
-            mass_results_timestep["mass_actual"] = mass_results_timestep["mass_water"] + mass_results_timestep["mass_sed"]
 
 
-            # Mass of all elements present in simulation during each timestep
-
-            timestep_attributes = ['mass', 'mass_degraded','mass_degraded_water', 'mass_degraded_sediment',
-                    'mass_volatilized', 'mass_photodegraded', 'mass_biodegraded',
-                    'mass_biodegraded_water', 'mass_biodegraded_sediment',
-                    'mass_hydrolyzed', 'mass_hydrolyzed_water', 'mass_hydrolyzed_sediment'
-                ]
-
-            for attr in timestep_attributes:
-                if extracted_attrs_dict[attr] is not None:
-                    mass_results_timestep[attr] = np.sum(extracted_attrs_dict[attr] * active_elements, axis=1) * mass_conversion_factor
-                else:
-                    mass_results_timestep[attr] = np.zeros_like(mass_results_timestep["mass_actual"])
+            adv_out=adv_out.astype(bool)
+            in_water_column=in_water_column.astype(bool)
+            in_sediment_layer=in_sediment_layer.astype(bool)
+            in_buried_sed=in_buried_sed.astype(bool)
 
 
-
-            # mass_tot_timestep = (np.sum(extracted_attrs_dict['mass'] * elements,1)*mass_conversion_factor)
-            # # Mass that has been degraded up to the end of each timestep considering all elements
-            # mass_degraded = (np.sum(extracted_attrs_dict['mass_degraded']*elements,1)*mass_conversion_factor)
-            # # Mass that has been degraded (wat and sed) and volatilized up to the end of each timestep
-            # # considering considering all elements
-            # mass_volatilized = (np.sum((extracted_attrs_dict['mass_volatilized'])*elements,1)*mass_conversion_factor)
-            # mass_degraded_w = (np.sum(extracted_attrs_dict['mass_degraded_water']*elements,1)*mass_conversion_factor)
-            # mass_degraded_s = (np.sum(extracted_attrs_dict['mass_degraded_sediment']*elements,1)*mass_conversion_factor)
-
-            # 'mass'
-            # 'mass_degraded','mass_degraded_water', 'mass_degraded_sediment',
-            # 'mass_volatilized', 'mass_photodegraded', 'mass_biodegraded',
-            # 'mass_biodegraded_water', 'mass_biodegraded_sediments',
-            # 'mass_hydrolyzed', 'mass_hydrolyzed_water', 'mass_hydrolyzed_sediments'
-
-            # controllo = (active_elements * (~adv_out) * (~stranded_elements)) == elements
+            def masked_nansum(arr, mask, axis):
+                """Sum arr over axis, only where mask==True; ignore NaNs inside mask."""
+                return np.nansum(np.where(mask, arr, np.nan), axis=axis)
 
 
-            # Calculate mass of  elements that are advected out of the domain
-            if shp_adv_out == False:
-                if ('missing_data' in status_categories) or ('outside' in status_categories):
-                    # adv_out = out_of_bounds
-                    # Mass advected out of the system during each time step
-                    mass_adv_out = (np.sum((extracted_attrs_dict['mass']*adv_out),1)*mass_conversion_factor)
-                    # Mass advected out of the system from start of simulation, until that time step
-                    mass_adv_out_cumulative = np.cumsum(mass_adv_out)
+            # Dynamically create variables and assign values
+            # ===== 1) Inside-system mass (active & not outside elements) =====
+            inside_mask = active & (~adv_out)
+            mass        = np.nan_to_num(extracted_attrs_dict_2d['mass'])
+
+            extracted_active_dict_1d = {}
+            extracted_active_dict_1d["mass_water_ts"] = masked_nansum(extracted_attrs_dict_2d['mass'], in_water_column  & inside_mask, axis=1) * mass_conversion_factor
+            extracted_active_dict_1d["mass_sed_ts"] = masked_nansum(extracted_attrs_dict_2d['mass'], in_sediment_layer  & inside_mask, axis=1) * mass_conversion_factor
+            extracted_active_dict_1d["mass_buried_ts"] = masked_nansum(extracted_attrs_dict_2d['mass'], in_buried_sed   & inside_mask, axis=1) * mass_conversion_factor
+            extracted_active_dict_1d["mass_actual_ts"] = extracted_active_dict_1d["mass_water_ts"] + extracted_active_dict_1d["mass_sed_ts"]
+
+            # ===== 2) Emitted mass (first timestep each element is finite) =====
+            valid = np.isfinite(extracted_attrs_dict_2d['mass'])
+            first_seen_idx = valid.argmax(axis=0)                 # 0 if never seen; guard with has_seen
+            has_seen = valid.any(axis=0)
+            # weight by mass at first_seen
+            rows = first_seen_idx[has_seen]
+            cols = np.arange(N_elem)[has_seen]
+            first_seen_mass = np.zeros(N_elem); first_seen_mass[has_seen] = mass[rows, cols]
+            emitted_mass = np.bincount(first_seen_idx[has_seen], weights=first_seen_mass[has_seen], minlength=steps)
+            extracted_active_dict_1d["emitted_mass_ts"] = emitted_mass * mass_conversion_factor
+            extracted_active_dict_1d["emitted_mass_cumulative"] = np.cumsum(extracted_active_dict_1d["emitted_mass_ts"])
+
+            # ===== 3) Degraded mass (all active) ===== CONTROLLARE COME GESTIRE MASS DI ELEMENTI ADV OUT/STRADED ECC
+            attrs_ls_1d_general = ['mass_degraded','mass_degraded_water', 'mass_degraded_sediment']
+            attrs_ls_1d_general_now = ['mass_degraded_now', 'mass_degraded_water_now', 'mass_degraded_sediment_now']
+            attrs_ls_1d_single_process = ['mass_volatilized', 'mass_photodegraded', 'mass_biodegraded',
+                        'mass_biodegraded_water', 'mass_biodegraded_sediment',
+                        'mass_hydrolyzed', 'mass_hydrolyzed_water', 'mass_hydrolyzed_sediment'
+                        ]
+
+
+            deactivated_mask = np.nan_to_num(status) != active_idx
+            for attr in  attrs_ls_1d_general:
+                attr = 'mass_degraded'
+                extracted_active_dict_1d[f"{attr}_cumulative"] = (
+                # Degraded mass logged for active elements (always cumulative)
+                ((masked_nansum(extracted_attrs_dict_2d.get(attr), active, axis=1) * mass_conversion_factor )
+                if extracted_attrs_dict_2d.get(attr) is not None else np.zeros_like(extracted_active_dict_1d["mass_actual"]))
+                + # Account for degraded mass that is removed from self.result after deactivation
+                (np.cumsum((masked_nansum(extracted_attrs_dict_2d.get(attr), deactivated_mask, axis=1) * mass_conversion_factor )
+                if extracted_attrs_dict_2d.get(attr) is not None else np.zeros_like(extracted_active_dict_1d["mass_actual"])))
+                )
+
+
+
+            for attr in  attrs_ls_1d_general_now:
+                extracted_active_dict_1d[f"{attr.replace('_now', '_ts')}"] = (
+                    (masked_nansum(extracted_attrs_dict_2d.get(attr), active, axis=1) * mass_conversion_factor )
+                if extracted_attrs_dict_2d.get(attr) is not None else np.zeros_like(extracted_active_dict_1d["mass_actual"]))
+
+
+                if Save_degr_now:
+                    extracted_active_dict_1d[attr] = (
+                        (masked_nansum(extracted_attrs_dict_2d.get(attr), inside_mask, axis=1) * mass_conversion_factor )
+                    if extracted_attrs_dict_2d.get(attr) is not None else np.zeros_like(extracted_active_dict_1d["mass_actual"]))
+
+                    extracted_active_dict_1d[f"{attr}_cumulative"] = np.cumsum(extracted_active_dict_1d[attr])
+
+
+            extracted_deactivated_dict_1d = {}
+
+            deactivated_mask = np.nan_to_num(status) != active_idx
+            for attr in  attrs_ls_1d:
+                extracted_deactivated_dict_1d[attr] = (
+                    (masked_nansum(extracted_attrs_dict_2d.get(attr), deactivated_mask, axis=1) * mass_conversion_factor )
+                if extracted_attrs_dict_2d.get(attr) is not None else np.zeros_like(extracted_active_dict_1d["mass_actual"]))
+
+                extracted_deactivated_dict_1d[f"{attr}_cumulative"] = np.cumsum(extracted_deactivated_dict_1d[attr])
+            if not Save_degr_now:
+                pass
+
+
+            # ===== 4) Mass by specie (active & not outside elements) =====
+            for sp in specie_ids_name.keys():
+                if specie_ids_name.get(sp) in ["buried", "sed_rev"]:
+                    continue
+                extracted_active_dict_1d[f"mass_{specie_ids_name.get(sp)}"] = \
+                masked_nansum(extracted_attrs_dict_2d['mass'], ((specie == sp)  & (inside_mask)), axis=1) * mass_conversion_factor
+
+            # ===== 5) Outside/advection  =====
+            # Either explicit status or adv_out mask when it flips False->True while active
+            exit_outside_at_t = np.zeros(steps)
+            if outside_idx is not None:
+                # Use status if present: first time status==outside for each element
+                outside_first_idx = np.full(N_elem, -1, dtype=int)
+                hit_outside = (status == outside_idx).any(axis=0)
+                if N_elem > 0:
+                    outside_first_idx[hit_outside] = (status == outside_idx).argmax(axis=0)[hit_outside]
+                # mass at that instant (use last finite before that instant if needed)
+                w = np.zeros(N_elem)
+                for j in np.where(hit_outside)[0]:
+                    t0 = outside_first_idx[j]
+                    k = t0
+                    while k >= 0 and not np.isfinite(mass[k, j]):
+                        k -= 1
+                    if k >= 0:
+                        w[j] = mass[k, j]
+                exit_outside_at_t = np.bincount(outside_first_idx[hit_outside], weights=w[hit_outside], minlength=steps)
             else:
-                mass_adv_out = np.zeros_like(mass_water)
-                mass_adv_out_cumulative = np.zeros_like(mass_water)
+                # Fall back to adv_out mask: count first time it becomes True while previously inside
+                became_out = (adv_out.astype(int).diff(axis=0, prepend=0) == 1) & active
+                # time-local mass when it becomes outside
+                exit_outside_at_t = masked_nansum(mass, became_out, axis=1)
 
-                # Mass emitted into the system up to the end of each timestep
-                mass_emitted = (mass_results_timestep['mass'] + mass_results_timestep['mass_degraded'] + mass_results_timestep['mass_volatilized'])
+            extracted_active_dict_1d["adv_out_mass"] = exit_outside_at_t * mass_conversion_factor
+            extracted_active_dict_1d["adv_out_mass_cumulative"] = np.cumsum(extracted_active_dict_1d["adv_out_mass"])
 
-                # Mass that has been degraded (wat and sed) and volatilized of elements
-                # advected out of the system
-                mass_volatilized_adv = (np.sum((extracted_attrs_dict['mass_volatilized'])* adv_out,1)*mass_conversion_factor)
-                mass_degraded_w_adv = (np.sum(extracted_attrs_dict['mass_degraded_water']* adv_out,1)*mass_conversion_factor)
-                mass_degraded_s_adv = (np.sum(extracted_attrs_dict['mass_degraded_sediment']* adv_out,1)*mass_conversion_factor)
-                mass_photodegr_adv = (np.sum(extracted_attrs_dict['mass_photodegraded']* adv_out,1)*mass_conversion_factor) if extracted_attrs_dict['mass_photodegraded'] is not None else np.zeros_like(mass_emitted)
-                mass_degraded_bio_adv = (np.sum(extracted_attrs_dict['mass_biodegraded']* adv_out,1)*mass_conversion_factor) if extracted_attrs_dict['mass_biodegraded'] is not None else np.zeros_like(mass_emitted)
-                mass_degraded_bio_w_adv = (np.sum(extracted_attrs_dict['mass_biodegraded_water']* adv_out,1)*mass_conversion_factor) if extracted_attrs_dict['mass_biodegraded_water'] is not None else np.zeros_like(mass_emitted)
-                mass_degraded_bio_s_adv = (np.sum(extracted_attrs_dict['mass_biodegraded_sediments']* adv_out,1)*mass_conversion_factor) if extracted_attrs_dict['mass_biodegraded_sediments'] is not None else np.zeros_like(mass_emitted)
-                mass_degraded_hydro_adv = (np.sum(extracted_attrs_dict['mass_hydrolyzed']* adv_out,1)*mass_conversion_factor) if extracted_attrs_dict['mass_hydrolyzed'] is not None else np.zeros_like(mass_emitted)
-                mass_degraded_hydro_w_adv = (np.sum(extracted_attrs_dict['mass_hydrolyzed_water']* adv_out,1)*mass_conversion_factor) if extracted_attrs_dict['mass_hydrolyzed_water'] is not None else np.zeros_like(mass_emitted)
-                mass_degraded_hydro_s_adv = (np.sum(extracted_attrs_dict['mass_hydrolyzed_sediments']* adv_out,1)*mass_conversion_factor) if extracted_attrs_dict['mass_hydrolyzed_sediments'] is not None else np.zeros_like(mass_emitted)
+            # ===== 6) Stranding  =====#
+            exit_stranding_at_t = np.zeros(steps)
+            if stranded_idx is not None:
+                stranded_first_idx = np.full(N_elem, -1, dtype=int)
+                hit_strand = (status == stranded_idx).any(axis=0)
+                if N_elem > 0:
+                    stranded_first_idx[hit_strand] = (status == stranded_idx).argmax(axis=0)[hit_strand]
+                w = np.zeros(N_elem)
+                for j in np.where(hit_strand)[0]:
+                    t0 = stranded_first_idx[j]
+                    k = t0
+                    while k >= 0 and not np.isfinite(mass[k, j]):
+                        k -= 1
+                    if k >= 0:
+                        w[j] = mass[k, j]
+                exit_stranding_at_t = np.bincount(stranded_first_idx[hit_strand], weights=w[hit_strand], minlength=steps)
+            extracted_active_dict_1d["stranded_mass"] = exit_stranding_at_t * mass_conversion_factor
+            extracted_active_dict_1d["stranded_mass_cumulative"] = np.cumsum(extracted_active_dict_1d["stranded_mass"])
 
-
-                # Mass removed from the system until the end of each timestep
-                mass_removed = (mass_results_timestep['mass_volatilized'] - mass_volatilized_adv) + \
-                               (mass_results_timestep['mass_degraded_water'] - mass_degraded_w_adv) +\
-                               (mass_results_timestep['mass_degraded_sediment'] - mass_degraded_s_adv) + \
-                               (mass_adv_out_cumulative + mass_sed_buried)
-                # Contribtion of each mechanism to the elimination of the chemical in the simulation
-                perc_volatilized = ((mass_results_timestep['mass_volatilized'] - mass_volatilized_adv)/mass_removed)*100
-                perc_degraded_w = ((mass_results_timestep['mass_degraded_water'] - mass_degraded_w_adv)/mass_removed)*100
-                perc_degraded_s = ((mass_results_timestep['mass_degraded_sediment'] - mass_degraded_s_adv)/mass_removed)*100
-                perc_photodegr = ((mass_results_timestep['mass_photodegraded'] - mass_photodegr_adv)/mass_removed)*100
-                perc_degraded_bio = ((mass_results_timestep['mass_biodegraded'] - mass_degraded_bio_adv)/mass_removed)*100
-                perc_degraded_bio_w = ((mass_results_timestep['mass_biodegraded_water'] - mass_degraded_bio_w_adv)/mass_removed)*100
-                perc_degraded_bio_s = ((mass_results_timestep['mass_biodegraded_sediments'] - mass_degraded_bio_s_adv)/mass_removed)*100
-                perc_mass_degraded_hydro = ((mass_results_timestep['mass_hydrolyzed'] - mass_degraded_hydro_adv)/mass_removed)*100
-                perc_mass_degraded_hydro_w = ((mass_results_timestep['mass_hydrolyzed_water'] - mass_degraded_hydro_w_adv)/mass_removed)*100
-                perc_mass_degraded_hydro_s = ((mass_results_timestep['mass_hydrolyzed_sediments'] - mass_degraded_hydro_s_adv)/mass_removed)*100
-                perc_adv = ((mass_adv_out_cumulative)/mass_removed)*100
-                perc_sed_buried = ((mass_sed_buried)/mass_removed)*100
-
-            mass_df = pd.DataFrame({
-                'mass_wat'+ "-["+ mass_unit +"]": mass_water,
-                'mass_sed_rev'+ "-["+ mass_unit +"]": mass_sed,
-                'mass_sed_buried'+ "-["+ mass_unit +"]": mass_sed_buried,
-                'mass_current'+ "-["+ mass_unit +"]": mass_actual,
-                'mass_emitted'+ "-["+ mass_unit +"]": mass_emitted,
-                'mass_degr_tot'+ "-["+ mass_unit +"]": mass_results_timestep['mass_degraded'],
-                'mass_degr_wat'+ "-["+ mass_unit +"]": mass_results_timestep['mass_degraded_water'],
-                'mass_degr_sed'+ "-["+ mass_unit +"]": mass_results_timestep['mass_degraded_sediment'],
-                'mass_vol'+ "-["+ mass_unit +"]": mass_results_timestep['mass_volatilized'],
-                'adv_out_ts'+"-["+ mass_unit +"]": mass_adv_out,
-                'adv_out_cumul'+"-["+ mass_unit +"]": mass_adv_out_cumulative,
-                'perc_vol-["%"]': perc_volatilized,
-                'perc_deg_w-["%"]': perc_degraded_w,
-                'perc_deg_s-["%"]': perc_degraded_s,
-                'perc_adv-["%"]': perc_adv,
-                'perc_sed_buried-["%"]': perc_sed_buried,
-                'mass_removed'+ "-["+ mass_unit +"]": mass_removed,
-                'mass_vol_adv'+ "-["+ mass_unit +"]": mass_volatilized_adv,
-                'mass_degr_wat_adv'+ "-["+ mass_unit +"]": mass_degraded_w_adv,
-                'mass_degr_sed_adv'+ "-["+ mass_unit +"]": mass_degraded_s_adv
-                }).astype(np.float64)
-
-            mass_fin_df = pd.concat([mass_by_specie_df, mass_df], axis=1)
-            mass_fin_df[('convertion_factors-[time_mass]')] = np.zeros_like(mass_emitted)
-            mass_fin_df.loc[0, ('convertion_factors-[time_mass]')]= time_conversion_factor
-            mass_fin_df.loc[1, ('convertion_factors-[time_mass]')]= np.float32(mass_conversion_factor)
-            print(f"save .csv file to {file_out_path + csv_file_name}")
-            mass_fin_df.to_csv(file_out_path + csv_file_name)
-
-        elif load_timeseries_from_file is True and timeseries_file_path is not None:
-            mass_fin_df = pd.read_csv(timeseries_file_path + csv_file_name)
-            # Specify mass_unit and time_unit from loaded dataframe
-            mass_col_ind = int(np.where(mass_fin_df.columns.str.contains("dissolved-"))[0])
-            mass_unit = mass_fin_df.columns[mass_col_ind][11:-1]
-            time_col_ind = int(np.where(mass_fin_df.columns.str.contains("time-"))[0])
-            time_unit = mass_fin_df.columns[time_col_ind][6:-1]
-            mass_fin_df = mass_fin_df.dropna(subset = ['date_of_timestep'])
-
-        else:
-            raise ValueError("timeseries_file_path must be specified")
-
-        time_conversion_factor = np.float32(mass_fin_df.loc[0, ('convertion_factors-[time_mass]')])
-        mass_conversion_factor = np.float32(mass_fin_df.loc[1, ('convertion_factors-[time_mass]')])
-
-        # Filter dataframe based on date
-        mass_fin_df = self.filter_dataframe(df = mass_fin_df,
-                                       time_unit = time_unit,
-                                       start_date = start_date, end_date = end_date)
-
-        # Create timeseries to plot
-        time_steps = self._select_df_column(col_name = "time-", dataframe = mass_fin_df)
-        mass_emitted = self._select_df_column(col_name = 'mass_emitted-', dataframe = mass_fin_df)
-        mass_actual = self._select_df_column(col_name = 'mass_current-', dataframe = mass_fin_df)
-        mass_water = self._select_df_column(col_name = 'mass_wat-', dataframe = mass_fin_df)
-        mass_sed = self._select_df_column(col_name = 'mass_sed_rev-', dataframe = mass_fin_df)
-        mass_degraded = self._select_df_column(col_name = 'mass_degr_tot-', dataframe = mass_fin_df)
-        mass_degraded_s = self._select_df_column(col_name = 'mass_degr_sed-', dataframe = mass_fin_df)
-        mass_degraded_w = self._select_df_column(col_name = 'mass_degr_wat-', dataframe = mass_fin_df)
-        mass_adv_out_cumulative = self._select_df_column(col_name = 'adv_out_cumul-', dataframe = mass_fin_df)
-        mass_adv_out = self._select_df_column(col_name = 'adv_out_ts-', dataframe = mass_fin_df)
-        mass_volatilized = self._select_df_column(col_name = 'mass_vol-', dataframe = mass_fin_df)
-        mass_sed_buried = self._select_df_column(col_name = 'mass_sed_buried-', dataframe = mass_fin_df)
-
-        perc_adv = self._select_df_column(col_name = 'perc_adv-', dataframe = mass_fin_df)
-        perc_degraded_s = self._select_df_column(col_name = 'perc_deg_s-', dataframe = mass_fin_df)
-        perc_degraded_w = self._select_df_column(col_name = 'perc_deg_w-', dataframe = mass_fin_df)
-        perc_volatilized = self._select_df_column(col_name = 'perc_vol-', dataframe = mass_fin_df)
-        perc_sed_buried = self._select_df_column(col_name ='perc_sed_buried-', dataframe = mass_fin_df)
-
-        if plot_figures is True:
-            print("Plotting figures")
-            if title_fig_tserie is None and chemical_compound is not None:
-                title_fig_tserie = (chemical_compound + ' mass')
-            if title_fig_mass is None and chemical_compound is not None:
-                title_fig_mass = (chemical_compound + ' mass')
-            if title_fig_deg is None and chemical_compound is not None:
-                title_fig_deg = (chemical_compound + ' removal')
-
-            mass_dissolved = (mass_fin_df[mass_fin_df.columns[mass_fin_df.columns.str.contains("dissolved-")]])
-            mass_DOC = (mass_fin_df[mass_fin_df.columns[mass_fin_df.columns.str.contains("DOC-")]])
-            mass_SPM = (mass_fin_df[mass_fin_df.columns[mass_fin_df.columns.str.contains("SPM-")]])
-            mass_sed_rev = (mass_fin_df[mass_fin_df.columns[mass_fin_df.columns.str.contains("mass_sed_rev-")]])
-            mass_sed_buried = (mass_fin_df[mass_fin_df.columns[mass_fin_df.columns.str.contains("mass_sed_buried-")]])
-
-            # Plot mass present/degraded/volatilized in the system
-            xlabel = "time" + " ["+ time_unit +"]"
-            fig_width = 2.5 * subplot_width
-            fig_height = 3.7 * subplot_height
-
-            fig1,((ax1,ax2),(ax3,ax4), (ax5, ax6), (ax7, ax8))=plt.subplots(nrows=4, ncols=2, figsize=(fig_width, fig_height))
-            fig1.suptitle(title_fig_tserie)
-
-            ax1.plot(time_steps, mass_emitted)
-            ax1.set_xlabel(xlabel)
-            ax1.set_ylabel('emitted mass'+ " ["+ mass_unit +"]")
-
-            ax2.plot(time_steps, mass_actual, 'k',
-                     time_steps, mass_water, 'b',
-                     time_steps, mass_sed, 'y')
-            ax2.set_xlabel(xlabel)
-            ax2.set_ylabel('current mass'+ " ["+ mass_unit +"]")
-            ax2.legend(['total mass','mass in wat','mass in sed'],prop={'size': 8})
-
-            ax3.plot(time_steps, mass_degraded,'k',
-                     time_steps, mass_degraded_s,'y',
-                     time_steps, mass_degraded_w,'b')
-
-            ax3.set_xlabel(xlabel)
-            ax3.set_ylabel('degraded mass'+ " ["+ mass_unit +"]")
-            ax3.legend(['degr. total','degr. in sed','degr. in wat'],prop={'size': 8})
-
-            ax4.plot(time_steps, mass_adv_out_cumulative, 'lime')
-            if deactivate_coords is False:
-                ax4.plot(time_steps, mass_adv_out, 'm')
-                ax4.legend(['adv. out cumulative','adv. out timestep'],prop={'size': 8})
-            else:
-                ax4.legend(['adv. out'],prop={'size': 8})
-            ax4.set_xlabel(xlabel)
-            ax4.set_ylabel('advected out mass' + " ["+ mass_unit +"]")
-
-            ax5.plot(time_steps, mass_volatilized, 'orange')
-            ax5.set_xlabel(xlabel)
-            ax5.set_ylabel('volatilized mass' + " ["+ mass_unit +"]")
-
-            ax6.plot(time_steps, mass_sed_buried, 'purple')
-            ax6.set_xlabel(xlabel)
-            ax6.set_ylabel('buried in sed mass' + " ["+ mass_unit +"]")
-
-            mass_dissolved_arr = mass_dissolved.to_numpy().flatten()
-            mass_DOC_arr = mass_DOC.to_numpy().flatten()
-            mass_SPM_arr = mass_SPM.to_numpy().flatten()
-            mass_sed_rev_arr = mass_sed_rev.to_numpy().flatten()
-            mass_actual_arr = mass_actual.to_numpy().flatten()
-
-            ax7.plot(time_steps, (mass_dissolved_arr/mass_actual_arr)*100, 'midnightblue',
-                     time_steps, (mass_DOC_arr/mass_actual_arr)*100, 'royalblue',
-                     time_steps, (mass_SPM_arr/mass_actual_arr)*100, 'palegreen',
-                     time_steps,(mass_sed_rev_arr/mass_actual_arr)*100, 'orange')
-            ax7.set_xlabel(xlabel)
-            ax7.set_ylabel('mass distribution [%]')
-            ax7.legend(['dissolved','DOC', 'SPM', 'sed'],prop={'size': 8})
-
-            ax8.plot(time_steps, perc_volatilized, 'orange',
-                     time_steps, perc_degraded_w, 'b',
-                     time_steps, perc_degraded_s, 'y',
-                     time_steps, perc_adv, 'm',
-                     time_steps, perc_sed_buried, 'saddlebrown',
-                     )
-            ax8.set_xlabel(xlabel)
-            ax8.set_ylabel('contribution to elimination [%]')
-            ax8.legend(['vol','deg_w', 'deg_s', 'adv', 'sed_burial'],prop={'size': 8})
-
-            fig1.tight_layout()
-            fig1.savefig(file_out_path+"/"+sim_name+"-time_series"+".png")
-
-            # Plot mass distribution among environmental media
-            bars=np.zeros((len(time_steps),5))
-
-            for i in range(0, len(time_steps)):
-                bars[i]=[mass_dissolved.iloc[i, 0],
-                         mass_DOC.iloc[i, 0],
-                         mass_SPM.iloc[i, 0],
-                         mass_sed_rev.iloc[i, 0],
-                         mass_sed_buried.iloc[i, 0]]
-
-            bottom=np.zeros_like(bars[:,0])
-
-            fig2, ax = plt.subplots()
-            fig2.suptitle(title_fig_mass)
-            ax.bar(np.arange((len(time_steps))),bars[:,0],width=1.25,color='midnightblue')
-            bottom=bars[:,0]
-            ax.bar(np.arange((len(time_steps))),bars[:,1],bottom=bottom,width=1.25,color='royalblue')
-            bottom=bottom+bars[:,1]
-            ax.bar(np.arange((len(time_steps))),bars[:,2],bottom=bottom,width=1.25,color='palegreen')
-            bottom=bottom+bars[:,2]
-            ax.bar(np.arange((len(time_steps))),bars[:,3],bottom=bottom,width=1.25,color='orange')
-            bottom=bottom+bars[:,3]
-
-            print(f'dissolved: {str(bars[-1,0])} {mass_unit} ({str(100*bars[-1,0]/np.sum(bars[-1,:]))} %)')
-            print(f'DOC: {str(bars[-1,1])} {mass_unit} ({str(100*bars[-1,1]/np.sum(bars[-1,:]))} %)')
-            print(f'SPM: {str(bars[-1,2])} {mass_unit} ({str(100*bars[-1,2]/np.sum(bars[-1,:]))} %)')
-            print(f'sediment: {str(bars[-1,3])} {mass_unit} ({str(100*bars[-1,3]/np.sum(bars[-1,:]))} %)')
+            # ===== 6) Burial  =====#
+            # First time specie transitions to "buried" specie id (num_ssrev)
+            exit_burial_at_t = np.zeros(steps)
+            buried_id = specie_ids_num.get('buried', None)
+            if buried_id is not None:
+                is_buried = (specie == buried_id)
+                hit_burial = is_buried.any(axis=0)
+                burial_first_idx = np.full(N_elem, -1, dtype=int)
+                if N_elem > 0:
+                    burial_first_idx[hit_burial] = is_buried.argmax(axis=0)[hit_burial]
+                w = np.zeros(N_elem)
+                for j in np.where(hit_burial)[0]:
+                    t0 = burial_first_idx[j]
+                    k = t0
+                    while k >= 0 and not np.isfinite(mass[k, j]):
+                        k -= 1
+                    if k >= 0:
+                        w[j] = mass[k, j]
+                exit_burial_at_t = np.bincount(burial_first_idx[hit_burial], weights=w[hit_burial], minlength=steps)
+            extracted_active_dict_1d["buried_mass"] = exit_burial_at_t * mass_conversion_factor
+            extracted_active_dict_1d["buried_mass_cumulative"] = np.cumsum( extracted_active_dict_1d["buried_mass"])
 
 
-            ax.legend(['dissolved', 'DOC', 'SPM','sediment'])
-            ax.set_ylabel('mass (' + mass_unit + ')')
-            # Get current tick positions
-            xticks = ax.get_xticks()
-            # Set the ticks explicitly before setting labels
-            ax.set_xticks(xticks)
-            ax.set_xticklabels(np.round(xticks * time_conversion_factor))
-            ax.set_xlabel('time (' + time_unit + ')')
 
-            plt.savefig(file_out_path+"/"+sim_name+"-mass_specie"+".png", bbox_inches="tight", dpi=300)
 
-            # Plot degradatin mecanisms during simulations
-            bars_deg=np.zeros((len(time_steps),5))
-            for i in range(0, len(time_steps)):
-                bars_deg[i]=[perc_volatilized.iloc[i, 0],
-                         perc_degraded_w.iloc[i, 0],
-                         perc_degraded_s.iloc[i, 0],
-                         perc_adv.iloc[i, 0],
-                         perc_sed_buried.iloc[i, 0]]
+            # ===== 5) Assemble DataFrame =====
+            df = pd.DataFrame({
+                f'time_[{getattr(time_steps, "units", "user")}]' if hasattr(time_steps, 'units') else f'time_[user]': time_steps,
+                'date_of_timestep': time_date_serie,
+                'emitted_mass': emitted_mass,
+                'mass_water': mass_water,
+                'mass_sed': mass_sed,
+                'mass_sed_buried': mass_bur,
+                'mass_actual': mass_actual,
+                'exit_degradation': exit_deg_at_t,
+                'exit_outside': exit_outside_at_t,
+                'exit_stranding': exit_stranding_at_t,
+                'exit_burial': exit_burial_at_t,
+                'cum_degradation_deactivated_only': cum_degradation_deactivated_only,
+                'cum_outside': cum_outside,
+                'cum_stranding': cum_strand,
+                'cum_burial': cum_burial,
+                'cum_total_exit': cum_total_exit,
+            })
+            return df
 
-            bottom_deg=np.zeros_like(bars_deg[:,0])
 
-            fig3, ax = plt.subplots()
-            fig3.suptitle(title_fig_deg)
-            ax.bar(np.arange((len(time_steps))),bars_deg[:,0],width=1.25,color='orange')
-            bottom_deg=bars_deg[:,0]
-            ax.bar(np.arange((len(time_steps))),bars_deg[:,1],bottom=bottom_deg,width=1.25,color='b')
-            bottom_deg = bottom_deg+bars_deg[:,1]
-            ax.bar(np.arange((len(time_steps))),bars_deg[:,2],bottom=bottom_deg,width=1.25,color='y')
-            bottom_deg = bottom_deg + bars_deg[:,2]
-            ax.bar(np.arange((len(time_steps))),bars_deg[:,3],bottom=bottom_deg,width=1.25,color='royalblue')
-            bottom_deg = bottom_deg+bars_deg[:,3]
-            ax.bar(np.arange((len(time_steps))),bars_deg[:,4],bottom=bottom_deg,width=1.25,color='saddlebrown')
 
-            ax.legend(['vol','deg_w', 'deg_s', 'adv', 'sed_burial'])
-            ax.set_ylabel('percentage (%)')
-            # Get current tick positions
-            xticks = ax.get_xticks()
-            # Set the ticks explicitly before setting labels
-            ax.set_xticks(xticks)
-            ax.set_xticklabels(np.round(xticks * time_conversion_factor))
-            ax.set_xlabel('time (' + time_unit + ')')
 
-            plt.savefig(file_out_path+"/"+sim_name+"-degrad"+".png", bbox_inches="tight", dpi=300)
-            print("save figures to ", file_out_path)
 
-            if check_mass is True:
-                print(f"mass_vol extracted: {mass_volatilized.to_numpy()[-1]}")
-                vol_active = (sum(self.elements.mass_volatilized)*mass_conversion_factor)
-                vol_inactive = (sum(self.elements_deactivated.mass_volatilized)*mass_conversion_factor)
-                print(f"mass_vol active: {vol_active}")
-                print(f"mass_vol inactive: {vol_inactive}")
-                print(f"mass_vol active + inactive : {vol_inactive + vol_active}")
-                print("####")
 
-                print(f"mass_degraded extracted {mass_degraded.to_numpy()[-1]}")
-                degraded_active = (sum(self.elements.mass_degraded)*mass_conversion_factor)
-                degraded_inactive = (sum(self.elements_deactivated.mass_degraded)*mass_conversion_factor)
-                print(f"mass_degraded active: {degraded_active}")
-                print(f"mass_degraded inactive: {degraded_inactive}")
-                print(f"mass_degraded active + inactive: {degraded_active + degraded_inactive}")
-                print("####")
 
-                print(f"mass_tot_ts extracted: {np.array(mass_tot_timestep[-1]).sum()}")
-                print("####")
-                mass_active = (sum(self.elements.mass)*mass_conversion_factor)
-                mass_inactive = (sum(self.elements_deactivated.mass)*mass_conversion_factor)
-                print(f"mass_tot_ts active: {mass_active}")
-                print(f"mass_tot_ts inactive: {mass_inactive}")
-                print(f"mass_tot_ts active + inactive: {mass_active + mass_inactive}")
-                print("####")
 
-                print(f"mass emitted extracted: {mass_emitted.to_numpy()[-1]}")
-                print("mass emitted check: ",
-                      f"{(mass_active + mass_inactive)+ (degraded_active + degraded_inactive)+ (vol_inactive + vol_active)}")
-                print("####")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    #     # #############
+
+    #     # # Get mass associated to each specie for each timestep, considering only active elements that are inside
+    #     # # the simulation domain (not stranded or advected out)
+    #     # print("Calculating timeseries from simulation")
+    #     # mass_by_specie=np.zeros((steps,5))
+
+    #     # for i in range(steps):
+    #     #     mass_by_specie[i] = [
+    #     #             np.sum(extracted_attrs_dict_2d['mass'][i, :] * (sp[i, :] == j) * (~adv_out[i, :])*(active_elements[i, :])) * mass_conversion_factor
+    #     #             for j in range(5)
+    #     #             ]
+
+    #     # time_steps =np.array(range(0, steps))*time_conversion_factor
+    #     # mass_by_specie_df = pd.DataFrame(mass_by_specie)
+
+    #     # for chem_specie in range(0,5):
+    #     #     if (chem_specie not in mass_by_specie_df.columns):
+    #     #         mass_by_specie_df[chem_specie] = np.zeros_like(time_steps)
+
+    #     # # Insert time as new columns
+    #     # mass_by_specie_df.insert(0,('time'+"-["+ time_unit +"]"), time_steps)
+    #     # start_date = pd.Timestamp(self.start_time.year,
+    #     #                           self.start_time.month,
+    #     #                           self.start_time.day)
+    #     # time_date_serie = pd.date_range(start=start_date, periods=steps, freq=self.time_step_output)
+    #     # mass_by_specie_df.insert(0,('date_of_timestep'), time_date_serie)
+    #     # del mass_by_specie
+
+    #     # # Change name of dataframe columns
+    #     # Col_names_res = list(mass_by_specie_df.columns)
+    #     # names_to_replace = ({0: "dissolved" + "-["+ mass_unit +"]",
+    #     #                     1: "DOC" + "-["+ mass_unit +"]",
+    #     #                     2: "SPM" + "-["+ mass_unit +"]",
+    #     #                     3: "sed_rev" + "-["+ mass_unit +"]",
+    #     #                     4: "sed_buried" + "-["+ mass_unit +"]"
+    #     #                     })
+    #     # Col_names_res = [names_to_replace.get(e, e) for e in Col_names_res]
+    #     # mass_by_specie_df.columns = Col_names_res
+
+    #     # mass_results_timestep = {}
+    #     # # Mass present in the system at each timestep considering only active elements
+    #     # # that are inside the simulation domain
+
+    #     # mass_results_timestep["mass_water"] = (np.sum(extracted_attrs_dict['mass']*in_water_column * (~adv_out)*active_elements,1) * mass_conversion_factor)
+    #     # mass_results_timestep["mass_sed"] = (np.sum(extracted_attrs_dict['mass']*in_sediment_layer * (~adv_out)*active_elements,1) * mass_conversion_factor)
+    #     # # mass_sed_buried is outside the domain
+    #     # mass_results_timestep["mass_sed_buried"] = (np.sum(extracted_attrs_dict['mass']*in_buried_sed * (~adv_out)*active_elements,1) * mass_conversion_factor)
+    #     # mass_results_timestep["mass_actual"] = mass_results_timestep["mass_water"] + mass_results_timestep["mass_sed"]
+
+
+    #     # # Mass of all elements present in simulation during each timestep
+
+    #     # timestep_attributes = ['mass', 'mass_degraded','mass_degraded_water', 'mass_degraded_sediment',
+    #     #         'mass_volatilized', 'mass_photodegraded', 'mass_biodegraded',
+    #     #         'mass_biodegraded_water', 'mass_biodegraded_sediment',
+    #     #         'mass_hydrolyzed', 'mass_hydrolyzed_water', 'mass_hydrolyzed_sediment'
+    #     #     ]
+
+    #     # for attr in timestep_attributes:
+    #     #     if extracted_attrs_dict[attr] is not None:
+    #     #         mass_results_timestep[attr] = np.sum(extracted_attrs_dict[attr] * active_elements, axis=1) * mass_conversion_factor
+    #     #     else:
+    #     #         mass_results_timestep[attr] = np.zeros_like(mass_results_timestep["mass_actual"])
+
+
+
+    #     # mass_tot_timestep = (np.sum(extracted_attrs_dict['mass'] * elements,1)*mass_conversion_factor)
+    #     # # Mass that has been degraded up to the end of each timestep considering all elements
+    #     # mass_degraded = (np.sum(extracted_attrs_dict['mass_degraded']*elements,1)*mass_conversion_factor)
+    #     # # Mass that has been degraded (wat and sed) and volatilized up to the end of each timestep
+    #     # # considering considering all elements
+    #     # mass_volatilized = (np.sum((extracted_attrs_dict['mass_volatilized'])*elements,1)*mass_conversion_factor)
+    #     # mass_degraded_w = (np.sum(extracted_attrs_dict['mass_degraded_water']*elements,1)*mass_conversion_factor)
+    #     # mass_degraded_s = (np.sum(extracted_attrs_dict['mass_degraded_sediment']*elements,1)*mass_conversion_factor)
+
+    #     # 'mass'
+    #     # 'mass_degraded','mass_degraded_water', 'mass_degraded_sediment',
+    #     # 'mass_volatilized', 'mass_photodegraded', 'mass_biodegraded',
+    #     # 'mass_biodegraded_water', 'mass_biodegraded_sediments',
+    #     # 'mass_hydrolyzed', 'mass_hydrolyzed_water', 'mass_hydrolyzed_sediments'
+
+    #     # controllo = (active_elements * (~adv_out) * (~stranded_elements)) == elements
+
+
+    #     # Calculate mass of  elements that are advected out of the domain
+    #     if shp_adv_out == False:
+    #         if ('missing_data' in status_categories) or ('outside' in status_categories):
+    #             # adv_out = out_of_bounds
+    #             # Mass advected out of the system during each time step
+    #             mass_adv_out = (np.sum((extracted_attrs_dict['mass']*adv_out),1)*mass_conversion_factor)
+    #             # Mass advected out of the system from start of simulation, until that time step
+    #             mass_adv_out_cumulative = np.cumsum(mass_adv_out)
+    #     else:
+    #         mass_adv_out = np.zeros_like(mass_water)
+    #         mass_adv_out_cumulative = np.zeros_like(mass_water)
+
+    #         # Mass emitted into the system up to the end of each timestep
+    #         mass_emitted = (mass_results_timestep['mass'] + mass_results_timestep['mass_degraded'] + mass_results_timestep['mass_volatilized'])
+
+    #         # Mass that has been degraded (wat and sed) and volatilized of elements
+    #         # advected out of the system
+    #         mass_volatilized_adv = (np.sum((extracted_attrs_dict['mass_volatilized'])* adv_out,1)*mass_conversion_factor)
+    #         mass_degraded_w_adv = (np.sum(extracted_attrs_dict['mass_degraded_water']* adv_out,1)*mass_conversion_factor)
+    #         mass_degraded_s_adv = (np.sum(extracted_attrs_dict['mass_degraded_sediment']* adv_out,1)*mass_conversion_factor)
+    #         mass_photodegr_adv = (np.sum(extracted_attrs_dict['mass_photodegraded']* adv_out,1)*mass_conversion_factor) if extracted_attrs_dict['mass_photodegraded'] is not None else np.zeros_like(mass_emitted)
+    #         mass_degraded_bio_adv = (np.sum(extracted_attrs_dict['mass_biodegraded']* adv_out,1)*mass_conversion_factor) if extracted_attrs_dict['mass_biodegraded'] is not None else np.zeros_like(mass_emitted)
+    #         mass_degraded_bio_w_adv = (np.sum(extracted_attrs_dict['mass_biodegraded_water']* adv_out,1)*mass_conversion_factor) if extracted_attrs_dict['mass_biodegraded_water'] is not None else np.zeros_like(mass_emitted)
+    #         mass_degraded_bio_s_adv = (np.sum(extracted_attrs_dict['mass_biodegraded_sediments']* adv_out,1)*mass_conversion_factor) if extracted_attrs_dict['mass_biodegraded_sediments'] is not None else np.zeros_like(mass_emitted)
+    #         mass_degraded_hydro_adv = (np.sum(extracted_attrs_dict['mass_hydrolyzed']* adv_out,1)*mass_conversion_factor) if extracted_attrs_dict['mass_hydrolyzed'] is not None else np.zeros_like(mass_emitted)
+    #         mass_degraded_hydro_w_adv = (np.sum(extracted_attrs_dict['mass_hydrolyzed_water']* adv_out,1)*mass_conversion_factor) if extracted_attrs_dict['mass_hydrolyzed_water'] is not None else np.zeros_like(mass_emitted)
+    #         mass_degraded_hydro_s_adv = (np.sum(extracted_attrs_dict['mass_hydrolyzed_sediments']* adv_out,1)*mass_conversion_factor) if extracted_attrs_dict['mass_hydrolyzed_sediments'] is not None else np.zeros_like(mass_emitted)
+
+
+    #         # Mass removed from the system until the end of each timestep
+    #         mass_removed = (mass_results_timestep['mass_volatilized'] - mass_volatilized_adv) + \
+    #                        (mass_results_timestep['mass_degraded_water'] - mass_degraded_w_adv) +\
+    #                        (mass_results_timestep['mass_degraded_sediment'] - mass_degraded_s_adv) + \
+    #                        (mass_adv_out_cumulative + mass_sed_buried)
+    #         # Contribtion of each mechanism to the elimination of the chemical in the simulation
+    #         perc_volatilized = ((mass_results_timestep['mass_volatilized'] - mass_volatilized_adv)/mass_removed)*100
+    #         perc_degraded_w = ((mass_results_timestep['mass_degraded_water'] - mass_degraded_w_adv)/mass_removed)*100
+    #         perc_degraded_s = ((mass_results_timestep['mass_degraded_sediment'] - mass_degraded_s_adv)/mass_removed)*100
+    #         perc_photodegr = ((mass_results_timestep['mass_photodegraded'] - mass_photodegr_adv)/mass_removed)*100
+    #         perc_degraded_bio = ((mass_results_timestep['mass_biodegraded'] - mass_degraded_bio_adv)/mass_removed)*100
+    #         perc_degraded_bio_w = ((mass_results_timestep['mass_biodegraded_water'] - mass_degraded_bio_w_adv)/mass_removed)*100
+    #         perc_degraded_bio_s = ((mass_results_timestep['mass_biodegraded_sediments'] - mass_degraded_bio_s_adv)/mass_removed)*100
+    #         perc_mass_degraded_hydro = ((mass_results_timestep['mass_hydrolyzed'] - mass_degraded_hydro_adv)/mass_removed)*100
+    #         perc_mass_degraded_hydro_w = ((mass_results_timestep['mass_hydrolyzed_water'] - mass_degraded_hydro_w_adv)/mass_removed)*100
+    #         perc_mass_degraded_hydro_s = ((mass_results_timestep['mass_hydrolyzed_sediments'] - mass_degraded_hydro_s_adv)/mass_removed)*100
+    #         perc_adv = ((mass_adv_out_cumulative)/mass_removed)*100
+    #         perc_sed_buried = ((mass_sed_buried)/mass_removed)*100
+
+    #     mass_df = pd.DataFrame({
+    #         'mass_wat'+ "-["+ mass_unit +"]": mass_water,
+    #         'mass_sed_rev'+ "-["+ mass_unit +"]": mass_sed,
+    #         'mass_sed_buried'+ "-["+ mass_unit +"]": mass_sed_buried,
+    #         'mass_current'+ "-["+ mass_unit +"]": mass_actual,
+    #         'mass_emitted'+ "-["+ mass_unit +"]": mass_emitted,
+    #         'mass_degr_tot'+ "-["+ mass_unit +"]": mass_results_timestep['mass_degraded'],
+    #         'mass_degr_wat'+ "-["+ mass_unit +"]": mass_results_timestep['mass_degraded_water'],
+    #         'mass_degr_sed'+ "-["+ mass_unit +"]": mass_results_timestep['mass_degraded_sediment'],
+    #         'mass_vol'+ "-["+ mass_unit +"]": mass_results_timestep['mass_volatilized'],
+    #         'adv_out_ts'+"-["+ mass_unit +"]": mass_adv_out,
+    #         'adv_out_cumul'+"-["+ mass_unit +"]": mass_adv_out_cumulative,
+    #         'perc_vol-["%"]': perc_volatilized,
+    #         'perc_deg_w-["%"]': perc_degraded_w,
+    #         'perc_deg_s-["%"]': perc_degraded_s,
+    #         'perc_adv-["%"]': perc_adv,
+    #         'perc_sed_buried-["%"]': perc_sed_buried,
+    #         'mass_removed'+ "-["+ mass_unit +"]": mass_removed,
+    #         'mass_vol_adv'+ "-["+ mass_unit +"]": mass_volatilized_adv,
+    #         'mass_degr_wat_adv'+ "-["+ mass_unit +"]": mass_degraded_w_adv,
+    #         'mass_degr_sed_adv'+ "-["+ mass_unit +"]": mass_degraded_s_adv
+    #         }).astype(np.float64)
+
+    #     mass_fin_df = pd.concat([mass_by_specie_df, mass_df], axis=1)
+    #     mass_fin_df[('convertion_factors-[time_mass]')] = np.zeros_like(mass_emitted)
+    #     mass_fin_df.loc[0, ('convertion_factors-[time_mass]')]= time_conversion_factor
+    #     mass_fin_df.loc[1, ('convertion_factors-[time_mass]')]= np.float32(mass_conversion_factor)
+    #     print(f"save .csv file to {file_out_path + csv_file_name}")
+    #     mass_fin_df.to_csv(file_out_path + csv_file_name)
+
+    # elif load_timeseries_from_file is True and timeseries_file_path is not None:
+    #     mass_fin_df = pd.read_csv(timeseries_file_path + csv_file_name)
+    #     # Specify mass_unit and time_unit from loaded dataframe
+    #     mass_col_ind = int(np.where(mass_fin_df.columns.str.contains("dissolved-"))[0])
+    #     mass_unit = mass_fin_df.columns[mass_col_ind][11:-1]
+    #     time_col_ind = int(np.where(mass_fin_df.columns.str.contains("time-"))[0])
+    #     time_unit = mass_fin_df.columns[time_col_ind][6:-1]
+    #     mass_fin_df = mass_fin_df.dropna(subset = ['date_of_timestep'])
+
+    # else:
+    #     raise ValueError("timeseries_file_path must be specified")
+
+    # time_conversion_factor = np.float32(mass_fin_df.loc[0, ('convertion_factors-[time_mass]')])
+    # mass_conversion_factor = np.float32(mass_fin_df.loc[1, ('convertion_factors-[time_mass]')])
+
+    # # Filter dataframe based on date
+    # mass_fin_df = self.filter_dataframe(df = mass_fin_df,
+    #                                time_unit = time_unit,
+    #                                start_date = start_date, end_date = end_date)
+
+    # # Create timeseries to plot
+    # time_steps = self._select_df_column(col_name = "time-", dataframe = mass_fin_df)
+    # mass_emitted = self._select_df_column(col_name = 'mass_emitted-', dataframe = mass_fin_df)
+    # mass_actual = self._select_df_column(col_name = 'mass_current-', dataframe = mass_fin_df)
+    # mass_water = self._select_df_column(col_name = 'mass_wat-', dataframe = mass_fin_df)
+    # mass_sed = self._select_df_column(col_name = 'mass_sed_rev-', dataframe = mass_fin_df)
+    # mass_degraded = self._select_df_column(col_name = 'mass_degr_tot-', dataframe = mass_fin_df)
+    # mass_degraded_s = self._select_df_column(col_name = 'mass_degr_sed-', dataframe = mass_fin_df)
+    # mass_degraded_w = self._select_df_column(col_name = 'mass_degr_wat-', dataframe = mass_fin_df)
+    # mass_adv_out_cumulative = self._select_df_column(col_name = 'adv_out_cumul-', dataframe = mass_fin_df)
+    # mass_adv_out = self._select_df_column(col_name = 'adv_out_ts-', dataframe = mass_fin_df)
+    # mass_volatilized = self._select_df_column(col_name = 'mass_vol-', dataframe = mass_fin_df)
+    # mass_sed_buried = self._select_df_column(col_name = 'mass_sed_buried-', dataframe = mass_fin_df)
+
+    # perc_adv = self._select_df_column(col_name = 'perc_adv-', dataframe = mass_fin_df)
+    # perc_degraded_s = self._select_df_column(col_name = 'perc_deg_s-', dataframe = mass_fin_df)
+    # perc_degraded_w = self._select_df_column(col_name = 'perc_deg_w-', dataframe = mass_fin_df)
+    # perc_volatilized = self._select_df_column(col_name = 'perc_vol-', dataframe = mass_fin_df)
+    # perc_sed_buried = self._select_df_column(col_name ='perc_sed_buried-', dataframe = mass_fin_df)
+
+    # if plot_figures is True:
+    #     print("Plotting figures")
+    #     if title_fig_tserie is None and chemical_compound is not None:
+    #         title_fig_tserie = (chemical_compound + ' mass')
+    #     if title_fig_mass is None and chemical_compound is not None:
+    #         title_fig_mass = (chemical_compound + ' mass')
+    #     if title_fig_deg is None and chemical_compound is not None:
+    #         title_fig_deg = (chemical_compound + ' removal')
+
+    #     mass_dissolved = (mass_fin_df[mass_fin_df.columns[mass_fin_df.columns.str.contains("dissolved-")]])
+    #     mass_DOC = (mass_fin_df[mass_fin_df.columns[mass_fin_df.columns.str.contains("DOC-")]])
+    #     mass_SPM = (mass_fin_df[mass_fin_df.columns[mass_fin_df.columns.str.contains("SPM-")]])
+    #     mass_sed_rev = (mass_fin_df[mass_fin_df.columns[mass_fin_df.columns.str.contains("mass_sed_rev-")]])
+    #     mass_sed_buried = (mass_fin_df[mass_fin_df.columns[mass_fin_df.columns.str.contains("mass_sed_buried-")]])
+
+    #     # Plot mass present/degraded/volatilized in the system
+    #     xlabel = "time" + " ["+ time_unit +"]"
+    #     fig_width = 2.5 * subplot_width
+    #     fig_height = 3.7 * subplot_height
+
+    #     fig1,((ax1,ax2),(ax3,ax4), (ax5, ax6), (ax7, ax8))=plt.subplots(nrows=4, ncols=2, figsize=(fig_width, fig_height))
+    #     fig1.suptitle(title_fig_tserie)
+
+    #     ax1.plot(time_steps, mass_emitted)
+    #     ax1.set_xlabel(xlabel)
+    #     ax1.set_ylabel('emitted mass'+ " ["+ mass_unit +"]")
+
+    #     ax2.plot(time_steps, mass_actual, 'k',
+    #              time_steps, mass_water, 'b',
+    #              time_steps, mass_sed, 'y')
+    #     ax2.set_xlabel(xlabel)
+    #     ax2.set_ylabel('current mass'+ " ["+ mass_unit +"]")
+    #     ax2.legend(['total mass','mass in wat','mass in sed'],prop={'size': 8})
+
+    #     ax3.plot(time_steps, mass_degraded,'k',
+    #              time_steps, mass_degraded_s,'y',
+    #              time_steps, mass_degraded_w,'b')
+
+    #     ax3.set_xlabel(xlabel)
+    #     ax3.set_ylabel('degraded mass'+ " ["+ mass_unit +"]")
+    #     ax3.legend(['degr. total','degr. in sed','degr. in wat'],prop={'size': 8})
+
+    #     ax4.plot(time_steps, mass_adv_out_cumulative, 'lime')
+    #     if deactivate_coords is False:
+    #         ax4.plot(time_steps, mass_adv_out, 'm')
+    #         ax4.legend(['adv. out cumulative','adv. out timestep'],prop={'size': 8})
+    #     else:
+    #         ax4.legend(['adv. out'],prop={'size': 8})
+    #     ax4.set_xlabel(xlabel)
+    #     ax4.set_ylabel('advected out mass' + " ["+ mass_unit +"]")
+
+    #     ax5.plot(time_steps, mass_volatilized, 'orange')
+    #     ax5.set_xlabel(xlabel)
+    #     ax5.set_ylabel('volatilized mass' + " ["+ mass_unit +"]")
+
+    #     ax6.plot(time_steps, mass_sed_buried, 'purple')
+    #     ax6.set_xlabel(xlabel)
+    #     ax6.set_ylabel('buried in sed mass' + " ["+ mass_unit +"]")
+
+    #     mass_dissolved_arr = mass_dissolved.to_numpy().flatten()
+    #     mass_DOC_arr = mass_DOC.to_numpy().flatten()
+    #     mass_SPM_arr = mass_SPM.to_numpy().flatten()
+    #     mass_sed_rev_arr = mass_sed_rev.to_numpy().flatten()
+    #     mass_actual_arr = mass_actual.to_numpy().flatten()
+
+    #     ax7.plot(time_steps, (mass_dissolved_arr/mass_actual_arr)*100, 'midnightblue',
+    #              time_steps, (mass_DOC_arr/mass_actual_arr)*100, 'royalblue',
+    #              time_steps, (mass_SPM_arr/mass_actual_arr)*100, 'palegreen',
+    #              time_steps,(mass_sed_rev_arr/mass_actual_arr)*100, 'orange')
+    #     ax7.set_xlabel(xlabel)
+    #     ax7.set_ylabel('mass distribution [%]')
+    #     ax7.legend(['dissolved','DOC', 'SPM', 'sed'],prop={'size': 8})
+
+    #     ax8.plot(time_steps, perc_volatilized, 'orange',
+    #              time_steps, perc_degraded_w, 'b',
+    #              time_steps, perc_degraded_s, 'y',
+    #              time_steps, perc_adv, 'm',
+    #              time_steps, perc_sed_buried, 'saddlebrown',
+    #              )
+    #     ax8.set_xlabel(xlabel)
+    #     ax8.set_ylabel('contribution to elimination [%]')
+    #     ax8.legend(['vol','deg_w', 'deg_s', 'adv', 'sed_burial'],prop={'size': 8})
+
+    #     fig1.tight_layout()
+    #     fig1.savefig(file_out_path+"/"+sim_name+"-time_series"+".png")
+
+    #     # Plot mass distribution among environmental media
+    #     bars=np.zeros((len(time_steps),5))
+
+    #     for i in range(0, len(time_steps)):
+    #         bars[i]=[mass_dissolved.iloc[i, 0],
+    #                  mass_DOC.iloc[i, 0],
+    #                  mass_SPM.iloc[i, 0],
+    #                  mass_sed_rev.iloc[i, 0],
+    #                  mass_sed_buried.iloc[i, 0]]
+
+    #     bottom=np.zeros_like(bars[:,0])
+
+    #     fig2, ax = plt.subplots()
+    #     fig2.suptitle(title_fig_mass)
+    #     ax.bar(np.arange((len(time_steps))),bars[:,0],width=1.25,color='midnightblue')
+    #     bottom=bars[:,0]
+    #     ax.bar(np.arange((len(time_steps))),bars[:,1],bottom=bottom,width=1.25,color='royalblue')
+    #     bottom=bottom+bars[:,1]
+    #     ax.bar(np.arange((len(time_steps))),bars[:,2],bottom=bottom,width=1.25,color='palegreen')
+    #     bottom=bottom+bars[:,2]
+    #     ax.bar(np.arange((len(time_steps))),bars[:,3],bottom=bottom,width=1.25,color='orange')
+    #     bottom=bottom+bars[:,3]
+
+    #     print(f'dissolved: {str(bars[-1,0])} {mass_unit} ({str(100*bars[-1,0]/np.sum(bars[-1,:]))} %)')
+    #     print(f'DOC: {str(bars[-1,1])} {mass_unit} ({str(100*bars[-1,1]/np.sum(bars[-1,:]))} %)')
+    #     print(f'SPM: {str(bars[-1,2])} {mass_unit} ({str(100*bars[-1,2]/np.sum(bars[-1,:]))} %)')
+    #     print(f'sediment: {str(bars[-1,3])} {mass_unit} ({str(100*bars[-1,3]/np.sum(bars[-1,:]))} %)')
+
+
+    #     ax.legend(['dissolved', 'DOC', 'SPM','sediment'])
+    #     ax.set_ylabel('mass (' + mass_unit + ')')
+    #     # Get current tick positions
+    #     xticks = ax.get_xticks()
+    #     # Set the ticks explicitly before setting labels
+    #     ax.set_xticks(xticks)
+    #     ax.set_xticklabels(np.round(xticks * time_conversion_factor))
+    #     ax.set_xlabel('time (' + time_unit + ')')
+
+    #     plt.savefig(file_out_path+"/"+sim_name+"-mass_specie"+".png", bbox_inches="tight", dpi=300)
+
+    #     # Plot degradatin mecanisms during simulations
+    #     bars_deg=np.zeros((len(time_steps),5))
+    #     for i in range(0, len(time_steps)):
+    #         bars_deg[i]=[perc_volatilized.iloc[i, 0],
+    #                  perc_degraded_w.iloc[i, 0],
+    #                  perc_degraded_s.iloc[i, 0],
+    #                  perc_adv.iloc[i, 0],
+    #                  perc_sed_buried.iloc[i, 0]]
+
+    #     bottom_deg=np.zeros_like(bars_deg[:,0])
+
+    #     fig3, ax = plt.subplots()
+    #     fig3.suptitle(title_fig_deg)
+    #     ax.bar(np.arange((len(time_steps))),bars_deg[:,0],width=1.25,color='orange')
+    #     bottom_deg=bars_deg[:,0]
+    #     ax.bar(np.arange((len(time_steps))),bars_deg[:,1],bottom=bottom_deg,width=1.25,color='b')
+    #     bottom_deg = bottom_deg+bars_deg[:,1]
+    #     ax.bar(np.arange((len(time_steps))),bars_deg[:,2],bottom=bottom_deg,width=1.25,color='y')
+    #     bottom_deg = bottom_deg + bars_deg[:,2]
+    #     ax.bar(np.arange((len(time_steps))),bars_deg[:,3],bottom=bottom_deg,width=1.25,color='royalblue')
+    #     bottom_deg = bottom_deg+bars_deg[:,3]
+    #     ax.bar(np.arange((len(time_steps))),bars_deg[:,4],bottom=bottom_deg,width=1.25,color='saddlebrown')
+
+    #     ax.legend(['vol','deg_w', 'deg_s', 'adv', 'sed_burial'])
+    #     ax.set_ylabel('percentage (%)')
+    #     # Get current tick positions
+    #     xticks = ax.get_xticks()
+    #     # Set the ticks explicitly before setting labels
+    #     ax.set_xticks(xticks)
+    #     ax.set_xticklabels(np.round(xticks * time_conversion_factor))
+    #     ax.set_xlabel('time (' + time_unit + ')')
+
+    #     plt.savefig(file_out_path+"/"+sim_name+"-degrad"+".png", bbox_inches="tight", dpi=300)
+    #     print("save figures to ", file_out_path)
+
+    #     if check_mass is True:
+    #         print(f"mass_vol extracted: {mass_volatilized.to_numpy()[-1]}")
+    #         vol_active = (sum(self.elements.mass_volatilized)*mass_conversion_factor)
+    #         vol_inactive = (sum(self.elements_deactivated.mass_volatilized)*mass_conversion_factor)
+    #         print(f"mass_vol active: {vol_active}")
+    #         print(f"mass_vol inactive: {vol_inactive}")
+    #         print(f"mass_vol active + inactive : {vol_inactive + vol_active}")
+    #         print("####")
+
+    #         print(f"mass_degraded extracted {mass_degraded.to_numpy()[-1]}")
+    #         degraded_active = (sum(self.elements.mass_degraded)*mass_conversion_factor)
+    #         degraded_inactive = (sum(self.elements_deactivated.mass_degraded)*mass_conversion_factor)
+    #         print(f"mass_degraded active: {degraded_active}")
+    #         print(f"mass_degraded inactive: {degraded_inactive}")
+    #         print(f"mass_degraded active + inactive: {degraded_active + degraded_inactive}")
+    #         print("####")
+
+    #         print(f"mass_tot_ts extracted: {np.array(mass_tot_timestep[-1]).sum()}")
+    #         print("####")
+    #         mass_active = (sum(self.elements.mass)*mass_conversion_factor)
+    #         mass_inactive = (sum(self.elements_deactivated.mass)*mass_conversion_factor)
+    #         print(f"mass_tot_ts active: {mass_active}")
+    #         print(f"mass_tot_ts inactive: {mass_inactive}")
+    #         print(f"mass_tot_ts active + inactive: {mass_active + mass_inactive}")
+    #         print("####")
+
+    #         print(f"mass emitted extracted: {mass_emitted.to_numpy()[-1]}")
+    #         print("mass emitted check: ",
+    #               f"{(mass_active + mass_inactive)+ (degraded_active + degraded_inactive)+ (vol_inactive + vol_active)}")
+    #         print("####")
 
     @staticmethod
     def _find_date_row(data_frame,
