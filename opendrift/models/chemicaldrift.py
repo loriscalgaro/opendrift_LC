@@ -9446,6 +9446,17 @@ class ChemicalDrift(OceanDrift):
             for da in aligned[1:]:
                 Final_sum = Final_sum + da.fillna(0)
 
+            ### Remove depth dimension but keep as coord
+            if "depth" in Final_sum.dims and Final_sum.sizes.get("depth", None) == 1:
+                depth_val = float(Final_sum["depth"].values)
+                Final_sum = Final_sum.squeeze("depth", drop=True)
+                Final_sum = Final_sum.assign_coords(depth=depth_val)
+
+            ### Reorder dimensions with time first
+            dims = list(Final_sum.dims)
+            dims.remove("time")
+            Final_sum = Final_sum.transpose("time", *dims)
+
         if Final_sum is not None:
             ### Select mask to conserve landmask at different depths
             print("Create landmask")
