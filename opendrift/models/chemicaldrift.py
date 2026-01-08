@@ -401,7 +401,13 @@ class ChemicalDrift(OceanDrift):
                          'Copper','Cadmium','Chromium','Lead','Vanadium','Zinc','Nickel','Tralopyril','Econea',
                          'Nitrogen', 'Alkalinity','Azoxystrobin','Diflufenican','Metconazole','Penconazole','Tebuconazole', 'Metaflumizone',
                          'Tetraconazole','Methiocarb','test', 'Sulfamethoxazole','Trimethoprim','Clindamycin',
-                         'Ofloxacin','Metformin','Venlafaxine',None],
+                         'Ofloxacin','Metformin','Venlafaxine',
+                         'chemical01', 'chemical02', 'chemical03', 'chemical04', 'chemical05', 'chemical06',
+                         'chemical07', 'chemical08', 'chemical09', 'chemical10', 'chemical11', 'chemical12',
+                         'chemical13', 'chemical14', 'chemical15', 'chemical16', 'chemical17', 'chemical18',
+                         'chemical19', 'chemical20', 'chemical21', 'chemical22', 'chemical23', 'chemical24',
+                         'chemical25', 'chemical26', 'chemical27', 'chemical28',
+                         None],
                 'default': None,
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Name of modelled chemical'},
             # Single process degradation
@@ -3230,52 +3236,92 @@ class ChemicalDrift(OceanDrift):
         if time_avg_conc:
             conctmp = H[:-1,:,:,:,:]
             cshape = conctmp.shape
-            mdt =    np.mean(times[1:] - times[:-1])    # output frequency in opendrift output file
-            if deltat==None:
+            Tconc = cshape[0]  # number of timesteps actually averaged
+
+            # compute ndt robustly
+            if len(times) < 2:
+                logger.warning("Only one timestep available; cannot time-average concentrations.")
                 ndt = 1
+                deltat_hours = None
             else:
+                mdt = np.mean(times[1:] - times[:-1])
                 if not isinstance(mdt, timedelta):
-                    logger.warning(
-                        "Mean timestep is not a datetime.timedelta object "
-                        "(likely only one timestep available). Cannot calculate mean concentration.")
-                    return
+                    logger.warning("Mean timestep is not datetime.timedelta; cannot time-average.")
+                    ndt = 1
+                    deltat_hours = None
                 else:
-                    ndt = int( deltat / (mdt.total_seconds()/3600.))
-            times2 = times[::ndt]
-            times2 = times2[1:]
-            odt = int(cshape[0]/ndt)
+                    mdt_hours = mdt.total_seconds() / 3600.0
+                    if deltat is None:
+                        ndt = 1
+                        deltat_hours = None
+                    else:
+                        deltat_hours = float(deltat)  # hours
+                        ndt = max(1, int(np.ceil(deltat_hours / mdt_hours)))
+
+            ndt = max(1, ndt)
+
+            # include partial last window
+            odt = int(np.ceil(Tconc / ndt)) if Tconc > 0 else 0
+            if odt == 0:
+                logger.warning("No timesteps available for averaging (Tconc=0).")
+                deltat_hours = None
+                return
+
+            # for full windows: times[::ndt][1:]  (i.e., ndt, 2*ndt, ...)
+            # avoid duplicated last timestamp by setting last timestamp to: last_full + deltat_hours
+            times_arr = np.asarray(times)
+
+            idx = (np.arange(odt) + 1) * ndt
+            idx = np.minimum(idx, len(times_arr) - 1)   # safe clamp
+            times2 = times_arr[idx]                     # len(times2) == odt always
+
+            # If last window is partial, fix duplicate timestamp due to clamping
+            if odt >= 2 and idx[-1] == idx[-2] and deltat_hours is not None:
+                times2 = times2.copy()
+                times2[-1] = times2[-2] + timedelta(hours=deltat_hours)
+
             logger.debug ('ndt '+ str(ndt))   # number of time steps over which to average in conc file
             logger.debug ('odt '+ str(odt))   # number of average slices
 
+            # time averaging
             try:
                 mean_conc = np.mean(conctmp.reshape(odt, ndt, *cshape[1:]), axis=1)
-            except: # If (times) is not a perfect multiple of deltat
-                mean_conc = np.zeros([odt,cshape[1],cshape[2],cshape[3],cshape[4]])
+            except Exception: # If (times) is not a perfect multiple of deltat
+                mean_conc = np.zeros([odt, cshape[1], cshape[2], cshape[3], cshape[4]], dtype=conctmp.dtype)
                 for ii in range(odt):
-                    meantmp  = np.mean(conctmp[(ii*ndt):(ii+1)*ndt,:,:,:,:],axis=0)
-                    mean_conc[ii,:,:,:,:] = meantmp
+                    s0 = ii * ndt
+                    s1 = min((ii + 1) * ndt, Tconc)  # partial last window handled here
+                    if s0 >= s1:
+                        continue
+                    mean_conc[ii,:,:,:,:] = np.mean(conctmp[s0:s1, :, :, :, :], axis=0)
 
             if elements_density is True:
                 denstmp = H_count[:-1,:,:,:,:]
                 dshape = denstmp.shape
                 try:
-                    mean_dens = np.sum(denstmp.reshape(odt, ndt, *dshape[1:]), axis=1)
-                except:
-                    mean_dens = np.zeros([odt,dshape[1],dshape[2],dshape[3],dshape[4]])
+                    mean_dens = np.mean(denstmp.reshape(odt, ndt, *dshape[1:]), axis=1)
+                except Exception: # If (times) is not a perfect multiple of deltat
+                    mean_dens = np.zeros([odt, dshape[1], dshape[2], dshape[3], dshape[4]], dtype=denstmp.dtype)
                     for ii in range(odt):
-                        meantmp  = np.mean(denstmp[(ii*ndt):(ii+1)*ndt,:,:,:,:],axis=0)
-                        mean_dens[ii,:,:,:,:] = meantmp
+                        s0 = ii * ndt
+                        s1 = min((ii + 1) * ndt, Tconc)
+                        if s0 >= s1:
+                            continue
+                        mean_dens[ii,:,:,:,:] = np.mean(denstmp[s0:s1,:,:,:,:], axis=0)
 
             if horizontal_smoothing is True:
                 Hsmtmp = Hsm[:-1,:,:,:,:]
                 Hsmshape = Hsmtmp.shape
                 try:
                     mean_Hsm = np.mean(Hsmtmp.reshape(odt, ndt, *Hsmshape[1:]), axis=1)
-                except:
-                    mean_Hsm = np.zeros([odt,Hsmshape[1],Hsmshape[2],Hsmshape[3],Hsmshape[4]])
+                except Exception: # If (times) is not a perfect multiple of deltat
+                    mean_Hsm = np.zeros([odt, Hsmshape[1], Hsmshape[2], Hsmshape[3], Hsmshape[4]], dtype=Hsmtmp.dtype)
                     for ii in range(odt):
-                        meantmp  = np.mean(Hsmtmp[(ii*ndt):(ii+1)*ndt,:,:,:,:],axis=0)
-                        Hsmtmp[ii,:,:,:,:] = meantmp
+                        s0 = ii * ndt
+                        s1 = min((ii + 1) * ndt, Tconc)
+                        if s0 >= s1:
+                            continue
+                        mean_Hsm[ii,:,:,:,:] = np.mean(Hsmtmp[s0:s1,:,:,:,:], axis=0)
 
 
         # Save outputs to netCDF Dataset
