@@ -25,6 +25,7 @@ from opendrift.models.shipdrift import ShipDrift
 from opendrift.models.openberg import OpenBerg
 from opendrift.models.plastdrift import PlastDrift
 from opendrift.models.radionuclides import RadionuclideDrift
+from opendrift.models.basemodel import Mode
 
 # Class to redirect output to text box
 class TextRedirector:
@@ -115,16 +116,18 @@ class OpenDriftGUI(tk.Tk):
         ##################
         self.n = ttk.Notebook(self.master)
         self.n.grid()
-        self.seed = ttk.Frame(self.n)
+        self.seed = tk.Frame(self.n)
         self.confignotebook = ttk.Notebook(self.n)
-        self.config = ttk.Frame(self.confignotebook)
-        self.forcing = ttk.Frame(self.n)
+        self.config = tk.Frame(self.confignotebook)
+        self.forcing = tk.Frame(self.n)
         self.n.add(self.seed, text='Seeding')
         self.n.add(self.confignotebook, text='Config')
         self.n.add(self.forcing, text='Forcing')
         self.confignotebook.add(self.config, text='SubConfig')
 
         # Top
+        self.logo = tk.Frame(self.seed, bg='white')
+        self.logo.grid(row=0, column=0, rowspan=1)
         self.top = tk.Frame(self.seed,
                             relief=tk.FLAT, pady=25, padx=25)
         self.top.grid(row=0, column=1, rowspan=1)
@@ -375,12 +378,18 @@ class OpenDriftGUI(tk.Tk):
 
         ##########################
         try:
-            img = ImageTk.PhotoImage(Image.open(
-                opendrift.test_data_folder +
-                                     '../../docs/opendrift_logo.png'))
-            panel = tk.Label(self.seed, image=img)
-            panel.image = img
-            panel.grid(row=0, column=0)
+            if datetime.now().month == 12 and datetime.now().day > 10:
+                img = ImageTk.PhotoImage(Image.open(
+                    opendrift.test_data_folder +
+                                         '../../docs/hohohOpenDrift.jpg').resize((200, 200)))
+                self.seed.configure(bg='lightblue')
+            else:
+                img = ImageTk.PhotoImage(Image.open(
+                    opendrift.test_data_folder +
+                                         '../../docs/opendrift_logo.png'))
+            self.logo_image=tk.Label(self.logo, image=img)
+            self.logo_image.image = img
+            self.logo_image.grid(row=0, column=0)
         except Exception as e:
             print(e)
             pass # Could not display logo
@@ -391,6 +400,13 @@ class OpenDriftGUI(tk.Tk):
         tk.Button(self.seed, text=startbutton, bg='green',
                   command=self.run_opendrift).grid(row=80, column=1,
                                               sticky=tk.W, pady=4)
+
+        try:
+            import opendrift_gui_conf
+            opendrift_gui_conf.customize(self)
+        except Exception as e:
+            print('No custom configuration')
+            #print(e)
 
     def copy_position(self, a, b, c):
         self.elat.delete(0, tk.END)
@@ -407,6 +423,8 @@ class OpenDriftGUI(tk.Tk):
 
     def handle_result(self, command):
 
+        mode = self.o.mode  # To be reset after plotting
+        self.o.mode = Mode.Result
         from os.path import expanduser
         homefolder = expanduser("~")
         filename = homefolder + '/' + self.simulationname
@@ -475,6 +493,8 @@ class OpenDriftGUI(tk.Tk):
                 print('Could not copy file:')
                 print(e)
 
+        self.o.mode = mode  # resetting
+
     def validate_config(self, value_if_allowed, prior_value, key):
         """From config menu selection."""
         if value_if_allowed == 'None':
@@ -487,10 +507,12 @@ class OpenDriftGUI(tk.Tk):
                 value_if_allowed = float(value_if_allowed)
             except:
                 return False
+
         try:
             self.o.set_config(key, value_if_allowed)
             return True
-        except:
+        except Exception as e:
+            print(e)
             return False
 
     def set_model(self, model, rebuild_gui=True, logfile=None):
@@ -711,13 +733,17 @@ class OpenDriftGUI(tk.Tk):
         else:
             cone = False
 
-        so = Leeway(loglevel=50)
+        so = OceanDrift(loglevel=50)
         for k,v in self.GUI_config.items():
             try:
                 so.set_config(k, v)
             except:
                 pass
-        so.seed_cone(lon=lon, lat=lat, radius=radius, time=start_time)
+        number = self.GUI_config['seed:number']['default']
+        if cone is True:
+            so.seed_cone(lon=lon, lat=lat, number=number, radius=radius, time=start_time)
+        else:
+            so.seed_elements(lon=lon, lat=lat, radius=radius, number=number, time=start_time)
         so.plot(buffer=.5, fast=True)
         del so
 
@@ -880,6 +906,8 @@ class OpenDriftGUI(tk.Tk):
                       command=lambda: self.handle_result(
                           'copy_netcdf')).grid(row=81, column=1)
 
+        # Allow setting config for next run
+        self.o.mode = Mode.Config
 
 def main():
     parser = argparse.ArgumentParser()

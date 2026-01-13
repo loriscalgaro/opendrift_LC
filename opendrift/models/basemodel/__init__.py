@@ -21,6 +21,13 @@ logger = logging.getLogger('opendrift')
 logging.getLogger('botocore').setLevel(logging.INFO)
 logging.getLogger('urllib3').setLevel(logging.INFO)
 logging.getLogger('PIL').setLevel(logging.INFO)
+logging.getLogger('fiona').setLevel(logging.INFO)
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except:
+    logger.debug('Cound not load dotenv')
 
 import sys
 import os
@@ -636,7 +643,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         """Store some properties and variables, for access at next time step"""
 
         if self.newly_seeded_IDs is not None:  # For newly seeded elements, we set previous equal to present
-            newly_seeded_rel_indices = np.where(self.elements.age_seconds==self.time_step.total_seconds())[0]    
+            newly_seeded_rel_indices = np.where(self.elements.age_seconds==self.time_step.total_seconds())[0]
 
         # Environment variables
         if self._environment_previous is not None:
@@ -659,7 +666,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             # Store present element properties
             for var in self._elements_previous:
                 self._elements_previous[var][self.elements.ID] = getattr(self.elements, var)
-            
+
     def interact_with_coastline(self, final=False):
         """Coastline interaction according to configuration setting"""
 
@@ -913,7 +920,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             indices = (self.elements_scheduled_time <= self.time) & \
                       (self.elements_scheduled_time >
                        self.time + self.time_step)
-        
+
         self.newly_seeded_IDs = self.elements_scheduled.ID[indices]  # may be deactivated if on land
         if self._elements_previous is not None and 'lon' in self._elements_previous:
             # store position of newly seeded elements
@@ -949,7 +956,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
 
         if isinstance(land_reader, ShapeReader):
             # can do this better
-            land_indices = land_reader.__on_land__(lon, lat)
+            land_indices = land_reader.get_variables('land_binary_mask', x=lon, y=lat)['land_binary_mask']
             land_indices = np.where(land_indices==1)[0]
             lon[land_indices], lat[land_indices], _ = land_reader.get_nearest_outside(
                 lon[land_indices],
@@ -981,6 +988,10 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             landlats = lat[land_indices]
             longrid = np.arange(lonmin, lonmax, deltalon)
             latgrid = np.arange(latmin, latmax, deltalat)
+            if len(longrid) > 1000 or len(latgrid) > 1000:
+                logger.warning(f'Particles cover large area - using coarser resolution for closest ocean point')
+                longrid = np.linspace(lonmin, lonmax, 1000)
+                latgrid = np.linspace(latmin, latmax, 1000)
             longrid, latgrid = np.meshgrid(longrid, latgrid)
             longrid = longrid.ravel()
             latgrid = latgrid.ravel()
@@ -996,7 +1007,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             if landgrid.size == 0:
                 # Need to catch this before trying .min() on it...
                 logger.warning('Land grid has zero size, cannot move elements.')
-                return lon, lat, land_indices                                        
+                return lon, lat, land_indices
             if landgrid.min() == 1 or np.isnan(landgrid.min()):
                 logger.warning('No ocean pixels nearby, cannot move elements.')
                 return lon, lat, land_indices
@@ -1039,7 +1050,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                 the number of elements are obtained from the config-default.
                 If provided, number must be a multiple of the number of points.
             number_per_point: integer, number of particles to be seeded at each point.
-                This shall not be provided along with number. 
+                This shall not be provided along with number.
                 Only relevant if lon/lat are arrays.
             time: datenum or list
                 The time at which particles are seeded/released.
@@ -1191,6 +1202,15 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                 meters_above_seafloor = 0
             kwargs['z'] = \
                 -env['sea_floor_depth_below_sea_level'].astype('float32') + meters_above_seafloor
+
+        # Getting element properties from seed config, if not specified explicitly
+        seed_config = self.get_configspec('seed:')
+        for seed_prop in seed_config:
+            prop = seed_prop.split(':')[-1]
+            if prop in kwargs:
+                continue
+            if prop in self.ElementType.variables:
+                kwargs[prop] = seed_config[f'seed:{prop}']['value']
 
         # Creating and scheduling elements
         elements = self.ElementType(lon=lon, lat=lat, **kwargs)
@@ -1559,7 +1579,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
 
         ga = g.to_crs({'proj':'cea'})  # Equal area projection for area calculation
         g_lonlat = g.to_crs({'proj':'lonlat'})  # Lonlat projection to get lon and lat
-        
+
         areas = np.array([p.area for p in ga.geometry.explode(index_parts=False)])
         logger.info(f'Seeding {number} elements within {len(areas)} polygons')
 
@@ -1571,15 +1591,19 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             number_per_polygon[0:abs(remaining)] += np.sign(remaining)
         elif abs(remaining) > len(number_per_polygon):
             raise ValueError('Should not happen')
-        
+
+        all_lons = np.array([])
+        all_lats = np.array([])
         for e, (n, polygon) in enumerate(zip(number_per_polygon, g_lonlat.geometry.explode(index_parts=False))):
             logger.info(f'Seeding {n} elements within polygon number {e+1} of area {areas[e]/1e6} km2')
             lons, lats = polygon.exterior.coords.xy
-            self.seed_within_polygon(lons=lons,
-                                     lats=lats,
-                                     number=n,
-                                     time=time,
-                                     **kwargs)
+            all_lons = np.append(all_lons, lons)
+            all_lats = np.append(all_lats, lats)
+        self.seed_within_polygon(lons=all_lons,
+                                 lats=all_lats,
+                                 number=number,
+                                 time=time,
+                                 **kwargs)
 
     @require_mode(mode=Mode.Ready)
     def seed_letters(self, text, lon, lat, time, number, scale=1.2):
@@ -1916,7 +1940,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
 
         # Store expected simulation extent, to check if new readers have coverage
         self.simulation_extent = simulation_extent
-        self.env.finalize(self.simulation_extent)
+        self.env.finalize(simulation_extent=self.simulation_extent,
+                          start=self.start_time, end=self.expected_end_time)
 
         ####################################################################
         # Preparing history array for storage in memory and eventually file
@@ -1943,7 +1968,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                                 if v.get('store_previous', False) is True]
         elements_previous = [vn for vn, v in self.elements.variables.items()
                              if v.get('store_previous', False) is True]
- 
+
         # Add the output variables which are always required,
         # as well as variables for which previous value is stored
         if export_variables is not None:
@@ -2092,7 +2117,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                 logger.debug('%s elements scheduled.' %
                              self.num_elements_scheduled())
                 logger.debug('===================================' * 2)
-                
+
                 # Display element locations to terminal
                 for n in ['lat', 'lon', 'z']:
                     d = getattr(self.elements, n)
@@ -2128,7 +2153,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                 self.interact_with_seafloor()
 
                 self.state_to_buffer()  # Append status to history array
-                
+
                 self.increase_age_and_retire()
 
                 self.remove_deactivated_elements()
@@ -2395,7 +2420,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
 
     def set_up_map(self,
                    corners=None,
-                   buffer=.1,
+                   buffer='auto',
                    delta_lat=None,
                    lscale=None,
                    fast=False,
@@ -2436,6 +2461,9 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                 lonmax = np.nanmax(lons)
                 latmin = np.nanmin(lats)
                 latmax = np.nanmax(lats)
+            if buffer == 'auto':
+                buffer_fraction = 0.3  # 30% whitespace, to be updated
+                buffer = np.maximum((lonmax-lonmin)/2, latmax-latmin)*buffer_fraction
             lonmin = lonmin - buffer * 2
             lonmax = lonmax + buffer * 2
             latmin = latmin - buffer
@@ -2498,6 +2526,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                 land_color = 'gray'
             else:
                 land_color = cfeature.COLORS['land']
+        land_zorder = kwargs.pop('land_zorder', 1.5)
 
         if 'text' in kwargs:
             if not isinstance(kwargs['text'], list):
@@ -2534,6 +2563,11 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                     **bx)
                 ax.add_patch(patch)
 
+        if 'line_plot_options' in kwargs:
+            x = kwargs['line_plot_options'].pop('x')
+            y = kwargs['line_plot_options'].pop('y')
+            plt.plot(x, y, **kwargs['line_plot_options'], transform=self.crs_lonlat)
+
         if not hide_landmask:
             if 'land_binary_mask' in self.env.priority_list and self.env.priority_list[
                     'land_binary_mask'][0] == 'shape':
@@ -2549,9 +2583,10 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                                   facecolor=facecolor,
                                   edgecolor='black')
             else:
-                reader_global_landmask.plot_land(ax, lonmin, latmin, lonmax,
-                                                 latmax, fast, ocean_color,
-                                                 land_color, lscale,
+                reader_global_landmask.plot_land(ax, lonmin, latmin, lonmax, latmax,
+                                                 fast=fast, ocean_color=ocean_color,
+                                                 land_color=land_color, land_zorder=land_zorder,
+                                                 lscale=lscale,
                                                  crs_plot=self.crs_plot,
                                                  crs_lonlat=self.crs_lonlat)
 
@@ -2587,7 +2622,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
 
 
     def animation(self,
-                  buffer=.2,
+                  buffer='auto',
                   corners=None,
                   filename=None,
                   compare=None,
@@ -2641,6 +2676,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             compare_list, compare_args = self._get_comparison_xy_for_plots(
                 compare)
             kwargs.update(compare_args)
+
+        background_zorder = kwargs.pop('background_zorder', 0)
 
         start_time = datetime.now()
         if cmap is None:
@@ -2824,7 +2861,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                                map_y,
                                scalar,
                                alpha=bgalpha,
-                               zorder=1,
+                               zorder=background_zorder,
                                antialiased=True,
                                linewidth=0.0,
                                rasterized=True,
@@ -2838,7 +2875,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                                     u_component[::skip, ::skip],
                                     v_component[::skip, ::skip],
                                     scale=scale,
-                                    zorder=1,
+                                    zorder=background_zorder,
                                     transform=self.crs_lonlat)
 
         if lcs is not None:
@@ -2851,6 +2888,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                                  vmin=vmin,
                                  vmax=vmax,
                                  cmap=cmap,
+                                 zorder=background_zorder,
                                  transform=self.crs_lonlat)
 
         if show_elements is True:
@@ -2861,6 +2899,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
 
         if color is False:
             cargs = {'c': None, 'color': markercolor, 'cmap': None}
+            vmin=None
+            vmax=None
         else:
             cargs = {'c': [], 'color': None, 'cmap': cmap}
 
@@ -3075,6 +3115,12 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                                            frames=frames,
                                            interval=interval)
             try:
+                __IPYTHON__
+                from IPython.display import display, HTML
+                plt.close()  # prevent showing figure in addition to animation
+                logger.info('Preparing animation for notebook....')
+                display(HTML(anim.to_jshtml()))
+            except NameError:
                 plt.show()
             except AttributeError as e:
                 logger.exception(e)
@@ -3309,7 +3355,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
 
     def plot(self,
              background=None,
-             buffer=.2,
+             buffer='auto',
              corners=None,
              linecolor=None,
              filename=None,
@@ -3332,7 +3378,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
              show_initial=True,
              density_pixelsize_m=1000,
              lalpha=None,
-             bgalpha=1,
+             bgalpha=.8,
              clabel=None,
              cpad=.05,
              caspect=30,
@@ -3633,6 +3679,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                            color=self.plot_comparison_colors[i + 1],
                            transform=self.crs_lonlat)
 
+        background_zorder = kwargs.pop('background_zorder', 0)
         if background is not None:
             if hasattr(self, 'time'):
                 time = self.time - self.time_step_output
@@ -3667,7 +3714,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                                             map_y,
                                             scalar,
                                             alpha=bgalpha,
-                                            zorder=1,
+                                            zorder=background_zorder,
                                             vmin=vmin,
                                             vmax=vmax,
                                             cmap=cmap,
@@ -3698,7 +3745,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                       v_component[::skip, ::skip],
                       scale=scale,
                       transform=self.crs_lonlat,
-                      zorder=1)
+                      zorder=background_zorder)
 
         if lcs is not None:
             map_x_lcs, map_y_lcs = (lcs['lon'], lcs['lat'])
@@ -3708,7 +3755,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                           alpha=1,
                           vmin=vmin,
                           vmax=vmax,
-                          zorder=0,
+                          zorder=background_zorder,
                           cmap=cmap,
                           transform=self.crs_lonlat)
 
@@ -4738,10 +4785,12 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
 
     def center_of_gravity(self, onlysurface=False):
         """
-        calculate center of mass and variance of all elements
+        Calculate center of mass and variance of all elements
+
         returns  (lon,lat), variance
         where (lon,lat) are the coordinates of the center of mass as
-        function of time"""
+        function of time
+        """
         lon, lat = self.result.lon, self.result.lat
         x, y = self.proj_latlon(lon, lat)
         if onlysurface == True:
@@ -4781,7 +4830,7 @@ def evaluate_conditional(key, operator, value, self=None):
     Returns: True or False
     """
 
-    operator_map = { 
+    operator_map = {
         '==': lambda x, y: x == y,
         '!=': lambda x, y: x != y,
         '<': lambda x, y: x < y,
@@ -4794,14 +4843,14 @@ def evaluate_conditional(key, operator, value, self=None):
         'or': lambda x, y: x or y,
         'and': lambda x, y: x and y,
     }
-    
+
     if isinstance(key, tuple):
         key = evaluate_conditional(key[0], key[1], key[2], self)
 
     if self is not None and not isinstance(key, bool):
         # If a OpenDrift instance is provided, this will evaluate the key, e.g. with get_config
         key = self._evaluate_key(key)
-    
+
     if isinstance(value, tuple):
         value = evaluate_conditional(value[0], value[1], value[2], self)
 

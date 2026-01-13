@@ -10,7 +10,7 @@ dependencies:
   - pyproj>=2.3
   - libgdal>=3.1
   - gdal>=3.1
-  - xarray
+  - xarray<=2025.9.0
   - dask
   - geopandas
   - cfgrib
@@ -34,6 +34,7 @@ dependencies:
   - adios_db>=1.2,<1.2.7
   - copernicusmarine>=2.0
   - bottleneck
+  - python-dotenv
   - pip
   - git
   - pip:

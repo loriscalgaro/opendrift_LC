@@ -47,13 +47,17 @@ def write_buffer(self):
         self._netCDF_encoding = encoding
         return
 
+    if self.result.sizes['time'] == 0:
+        logger.debug('No new time steps to write')
+        return
+
     self.outfile = Dataset(self.outfile_name, 'a')  # Re-open file at each write
     numtimes = self.outfile['time'].shape[0]
 
     for varname in self.result.data_vars:
         if 'time' in self.result[varname].dims:
             var = self.outfile.variables[varname]
-            var[:, numtimes:numtimes + self.result.sizes['time']] = self.result[varname]
+            var[:, numtimes:numtimes + self.result.sizes['time']] = self.result[varname].fillna(var._FillValue)
     self.outfile.variables['time'][numtimes:numtimes + self.result.sizes['time']] = \
         date2num(pd.to_datetime(self.result.time).to_pydatetime(),
                  self.outfile['time'].units, self.outfile['time'].calendar)
