@@ -8380,79 +8380,61 @@ class ChemicalDrift(OceanDrift):
         """
         Normalize 'depth' and 'specie' across a list of DataArrays.
 
-        Rules:
-          - If no DataArray has 'depth': leave depth untouched (i.e. absent), just
-            drop 'specie' dim/coord where present.
-          - If some DataArrays have 'depth':
-              * All 'depth' coordinates among those must have the same length and values
-                (scalar vs [0.] is treated as equal).
-              * If depth is single-valued (length 1), every DataArray is converted to have
-                a 'depth' dimension of length 1 with that value and matching coord.
-              * If depth is multi-valued (length > 1), every DataArray must already have
-                'depth' present, and all must match; they are left multi-depth but their
-                depth coord is set to the common reference.
-          - In all cases, remove any 'specie' dimension and/or coordinate.
+        - 'specie' is always removed (dim and/or coord).
+        - If a common single-valued depth exists, it is kept as a SCALAR coordinate
+          (0-D), NOT a dimension.
+        - If depth is multi-valued (len > 1), we keep it as-is (dimension/coord).
+        - If depth is multi-valued (length > 1), every DataArray must already have
+          'depth' present, and all must match; they are left multi-depth but their
+          depth coord is set to the common reference.
         """
         import numpy as np
         import xarray as xr
+
+        # ---- find depth reference among inputs (if any) ----
         depth_ref = None
         depth_ref_idx = None
         has_depth_flags = []
 
-        # Inspect & verify depth where present
         for i, da in enumerate(DataArray_ls):
             has_depth = ("depth" in da.coords) or ("depth" in da.dims)
             has_depth_flags.append(has_depth)
-
             if not has_depth:
                 continue
 
-            # Get depth values irrespective of dim vs coord
-            if "depth" in da.coords:
-                depth_vals = da.coords["depth"].values
-            else:
-                depth_vals = da["depth"].values
-
-            depth_arr_norm = np.atleast_1d(np.asarray(depth_vals))
+            depth_vals = da.coords["depth"].values if "depth" in da.coords else da["depth"].values
+            depth_arr = np.atleast_1d(np.asarray(depth_vals))
 
             if depth_ref is None:
-                depth_ref = depth_arr_norm
+                depth_ref = depth_arr
                 depth_ref_idx = i
             else:
-                depth_ref_norm = np.atleast_1d(np.asarray(depth_ref))
-
-                # Require same shape and values for all with depth
-                if depth_arr_norm.shape != depth_ref_norm.shape or not np.allclose(
-                    depth_arr_norm, depth_ref_norm
-                ):
+                ref_arr = np.atleast_1d(np.asarray(depth_ref))
+                if depth_arr.shape != ref_arr.shape or not np.allclose(depth_arr, ref_arr):
                     raise ValueError(
                         f"Inconsistent depth coordinates between inputs {i} and {depth_ref_idx}:\n"
-                        f"  depth[{i}] = {depth_arr_norm}\n"
-                        f"  depth[{depth_ref_idx}] = {depth_ref_norm}\n"
+                        f"  depth[{i}] = {depth_arr}\n"
+                        f"  depth[{depth_ref_idx}] = {ref_arr}\n"
                         "All depth coordinate values must be identical."
                     )
 
-        # No depth anywhere
-        if depth_ref is None:
-            # Just drop 'specie' and return
-            normalized = []
-            for da in DataArray_ls:
-                aa = da
-                # Drop specie dimension if present
-                if "specie" in aa.dims:
-                    aa = aa.squeeze("specie", drop=True)
-                # Drop specie coord if present
-                if "specie" in aa.coords:
-                    aa = aa.drop_vars("specie")
-                normalized.append(aa)
-            return normalized
+        # helper: drop specie everywhere
+        def _drop_specie(aa: xr.DataArray) -> xr.DataArray:
+            if "specie" in aa.dims:
+                aa = aa.squeeze("specie", drop=True)
+            if "specie" in aa.coords:
+                aa = aa.drop_vars("specie")
+            return aa
 
-        # There is a common depth
-        depth_ref_norm = np.atleast_1d(np.asarray(depth_ref))
-        n_depth = depth_ref_norm.size
+        # ---- if no depth anywhere: just drop specie and return ----
+        if depth_ref is None:
+            return [_drop_specie(da) for da in DataArray_ls]
+
+        depth_ref = np.atleast_1d(np.asarray(depth_ref))
+        n_depth = depth_ref.size
         any_missing_depth = not all(has_depth_flags)
 
-        # If multi-depth and some arrays have no depth at all, raise error.
+        # If multi-depth and some arrays missing depth => unsafe
         if n_depth > 1 and any_missing_depth:
             raise ValueError(
                 "Some DataArrays have multi-layer 'depth' while others have no 'depth'. "
@@ -8462,52 +8444,38 @@ class ChemicalDrift(OceanDrift):
         normalized = []
 
         for i, da in enumerate(DataArray_ls):
-            aa = da
+            aa = _drop_specie(da)
 
-            # Normalize depth to be a dim + coord with the common values
             if n_depth == 1:
-                depth_value = float(depth_ref_norm[0])
+                depth_value = float(depth_ref[0])
 
+                # If depth is a dimension, collapse it (keep info)
                 if "depth" in aa.dims:
-                    # Ensure size==1
                     if aa.sizes["depth"] != 1:
                         raise ValueError(
-                            f"DataArray index {i} has 'depth' dim of size {aa.sizes['depth']} "
+                            f"DataArray index {i} has 'depth' dim size {aa.sizes['depth']} "
                             "but reference depth is single-valued."
                         )
-                    # Enforce coord
-                    aa = aa.assign_coords(depth=[depth_value])
-                    print(f"Normalized depth coord for array {i} → [{depth_value}]")
-                else:
-                    # Remove any scalar coord if present
-                    if "depth" in aa.coords:
-                        aa = aa.drop_vars("depth")
-                    # Add depth as a dimension with single coordinate
-                    aa = aa.expand_dims(dim={"depth": [depth_value]})
-                    print(f"Added depth=[{depth_value}] as dimension to array {i}")
+                    aa = aa.isel(depth=0, drop=True)
+
+                # Ensure depth is a scalar coord (0-D)
+                # (drop any existing 1D coord first)
+                if "depth" in aa.coords:
+                    aa = aa.drop_vars("depth")
+                aa = aa.assign_coords(depth=depth_value)  # scalar coord
 
             else:
-                # Multi-depth: all must already have depth, and values were alredy checked
-                if "depth" not in aa.dims:
-                    raise ValueError(
-                        f"DataArray index {i} has no 'depth' dimension, but reference depth "
-                        "is multi-layer."
-                    )
-                # Enforce identical depth coord
-                aa = aa.assign_coords(depth=depth_ref_norm)
-                print(f"Normalized depth coord for array {i} → {depth_ref_norm.tolist()}")
-
-            # -Drop 'specie' dim & coord in all cases
-            if "specie" in aa.dims:
-                aa = aa.squeeze("specie", drop=True)
-                print(f"Removed 'specie' dimension from array {i}")
-            if "specie" in aa.coords:
-                aa = aa.drop_vars("specie")
-                print(f"Removed 'specie' coordinate from array {i}")
+                # multi-depth: keep as-is, but enforce identical coord values
+                if "depth" in aa.dims:
+                    aa = aa.assign_coords(depth=depth_ref)
+                elif "depth" in aa.coords:
+                    # coord without dim: still enforce
+                    aa = aa.assign_coords(depth=depth_ref)
 
             normalized.append(aa)
 
         return normalized
+
 
 
     def sum_DataArray_list(self,
