@@ -28,7 +28,6 @@ import logging; logger = logging.getLogger(__name__)
 from opendrift.elements import LagrangianArray
 from opendrift.models.basemodel import OpenDriftSimulation
 from opendrift.config import CONFIG_LEVEL_BASIC, CONFIG_LEVEL_ESSENTIAL
-from opendrift.models.physics_methods import PhysicsMethods
 from scipy.integrate import solve_ivp
 import numpy as np
 
@@ -41,8 +40,6 @@ rho_iceb = 900         # Density of iceberg (kg/m^3)
 g = 9.81               # Acceleration due to gravity in m/s²
 omega = 7.2921e-5      # Angular frequency (rad/s)
 csi = 1                # Sea ice coefficient of resistance
-wave_drag_coef = 0.3   # Wave drag coefficient
-
 
 
 class IcebergObj(LagrangianArray):
@@ -91,6 +88,9 @@ class IcebergObj(LagrangianArray):
         ('wind_skin_drag_coef', {'dtype': np.float32,  #Wind/Air skin drag coef. (Cda, IK)
                                  'units': '1',
                                  'default': 0.0022}),
+        ('wave_drag_coef', {'dtype': np.float32,  #Wave drag coef.
+                                 'units': '1',
+                                 'default': 0.3}),
         ("iceb_x_velocity", {'dtype': np.float32,     #Iceberg velocity in the x-direction
                              'units': "m/s",
                              'default': 0.0}),
@@ -108,7 +108,7 @@ def ocean_force(iceb_vel, water_vel, Avo, Aho, rho_water, water_form_drag_coef, 
         water_vel : Ocean current velocity
         rho_water : Water density
         Avo : Vertical area of the iceberg in the ocean (length x draft)
-        Aho : Horizontal area of the iceberg in contact with the ocean (width x draft)
+        Aho : Horizontal area of the iceberg in contact with the ocean (width x length)
         water_form_drag_coef : Co is the ocean form drag coefficient
         water_skin_drag_coef : Cdo is the ocean skin drag coefficient
     """
@@ -129,10 +129,12 @@ def wind_force(iceb_vel, wind_vel, Ava, Aha, wind_form_drag_coef, wind_skin_drag
         iceb_vel : Iceberg's velocity at time t
         wind_vel : Wind velocity
         Ava : Vertical area of the iceberg in the air (length x sail)
-        Aha : Horizontal area of the iceberg in contact with the air (width x sail)
+        Aha : Horizontal area of the iceberg in contact with the air (width x length)
         wind_form_drag_coef : Ca is the air form drag coefficient
         wind_skin_drag_coef : Cda is the air skin drag coefficient
     """
+
+    # TODO: wind_force seems to be more than 10 times smaller than wave_force. This should be checked.
     vxa, vya = wind_vel[0], wind_vel[1]
     x_vel, y_vel = iceb_vel[0], iceb_vel[1]
     rel_wind_x_vel = vxa - x_vel
@@ -144,16 +146,17 @@ def wind_force(iceb_vel, wind_vel, Ava, Aha, wind_form_drag_coef, wind_skin_drag
     return np.array([F_wind_x, F_wind_y])
 
 
-def wave_radiation_force(rho_water, wave_height, wave_direction, iceb_length):
+def wave_radiation_force(rho_water, wave_height, wave_direction, wave_drag_coef, iceb_length):
     """ Wave radiation force
     Args:
         rho_water : Water density
         wave_height    : Wave significant height
         wave_direction : Wave direction
+        wave_drag_coef : Wave drag coefficient
         iceb_length    : Iceberg's length
     """
-    F_wave_x = (0.5 * rho_water * wave_drag_coef * g * iceb_length * (wave_height / 2) ** 2 * np.sin(np.deg2rad(wave_direction)))
-    F_wave_y = (0.5 * rho_water * wave_drag_coef * g * iceb_length * (wave_height / 2) ** 2 * np.cos(np.deg2rad(wave_direction)))
+    F_wave_x = (0.25 * rho_water * wave_drag_coef * g * iceb_length * (wave_height / 2) ** 2 * np.sin(np.deg2rad(wave_direction)))
+    F_wave_y = (0.25 * rho_water * wave_drag_coef * g * iceb_length * (wave_height / 2) ** 2 * np.cos(np.deg2rad(wave_direction)))
     return np.array([F_wave_x, F_wave_y])
 
 
@@ -433,26 +436,26 @@ class OpenBerg(OpenDriftSimulation):
         water_skin_drag_coef = self.elements.water_skin_drag_coef
         wind_form_drag_coef = self.elements.wind_form_drag_coef
         wind_skin_drag_coef = self.elements.wind_skin_drag_coef
+        wave_drag_coef = self.elements.wave_drag_coef
 
         T = self.environment.sea_water_temperature
         S = self.environment.sea_water_salinity
-        rho_water = PhysicsMethods.sea_water_density(T, S)
         sea_slope_x = self.environment.sea_surface_x_slope
         sea_slope_y = self.environment.sea_surface_y_slope
         sea_surface_height= self.environment.sea_surface_height
         wave_height = self.environment.sea_surface_wave_significant_height
-        wave_direction = self.environment.sea_surface_wave_from_direction
+        wave_direction = -self.environment.sea_surface_wave_from_direction
         sea_ice_thickness = self.environment.sea_ice_thickness
         sea_ice_conc = self.environment.sea_ice_area_fraction
         water_depth = self.environment.sea_floor_depth_below_sea_level
-        Avo = length * abs(draft)
-        Aho = width * abs(draft)
+        Avo = length * draft
+        Aho = width * length
         Ava = length * sail
-        Aha = width * sail
+        Aha = width * length
         Ai = sea_ice_thickness * length
         
         mass = width * (Ava + Avo) * rho_iceb * weight_coef
-        k = (rho_air * wind_form_drag_coef * Ava / (rho_water * water_form_drag_coef * Avo))
+        k = (rho_air * wind_form_drag_coef * Ava) / (rho_water * water_form_drag_coef * Avo)
         f = np.sqrt(k) / (1 + np.sqrt(k)) # (f is the wind drift factor, only used in the no acceleration model)
 
         wave_rad = self.get_config('drift:wave_rad')
@@ -487,13 +490,15 @@ class OpenBerg(OpenDriftSimulation):
 
 
         def dynamic(t,iceb_vel, water_vel, wind_vel, wave_height, wave_direction, Avo, Aho,
-                    Ava, Aha, rho_water, water_form_drag_coef,  water_skin_drag_coef, wind_form_drag_coef, wind_skin_drag_coef, iceb_length, mass,lat, sea_slope_x, sea_slope_y):
+                    Ava, Aha, rho_water, water_form_drag_coef,  water_skin_drag_coef,
+                    wind_form_drag_coef, wind_skin_drag_coef, wave_drag_coef, iceb_length, mass,
+                    lat, sea_slope_x, sea_slope_y):
             """ Function required by solve_ivp. The t and iceb_vel parameters are required by solve_ivp, shouldn't be deleted """
             iceb_vel = iceb_vel.reshape((2, -1))
             # Individual forces
             ocean_force_val = ocean_force(iceb_vel, water_vel, Avo, Aho, rho_water, water_form_drag_coef, water_skin_drag_coef)
             wind_force_val = wind_force(iceb_vel, wind_vel, Ava, Aha, wind_form_drag_coef, wind_skin_drag_coef)
-            wave_radiation_force_val = int(wave_rad) * wave_radiation_force(rho_water, wave_height, wave_direction, iceb_length)
+            wave_radiation_force_val = int(wave_rad) * wave_radiation_force(rho_water, wave_height, wave_direction, wave_drag_coef, iceb_length)
             coriolis_force_val = int(coriolis) * coriolis_force(iceb_vel, mass, lat)
             sea_surface_slope_val = int(sea_surface_slope) * sea_surface_slope_force(sea_slope_x, sea_slope_y, mass)
             
@@ -533,8 +538,11 @@ class OpenBerg(OpenDriftSimulation):
             logger.debug("Grounding process disabled in configuration")
         
         sol = solve_ivp(dynamic, [0, self.time_step.total_seconds()], V0,
-                        args=(water_vel, wind_vel, wave_height, wave_direction, Avo, Aho, Ava, Aha, rho_water,
-                              water_form_drag_coef, water_skin_drag_coef, wind_form_drag_coef, wind_skin_drag_coef,length, mass, lat, sea_slope_x, sea_slope_y),
+                        args=(water_vel, wind_vel, wave_height, wave_direction,
+                              Avo, Aho, Ava, Aha, rho_water,
+                              water_form_drag_coef, water_skin_drag_coef, wind_form_drag_coef,
+                              wind_skin_drag_coef, wave_drag_coef, length, mass, lat,
+                              sea_slope_x, sea_slope_y),
                               vectorized=True,
                               t_eval=np.array([self.time_step.total_seconds()]))
         V = sol.y.reshape((2, -1))
@@ -584,7 +592,6 @@ class OpenBerg(OpenDriftSimulation):
             return
         T = self.environment.sea_water_temperature
         S = self.environment.sea_water_salinity
-        rho_water = PhysicsMethods.sea_water_density(T, S)
         L = self.elements.length
         W = self.elements.width
         H = self.elements.draft + self.elements.sail
