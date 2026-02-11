@@ -146,12 +146,12 @@ class ChemicalDrift(OceanDrift):
         'sea_water_ph_reported_on_total_scale':{'fallback': 8.1, 'profiles': True}, # water_pH from CMENS with standard name #
         'pH_sediment':{'fallback': 6.9, 'profiles': False}, # supplied by the user, with pH_sediment as standard name
         'mole_concentration_of_dissolved_molecular_oxygen_in_sea_water':{'fallback': 7.25, 'profiles': True}, # in g/m3 or mg/L from CMENS with standard name
-        'mole_concentration_of_dissolved_inorganic_carbon_in_sea_water':{'fallback': 104, 'profiles': True}, # in concentration of carbon in the water (Conc_C) in mol/m3, nedded as ueq/L (conversion: 22.73 ueq/mg_C, MW_C = 12.01 g/mol. # DONE
+        'mole_concentration_of_dissolved_inorganic_carbon_in_sea_water':{'fallback': 104, 'profiles': True}, # in concentration of carbon in the water (Conc_C) in mol/m3, nedded as ueq/L (conversion: 22.73 ueq/mg_C, MW_C = 12.01 g/mol.
         # From concentration of carbon in the water (Conc_C) in mol/m3: Conc_CO2 = ((Conc_C*MW_C)*1000)*22.73*1000;
         # from mol_C/m3, *12.01 g_C/mol = g_C/m3, *1000 = mg/m3, * 22.73 ueq/mg = ueq/m3, *1000 = ueq/L
         # default from https://www.soest.hawaii.edu/oceanography/faculty/zeebe_files/Publications/ZeebeWolfEnclp07.pdf, 2.3 mmol/kg
-        'solar_irradiance':{'fallback': 241}, # Available in W/m2, in the function it is nedded in Ly/day. TO DO Check UM of input for convertion. 1 Ly = 41868 J/m2 -> 1 Ly/day =  41868 J/m2 / 86400 s = 0.4843 W/m2  # DONE
-        'mole_concentration_of_phytoplankton_expressed_as_carbon_in_sea_water':{'fallback': 0, 'profiles': True} # in mmol_carbon/m3 for CMENS. # TO DO *1e-6 to convert into mol/L. #  Concentration of phytoplankton as “mmol/m3 of phytoplankton expressed as carbon”
+        'solar_irradiance':{'fallback': 241}, # Available in W/m2, in the function it is nedded in Ly/day. TO DO Check UM of input for convertion. 1 Ly = 41868 J/m2 -> 1 Ly/day =  41868 J/m2 / 86400 s = 0.4843 W/m2
+        'mole_concentration_of_phytoplankton_expressed_as_carbon_in_sea_water':{'fallback': 0, 'profiles': True} # in mmol_carbon/m3 for CMENS. # *1e-6 to convert into mol/L. #  Concentration of phytoplankton as “mmol/m3 of phytoplankton expressed as carbon”
 
         }
 
@@ -5171,7 +5171,7 @@ class ChemicalDrift(OceanDrift):
         sed_species = ["Sediment reversible",
                        "Sediment slowly reversible",
                        "Sediment irreversible",
-                       "sediment", "buried",]
+                       "sediment", "buried"]
 
         # Exclude specified species from water/sediment concentration maps
         if Excluded_species is None:
@@ -7460,7 +7460,7 @@ class ChemicalDrift(OceanDrift):
 
             # ===== 3) Degraded mass (all active) ===== CONTROLLARE COME GESTIRE MASS DI ELEMENTI ADV OUT/STRADED ECC
             attrs_ls_1d_general = ['mass_degraded','mass_degraded_water', 'mass_degraded_sediment']
-            attrs_ls_1d_general_now = ['mass_degraded_now', 'mass_degraded_water_now', 'mass_degraded_sediment_now']
+            attrs_ls_1d_general_now = ['mass_degraded_now']
             attrs_ls_1d_single_process = ['mass_volatilized', 'mass_photodegraded', 'mass_biodegraded',
                         'mass_biodegraded_water', 'mass_biodegraded_sediment',
                         'mass_hydrolyzed', 'mass_hydrolyzed_water', 'mass_hydrolyzed_sediment'
