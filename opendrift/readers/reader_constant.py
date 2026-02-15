@@ -22,7 +22,14 @@ class Reader(BaseReader, ContinuousReader):
     '''A very simple reader that always give the same value for its variables'''
 
     def __init__(self, parameter_value_map):
-        '''init with a map {'variable_name': value, ...}'''
+        """init with a map {'variable_name': value, ...}
+        
+        value can also be an array, and in this case the map/dictionary
+        should also include `element_ID` which corresponds to the elements that
+        shall receive the actual value:
+            self.environment.<variable_name> --> value[element_ID = self.elements.ID]  (pseudo code)
+
+        """
 
         for key, var in parameter_value_map.items():
             parameter_value_map[key] = np.atleast_1d(var)
@@ -41,13 +48,21 @@ class Reader(BaseReader, ContinuousReader):
         # Run constructor of parent Reader class
         super(Reader, self).__init__()
 
+        if 'element_ID' in parameter_value_map:
+            self._element_ID = True  # will be updated with indices of actual elements
+
     def get_variables(self, requestedVariables, time=None,
                       x=None, y=None, z=None):
 
         variables = {'time': time, 'x': x, 'y': y, 'z': z}
         #variables.update(self._parameter_value_map)
         for var in requestedVariables:
-            variables[var] = self._parameter_value_map[var]*np.ones(x.shape)
+            value = self._parameter_value_map[var]
+            if self._element_ID is None or len(self._parameter_value_map[var]==1):  # Same scalar value for all elements
+                variables[var] = self._parameter_value_map[var]*np.ones(x.shape)
+            else:  # Individual mapping
+                indices = np.where(np.isin(self._parameter_value_map['element_ID'], self._element_ID))[0]
+                variables[var] = self._parameter_value_map[var][indices]
 
         return variables
 

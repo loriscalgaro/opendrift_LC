@@ -37,7 +37,7 @@ for seafloor_action in seafloor_actions:
 
     o.add_reader([reader_osc, reader_norkyst])
 
-    o.set_config('drift:horizontal_diffusivity', 0)
+    o.set_config('environment:constant:horizontal_diffusivity', 0)
     o.set_config('environment:constant:y_sea_water_velocity', 0)
     o.set_config('environment:constant:land_binary_mask', 0)
     o.set_config('general:use_auto_landmask', False)

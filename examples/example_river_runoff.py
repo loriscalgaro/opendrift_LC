@@ -20,7 +20,7 @@ histogram_file = 'runoff_histogram.nc'
 #%%
 # First make a simulation with two seedings, marked by *origin_marker*
 o = OceanDrift(loglevel=20)
-o.set_config('drift:horizontal_diffusivity', 300)
+o.set_config('environment:constant:horizontal_diffusivity', 300)
 o.set_config('general:coastline_action', 'previous')
 o.set_config('general:coastline_approximation_precision', None)  # Faster to go back to previous
 t1 = datetime.now()

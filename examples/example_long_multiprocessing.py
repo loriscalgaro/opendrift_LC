@@ -46,7 +46,7 @@ def RunOceanDrift(pool_number):
     reader_topaz4 = reader_netCDF_CF_generic.Reader("https://thredds.met.no/thredds/dodsC/topaz/dataset-topaz4-arc-myoceanv2-be")
     o.add_reader(reader_topaz4, variables=['x_sea_water_velocity', 'y_sea_water_velocity','sea_water_temperature','sea_water_salinity','sea_floor_depth_below_sea_level'])
 
-    o.set_config('drift:horizontal_diffusivity', 50)
+    o.set_config('environment:constant:horizontal_diffusivity', 50)
 
     time = datetime(2023,1,1)
 

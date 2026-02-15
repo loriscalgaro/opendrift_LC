@@ -20,7 +20,7 @@ o.add_readers_from_list(['https://thredds.met.no/thredds/dodsC/fou-hi/barents_ep
 o.set_config('processes:dispersion',  False)
 o.set_config('processes:evaporation',  False)
 o.set_config('processes:emulsification',  False)
-o.set_config('drift:horizontal_diffusivity', 10)
+o.set_config('environment:constant:horizontal_diffusivity', 10)
 o.set_config('drift:truncate_ocean_model_below_m', 3)
 
 #%%

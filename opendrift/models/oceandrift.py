@@ -79,6 +79,7 @@ class OceanDrift(OpenDriftSimulation):
         'ocean_vertical_diffusivity': {'fallback': 0,
              'skip_if': ['drift:vertical_mixing', 'is', False],
              'profiles': True},
+        'horizontal_diffusivity': {'fallback': 0},
         'sea_surface_wave_significant_height': {'fallback': 0},
         'sea_surface_wave_stokes_drift_x_velocity': {'fallback': 0,
             'skip_if': ['drift:stokes_drift', 'is', False]},
