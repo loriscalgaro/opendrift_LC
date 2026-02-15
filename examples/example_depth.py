@@ -17,7 +17,7 @@ o.add_readers_from_list([
 
 #%%
 # Adding some diffusion
-o.set_config('drift:horizontal_diffusivity', 10)  # m2/s
+o.set_config('environment:constant:horizontal_diffusivity', 10)  # m2/s
 
 #%%
 # Seed 1000 elements at random depths

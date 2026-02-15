@@ -118,6 +118,8 @@ class BaseReader(Variables, Combine, Filter):
 
         self.is_lazy = False  # Generally False
 
+        self._element_ID = None  # Generally readers should not know ID of elements
+
         # Set projection for coordinate transformations
         if self.proj is None:
             if self.proj4 is not None:
