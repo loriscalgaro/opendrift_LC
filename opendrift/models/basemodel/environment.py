@@ -504,7 +504,8 @@ class Environment(Timeable, Configurable):
                         lat,
                         z,
                         profiles=None,
-                        profiles_depth=None):
+                        profiles_depth=None,
+                        element_ID=None):
         '''Retrieve environmental variables at requested positions.
 
         Args:
@@ -522,6 +523,8 @@ class Environment(Timeable, Configurable):
             profiles: list of variables for which profiles are needed
 
             profiles_depth: depth of profiles in meters, as a positive number
+
+            element_ID: ID of actual elements, for the readers that might provide data based on this ID (exception)
 
         Updates:
             Buffer (raw data blocks) for each reader stored for performance:
@@ -613,9 +616,12 @@ class Environment(Timeable, Configurable):
                             )
                             return self.get_environment(variables, time, lon,
                                                         lat, z, profiles,
-                                                        profiles_depth)
+                                                        profiles_depth, element_ID=element_ID)
                     continue
                 # Fetch given variables at given positions from current reader
+                if reader._element_ID is not None:
+                    logger.debug(f'Setting _element_ID for reader {reader_name}')
+                    reader._element_ID = element_ID[missing_indices]
                 try:
                     logger.debug('Data needed for %i elements' %
                                  len(missing_indices))
@@ -645,7 +651,7 @@ class Environment(Timeable, Configurable):
                             )
                             return self.get_environment(variables, time, lon,
                                                         lat, z, profiles,
-                                                        profiles_depth)
+                                                        profiles_depth, element_ID=element_ID)
                     continue
 
                 except Exception as e:  # Unknown error
@@ -677,7 +683,7 @@ class Environment(Timeable, Configurable):
                             )
                             return self.get_environment(variables, time, lon,
                                                         lat, z, profiles,
-                                                        profiles_depth)
+                                                        profiles_depth, element_ID=element_ID)
                     continue
 
                 # Copy retrieved variables to env array, and mask nan-values
@@ -764,7 +770,7 @@ class Environment(Timeable, Configurable):
                                 'Missing variables: calling get_environment recursively'
                             )
                             return self.get_environment(variables, time, lon,
-                                                        lat, z, profiles)
+                                                        lat, z, profiles, profiles_depth, element_ID=element_ID)
 
         logger.debug('---------------------------------------')
         logger.debug('Finished processing all variable groups')

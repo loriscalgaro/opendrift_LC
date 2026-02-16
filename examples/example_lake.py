@@ -24,7 +24,7 @@ o = OceanDrift(loglevel=20)
 o.add_reader(reader_lakes)
 o.set_config('general:use_auto_landmask', False)  # To use custom landmask instead
 o.set_config('environment:constant:x_sea_water_velocity', 1)
-o.set_config('drift:horizontal_diffusivity', 100)
+o.set_config('environment:constant:horizontal_diffusivity', 100)
 o.seed_elements(lon=48.819, lat=44.959, radius=5000, number=100, time=datetime.now())
 
 o.run(steps=10)

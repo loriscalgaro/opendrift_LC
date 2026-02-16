@@ -687,7 +687,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                                      self.time,
                                      self.elements.lon,
                                      self.elements.lat,
-                                     self.elements.z)
+                                     self.elements.z,
+                                     element_ID = self.elements.ID)
             self.environment.land_binary_mask = en.land_binary_mask
 
         if i == 'stranding':  # Deactivate elements on land, but not in air
@@ -903,6 +904,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             self.start_time = min_time
             logger.debug('Setting simulation start time to %s' % str(min_time))
 
+        return elements.ID
+
     def release_elements(self):
         """Activate elements which are scheduled within following timestep."""
 
@@ -977,7 +980,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                                         lon=lon,
                                         lat=lat,
                                         z=0 * lon,
-                                        time=land_reader.start_time)[0]['land_binary_mask']
+                                        time=land_reader.start_time,
+                                        element_ID=self.elements.ID)[0]['land_binary_mask']
             if land.max() == 0:
                 logger.info('All points are in ocean')
                 return lon, lat, None
@@ -1003,7 +1007,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                                             lon=longrid,
                                             lat=latgrid,
                                             z=0 * longrid,
-                                            time=land_reader.start_time)[0]['land_binary_mask']
+                                            time=land_reader.start_time,
+                                            element_ID=self.elements.ID)[0]['land_binary_mask']
             if landgrid.size == 0:
                 # Need to catch this before trying .min() on it...
                 logger.warning('Land grid has zero size, cannot move elements.')
@@ -1212,10 +1217,23 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             if prop in self.ElementType.variables:
                 kwargs[prop] = seed_config[f'seed:{prop}']['value']
 
+        environment = kwargs.pop('environment', None)
+
         # Creating and scheduling elements
         elements = self.ElementType(lon=lon, lat=lat, **kwargs)
         time_array = np.array(time)
-        self.schedule_elements(elements, time)
+        new_element_IDs = self.schedule_elements(elements, time)
+
+        if environment is not None:
+            logger.debug(f'enviroment is provided to seed method, adding constant reader for {environment}')
+            from opendrift.readers.reader_constant import Reader as ConstantReader
+            environment['element_ID'] = new_element_IDs
+            cr = ConstantReader(environment)
+            # Must change mode tomporarily to be allowed to add a new reader
+            tmp_mode = self.mode
+            self.mode = opendrift.models.basemodel.Mode.Config
+            self.add_reader(cr)
+            self.mode = tmp_mode
 
     @require_mode(mode=Mode.Ready)
     def seed_cone(self, lon, lat, time, radius=0, number=None, **kwargs):
@@ -1660,8 +1678,13 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
 
     def horizontal_diffusion(self):
         """Move elements with random walk according to given horizontal diffuivity."""
-        D = self.get_config('drift:horizontal_diffusivity')
-        if D == 0:
+        if 'horizontal_diffusivity' not in self.required_variables:
+            logger.debug('No horizontal diffusion')
+            return
+        D = self.environment.horizontal_diffusivity
+        if len(D) == 0:
+            return  # no active elements
+        if D.max() == 0:
             logger.debug('Horizontal diffusivity is 0, no random walk.')
             return
         if self.num_elements_active() == 0:
@@ -1673,9 +1696,12 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         y_vel = self.elements.moving * np.sqrt(2 * D / dt) * np.random.normal(
             scale=1, size=self.num_elements_active())
         speed = np.sqrt(x_vel * x_vel + y_vel * y_vel)
+        if D.min() == D.max():
+            dstring = f'{D.min()}'
+        else:
+            dstring = f'{D.min()} - {D.max()}'
         logger.debug(
-            'Moving elements according to horizontal diffusivity of %s, with speeds between %s and %s m/s'
-            % (D, speed.min(), speed.max()))
+            f'Moving elements according to horizontal diffusivity of {dstring}, with speeds between {speed.min()} and {speed.max()} m/s')
         self.update_positions(x_vel, y_vel)
 
     def deactivate_elements(self, indices, reason='deactivated'):
@@ -2147,7 +2173,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                                          self.elements.lat,
                                          self.elements.z,
                                          self.required_profiles,
-                                         self.profiles_depth)
+                                         self.profiles_depth,
+                                         element_ID = self.elements.ID)
 
                 self.calculate_missing_environment_variables()
 

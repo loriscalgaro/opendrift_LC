@@ -27,7 +27,7 @@ o.set_config('drift:vertical_mixing', True)
 o.set_config('vertical_mixing:diffusivitymodel','environment')  # apply vertical diffusivity from ocean model
 # Vertical mixing requires fast time step
 o.set_config('vertical_mixing:timestep', 600.) # seconds
-o.set_config('drift:horizontal_diffusivity', 10)
+o.set_config('environment:constant:horizontal_diffusivity', 10)
 
 #%%
 o.set_config('radionuclide:particle_diameter',5.e-6)  # m

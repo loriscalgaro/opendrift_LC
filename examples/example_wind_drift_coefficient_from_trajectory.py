@@ -30,7 +30,7 @@ ot.add_readers_from_list([tdf +
 
 #%%
 # Adding some horizontal diffusivity as "noise"
-ot.set_config('drift:horizontal_diffusivity', 10)
+ot.set_config('environment:constant:horizontal_diffusivity', 10)
 
 #%%
 # Using a wind_drift_factor of 0.33 i.e. drift is current + 3.3% of wind speed

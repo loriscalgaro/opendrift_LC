@@ -18,7 +18,8 @@ o.add_readers_from_list([
     'https://tds.hycom.org/thredds/dodsC/FMRC_ESPC-D-V02_uv3z/FMRC_ESPC-D-V02_uv3z_best.ncd',
     'https://pae-paha.pacioos.hawaii.edu/thredds/dodsC/ncep_global/NCEP_Global_Atmospheric_Model_best.ncd'])
 o.set_config('environment:constant:ocean_mixed_layer_thickness', 20)
-o.set_config('drift', {'current_uncertainty': 0, 'wind_uncertainty': 0, 'horizontal_diffusivity': 20})
+o.set_config('environment:constant:horizontal_diffusivity', 20)
+o.set_config('drift', {'current_uncertainty': 0, 'wind_uncertainty': 0})
 
 #%%
 # Configuration
