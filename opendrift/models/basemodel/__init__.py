@@ -904,6 +904,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             self.start_time = min_time
             logger.debug('Setting simulation start time to %s' % str(min_time))
 
+        return elements.ID
+
     def release_elements(self):
         """Activate elements which are scheduled within following timestep."""
 
@@ -1215,10 +1217,23 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             if prop in self.ElementType.variables:
                 kwargs[prop] = seed_config[f'seed:{prop}']['value']
 
+        environment = kwargs.pop('environment', None)
+
         # Creating and scheduling elements
         elements = self.ElementType(lon=lon, lat=lat, **kwargs)
         time_array = np.array(time)
-        self.schedule_elements(elements, time)
+        new_element_IDs = self.schedule_elements(elements, time)
+
+        if environment is not None:
+            logger.debug(f'enviroment is provided to seed method, adding constant reader for {environment}')
+            from opendrift.readers.reader_constant import Reader as ConstantReader
+            environment['element_ID'] = new_element_IDs
+            cr = ConstantReader(environment)
+            # Must change mode tomporarily to be allowed to add a new reader
+            tmp_mode = self.mode
+            self.mode = opendrift.models.basemodel.Mode.Config
+            self.add_reader(cr)
+            self.mode = tmp_mode
 
     @require_mode(mode=Mode.Ready)
     def seed_cone(self, lon, lat, time, radius=0, number=None, **kwargs):

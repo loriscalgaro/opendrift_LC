@@ -621,7 +621,7 @@ class Environment(Timeable, Configurable):
                 # Fetch given variables at given positions from current reader
                 if reader._element_ID is not None:
                     logger.debug(f'Setting _element_ID for reader {reader_name}')
-                    reader._element_ID = element_ID
+                    reader._element_ID = element_ID[missing_indices]
                 try:
                     logger.debug('Data needed for %i elements' %
                                  len(missing_indices))
@@ -638,8 +638,7 @@ class Environment(Timeable, Configurable):
                             variable_group, profiles = profiles_from_reader,
                             profiles_depth = profiles_depth, time = time,
                             lon=lon[missing_indices], lat=lat[missing_indices],
-                            z=z[missing_indices], rotate_to_proj=self.proj_latlon,
-                            element_ID=element_ID)
+                            z=z[missing_indices], rotate_to_proj=self.proj_latlon)
 
                 except NotCoveredError as e:
                     logger.info(e)
