@@ -687,7 +687,7 @@ class Variables(ReaderDomain):
 
     @abstractmethod
     def _get_variables_interpolated_(self, variables, profiles, profiles_depth,
-                                     time, reader_x, reader_y, z, element_ID=None):
+                                     time, reader_x, reader_y, z):
         """
         This method _must_ be implemented by every reader. Usually by
         subclassing one of the reader types (e.g.
@@ -710,8 +710,7 @@ class Variables(ReaderDomain):
                                       x=None,
                                       y=None,
                                       z=None,
-                                      rotate_to_proj=None,
-                                      element_ID=None):
+                                      rotate_to_proj=None):
         """
         Get variables in native projection of reader.
 
@@ -862,8 +861,7 @@ class Variables(ReaderDomain):
                                    lon=None,
                                    lat=None,
                                    z=None,
-                                   rotate_to_proj=None,
-                                   element_ID=None):
+                                   rotate_to_proj=None):
         """
         `get_variables_interpolated` is the main interface to
         :class:`opendrift.basemodel.OpenDriftSimulation`, and is responsible
