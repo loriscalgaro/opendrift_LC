@@ -342,7 +342,7 @@ def test_chemicaldrift_write_concentration_map():
 
     o.set_config('environment:constant:land_binary_mask',0)
     o.set_config('general:use_auto_landmask', False)
-    o.set_config("drift:horizontal_diffusivity", 10)
+    o.set_config("environment:constant:horizontal_diffusivity", 10)
     o.set_config("seed:LMM_fraction",1)
     o.set_config("seed:particle_fraction",0)
     o.set_config("chemical:dynamic_partitioning", False)

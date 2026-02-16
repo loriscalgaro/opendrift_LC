@@ -282,6 +282,9 @@ class OpenOil(OceanDrift):
         'sea_floor_depth_below_sea_level': {
             'fallback': 10000
         },
+        'horizontal_diffusivity': {
+            'fallback': 0, 'important': False,
+        },
         'ocean_vertical_diffusivity': {
             'fallback': 0.02,
             'important': False,

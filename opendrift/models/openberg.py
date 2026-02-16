@@ -303,6 +303,10 @@ class OpenBerg(OpenDriftSimulation):
         "sea_surface_y_slope": {"fallback": 0, 'important': False},
         "x_wind": {"fallback": None, "important": True},
         "y_wind": {"fallback": None, "important": True},
+        # Since OpenBerg model is deterministic for given iceberg size,
+        # (in contrast to the Leeway model), we use a default diffusivity
+        # to yield some variability.
+        "horizontal_diffusivity": {"fallback": 0, "important": False},
         "sea_surface_wave_significant_height": {"fallback": 0},
         "sea_surface_wave_from_direction": {"fallback": 0},
         "sea_surface_wave_stokes_drift_x_velocity": {"fallback": 0, 'important': False},
@@ -418,11 +422,6 @@ class OpenBerg(OpenDriftSimulation):
                 'level': CONFIG_LEVEL_BASIC
             },  
         })
-
-        # Since OpenBerg model is deterministic for given iceberg size,
-        # (in contrast to the Leeway model), we use a default diffusivity
-        # to yield some variability.
-        self._set_config_default('drift:horizontal_diffusivity', 100)
 
 
     def advect_iceberg(self):

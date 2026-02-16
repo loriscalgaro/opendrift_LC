@@ -597,7 +597,7 @@ class PhysicsMethods:
             mid_env, profiles, missing = self.env.get_environment(
                 ['x_sea_water_velocity', 'y_sea_water_velocity'],
                 self.time + self.time_step/2,
-                mid_lon, mid_lat, self.elements.z, profiles=None)
+                mid_lon, mid_lat, self.elements.z, profiles=None, element_ID=self.elements.ID)
             if self.get_config('drift:advection_scheme') == 'runge-kutta4':
                 logger.debug('Runge-kutta 4th order...')
                 x_vel2 = mid_env['x_sea_water_velocity']
@@ -612,7 +612,7 @@ class PhysicsMethods:
                 env2, profiles, missing = self.env.get_environment(
                     ['x_sea_water_velocity', 'y_sea_water_velocity'],
                     self.time + self.time_step/2,
-                    lon2, lat2, self.elements.z, profiles=None)
+                    lon2, lat2, self.elements.z, profiles=None, element_ID=self.elements.ID)
                 # Third step
                 x_vel3 = env2['x_sea_water_velocity']
                 y_vel3 = env2['y_sea_water_velocity']
@@ -626,7 +626,7 @@ class PhysicsMethods:
                 env3, profiles, missing = self.env.get_environment(
                     ['x_sea_water_velocity', 'y_sea_water_velocity'],
                     self.time + self.time_step,
-                    lon3, lat3, self.elements.z, profiles=None)
+                    lon3, lat3, self.elements.z, profiles=None, element_ID=self.elements.ID)
                 # Fourth step
                 x_vel4 = env3['x_sea_water_velocity']
                 y_vel4 = env3['y_sea_water_velocity']

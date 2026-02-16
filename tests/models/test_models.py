@@ -75,7 +75,7 @@ class TestModels(unittest.TestCase):
     def test_shipdrift(self):
         """Sintef case study"""
         s = ShipDrift(loglevel=50)
-        s.set_config('drift:horizontal_diffusivity', 0)
+        s.set_config('environment:constant:horizontal_diffusivity', 0)
         c = reader_constant.Reader({
             'sea_surface_wave_significant_height': 5,
             'sea_surface_wave_mean_period_from_variance_spectral_density_second_frequency_moment': 11,
@@ -123,7 +123,7 @@ class TestModels(unittest.TestCase):
             'x_sea_water_velocity': 0.05656854249,
             'y_sea_water_velocity': -0.05656854249})
         s.set_config('environment:fallback:land_binary_mask', 0)
-        s.set_config('drift:horizontal_diffusivity', 0)
+        s.set_config('environment:constant:horizontal_diffusivity', 0)
         s.add_reader(c)
         s.seed_elements(lon=2.254, lat=59.873,
                         time=datetime.now(), number=1,
