@@ -8156,6 +8156,9 @@ class ChemicalDrift(OceanDrift):
                 extracted_active_dict_1d["mass_buried_ts"] = buried_at_t
                 extracted_active_dict_1d["mass_buried_cumulative"] = buried_cum
 
+
+
+
             # ===== 5) Assemble DataFrame =====
             df = pd.DataFrame({
                 time
