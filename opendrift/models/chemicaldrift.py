@@ -192,9 +192,12 @@ class ChemicalDrift(OceanDrift):
                 'min': 0, 'max': 100, 'units': 'm',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:doc_concentration_half_depth': {'type': 'float', 'default': 1000, # TODO: check better
-                'min': 0, 'max': 1200, 'units': 'm',                                     # Vertical conc drops more slowly slower than for SPM
+                'min': 0, 'max': 1200, 'units': 'm',                                    # Vertical conc drops more slowly slower than for SPM
                 'level': CONFIG_LEVEL_ADVANCED, 'description': ''},                # example: 10.3389/fmars.2017.00436. lower limit around 40 umol/L
             'chemical:particle_diameter_uncertainty': {'type': 'float', 'default': 1e-7,
+                'min': 0, 'max': 100e-6, 'units': 'm',
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+            'chemical:doc_particle_diameter_uncertainty': {'type': 'float', 'default': 1e-7,
                 'min': 0, 'max': 100e-6, 'units': 'm',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             'seed:LMM_fraction': {'type': 'float','default': .1,
@@ -250,6 +253,9 @@ class ChemicalDrift(OceanDrift):
             'chemical:transformations:degradation_mode': {'type': 'enum',
                 'enum': ['OverallRateConstants', 'SingleRateConstants'], 'default': 'OverallRateConstants',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Select degradation mode'},
+            'chemical:transformations:mass_checks': {'type': 'bool', 'default': False,
+                'description': 'Check consistency of degraded mass across mechanisms and wat/sed.',
+                'level': CONFIG_LEVEL_BASIC},
             # Sorption/desorption
             'chemical:transformations:dissociation': {'type': 'enum',
                 'enum': ['nondiss','acid', 'base', 'amphoter'], 'default': 'nondiss',
@@ -392,28 +398,8 @@ class ChemicalDrift(OceanDrift):
             'chemical:sediment:buried_leaking_rate': {'type': 'float', 'default': 0,
                 'min': 0, 'max': 10, 'units': 's-1',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Rate of resuspension of buried sediments'},
-            #
-            'chemical:compound': {'type': 'enum',
-                'enum': ['Naphthalene','Phenanthrene','Fluoranthene',
-                         'Benzo-a-anthracene','Benzo-a-pyrene','Dibenzo-ah-anthracene',
-                         'C1-Naphthalene','Acenaphthene','Acenaphthylene','Fluorene',
-                         'Dibenzothiophene','C2-Naphthalene','Anthracene','C3-Naphthalene','C1-Dibenzothiophene',
-                         'Pyrene','C1-Phenanthrene','C2-Dibenzothiophene',
-                         'C2-Phenanthrene','Benzo-b-fluoranthene','Chrysene',
-                         'C3-Dibenzothiophene','C3-Phenanthrene',
-                         'Benzo-k-fluoranthene','Benzo-ghi-perylene','Indeno-123cd-pyrene',
-                         'Copper','Cadmium','Chromium','Lead','Vanadium','Zinc','Nickel','Tralopyril','Econea',
-                         'Nitrogen', 'Alkalinity','Azoxystrobin','Diflufenican','Metconazole','Penconazole','Tebuconazole', 'Metaflumizone',
-                         'Tetraconazole','Methiocarb','test', 'Sulfamethoxazole','Trimethoprim','Clindamycin',
-                         'Ofloxacin','Metformin','Venlafaxine',
-                         'chemical01', 'chemical02', 'chemical03', 'chemical04', 'chemical05', 'chemical06',
-                         'chemical07', 'chemical08', 'chemical09', 'chemical10', 'chemical11', 'chemical12',
-                         'chemical13', 'chemical14', 'chemical15', 'chemical16', 'chemical17', 'chemical18',
-                         'chemical19', 'chemical20', 'chemical21', 'chemical22', 'chemical23', 'chemical24',
-                         'chemical25', 'chemical26', 'chemical27', 'chemical28',
-                         None],
-                'default': None,
-                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Name of modelled chemical'},
+            'chemical:compound': {'type': 'str', 'default': '', 'min_length': 0, 'max_length': 256,
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Name of modelled chemical' },
             # Single process degradation
             # Save each degradation process output
             'chemical:transformations:Save_single_degr_mass': {'type': 'bool', 'default': False,
@@ -633,72 +619,116 @@ class ChemicalDrift(OceanDrift):
 
 
     def seed_elements(self, *args, **kwargs):
+        import numpy as np
 
-        if hasattr(self,'name_species') == False:
+        if hasattr(self, 'name_species') is False:
             self.init_species()
             self.init_transfer_rates()
 
-
+        # Number of elements
         if 'number' in kwargs:
-            num_elements = kwargs['number']
+            num_elements = int(kwargs['number'])
         else:
-            num_elements = self.get_config('seed:number')
+            num_elements = int(self.get_config('seed:number'))
 
-        if 'specie' in kwargs:
-            # print('num_elements', num_elements)
-            # try:
-            #     print('len specie:',len(kwargs['specie']))
-            # except:
-            #     print('specie:',kwargs['specie'])
 
-            init_specie = np.ones(num_elements,dtype=int)
-            init_specie[:] = kwargs['specie']
+        # Speciation handling
+        if 'specie' in kwargs and kwargs['specie'] is not None:
+            sp = kwargs['specie']
 
+            # scalar specie
+            if np.isscalar(sp):
+                init_specie = np.full(num_elements, int(sp), dtype=int)
+            else:
+                # per-element array/list
+                sp_arr = np.asarray(sp, dtype=int).ravel()
+                if sp_arr.size != num_elements:
+                    raise ValueError(
+                        f"'specie' length ({sp_arr.size}) must equal number of elements ({num_elements})."
+                    )
+                init_specie = sp_arr
+
+            kwargs['specie'] = init_specie
         else:
+            # Ensure specie key doesn't accidentally influence downstream logic
+            kwargs.pop('specie', None)
 
-            # Set initial partitioning
-            if 'particle_fraction' in kwargs:
-                particle_frac = kwargs['particle_fraction']
-            else:
-                particle_frac = self.get_config('seed:particle_fraction')
+            # Config-driven initial partitioning
+            particle_frac = kwargs.get('particle_fraction', self.get_config('seed:particle_fraction'))
+            lmm_frac = kwargs.get('LMM_fraction', self.get_config('seed:LMM_fraction'))
 
-            if 'LMM_fraction' in kwargs:
-                lmm_frac = kwargs['LMM_fraction']
-            else:
-                lmm_frac = self.get_config('seed:LMM_fraction')
-
-            if not lmm_frac + particle_frac == 1.:
-                logger.error('Fraction does not sum up to 1: %s' % str(lmm_frac+particle_frac) )
+            if not np.isclose(lmm_frac + particle_frac, 1.0, rtol=0, atol=1e-12):
+                logger.error('Fraction does not sum up to 1: %s' % str(lmm_frac + particle_frac))
                 logger.error('LMM fraction: %s ' % str(lmm_frac))
-                logger.error( 'Particle fraction %s '% str(particle_frac) )
-                raise ValueError('Illegal specie fraction combination : ' + str(lmm_frac) + ' '+ str(particle_frac) )
+                logger.error('Particle fraction %s ' % str(particle_frac))
+                raise ValueError('Illegal specie fraction combination : ' + str(lmm_frac) + ' ' + str(particle_frac))
 
-            init_specie = np.ones(num_elements, int)
+            init_specie = np.ones(num_elements, dtype=int)
 
-            dissolved=np.random.rand(num_elements)<lmm_frac
-            if self.get_config('chemical:transfer_setup')=='Sandnesfj_Al':
-                init_specie[dissolved]=self.num_lmmcation
+            dissolved = np.random.rand(num_elements) < lmm_frac
+            if self.get_config('chemical:transfer_setup') == 'Sandnesfj_Al':
+                init_specie[dissolved] = self.num_lmmcation
             else:
-                init_specie[dissolved]=self.num_lmm
-            init_specie[~dissolved]=self.num_prev
+                init_specie[dissolved] = self.num_lmm
+            init_specie[~dissolved] = self.num_prev
+
             kwargs['specie'] = init_specie
 
+        # Logging
         logger.debug('Initial partitioning:')
-        for i,sp in enumerate(self.name_species):
-            logger.debug( '{:>9} {:>3} {:24} '.format(  np.sum(init_specie==i), i, sp ) )
+        for i, sp_name in enumerate(self.name_species):
+            logger.debug('{:>9} {:>3} {:24} '.format(np.sum(init_specie == i), i, sp_name))
 
-        # Set initial particle size
-        if 'diameter' in kwargs:
-            diameter = kwargs['diameter']
+        # Diameter assignment (respect explicit per-element diameters)
+        def _as_per_element_array(x, n):
+            import numpy as np
+            if x is None or np.isscalar(x):
+                return None
+            try:
+                arr = np.asarray(x, dtype=float).ravel()
+            except Exception:
+                return None
+            return arr if arr.size == n else None
+
+        diam_in = kwargs.get("diameter", None)
+
+        # If explicit per-element array provided: preserve it fully
+        arr = _as_per_element_array(diam_in, num_elements)
+        if arr is not None:
+            kwargs["diameter"] = arr
         else:
-            diameter = self.get_config('chemical:particle_diameter')
+            # Build a "base diameter" for everyone, then only override masked species.
+            # Prefer seed-config diameter if present; otherwise fall back to 0.0
+            base_diam_default = 0.0
+            init_diam = np.full(num_elements, base_diam_default, dtype=float)
 
-        std = self.get_config('chemical:particle_diameter_uncertainty')
+            name_to_idx = {name: i for i, name in enumerate(self.name_species)}
+            diam_names = {
+                "Particle reversible",
+                "Particle slowly reversible",
+                "Particle irreversible",
+                "Sediment reversible",
+                "Sediment slowly reversible",
+                "Sediment irreversible",
+            }
+            diam_idx = {name_to_idx[n] for n in diam_names if n in name_to_idx}
 
-        init_diam = np.zeros(num_elements,float)
-        init_diam[init_specie==self.num_prev] = diameter + np.random.normal(0, std, sum(init_specie==self.num_prev))
-        kwargs['diameter'] = init_diam
+            if diam_idx:
+                mask = np.isin(init_specie, list(diam_idx))
+                nmask = int(mask.sum())
+                if nmask > 0:
+                    # scalar provided => apply ONLY to masked species
+                    if diam_in is not None and np.isscalar(diam_in):
+                        diam_mean = float(diam_in)
+                    else:
+                        diam_mean = float(self.get_config("chemical:particle_diameter"))
 
+                    std_diam = float(self.get_config("chemical:particle_diameter_uncertainty"))
+                    init_diam[mask] = diam_mean + np.random.normal(0.0, std_diam, nmask)
+
+            # Always pass a full diameter array so only masked species change;
+            # non-masked stay at base_diam_default (i.e., 0.0).
+            kwargs["diameter"] = init_diam
 
         super(ChemicalDrift, self).seed_elements(*args, **kwargs)
 
@@ -738,7 +768,7 @@ class ChemicalDrift(OceanDrift):
 
         return corr
 
-### Functions to update partitioning coefficients
+    ### Functions to update partitioning coefficients
 
     def calc_KOC_sedcorr(self, KOC_sed_initial, KOC_sed_n, pKa_acid, pKa_base, KOW, pH_sed, diss,
                          KOC_sed_acid, KOC_sed_base):
@@ -1062,6 +1092,76 @@ class ChemicalDrift(OceanDrift):
 
         return LightFactor
 
+    def assert_degradation_balance(self, degraded_now, W, S, Save_degr_now, check_single_mech=False):
+        ''' Common consistency checks for both degradation modes.
+
+        Checks:
+          1) total degraded equals water+sediment degraded (for this step or cumulatively)
+          2) if Save_degr_now: mass_degraded_now equals water+sediment for this step
+          3) if check_single_mech: total mechanisms equals degraded (step or cumulative)
+        '''
+        # computed step totals
+        degraded_step_sum = float(degraded_now.sum())
+        degraded_step_ws_sum = float(degraded_now[W].sum() + degraded_now[S].sum())
+        assert np.isclose(degraded_step_sum, degraded_step_ws_sum, rtol=1e-5, atol=1e-8), \
+            "Computed degraded_now is inconsistent with computed water+sediment split"
+
+        # stored totals
+        if Save_degr_now:
+            stored_now_sum = float(self.elements.mass_degraded_now.sum())
+            stored_ws_sum = float(self.elements.mass_degraded_water.sum() + self.elements.mass_degraded_sediment.sum())
+
+            assert np.isclose(stored_now_sum, stored_ws_sum, rtol=1e-5, atol=1e-8), \
+                "Inconsistent sum of mass_degraded_now vs (water+sediment) for this timestep"
+            assert np.isclose(stored_now_sum, degraded_step_sum, rtol=1e-5, atol=1e-8), \
+                "Stored mass_degraded_now does not match computed degraded_now for this timestep"
+        else:
+            stored_tot_sum = float(self.elements.mass_degraded.sum())
+            stored_ws_sum = float(self.elements.mass_degraded_water.sum() + self.elements.mass_degraded_sediment.sum())
+
+            assert np.isclose(stored_tot_sum, stored_ws_sum, rtol=1e-5, atol=1e-8), \
+                "Inconsistent cumulative mass_degraded vs (water+sediment)"
+
+        # single-mechanism checks
+        if not (check_single_mech and self.get_config('chemical:transformations:Save_single_degr_mass') is True):
+            return
+
+        mech_sum = 0.0
+
+        # Hydrolysis
+        if self.get_config('chemical:transformations:Hydrolysis'):
+            # guard existence just in case
+            assert hasattr(self.elements, "mass_hydrolyzed_water") and hasattr(self.elements, "mass_hydrolyzed_sediment")
+            hyd = float(self.elements.mass_hydrolyzed.sum())
+            hyd_ws = float(self.elements.mass_hydrolyzed_water.sum() + self.elements.mass_hydrolyzed_sediment.sum())
+            assert np.isclose(hyd, hyd_ws, rtol=1e-5, atol=1e-8), \
+                "Inconsistent sum of mass hydrolyzed in water and sediment"
+            mech_sum += hyd
+
+        # Biodegradation
+        if self.get_config('chemical:transformations:Biodegradation'):
+            assert hasattr(self.elements, "mass_biodegraded_water") and hasattr(self.elements, "mass_biodegraded_sediment")
+            bio = float(self.elements.mass_biodegraded.sum())
+            bio_ws = float(self.elements.mass_biodegraded_water.sum() + self.elements.mass_biodegraded_sediment.sum())
+            assert np.isclose(bio, bio_ws, rtol=1e-5, atol=1e-8), \
+                "Inconsistent sum of mass biodegraded in water and sediment"
+            mech_sum += bio
+
+        # Photodegradation (water-only, no split check unless you add arrays)
+        if self.get_config('chemical:transformations:Photodegradation'):
+            if hasattr(self.elements, "mass_photodegraded"):
+                mech_sum += float(self.elements.mass_photodegraded.sum())
+
+        # Mechanisms reconstruct total degraded
+        if Save_degr_now:
+            stored_now_sum = float(self.elements.mass_degraded_now.sum())
+            assert np.isclose(stored_now_sum, mech_sum, rtol=1e-5, atol=1e-8), \
+                "Inconsistent sum: degraded_now vs (enabled mechanisms) for this timestep"
+        else:
+            stored_tot_sum = float(self.elements.mass_degraded.sum())
+            assert np.isclose(stored_tot_sum, mech_sum, rtol=1e-5, atol=1e-8), \
+                "Inconsistent sum: cumulative degraded vs (enabled mechanisms)"
+
     def init_transfer_rates(self):
         ''' Initialization of background values in the transfer rates 2D array.
         '''
@@ -1069,7 +1169,6 @@ class ChemicalDrift(OceanDrift):
         transfer_setup=self.get_config('chemical:transfer_setup')
 
 #        logger.info( 'transfer setup: %s' % transfer_setup)
-
 
         self.transfer_rates = np.zeros([self.nspecies,self.nspecies])
         self.ntransformations = np.zeros([self.nspecies,self.nspecies])
@@ -2071,6 +2170,10 @@ class ChemicalDrift(OceanDrift):
 
         if self.get_config('chemical:transformations:degradation') is True:
             Save_degr_now = self.get_config('chemical:transformations:Save_degr_now')
+            if Save_degr_now:
+                self.elements.mass_degraded_now.fill(0.0)
+                self.elements.mass_degraded_water.fill(0.0)
+                self.elements.mass_degraded_sediment.fill(0.0)
             if self.get_config('chemical:transformations:degradation_mode')=='OverallRateConstants':
 
                 logger.debug('Calculating overall degradation using overall rate constants')
@@ -2128,25 +2231,13 @@ class ChemicalDrift(OceanDrift):
 
                 if W_deg or S_deg:
                     if Save_degr_now:
-                        SPM = (self.elements.specie == self.num_prev)
-                        SPM_deg = np.any(SPM)
-
+                        # Update mass_degraded_*_now for this timestep
                         self.elements.mass_degraded_now[W] = degraded_now[W]
                         self.elements.mass_degraded_now[S] = degraded_now[S]
-                        if SPM_deg:
-                            self.elements.mass_degraded_now[SPM] = 0.
 
                         self.elements.mass_degraded_water[W] = degraded_now[W]
-                        if SPM_deg:
-                            self.elements.mass_degraded_water[SPM] = 0.
-                        if S_deg:
-                            self.elements.mass_degraded_water[S] = 0.
-
                         self.elements.mass_degraded_sediment[S] = degraded_now[S]
-                        if SPM_deg:
-                            self.elements.mass_degraded_sediment[SPM] = 0.
-                        if W_deg:
-                            self.elements.mass_degraded_sediment[W] = 0.
+
                     else:
                         self.elements.mass_degraded_water[W] = self.elements.mass_degraded_water[W] + degraded_now[W]
                         self.elements.mass_degraded_sediment[S] = self.elements.mass_degraded_sediment[S] + degraded_now[S]
@@ -2158,11 +2249,11 @@ class ChemicalDrift(OceanDrift):
                     self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/500,
                                              reason='removed')
                 else:
-                    if Save_degr_now:
-                        self.elements.mass_degraded_now = np.zeros(self.num_elements_active())
-                        self.elements.mass_degraded_water = np.zeros(self.num_elements_active())
-                        self.elements.mass_degraded_sediment = np.zeros(self.num_elements_active())
+                    pass
 
+                if self.get_config("chemical:transformations:mass_checks"):
+                    # Consistency checks (overall mode)
+                    self.assert_degradation_balance(degraded_now, W, S, Save_degr_now, check_single_mech=False)
 
                 #to_deactivate = self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100
                 #vol_morethan_degr = self.elements.mass_degraded >= self.elements.mass_volatilized
@@ -2172,6 +2263,7 @@ class ChemicalDrift(OceanDrift):
 
             elif self.get_config('chemical:transformations:degradation_mode')=='SingleRateConstants':
                 logger.debug('Calculating single degradation rates in water')
+
                 # print(self.steps_calculation)
                 Photo_degr = self.get_config('chemical:transformations:Photodegradation')
                 Bio_degr = self.get_config('chemical:transformations:Biodegradation')
@@ -2188,9 +2280,6 @@ class ChemicalDrift(OceanDrift):
                 S =   (self.elements.specie == self.num_srev) | (self.elements.specie == self.num_ssrev)
                 W_deg = np.any(W)
                 S_deg = np.any(S)
-                if Save_degr_now:
-                    SPM = (self.elements.specie == self.num_prev)
-                    SPM_deg = np.any(SPM)
 
                 k_Photo = self.get_config('chemical:transformations:k_Photo')
                 k_DecayMax_water = self.get_config('chemical:transformations:k_DecayMax_water')
@@ -2382,6 +2471,8 @@ class ChemicalDrift(OceanDrift):
                         k_S_bio = self.get_config('chemical:transformations:k_DecayMax_water')/4  # From AQUATOX   k_DecayMax_water is a rate (1/h), and k_S_bio is four times slower than k_DecayMax_water
                         k_S_bio = k_S_bio * self.calc_pHCorr(pH_min_bio, pH_max_bio, pH_sed)
                         k_S_bio = k_S_bio * self.tempcorr("Arrhenius",DH_kSt,TS,Tref_kSt)
+                        # k_S_bio = k_S_bio * self.calc_TCorr(T_Max_bio, T_Opt_bio, T_Adp_bio, Max_Accl_bio,
+                        #                                     Dec_Accl_bio, Q10_bio, TW)
 
                         # Apply slower degradation to buried sediments due to anoxic conditions
                         ssrev_slow_deg = self.get_config('chemical:transformations:ssrev_slow_deg_factor')
@@ -2393,8 +2484,6 @@ class ChemicalDrift(OceanDrift):
                             S_is_buried = (self.elements.specie[S] == self.num_ssrev)
                             k_S_bio[S_is_buried] *= ssrev_slow_deg
 
-                        # k_S_bio = k_S_bio * self.calc_TCorr(T_Max_bio, T_Opt_bio, T_Adp_bio, Max_Accl_bio,
-                        #                                     Dec_Accl_bio, Q10_bio, TW)
                     else:
                         k_S_bio = np.zeros_like(TS)
 
@@ -2425,22 +2514,28 @@ class ChemicalDrift(OceanDrift):
                     k_W_hydro_fraction = 0
                     k_S_hydro_fraction = 0
 
+                    if Save_degr_now:
+                        self.elements.mass_photodegraded.fill(0.0)
+                        self.elements.mass_biodegraded.fill(0.0)
+                        self.elements.mass_biodegraded_water.fill(0.0)
+                        self.elements.mass_biodegraded_sediment.fill(0.0)
+                        self.elements.mass_hydrolyzed.fill(0.0)
+                        self.elements.mass_hydrolyzed_water.fill(0.0)
+                        self.elements.mass_hydrolyzed_sediment.fill(0.0)
+
+
                     if Photo_degr is True and k_Photo > 0:
                         if np.sum(k_W_photo) > 0:
                             photo_degraded_now = np.zeros(self.num_elements_active())
                             k_W_photo_fraction = np.minimum((k_W_photo / 3600) / np.maximum(k_W_fin, 1e-12), 1.0) # from 1/h to 1/s, clamp fraction to 1 to avoid breaking mass conservation
                             photo_degraded_now[W] = degraded_now[W] * k_W_photo_fraction
                             if Save_degr_now is True:
-                                self.elements.mass_photodegraded[W] = photo_degraded_now[W]
-                                if S_deg:
-                                    self.elements.mass_photodegraded[S] = 0.
-                                if SPM_deg:
-                                    self.elements.mass_photodegraded[SPM] = 0.
+                                if W_deg:
+                                    self.elements.mass_photodegraded[W] = photo_degraded_now[W]
                             else:
                                 self.elements.mass_photodegraded[W] = self.elements.mass_photodegraded[W] + photo_degraded_now[W]
                     else:
-                        if Save_degr_now:
-                            self.elements.mass_photodegraded = np.zeros(self.num_elements_active())
+                        pass
 
                     if Bio_degr is True and k_DecayMax_water > 0:
                         if np.sum(k_W_bio) > 0 or np.sum(k_S_bio) > 0:
@@ -2452,32 +2547,19 @@ class ChemicalDrift(OceanDrift):
                                 k_S_bio_fraction = np.minimum((k_S_bio / 3600) / np.maximum(k_S_fin, 1e-12), 1.0) # from 1/h to 1/s, clamp fraction to 1 to avoid breaking mass conservation
                                 bio_degraded_now[S] = degraded_now[S] * k_S_bio_fraction
                             if Save_degr_now is True:
-                                self.elements.mass_biodegraded[W] = bio_degraded_now[W]
-                                self.elements.mass_biodegraded[S] = bio_degraded_now[S]
-                                if SPM_deg:
-                                    self.elements.mass_biodegraded[SPM] = 0.
-
-                                self.elements.mass_biodegraded_water[W] = bio_degraded_now[W]
-                                if S_deg:
-                                    self.elements.mass_biodegraded_water[S] = 0.
-                                if SPM_deg:
-                                    self.elements.mass_biodegraded_water[SPM] = 0.
-
-                                self.elements.mass_biodegraded_sediment[S] = bio_degraded_now[S]
                                 if W_deg:
-                                    self.elements.mass_biodegraded_sediment[W] = 0.
-                                if SPM_deg:
-                                    self.elements.mass_biodegraded_sediment[SPM] = 0.
-
+                                    self.elements.mass_biodegraded[W] = bio_degraded_now[W]
+                                    self.elements.mass_biodegraded_water[W] = bio_degraded_now[W]
+                                if S_deg:
+                                    self.elements.mass_biodegraded[S] = bio_degraded_now[S]
+                                    self.elements.mass_biodegraded_sediment[S] = bio_degraded_now[S]
                             else:
-                                self.elements.mass_biodegraded = self.elements.mass_biodegraded + bio_degraded_now
+                                self.elements.mass_biodegraded[W] = self.elements.mass_biodegraded[W] + bio_degraded_now[W]
+                                self.elements.mass_biodegraded[S] = self.elements.mass_biodegraded[S] + bio_degraded_now[S]
                                 self.elements.mass_biodegraded_water[W] = self.elements.mass_biodegraded_water[W] + bio_degraded_now[W]
                                 self.elements.mass_biodegraded_sediment[S] = self.elements.mass_biodegraded_sediment[S] + bio_degraded_now[S]
                     else:
-                        if Save_degr_now:
-                            self.elements.mass_biodegraded = np.zeros(self.num_elements_active())
-                            self.elements.mass_biodegraded_water = np.zeros(self.num_elements_active())
-                            self.elements.mass_biodegraded_sediment = np.zeros(self.num_elements_active())
+                        pass
 
                     if Hydro_degr is True:
                         if np.sum(k_W_hydro) > 0 or np.sum(k_S_hydro) > 0:
@@ -2490,36 +2572,25 @@ class ChemicalDrift(OceanDrift):
                                 hydro_degraded_now[S] = degraded_now[S] * k_S_hydro_fraction
 
                             if Save_degr_now is True:
-                                self.elements.mass_hydrolyzed[W] = hydro_degraded_now[W]
-                                self.elements.mass_hydrolyzed[S] = hydro_degraded_now[S]
-                                if SPM_deg:
-                                    self.elements.mass_hydrolyzed[SPM] = 0.
-
-                                self.elements.mass_hydrolyzed_water[W] = hydro_degraded_now[W]
-                                if S_deg:
-                                    self.elements.mass_hydrolyzed_water[S] = 0.
-                                if SPM_deg:
-                                    self.elements.mass_hydrolyzed_water[SPM] = 0.
-
-                                self.elements.mass_hydrolyzed_sediment[S] = hydro_degraded_now[S]
                                 if W_deg:
-                                    self.elements.mass_hydrolyzed_sediment[W] = 0.
-                                if SPM_deg:
-                                    self.elements.mass_hydrolyzed_sediment[SPM] = 0.
-
+                                    self.elements.mass_hydrolyzed[W] = hydro_degraded_now[W]
+                                    self.elements.mass_hydrolyzed_water[W] = hydro_degraded_now[W]
+                                if S_deg:
+                                    self.elements.mass_hydrolyzed[S] = hydro_degraded_now[S]
+                                    self.elements.mass_hydrolyzed_sediment[S] = hydro_degraded_now[S]
                             else:
                                 self.elements.mass_hydrolyzed[W] = self.elements.mass_hydrolyzed[W] + hydro_degraded_now[W]
                                 self.elements.mass_hydrolyzed[S] = self.elements.mass_hydrolyzed[S] + hydro_degraded_now[S]
-                                self.elements.mass_hydrolyzed_water[W] = self.elements.mass_hydrolyzed[W] + hydro_degraded_now[W]
+                                self.elements.mass_hydrolyzed_water[W] = self.elements.mass_hydrolyzed_water[W] + hydro_degraded_now[W]
                                 self.elements.mass_hydrolyzed_sediment[S] = self.elements.mass_hydrolyzed_sediment[S] + hydro_degraded_now[S]
                     else:
-                        if Save_degr_now:
-                            self.elements.mass_hydrolyzed = np.zeros(self.num_elements_active())
-                            self.elements.mass_hydrolyzed_water = np.zeros(self.num_elements_active())
-                            self.elements.mass_hydrolyzed_sediment = np.zeros(self.num_elements_active())
+                        pass
 
-                    total_fraction = (k_W_photo_fraction + k_W_bio_fraction + k_W_hydro_fraction)
-                    assert np.all(total_fraction <= 1.0 + 1e-6), "Degradation fractions exceed 100%"
+                    total_W_fraction = (k_W_photo_fraction + k_W_bio_fraction + k_W_hydro_fraction)
+                    assert np.all(total_W_fraction <= 1.0 + 1e-6), "Degradation fractions in water exceed 100%"
+                    total_S_fraction = (k_S_bio_fraction + k_S_hydro_fraction)
+                    assert np.all(total_S_fraction <= 1.0 + 1e-6), "Degradation fractions in sediments exceed 100%"
+
 
                 if (k_S_fin_sum > 0) or (k_W_fin_sum > 0):
                     self.elements.mass_degraded = self.elements.mass_degraded + degraded_now
@@ -2527,25 +2598,10 @@ class ChemicalDrift(OceanDrift):
                     if Save_degr_now:
                         if W_deg:
                             self.elements.mass_degraded_now[W] = degraded_now[W]
-                        if S_deg:
-                            self.elements.mass_degraded_now[S] = degraded_now[S]
-                        if SPM_deg:
-                            self.elements.mass_degraded_now[SPM] = 0.
-
-                        if W_deg:
                             self.elements.mass_degraded_water[W] = degraded_now[W]
                         if S_deg:
-                            self.elements.mass_degraded_water[S] = 0.
-                        if SPM_deg:
-                            self.elements.mass_degraded_water[SPM] = 0.
-
-                        if S_deg:
+                            self.elements.mass_degraded_now[S] = degraded_now[S]
                             self.elements.mass_degraded_sediment[S] = degraded_now[S]
-                        if W_deg:
-                            self.elements.mass_degraded_sediment[W] = 0.
-                        if SPM_deg:
-                            self.elements.mass_degraded_sediment[SPM] = 0.
-
                     else:
                         self.elements.mass_degraded_water[W] = self.elements.mass_degraded_water[W] + degraded_now[W]
                         self.elements.mass_degraded_sediment[S] = self.elements.mass_degraded_sediment[S] + degraded_now[S]
@@ -2556,38 +2612,12 @@ class ChemicalDrift(OceanDrift):
                     self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/500,
                                              reason='removed')
                 else:
-                    if Save_degr_now:
-                        self.elements.mass_degraded_now = np.zeros(self.num_elements_active())
-                        self.elements.mass_degraded_water = np.zeros(self.num_elements_active())
-                        self.elements.mass_degraded_sediment = np.zeros(self.num_elements_active())
+                    pass
 
-                assert np.isclose(np.sum(self.elements.mass_hydrolyzed),
-                                  np.sum(self.elements.mass_hydrolyzed_sediment) + np.sum(self.elements.mass_hydrolyzed_water),
-                                  rtol=1e-5, atol=1e-8), "Inconsistent sum of mass hydrolized in wat and sed"
 
-                assert np.isclose(np.sum(self.elements.mass_biodegraded),
-                                  np.sum(self.elements.mass_biodegraded_sediment) + np.sum(self.elements.mass_biodegraded_water),
-                                  rtol=1e-5, atol=1e-8), "Inconsistent sum of mass biodegraded in wat and sed"
-
-                if Save_degr_now is True:
-                    assert np.isclose(np.sum(self.elements.mass_degraded_now),
-                                      np.sum(self.elements.mass_degraded_sediment) + np.sum(self.elements.mass_degraded_water),
-                                      rtol=1e-5, atol=1e-8), "Inconsistent sum of mass degraded in water and sediment"
-                    if self.get_config('chemical:transformations:Save_single_degr_mass') is True:
-                        # print(f"mass_degraded_now sum: {np.sum(self.elements.mass_degraded_now)}")
-                        # print(f"sum of mechanisms: {np.sum(self.elements.mass_hydrolyzed)} + {np.sum(self.elements.mass_biodegraded)} + {np.sum(self.elements.mass_photodegraded)}")
-                        # print(f"total mechanisms sum: {np.sum(self.elements.mass_hydrolyzed) + np.sum(self.elements.mass_biodegraded) + np.sum(self.elements.mass_photodegraded)}")
-                        assert np.isclose(np.sum(self.elements.mass_degraded_now),
-                                          np.sum(self.elements.mass_hydrolyzed) + np.sum(self.elements.mass_biodegraded) + np.sum(self.elements.mass_photodegraded),
-                                          rtol=1e-5, atol=1e-8), "Inconsistent sum of mass degraded now and single mechanism"
-                else:
-                    assert np.isclose(np.sum(self.elements.mass_degraded),
-                                      np.sum(self.elements.mass_degraded_sediment) + np.sum(self.elements.mass_degraded_water),
-                                      rtol=1e-5, atol=1e-8), "Inconsistent sum of mass degraded in water and sediment"
-                    if self.get_config('chemical:transformations:Save_single_degr_mass') is True:
-                        assert np.isclose(np.sum(self.elements.mass_degraded),
-                                          np.sum(self.elements.mass_hydrolyzed) + np.sum(self.elements.mass_biodegraded) + np.sum(self.elements.mass_photodegraded),
-                                          rtol=1e-5, atol=1e-8), "Inconsistent sum of mass degraded now and single mechanism"
+                if self.get_config("chemical:transformations:mass_checks"):
+                    # Consistency checks (single-mechanism mode)
+                    self.assert_degradation_balance(degraded_now, W, S, Save_degr_now, check_single_mech=True)
 
                 # print(f"mass_hydrolyzed_sediment: {np.sum(self.elements.mass_hydrolyzed_sediment)/np.sum(self.elements.mass_hydrolyzed)}")
                 # print(f"mass_hydrolyzed_water: {np.sum(self.elements.mass_hydrolyzed_water)/np.sum(self.elements.mass_hydrolyzed)}")
@@ -2601,6 +2631,9 @@ class ChemicalDrift(OceanDrift):
     def volatilization(self):
         if self.get_config('chemical:transformations:volatilization') is True:
             Save_degr_now = self.get_config('chemical:transformations:Save_degr_now')
+            if Save_degr_now:
+                self.elements.mass_volatilized_now = np.zeros(self.num_elements_active())
+
             logger.debug('Calculating: volatilization')
             volatilized_now = np.zeros(self.num_elements_active())
 
@@ -2634,6 +2667,7 @@ class ChemicalDrift(OceanDrift):
                   * (-self.elements.z <= mixedlayerdepth)
                     # does volatilization apply only to num_lmm?
                     # check
+
 
             mixedlayerdepth = self.environment.ocean_mixed_layer_thickness
             mixedlayerdepth = mixedlayerdepth[W]
@@ -2735,14 +2769,6 @@ class ChemicalDrift(OceanDrift):
             volatilized_now[W] = self.elements.mass[W] * (1-np.exp(-K_volatilization * self.time_step.total_seconds()))
             if Save_degr_now:
                 self.elements.mass_volatilized_now[W] = volatilized_now[W]
-
-                Sed =   (self.elements.specie == self.num_srev) | (self.elements.specie == self.num_ssrev)
-                SPM = (self.elements.specie == self.num_prev)
-                if np.any(Sed):
-                    self.elements.mass_volatilized_now[Sed] = np.zeros(np.count_nonzero(Sed) )
-                if np.any(SPM):
-                    self.elements.mass_volatilized_now[SPM] = np.zeros(np.count_nonzero(SPM) )
-
 
             self.elements.mass_volatilized = self.elements.mass_volatilized + volatilized_now
             self.elements.mass = self.elements.mass - volatilized_now
@@ -4171,56 +4197,392 @@ class ChemicalDrift(OceanDrift):
     seed_from_STEAM = seed_from_DataArray
     ''' Alias of seed_from_DataArray method for backward compatibility
     '''
+    ### Helpers for seed_from_NETCDF ###
 
     @staticmethod
-    def _get_number_of_elements(
-            g_mode,
-            mass_element_ug=None,
-            data_point=None,
-            n_elements=None):
+    def _get_number_of_elements(g_mode, mass_element_ug=None, data_point=None, n_elements=None):
+        """
+        Returns number of elements to generate.
 
-        if g_mode == "mass" and mass_element_ug is not None and data_point is not None:
-            return int(np.ceil(np.array(data_point / mass_element_ug)))
-        elif g_mode == "fixed" and n_elements is not None and n_elements > 0.:
-            return n_elements
+        For g_mode == "mass":
+            Checks inputs. Number of full elements and residuals
+            are handles speparately.
+        For g_mode == "fixed":
+            Returns n_elements.
+        """
+        import numpy as np
+
+        if g_mode == "mass":
+            if mass_element_ug is None or data_point is None:
+                raise ValueError(...)
+            if mass_element_ug <= 0:
+                raise ValueError(...)
+            if data_point <= 0:
+                return 0
+            return int(np.floor(float(data_point) / float(mass_element_ug)))
+        elif g_mode == "fixed":
+            if n_elements is None or n_elements <= 0:
+                raise ValueError("fixed mode requires n_elements > 0")
+            return int(n_elements)
         else:
             raise ValueError("Incorrect combination of mode and input - undefined inputs")
 
+    @staticmethod
+    def _get_z(
+        mode,
+        number,
+        NETCDF_data_dim_names,
+        depth_seed=None, depth_min=None, depth_max=None,
+        sed_seafloor_eps=0.005,
+    ):
+        """
+        Compute initial vertical positions (z) for seeded elements.
+          - Guards against non-finite inputs and invalid bounds (depth_max <= depth_min).
+          - Uses safe fallbacks for very thin layers.
+          - Validates number > 0.
+
+        Returns:
+          - np.ndarray of shape (number,) with negative depths (meters) for water_conc/emission
+          - a string "seafloor+X" for sed_conc (OpenDrift convention)
+        """
+        import numpy as np
+
+        if number is None:
+            raise ValueError("number is None")
+        number = int(number)
+        if number < 0:
+            raise ValueError(f"number must be >= 0, got {number}")
+        if number == 0:
+            return np.empty((0,), dtype=float)
+
+        dim_names = set(NETCDF_data_dim_names or [])
+
+        if mode == "water_conc":
+            # depth_seed is required in water_conc to handle the no-depth-dim case
+            if depth_seed is None:
+                raise ValueError("water_conc requires depth_seed (bathymetry at seed point).")
+            if not np.isfinite(depth_seed) or float(depth_seed) <= 0.0:
+                raise ValueError(f"water_conc requires finite depth_seed > 0, got {depth_seed}")
+
+            if "depth" in dim_names:
+                # With explicit depth layers: seed uniformly inside [depth_min, depth_max]
+                if depth_min is None or depth_max is None:
+                    raise ValueError(
+                        "depth_min and depth_max must be provided when 'depth' is a dimension."
+                    )
+                if (not np.isfinite(depth_min)) or (not np.isfinite(depth_max)):
+                    raise ValueError(
+                        f"depth_min/depth_max must be finite, got {depth_min}, {depth_max}"
+                    )
+
+                lo = float(depth_min)
+                hi = float(depth_max)
+                # ensure ordering
+                if hi < lo:
+                    lo, hi = hi, lo
+
+                # If the layer is extremely thin or degenerate, place all at lo (but not shallower than 1e-4)
+                eps = 1e-4
+                if hi - lo <= eps:
+                    zpos = max(lo, eps)
+                    return -np.full(number, zpos, dtype=float)
+
+                # avoid exact endpoints (optional but helps when bounds come from discretized levels)
+                lo2 = max(lo, eps)
+                hi2 = max(hi, lo2 + eps)
+                return -np.random.uniform(lo2, hi2, number)
+
+            # No depth dimension: seed somewhere in the water column, shallowly away from 0 and bottom
+            eps = 1e-4
+            hi = float(depth_seed) - eps
+            if not np.isfinite(hi) or hi <= eps:
+                return -np.full(number, eps, dtype=float)
+            return -np.random.uniform(eps, hi, number)
+
+        if mode == "sed_conc":
+            if sed_seafloor_eps is None or not np.isfinite(sed_seafloor_eps) or sed_seafloor_eps < 0:
+                raise ValueError(f"sed_seafloor_eps must be finite and >= 0, got {sed_seafloor_eps}")
+            return f"seafloor+{float(sed_seafloor_eps)}"
+
+        if mode == "emission":
+            # keep it very shallow by default (0..1 m), but avoid exactly 0
+            eps = 1e-4
+            hi = 1.0 - eps
+            if hi <= eps:
+                return -np.full(number, eps, dtype=float)
+            return -np.random.uniform(eps, hi, number)
+
+        raise ValueError(f"Unsupported mode '{mode}' in _get_z")
 
     @staticmethod
-    def _get_z(mode, number, NETCDF_data_dim_names, depth_seed=None, sed_mix_depth=None,
-               depth_min = None, depth_max = None):
-        if mode == "water_conc" and depth_seed is not None:
-            if "depth" in NETCDF_data_dim_names:
-                if depth_min is not None and depth_max is not None:
-                    return -1 * np.random.uniform(depth_min, depth_max, number)
-                else:
-                    raise ValueError("depth_min or depth_max is None when depth dimension of NETCDF_data is specified")
+    def _remove_positions(items, positions):
+        """
+        Remove indices in `positions` from each item in `items`.
+
+        Each item can be:
+          - a 1D array
+          - a tuple/list of arrays (e.g. `sel` from np.where)
+          - None (passes through)
+        Returns a tuple of pruned items in same order.
+        """
+        import numpy as np
+        positions = np.asarray(positions, dtype=int)
+
+        def prune_one(x):
+            if x is None:
+                return None
+            if isinstance(x, (tuple, list)):
+                out = tuple(np.delete(np.asarray(a), positions) for a in x)
+                return out if isinstance(x, tuple) else list(out)
+            return np.delete(np.asarray(x), positions)
+
+        return tuple(prune_one(x) for x in items)
+
+    @staticmethod
+    def _coord_values_and_sel_index(da, dim_name):
+        """
+        Return (coord_values, dim_index_in_sel or None).
+
+        - If dim_name is a dimension: coord_values is the coordinate values (1D, len=dim)
+          and dim_index is the position in sel tuple.
+        - If dim_name is not a dimension but exists as a coordinate:
+          coord_values is np.array(da.coords[dim_name]) and dim_index is None.
+        """
+        import numpy as np
+
+        dim_names = list(da.dims)
+        if dim_name in dim_names:
+            dim_index = dim_names.index(dim_name)
+            coord_vals = np.asarray(da[dim_name].data)
+            return coord_vals, dim_index
+
+        # coordinate but not a dimension
+        if dim_name in da.coords:
+            coord_vals = np.asarray(da.coords[dim_name].data)
+            return coord_vals, None
+
+        raise ValueError(f"'{dim_name}' not found as dimension or coordinate in dataarray.")
+
+    def build_specie_array(self, n, speciation, default_specie):
+        '''
+        Builds the initial per-element species index array (length n) used when seeding particles.
+        It interprets speciation as:
+         - None / "config": returns None (meaning: don’t pass specie, let config-driven partitioning decide).
+
+         - "default": returns an array filled with default_specie.
+         - scalar int or species-name str: returns an array with that single species for all n.
+         - array-like of int/str: (length n): returns the corresponding per-element indices (mapping names via self.name_species).
+         - dict {species: fraction}:→ randomly samples n species according to the normalized fractions.
+        '''
+        import numpy as np
+
+        # ChemicalDrift config-driven partitioning
+        if speciation in (None, "config"):
+            return None
+
+        if speciation == "default":
+            return np.full(n, int(default_specie), dtype=int)
+
+        # scalar: all same (int or species-name string)
+        if np.isscalar(speciation):
+            if isinstance(speciation, str):
+                if not hasattr(self, "name_species"):
+                    self.init_species()
+                try:
+                    sp_idx = int(self.name_species.index(speciation))
+                except ValueError:
+                    raise ValueError(f"Unknown species name '{speciation}'. Valid: {self.name_species}")
+                return np.full(n, sp_idx, dtype=int)
             else:
-                return -1 * np.random.uniform(0.0001, depth_seed - 0.0001, number)
-        elif mode == "sed_conc" and depth_seed is not None and sed_mix_depth is not None:
-            return  -1 * np.random.uniform(depth_seed + 0.0001, depth_seed + sed_mix_depth - 0.0001, number)
-        elif mode == "emission":
-            return -1 * np.random.uniform(0.0001, 1 - 0.0001, number)
+                return np.full(n, int(speciation), dtype=int)
+
+        # explicit array/list of indices OR names (length must be n)
+        if isinstance(speciation, (list, tuple, np.ndarray)):
+            arr = np.asarray(speciation).ravel()
+            if arr.size != n:
+                raise ValueError(f"Explicit speciation array has length {arr.size}, expected {n}.")
+
+            # If any strings present, map by name_species
+            if arr.dtype.kind in ("U", "S", "O"):
+                if not hasattr(self, "name_species"):
+                    self.init_species()
+
+                out = np.empty(arr.size, dtype=int)
+                for i, v in enumerate(arr):
+                    if isinstance(v, str):
+                        try:
+                            out[i] = int(self.name_species.index(v))
+                        except ValueError:
+                            raise ValueError(f"Unknown species name '{v}'. Valid: {self.name_species}")
+                    else:
+                        idx = int(v)
+                        if idx < 0 or idx >= len(self.name_species):
+                            raise ValueError(f"Species index {idx} out of range 0..{len(self.name_species)-1}")
+
+                        out[i] = int(v)
+                return out.astype(int)
+
+            # Pure numeric
+            if not hasattr(self, "name_species"):
+                self.init_species()
+
+            arr_i = arr.astype(int)
+            if np.any(arr_i < 0) or np.any(arr_i >= len(self.name_species)):
+                bad = arr_i[(arr_i < 0) | (arr_i >= len(self.name_species))][:5]
+                raise ValueError(f"Species index out of range 0..{len(self.name_species)-1}. Examples: {bad.tolist()}")
+            return arr_i
+
+        # dict of fractions: {species: fraction, ...} (keys int or str)
+        if isinstance(speciation, dict):
+            keys = list(speciation.keys())
+            fracs = np.asarray([speciation[k] for k in keys], dtype=float)
+
+            if np.any(fracs < 0):
+                raise ValueError("Speciation fractions must be >= 0.")
+            s = fracs.sum()
+            if not np.isfinite(s) or s <= 0:
+                raise ValueError("Speciation fractions must sum to a positive number.")
+            fracs = fracs / s  # normalize
+
+            if not hasattr(self, "name_species"):
+                self.init_species()
+
+            idx = []
+            for k in keys:
+                if isinstance(k, str):
+                    try:
+                        idx.append(int(self.name_species.index(k)))
+                    except ValueError:
+                        raise ValueError(f"Unknown species name '{k}'. Valid: {self.name_species}")
+                else:
+                    if int(k) < 0 or int(k) >= len(self.name_species):
+                        raise ValueError(f"Species index {k} out of range 0..{len(self.name_species)-1}")
+
+                    idx.append(int(k))
+
+            idx = np.asarray(idx, dtype=int)
+            return np.random.choice(idx, size=n, p=fracs).astype(int)
+
+        raise TypeError(
+            "speciation must be None/'config'/'default', int, str, array-like of int/str, or dict of fractions."
+        )
+
+    def speciation_to_indices_set(self, speciation, name_to_idx, active_names, label="speciation"):
+        """
+        Return a set of species indices referenced by speciation input (without sampling).
+        speciation may be: None/"config"/"default", int, str, array-like of int/str, dict with int/str keys.
+        """
+        import numpy as np
+
+        missing = set()
+
+        def to_index(v):
+            if isinstance(v, str):
+                if v not in name_to_idx:
+                    missing.add(v)
+                    return None
+                return int(name_to_idx[v])
+            # numeric: accept as index but check bounds
+            i = int(v)
+            if i < 0 or i >= len(active_names):
+                raise ValueError(
+                    f"{label}: species index {i} out of range for active species list (0..{len(active_names)-1})."
+                )
+            return i
+
+        if isinstance(speciation, dict):
+            vals = list(speciation.keys())
+        elif np.isscalar(speciation):
+            vals = [speciation]
+        elif isinstance(speciation, (list, tuple, np.ndarray)):
+            vals = list(np.asarray(speciation, dtype=object).ravel())
         else:
-            raise ValueError("Incorrect mode or depth")
+            raise TypeError(f"{label}: speciation must be None/'config', int, str, array-like, or dict.")
+
+        used = set()
+        for v in vals:
+            idx = to_index(v)
+            if idx is not None:
+                used.add(idx)
+
+        return used, missing
+
+    def validate_speciation_input_allowed(self, speciation, allowed_names, label="speciation"):
+        """
+        Validate that the user-provided speciation references only species allowed for this context,
+        AND that requested species are available (active) in self.name_species for this run.
+
+        - water_speciation accepts speciation as None/"config"/"default" (config-driven) and int/str/array/dict
+        - sediment_speciation accepts speciation as "default"/int/str/array/dict, but not None/"config"
+        - allowed_names may include species that are not active in this run; those are ignored for building allowed_idx.
+        - If the user requests a species name not active in this run -> raises ValueError with a helpful message.
+        """
+        if speciation is None or speciation in ["config", "default"]:
+            if label == "sed_speciation":
+                if speciation is None or speciation == "config":
+                    raise ValueError(
+                        f"{label} cannot be None or 'config', it is: {speciation}"
+                    )
+            return
+
+        if not hasattr(self, "name_species"):
+            self.init_species()
+
+        active_names = list(self.name_species)
+        active_set = set(active_names)
+        allowed_set = set(allowed_names)
+
+        # Allowed AND active for this run
+        allowed_active = allowed_set & active_set
+
+        # If none of the allowed species are active, validation is impossible / meaningless
+        if not allowed_active:
+            raise ValueError(
+                f"{label}: none of the allowed species are active in this run. "
+                f"Allowed: {sorted(allowed_set)}. Active: {active_names}"
+            )
+
+        # Build index sets safely
+        name_to_idx = {name: i for i, name in enumerate(active_names)}
+        allowed_idx = {name_to_idx[n] for n in allowed_active}
+
+        # Collect which species the user referenced (as indices), and also track missing names
+        used_idx, missing_names = self.speciation_to_indices_set(
+            speciation, name_to_idx=name_to_idx, active_names=active_names, label=label
+        )
+
+        if missing_names:
+            raise ValueError(
+                f"{label}: requested species are not active in this run: {sorted(missing_names)}. "
+                f"Active species: {active_names}"
+            )
+
+        bad_idx = sorted(set(used_idx) - set(allowed_idx))
+        if bad_idx:
+            bad_names = [active_names[i] for i in bad_idx]
+            raise ValueError(
+                f"{label}: contains species not allowed here: {bad_names}. "
+                f"Allowed (active subset): {sorted(allowed_active)}")
 
     def seed_from_NETCDF(
             self,
             NETCDF_data,
-            Bathimetry_data,
-            Bathimetry_seed_data,
+            Bathimetry_data=None,
+            Bathimetry_seed_data=None,
             mode='water_conc',
             lon_resol=None,
             lat_resol=None,
             lowerbound=0,
-            higherbound=np.inf,
+            higherbound=float("inf"),
             radius=50,
             mass_element_ug=100e3,
             number_of_elements=None,
             origin_marker=1,
             gen_mode="mass",
-            last_depth_until_bathimetry = True
+            water_speciation=None,
+            sed_speciation="default",
+            last_depth_until_bathimetry=True,
+            sed_seafloor_eps=0.001
     ):
         """Seed elements based on a dataarray with water/sediment concentration or direct emissions to water
 
@@ -4246,309 +4608,508 @@ class ChemicalDrift(OceanDrift):
                 lon_resol:            float32, longitude resolution of the NETCDF dataset
                 lat_resol:            float32, latitude resolution of the NETCDF dataset
                 gen_mode:             string, "mass" (elements generated from mass), "fixed" (fixed number of elements for each data point)
+                water_speciation:     Controls initial species assignment for elements seeded in water_conc and emission modes.
+                                        Accepted values:
+                                          - None or "config": do not pass 'specie' to ChemicalDrift.seed_elements;
+                                            triggers ChemicalDrift's config-driven initial partitioning
+                                            (seed:LMM_fraction and seed:particle_fraction, plus any transfer_setup logic).
+                                          - "default": pass specie=self.num_lmm for water_conc and emission modes
+                                          - int: force all seeded elements to the given species index.
+                                          - array-like of int or species names (length = number of elements seeded at that datapoint):
+                                            explicit per-element species indices or names.
+                                          - dict: {species: fraction, ...} to randomly assign species according to fractions.
+                                            Keys may be species indices (int) or species names (str) in self.name_species.
+                                            Fractions are normalized if they do not sum exactly to 1.
+                sed_speciation:       Controls initial species assignment for elements seeded in sed_conc mode.
+                                          - Same accepted values and behavior as water_speciation, but applied to sediment
+                                            seeding (default species is self.num_srev).
+                                          - Cannot be None or "config", as partitioning to sediments from config is not implemented in ChemicalDrift.seed_elements
                 origin_marker:        int, or string "single", assign a marker to seeded elements. If "single" a different origin_marker will be assigned to each datapoint
                 last_depth_until_bathimetry: boolean, when depth is specified in NETCDF_data using "water_conc" mode
                                             the water column below the highest depth value is considered the same as the last
                                             available layer (True) or is consedered without chemical (False)
+                sed_seafloor_eps:     float32, sediments will be seeded sed_seafloor_eps (m) above seafloor,
 
             """
         import opendrift
-
+        from datetime import datetime
+        import numpy as np
         # mass_element_ug=1e3     # 1e3 - 1 element is 1mg chemical
         # mass_element_ug=100e3   # 100e3 - 1 element is 100mg chemical
         # mass_element_ug=1e6     # 1e6 - 1 element is 1g chemical
         # mass_element_ug=1e9     # 1e9 - 1 element is 1kg chemical
+
+        # Validate speciation inputs
         if mode not in ['water_conc', 'sed_conc', 'emission']:
             raise ValueError(f"Invalid mode: '{mode}', only 'water_conc', 'sed_conc', and 'emission' are permitted")
 
-        sel = np.where((NETCDF_data > lowerbound) & (NETCDF_data < higherbound))
-        time_check = (NETCDF_data.time).size
-        NETCDF_data_dim_names = list(NETCDF_data.dims)
-
-        if"latitude" in NETCDF_data_dim_names:
-            la_name_index = NETCDF_data_dim_names.index("latitude")
-        if"longitude" in NETCDF_data_dim_names:
-            lo_name_index = NETCDF_data_dim_names.index("longitude")
-        if "time" in NETCDF_data_dim_names:
-            time_name_index = NETCDF_data_dim_names.index("time")
-        elif time_check > 1:
-            raise ValueError("Dimension [time] is not present in NETCDF_data_dim_names")
-        else:
-            pass
-
-        depth_min = None
-        depth_max = None
-
-        if "depth" in NETCDF_data.dims:
-            depth_name_index = NETCDF_data_dim_names.index("depth")
-            all_depth_values = np.sort(np.absolute(np.unique(np.array(NETCDF_data.depth)))) # Change depth to positive values
-
-        if (time_check) == 1:
-        # fix for different encoding of single time step emissions
-            try:
-                t = np.datetime64(str(np.array(NETCDF_data.time.data)))
-                t = np.array(t, dtype='datetime64[s]') # time truncaded to [s] to avoid datetime.utcfromtimestamp only integers error
-            except:
-                t = np.datetime64(str(np.array(NETCDF_data.time[0])))
-                t = np.array(t, dtype='datetime64[s]')
-
-        elif time_check > 1:
-            t = NETCDF_data.time[sel[time_name_index]].data
-            t = np.array(t, dtype='datetime64[s]')
-
-        if "depth" in NETCDF_data.dims:
-            depth = np.absolute(NETCDF_data.depth[sel[depth_name_index]].data) # Change depth to positive values to calculate pixel volume
-
-        if"latitude" in NETCDF_data_dim_names:
-            la = NETCDF_data.latitude[sel[la_name_index]].data
-        else:
-            la = np.array(NETCDF_data.latitude)
-        if"longitude" in NETCDF_data_dim_names:
-            lo = NETCDF_data.longitude[sel[lo_name_index]].data
-        else:
-            lo = np.array(NETCDF_data.longitude)
-
-        if (lon_resol is None or lat_resol is None):
-            raise ValueError("lat/lon_resol must be specified")
-
-        lon_array = lo + lon_resol / 2  # find center of pixel for volume of water / sediments
-        lat_array = la + lat_resol / 2  # find center of pixel for volume of water / sediments
-
-        # Check bathimetry for inconsistent data
-        if mode != 'emission':
-            Check_bathimetry = []
-            for i in range(0, max(t.size, lo.size, la.size)):
-                Bathimetry_seed = np.array([(Bathimetry_seed_data.sel(latitude=lat_array[i],longitude=lon_array[i],method='nearest'))]) # m
-                if np.isnan(Bathimetry_seed) or Bathimetry_seed <=0:
-                    Check_bathimetry.append(i)
-
-            if len(Check_bathimetry) > 0:
-                # Remove datapoints with inconsistent bathimetry for seeding
-
-                def remove_positions(arrays, positions):
-                    '''
-                    Remove positions specified in Check_bathimetry from each array of sel/la/lo/depth
-                    '''
-                    if len(arrays) == 1:
-                        return (np.delete(arrays[0], positions))
-                    else:
-                        return tuple(np.delete(array, positions) for array in arrays)
-
-                sel = remove_positions(sel, Check_bathimetry)
-                la = np.array(remove_positions([la], Check_bathimetry))
-                lo = np.array(remove_positions([lo], Check_bathimetry))
-                lat_array = np.array(remove_positions([lat_array], Check_bathimetry))
-                lon_array = np.array(remove_positions([lon_array], Check_bathimetry))
-                if "depth" in NETCDF_data.dims:
-                    depth = np.array(remove_positions([depth], Check_bathimetry))
-                if t.size == 1:
-                    pass
-                elif t.size > 1:
-                    t = np.array(remove_positions([t], Check_bathimetry))
-                logger.info(f"{len(Check_bathimetry)} datapoints removed due to inconsistent bathimetry")
-                del(Check_bathimetry)
-            else:
-                del(Check_bathimetry)
-
-        data = np.array(NETCDF_data.data)
-        print(f"Seeding {str(np.sum((~np.isnan(data)) & (data > 0)))} datapoints")
-        list_index_print = self._print_progress_list(max(t.size, lo.size, la.size))
-
-        sed_mixing_depth = np.array(self.get_config('chemical:sediment:mixing_depth')) # m
-
-        if mode == 'sed_conc':
-            # Compute mass of dry sediment in each pixel grid cell
-            sed_mixing_depth = np.array(self.get_config('chemical:sediment:mixing_depth')) # m
-            sed_density      = np.array(self.get_config('chemical:sediment:density')) # density of sediment particles, in kg/m3 d.w.
-            sed_porosity     = np.array(self.get_config('chemical:sediment:porosity') ) # fraction of sediment volume made of water, adimensional (m3/m3)
+        if not np.all([(hasattr(self, attr)) for attr in ['nspecies', 'name_species', 'transfer_rates']]):
             if self.mode != opendrift.models.basemodel.Mode.Config:
                 self.mode = opendrift.models.basemodel.Mode.Config
             self.init_species()
             self.init_transfer_rates()
 
+        WATER_ALLOWED = {
+            "LMM", "LMMcation", "LMManion",
+            "Colloid", "Humic colloid",
+            "Polymer",
+            "Particle reversible",
+            "Particle slowly reversible",
+            "Particle irreversible",
+        }
 
-        lat_grid_m = np.array([6.371e6 * lat_resol * (2 * np.pi) / 360])
+        SED_ALLOWED = {
+            "Sediment reversible",
+            "Sediment slowly reversible",
+            "Sediment irreversible",
+        }
 
-        if mode == 'emission':
-            Bathimetry_seed = None
+        self.validate_speciation_input_allowed(water_speciation, WATER_ALLOWED, label="water_speciation")
+        self.validate_speciation_input_allowed(sed_speciation,   SED_ALLOWED,   label="sed_speciation")
 
+        # Select data
+        sel = np.where((NETCDF_data > lowerbound) & (NETCDF_data < higherbound))
+
+        time_check = NETCDF_data.sizes.get("time", 0)
+        if time_check == 0:
+            raise ValueError("NETCDF_data has no 'time' dimension/coord.")
+        time_check = (NETCDF_data.time).size
+
+        NETCDF_data_dim_names = list(NETCDF_data.dims)
+
+        # Build per-point lat/lon vectors aligned with selected datapoints
+        if lon_resol is None or lat_resol is None:
+            raise ValueError("lat/lon_resol must be specified")
+
+        lat_vals, lat_sel_idx = self._coord_values_and_sel_index(NETCDF_data, "latitude")
+        lon_vals, lon_sel_idx = self._coord_values_and_sel_index(NETCDF_data, "longitude")
+
+        if lat_sel_idx is not None:
+            la = lat_vals[sel[lat_sel_idx]]
+        else:
+            # not a dim: allow only scalar coord
+            if lat_vals.size != 1:
+                raise ValueError("latitude is not a dimension: only scalar latitude coordinate is supported.")
+            la = np.full(len(sel[0]), float(lat_vals.item()))
+
+        if lon_sel_idx is not None:
+            lo = lon_vals[sel[lon_sel_idx]]
+        else:
+            if lon_vals.size != 1:
+                raise ValueError("longitude is not a dimension: only scalar longitude coordinate is supported.")
+            lo = np.full(len(sel[0]), float(lon_vals.item()))
+
+        if "time" in NETCDF_data_dim_names:
+            time_name_index = NETCDF_data_dim_names.index("time")
+        elif time_check > 1:
+            raise ValueError("Dimension [time] is not present in NETCDF_data_dim_names")
+        else:
+            time_name_index = None
+
+        depth_min = None
+        depth_max = None
+        depth = None
+        all_depth_values = None
+
+        if "depth" in NETCDF_data.dims:
+            depth_name_index = NETCDF_data_dim_names.index("depth")
+            all_depth_values = np.sort(np.absolute(np.unique(np.array(NETCDF_data.depth)))) # Change depth to positive values
+        else:
+            depth_name_index = None
+
+        # Time vector
+        if time_check == 1:
+            # fix for different encoding of single time step emissions
+            # time truncaded to [s] to avoid datetime.utcfromtimestamp only integers error
+            try:
+                t = np.datetime64(str(np.array(NETCDF_data.time.data)))
+                t = np.array(t, dtype='datetime64[s]')
+            except Exception:
+                t = np.datetime64(str(np.array(NETCDF_data.time[0])))
+                t = np.array(t, dtype='datetime64[s]')
+        else:
+            t = NETCDF_data.time[sel[time_name_index]].data
+            t = np.array(t, dtype='datetime64[s]')
+
+        # Depth vector for selected points (if any)
+        if depth_name_index is not None:
+            depth = np.absolute(NETCDF_data.depth[sel[depth_name_index]].data)
+
+        # find center of pixel for volume of water / sediments
+        lon_array = lo + lon_resol / 2
+        lat_array = la + lat_resol / 2
+
+        # Check bathimetry for inconsistent data (only for water_conc)
+        if mode == 'water_conc':
+            if Bathimetry_data is None or Bathimetry_seed_data is None:
+                raise ValueError("Bathimetry_data and Bathimetry_seed_data are required for mode='water_conc'")
+
+            check_bad = []
+            ncheck = int(np.size(lo))  # selected-point vectors at this stage
+            for i in range(ncheck):
+                Bseed = float(
+                    Bathimetry_seed_data.sel(
+                        latitude=float(lat_array[i]),
+                        longitude=float(lon_array[i]),
+                        method='nearest'
+                    ).values
+                )
+                if (not np.isfinite(Bseed)) or (Bseed <= 0.0):
+                    check_bad.append(i)
+
+            if len(check_bad) > 0:
+                bad = np.asarray(check_bad, dtype=int)
+                # prepare optional vectors
+                depth_vec = depth if depth is not None else None
+                t_vec = t if (hasattr(t, "size") and t.size > 1) else None
+                # prune everything in one call (sel included)
+                sel, la, lo, lat_array, lon_array, depth_vec, t_vec = self._remove_positions(
+                    (sel, la, lo, lat_array, lon_array, depth_vec, t_vec),
+                    bad
+                )
+
+                # restore optional vectors
+                if depth_vec is not None:
+                    depth = depth_vec
+                if t_vec is not None:
+                    t = t_vec
+
+                logger.info(f"{bad.size} datapoints removed due to inconsistent bathimetry")
+
+        # Build 1D values aligned with sel/la/lo/lat_array/lon_array (and depth/t if present)
+        values = np.asarray(NETCDF_data.data)[sel]
+        # values = np.asarray(NETCDF_data.values)[sel]
+        npts = int(values.size)
+
+        if npts == 0:
+            logger.info("No datapoints left after filtering/pruning; nothing to seed.")
+            return
+
+        print(f"Seeding {npts} datapoints")
+        list_index_print = self._print_progress_list(npts)
+
+        if mode == 'sed_conc':
+            # Compute mass of dry sediment in each pixel grid cell
+            sed_mixing_depth = float(self.get_config('chemical:sediment:mixing_depth')) # m
+            sed_density      = float(self.get_config('chemical:sediment:density'))      # kg/m3 (dry)
+            sed_porosity     = float(self.get_config('chemical:sediment:porosity'))     # m3/m3
+
+        # origin markers aligned with filtered points
         if origin_marker == "single":
-            origin_marker_np = np.arange(0, max(t.size, lo.size, la.size))
+            origin_marker_np = np.arange(npts)
 
-        for i in range(0, max(t.size, lo.size, la.size)):
+        fail_count = 0
+        fail_indices = [] # optional: store first N indices for debugging
+        FAIL_KEEP = 20
+
+        for i in range(npts):
             if i == 0:
                 time_start_0 = datetime.now()
             if i == 1:
                 time_start_1 = datetime.now()
-                estimated_time = (time_start_1 - time_start_0)* (max(t.size, lo.size, la.size))
+                estimated_time = (time_start_1 - time_start_0) * npts
                 print(f"Estimated time (h:min:s): {estimated_time}")
+
             if i in list_index_print:
-            #     print(f"Seeding elem {i} out of {max(t.size, lo.size, la.size)}")
                 print(".", end="")
-            lon_grid_m = None
+
+            # Per-point lat/lon (scalar)
+            lai = float(la[i])
+            loi = float(lo[i])
+
+            # Grid size in meters (scalar)
+            lon_grid_m = float(
+                6.371e6
+                * np.cos(2.0 * np.pi * float(lai) / 360.0)
+                * lon_resol
+                * (2.0 * np.pi) / 360.0
+            )
+            lat_grid_m_scalar = float(6.371e6 * lat_resol * (2.0 * np.pi) / 360.0)
+
             depth_min = None
             depth_max = None
+            depth_layer_high = None
+            Bathimetry_seed = None  # avoid stale reuse
 
-            if mode != 'emission':
-                lon_grid_m =  np.array([(6.371e6 * (np.cos(2 * (np.pi) * la[i] / 360)) * lon_resol * (2 * np.pi) / 360)])  # 6.371e6: radius of Earth in m
-                if "depth" in NETCDF_data.dims:
-                    # depth start from 0 at surface layer, with positive values at higher depths
-                    depth_datapoint = np.absolute(depth[i])
-                    # depth_datapoint_index = list(all_depth_values).index(depth_datapoint)
-                    Bathimetry_datapoint = np.array([(Bathimetry_data.sel(latitude=la[i],longitude=lo[i],method='nearest'))]) # m
-                    # depth of seeding must be the same as the one considered for resuspention process
-                    Bathimetry_seed = np.array([(Bathimetry_seed_data.sel(latitude=lat_array[i],longitude=lon_array[i],method='nearest'))]) # m
-                    # array of depth values available for lat/lon position
-                    depth_datapoint_np = np.sort(np.absolute(np.array(NETCDF_data.sel(latitude=la[i],longitude=lo[i],method='nearest')['depth']))) # depth is changed to positive values to calculate pixel volume
-                    depth_datapoint_np_index = list(depth_datapoint_np).index(depth_datapoint)
+            if mode == 'water_conc':
+                # Seed-depth for resuspension etc. (scalar)
+                Bathimetry_seed = float(
+                    Bathimetry_seed_data.sel(
+                        latitude=float(lat_array[i]),
+                        longitude=float(lon_array[i]),
+                        method='nearest'
+                    ).values
+                )
 
-                    if 0 in all_depth_values:
-                        # use of ChemicalDrift output, where depth represents top of vertical layer
+                if depth is not None:
+                    # depth for this datapoint (scalar, positive)
+                    depth_datapoint = float(np.absolute(depth[i]))
+
+                    # Bathymetry at the datapoint lon/lat (scalar)
+                    Bathimetry_datapoint = float(
+                        Bathimetry_data.sel(
+                            latitude=float(lai),
+                            longitude=float(loi),
+                            method='nearest'
+                        ).values
+                    )
+                    # available depth levels at this lon/lat (1D array, positive)
+                    depth_datapoint_np = np.sort(np.absolute(np.array(
+                        NETCDF_data.sel(latitude=float(lai), longitude=float(loi), method='nearest')['depth']
+                    )))
+                    depth_datapoint_np_index = int(np.argmin(np.abs(depth_datapoint_np - depth_datapoint)))
+
+                    if all_depth_values is not None and (0 in all_depth_values):
+                        # ChemicalDrift output convention: depth = TOP of layer
                         depth_min = depth_datapoint
-                        # check if depth value of datapiont is the last avalable for lat/lon
-                        if depth_datapoint == depth_datapoint_np[-1]:
+                        if depth_datapoint_np_index >= len(depth_datapoint_np) - 1:
                             depth_max = Bathimetry_datapoint
                         else:
-                            depth_max = min(depth_datapoint_np[depth_datapoint_np_index + 1], Bathimetry_datapoint)
+                            depth_max = min(float(depth_datapoint_np[depth_datapoint_np_index + 1]), Bathimetry_datapoint)
+
 
                         depth_layer_high = depth_max - depth_min
                         if depth_layer_high < 0:
-                            Error_depth = "datapoint at lon: " + str(lo[i])[0:8] +\
-                            " & lat: " + str(la[i])[0:8]+ " & depth: " + str(depth_datapoint)[0:8]+\
-                            " is at depth higher than bathimetry (" + str(Bathimetry_datapoint)[1:8] + ")"
-                            raise ValueError(Error_depth)
+                            raise ValueError(
+                                f"datapoint at lon {str(loi)[:8]} lat {str(lai)[:8]} depth {str(depth_datapoint)[:8]} "
+                                f"is deeper than bathimetry ({str(Bathimetry_datapoint)[:8]})"
+                            )
                     else:
-                        # use of standard convention where depth represents bottom of vertical layer
+                        # Standard convention: depth = BOTTOM of layer
                         if depth_datapoint_np_index > 0:
-                            # datapoint is below the surface layer
-                            depth_min = (depth_datapoint_np[depth_datapoint_np_index - 1])
+                            depth_min = float(depth_datapoint_np[depth_datapoint_np_index - 1])
                         else:
-                            # datapoint is within the surface layer
-                            depth_min = 0
+                            depth_min = 0.0
 
-                        # check if datapoint is the last depth available for lat/lon position
-                        if depth_datapoint_np_index == len(depth_datapoint_np)-1 and last_depth_until_bathimetry is True:
+                        if (depth_datapoint_np_index == len(depth_datapoint_np) - 1) and (last_depth_until_bathimetry is True):
                             depth_max = max(depth_datapoint, Bathimetry_datapoint)
                         else:
                             depth_max = depth_datapoint
 
+                        depth_layer_high = depth_max - depth_min
                 else:
-                    depth_layer_high = np.array([(Bathimetry_data.sel(latitude=la[i],longitude=lo[i],method='nearest'))]) # m
-                    # depth of seeding must be the same as the one considered for resuspention process
-                    Bathimetry_seed = np.array([(Bathimetry_seed_data.sel(latitude=lat_array[i],longitude=lon_array[i],method='nearest'))]) # m
+                    # No depth dimension: whole water column
+                    Bathimetry_datapoint = float(
+                        Bathimetry_data.sel(
+                            latitude=float(lai),
+                            longitude=float(loi),
+                            method='nearest'
+                        ).values
+                    )
+                    depth_layer_high = Bathimetry_datapoint
+
+            # Mass per datapoint
+            v = values[i]
+
+            if mode == 'water_conc' and depth_layer_high is None:
+                raise ValueError("depth_layer_high is None for water_conc; check bathymetry/depth handling.")
 
             if mode == 'water_conc':
-                pixel_volume = depth_layer_high * lon_grid_m * lat_grid_m
-                # concentration is ug/L, volume is m: m3 * 1e3 = L
-                mass_ug = (data[sel][i] * (pixel_volume * 1e3))
-
+                pixel_volume = depth_layer_high * lon_grid_m * lat_grid_m_scalar  # m3 (scalar)
+                mass_ug = float(v) * (pixel_volume * 1e3)                         # ug/L * L (1 m3 = 1e3 L) = ug(scalar)
             elif mode == 'sed_conc':
-                # sed_conc_ug_kg is ug/kg d.w. (dry weight)
-                pixel_volume =  sed_mixing_depth * (lon_grid_m * lat_grid_m) # m3
-                pixel_sed_mass = (pixel_volume)*(1-sed_porosity)*sed_density # kg
-                mass_ug = data[sel][i]*pixel_sed_mass
-
+                pixel_volume = sed_mixing_depth * (lon_grid_m * lat_grid_m_scalar) # m3 (scalar)
+                pixel_sed_mass = pixel_volume * (1 - sed_porosity) * sed_density   # kg dry
+                mass_ug = float(v) * pixel_sed_mass                                # ug/kg * kg
             elif mode == 'emission':
-                mass_ug = data[sel][i]*1e9 # emissions is kg, 1 kg = 1e9 ug
+                mass_ug = float(v) * 1e9                                          # kg = 1e9 ug
             else:
                 raise ValueError("Incorrect mode")
 
-            if mass_ug == 0:
+            if mass_ug <= 0:
                 continue
 
-            number = self._get_number_of_elements(
-                g_mode=gen_mode,
-                mass_element_ug=mass_element_ug,
-                data_point=mass_ug,
-                n_elements=number_of_elements)
-
-            if t.size == 1:
-                time = datetime.utcfromtimestamp(int(
-                    (np.array(t - np.datetime64('1970-01-01T00:00:00'))) / np.timedelta64(1, 's')))
-            elif t.size > 1:
-                time = datetime.utcfromtimestamp(int(
-                    (np.array(t[i] - np.datetime64('1970-01-01T00:00:00'))) / np.timedelta64(1, 's')))
-
-            # specie to be added to seed parameters for sediments and water
-            if mode == 'sed_conc':
-                specie_elements = 3 # 'num_srev' # Name of specie for sediment elements
-                moving_emement = False # sediment particles will not move
+            # Time per point
+            if getattr(t, "size", 1) == 1:
+                time = datetime.utcfromtimestamp(int((np.array(t - np.datetime64('1970-01-01T00:00:00'))) / np.timedelta64(1, 's')))
             else:
-                specie_elements = 0 # 'num_lmm' # Name of specie for dissolved elements
-                moving_emement = True # dissolved particles will move
+                time = datetime.utcfromtimestamp(int((np.array(t[i] - np.datetime64('1970-01-01T00:00:00'))) / np.timedelta64(1, 's')))
 
-            if gen_mode == 'fixed':
-                mass_element_seed_ug = mass_ug / number
-            elif gen_mode == 'mass':
-                mass_element_seed_ug = mass_element_ug
+            # Default species + moving flag
+            if mode == 'sed_conc':
+                default_specie = self.num_srev
+                moving_element = False
+            else:
+                default_specie = self.num_lmm
+                moving_element = True
 
-            if mass_element_seed_ug > 0:
-                # print(i)
-                z = self._get_z(mode = mode,
-                                number = number,
-                                NETCDF_data_dim_names = NETCDF_data_dim_names,
-                                depth_min = depth_min,
-                                depth_max = depth_max,
-                                depth_seed = Bathimetry_seed, # depth must be the same as the one considered for resuspention process
-                                sed_mix_depth = sed_mixing_depth)
 
-                for k in range(len(z)):
+            # Elements count and mass distribution
+            if gen_mode == "mass":
+                if mass_element_ug <= 0:
+                    raise ValueError("mass_element_ug must be > 0 in mass mode")
+                # number of full-size elements
+                number_full = int(mass_ug // mass_element_ug)
+                # remaining mass
+                mass_residual = float(mass_ug - number_full * mass_element_ug)
+                # If total mass is smaller than max element mass, it will seed one element with the full mass
+                seed_single_residual_only = (number_full == 0 and mass_residual > 0)
 
-                    if"latitude" in NETCDF_data_dim_names:
-                        elem_lat = lat_array[i]
-                    else:
-                        # specify lat if all elements are seeded in the same place
-                        elem_lat = lat_array
-                    if"longitude" in NETCDF_data_dim_names:
-                        elem_lon = lon_array[i]
-                    else:
-                        # specify lon if all elements are seeded in the same place
-                        elem_lon = lon_array
+                number = int(number_full)
+                mass_element_seed_ug = float(mass_element_ug)
 
-                    if origin_marker == "single":
-                        origin_marker_seed = origin_marker_np[i]
-                    else:
-                        origin_marker_seed = origin_marker
+            elif gen_mode == "fixed":
+                number = self._get_number_of_elements(g_mode="fixed", n_elements=number_of_elements)
+                if number <= 0:
+                    continue
+                number = int(number)
+                mass_element_seed_ug = float(mass_ug / number)
+                mass_residual = 0.0
+                seed_single_residual_only = False
+            else:
+                raise ValueError("Invalid gen_mode")
 
-                    self.seed_elements(
-                        lon=elem_lon,
-                        lat=elem_lat,
-                        radius=radius,
-                        number=1,
-                        time=time,
+            # Per-point seed location (pixel center arrays already filtered)
+            elem_lat = float(lat_array[i])
+            elem_lon = float(lon_array[i])
+            origin_marker_seed = origin_marker_np[i] if origin_marker == "single" else origin_marker
+
+            # Seed "main batch" only if number > 0
+            if number > 0:
+                z = self._get_z(
+                    mode=mode,
+                    number=number,
+                    NETCDF_data_dim_names=NETCDF_data_dim_names,
+                    depth_min=depth_min,
+                    depth_max=depth_max,
+                    depth_seed=Bathimetry_seed if mode == 'water_conc' else None,
+                    sed_seafloor_eps=sed_seafloor_eps,
+                )
+            else:
+                z = None
+
+            if mode == 'sed_conc':
+                z_str = z if number > 0 else f"seafloor+{sed_seafloor_eps}"
+                # Full-size elements
+                # z is a string like "seafloor+0.001" -> OpenDrift resolves seafloor internally
+                # to tolerate failures we do per-element try/except.
+                spec_choices = self.build_specie_array(
+                n=number,
+                speciation=sed_speciation,
+                default_specie=default_specie
+                )
+
+                for k in range(number):
+                    try:
+                        kwargs_seed = dict(
+                            lon=elem_lon, lat=elem_lat, radius=radius,
+                            number=1, time=time,
+                            mass=mass_element_seed_ug,
+                            mass_degraded=0, mass_volatilized=0,
+                            moving=moving_element,
+                            z=z_str,
+                            origin_marker=origin_marker_seed
+                        )
+
+                        # spec_choices should never be None for sediments (validated);
+                        # since omitting specie would trigger water partitioning
+                        if spec_choices is not None:
+                            kwargs_seed["specie"] = int(spec_choices[k])
+                        else:
+                            raise RuntimeError("sed_speciation resolved to None, which is not supported for sediment seeding.")
+
+                        self.seed_elements(**kwargs_seed)
+
+                    except Exception:
+                        fail_count += 1
+                        if len(fail_indices) < FAIL_KEEP:
+                            fail_indices.append(i)
+
+                # Residual (mass mode only)
+                if gen_mode == "mass":
+                    residual_to_seed = float(mass_ug) if seed_single_residual_only else float(mass_residual)
+                    if residual_to_seed > 0:
+                        spec_res = self.build_specie_array(1, sed_speciation, default_specie)
+                        try:
+                            kwargs_res = dict(
+                                lon=elem_lon, lat=elem_lat, radius=radius,
+                                number=1, time=time,
+                                mass=residual_to_seed,
+                                mass_degraded=0, mass_volatilized=0,
+                                moving=moving_element,
+                                z=z_str,
+                                origin_marker=origin_marker_seed
+                            )
+
+                            if spec_res is not None:
+                                kwargs_res["specie"] = int(spec_res[0])
+
+                            self.seed_elements(**kwargs_res)
+
+                        except Exception:
+                            fail_count += 1
+                            if len(fail_indices) < FAIL_KEEP:
+                                fail_indices.append(i)
+
+            else:
+                # water_conc / emission
+                if number > 0:
+
+                    spec_arr = self.build_specie_array(
+                        n=number,
+                        speciation=water_speciation if mode in ("water_conc", "emission") else None,
+                        default_specie=default_specie
+                    )
+
+                    kwargs_seed = dict(
+                        lon=elem_lon, lat=elem_lat, radius=radius,
+                        number=number, time=time,
                         mass=mass_element_seed_ug,
-                        mass_degraded=0,
-                        mass_volatilized=0,
-                        specie = specie_elements,
-                        moving = moving_emement,
-                        z=z[k],
-                        origin_marker=origin_marker_seed)
+                        mass_degraded=0, mass_volatilized=0,
+                        moving=moving_element,
+                        z=z,
+                        origin_marker=origin_marker_seed
+                    )
 
-                    if gen_mode != "fixed":
-                        mass_residual = (mass_ug) - (number * mass_element_seed_ug)
+                    # If spec_arr is None => DO NOT pass 'specie' -> config-driven partitioning
+                    if spec_arr is not None:
+                        kwargs_seed["specie"] = spec_arr
 
-                        if mass_residual > 0:
-                            z = self._get_z(mode = mode,
-                                            number = 1,
-                                            NETCDF_data_dim_names = NETCDF_data_dim_names,
-                                            depth_min = depth_min,
-                                            depth_max = depth_max,
-                                            depth_seed = Bathimetry_seed, # depth must be the same as the one considered for resuspention process
-                                            sed_mix_depth = sed_mixing_depth)
+                    self.seed_elements(**kwargs_seed)
 
-                            self.seed_elements(
-                                lon=lon_array[i],
-                                lat=lat_array[i],
-                                radius=radius,
-                                number=1,
-                                time=time,
-                                mass=mass_residual,
-                                mass_degraded=0,
-                                mass_volatilized=0,
-                                specie = specie_elements,
-                                moving = moving_emement,
-                                z=z,
-                                origin_marker=origin_marker_seed)
+                # Residual (mass mode only)
+                if gen_mode == "mass":
+                    residual_to_seed = float(mass_ug) if seed_single_residual_only else float(mass_residual)
+                    if residual_to_seed > 0:
+                        z_res = self._get_z(
+                            mode=mode,
+                            number=1,
+                            NETCDF_data_dim_names=NETCDF_data_dim_names,
+                            depth_min=depth_min,
+                            depth_max=depth_max,
+                            depth_seed=Bathimetry_seed if mode == 'water_conc' else None,
+                            sed_seafloor_eps=sed_seafloor_eps,
+                        )
+
+                        spec_res = self.build_specie_array(
+                            n=1,
+                            speciation=water_speciation if mode in ("water_conc", "emission") else None,
+                            default_specie=default_specie
+                        )
+
+                        kwargs_res = dict(
+                            lon=elem_lon, lat=elem_lat, radius=radius,
+                            number=1, time=time,
+                            mass=residual_to_seed,
+                            mass_degraded=0, mass_volatilized=0,
+                            moving=moving_element,
+                            z=z_res,
+                            origin_marker=origin_marker_seed
+                        )
+
+                        if spec_res is not None:
+                            kwargs_res["specie"] = spec_res
+
+                        self.seed_elements(**kwargs_res)
+
+        if fail_count > 0:
+            logger.warning(
+                f"Seeding completed with {fail_count} failed seed_elements calls "
+                f"(showing up to {len(fail_indices)} failing point indices: {fail_indices})."
+            )
+        else:
+            logger.info("Seeding completed with 0 failures.")
+
 
     def interp_weights(self, xyz, uvw):
         """
