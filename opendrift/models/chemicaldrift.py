@@ -2770,17 +2770,6 @@ class ChemicalDrift(OceanDrift):
             if Save_degr_now:
                 self.elements.mass_volatilized_now[W] = volatilized_now[W]
 
-<<<<<<< Updated upstream
-=======
-                Sed =   (self.elements.specie == self.num_srev) | (self.elements.specie == self.num_ssrev)
-                SPM = (self.elements.specie == self.num_prev)
-                if np.any(Sed):
-                    self.elements.mass_volatilized_now[Sed] = np.zeros(np.count_nonzero(Sed))
-                if np.any(SPM):
-                    self.elements.mass_volatilized_now[SPM] = np.zeros(np.count_nonzero(SPM))
-
-
->>>>>>> Stashed changes
             self.elements.mass_volatilized = self.elements.mass_volatilized + volatilized_now
             self.elements.mass = self.elements.mass - volatilized_now
             self.elements.mass = np.maximum(self.elements.mass, 0.0)
@@ -8039,17 +8028,10 @@ class ChemicalDrift(OceanDrift):
             extracted_active_dict_1d["mass_emitted_ts"] = emitted_mass * mass_conversion_factor
             extracted_active_dict_1d["mass_emitted_cumulative"] = np.cumsum(extracted_active_dict_1d["mass_emitted_ts"])
 
-<<<<<<< Updated upstream
-            # ===== 3) Degraded mass (all active) ===== CONTROLLARE COME GESTIRE MASS DI ELEMENTI ADV OUT/STRADED ECC
-            attrs_ls_1d_general = ['mass_degraded','mass_degraded_water', 'mass_degraded_sediment']
-            attrs_ls_1d_general_now = ['mass_degraded_now']
-            attrs_ls_1d_single_process = ['mass_volatilized', 'mass_photodegraded', 'mass_biodegraded',
-=======
             # ===== 3) Degraded mass ===== CONTROLLARE COME GESTIRE MASS DI ELEMENTI ADV OUT/STRADED ECC
             attrs_ls_1d_general = ['mass_degraded','mass_degraded_water', 'mass_degraded_sediment', 'mass_volatilized']
             attrs_ls_1d_general_now = ['mass_degraded_now', 'mass_degraded_water_now', 'mass_degraded_sediment_now', 'mass_volatilized_now']
             attrs_ls_1d_single_process = ['mass_photodegraded', 'mass_biodegraded',
->>>>>>> Stashed changes
                         'mass_biodegraded_water', 'mass_biodegraded_sediment',
                         'mass_hydrolyzed', 'mass_hydrolyzed_water', 'mass_hydrolyzed_sediment'
                         ]
@@ -8173,9 +8155,6 @@ class ChemicalDrift(OceanDrift):
 
                 extracted_active_dict_1d["mass_buried_ts"] = buried_at_t
                 extracted_active_dict_1d["mass_buried_cumulative"] = buried_cum
-
-
-
 
             # ===== 5) Assemble DataFrame =====
             df = pd.DataFrame({
