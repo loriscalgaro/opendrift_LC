@@ -229,6 +229,8 @@ class ChemicalDrift(OceanDrift):
                 'level': CONFIG_LEVEL_BASIC, 'description': 'Toggle Sediment_reversible specie'},
             'chemical:species:Sediment_slowly_reversible': {'type': 'bool', 'default': False,
                 'level': CONFIG_LEVEL_BASIC, 'description': 'Toggle Sediment_slowly_reversible specie'},
+            'chemical:species:Sediment_buried': {'type': 'bool', 'default': False,
+                'level': CONFIG_LEVEL_BASIC, 'description': 'Toggle Sediment_buried specie'},
             'chemical:species:Sediment_irreversible': {'type': 'bool', 'default': False,
                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Toggle Sediment_irreversible specie'},
             # Transformations
@@ -243,7 +245,13 @@ class ChemicalDrift(OceanDrift):
                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Desorption rate of metals from particles'},
             'chemical:transformations:slow_coeff': {'type': 'float', 'default': 0, #1.2e-7,         # Simonsen 2019
                 'min': 0, 'max': 1e6, 'units': '',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Desorption coefficient from slowly reversible fractions'},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Adsorption coefficient to slowly reversible fractions (metals)'},
+            'chemical:transformations:slow_coeff_des': {'type': 'float', 'default': 0, # 2.77e-7 1/s (up to 1.11e-6 1/s) # doi.org/10.1021/es960300+ Cornelissen et al. (1997) # oi.org/10.1897/06-104R.1 Birdwell et al. (2007)
+                'min': 0, 'max': 1e6, 'units': '',
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Desorption coefficient from slowly reversible fractions (organics)'},
+            'chemical:transformations:slow_coeff_ads': {'type': 'float', 'default': 0, # 1.88e-7 1/s (up to 7.43e-6 1/s) (40% of chem in slow fraction) # doi:10.1016/j.chemosphere.2005.02.092 Dunnivant et al. (2005)
+                'min': 0, 'max': 1e6, 'units': '',
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Adsorption coefficient to slowly reversible fractions (organics)'},
             'chemical:transformations:volatilization': {'type': 'bool', 'default': False,
                 'description': 'Chemical is evaporated.',
                 'level': CONFIG_LEVEL_BASIC},
@@ -401,6 +409,10 @@ class ChemicalDrift(OceanDrift):
             'chemical:sediment:buried_leaking_rate': {'type': 'float', 'default': 0,
                 'min': 0, 'max': 10, 'units': 's-1',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Rate of resuspension of buried sediments'},
+            'chemical:sediment:buried_leak_to_ssrev_fraction': {'type': 'float', 'default': 0.0,
+                'min': 0, 'max': 1, 'units': '',
+                'level': CONFIG_LEVEL_ADVANCED,
+                'description': 'Fraction of buried-sediment leaking that returns to Sediment slowly reversible (rest goes to Sediment reversible).'},
             'chemical:compound': {'type': 'str', 'default': '', 'min_length': 0, 'max_length': 256,
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Name of modelled chemical' },
             # Single process degradation
@@ -546,39 +558,85 @@ class ChemicalDrift(OceanDrift):
         super(ChemicalDrift, self).prepare_run()
 
     def init_species(self):
-        # Initialize specie types
-        if self.get_config('chemical:transfer_setup')=='metals':
-            self.set_config('chemical:species:LMM',True)
-            self.set_config('chemical:species:Particle_reversible', True)
-            self.set_config('chemical:species:Particle_slowly_reversible', True)
-            self.set_config('chemical:species:Sediment_reversible', True)
-            self.set_config('chemical:species:Sediment_slowly_reversible', True)
-        elif self.get_config('chemical:transfer_setup')=='137Cs_rev':
-            self.set_config('chemical:species:LMM',True)
-            self.set_config('chemical:species:Particle_reversible', True)
-            self.set_config('chemical:species:Sediment_reversible', True)
-        elif self.get_config('chemical:transfer_setup')=='Sandnesfj_Al':
-            self.set_config('chemical:species:LMM', False)
-            self.set_config('chemical:species:LMMcation', True)
-            self.set_config('chemical:species:LMManion', True)
-            self.set_config('chemical:species:Humic_colloid', True)
-            self.set_config('chemical:species:Polymer', True)
-            self.set_config('chemical:species:Particle_reversible', True)
-            self.set_config('chemical:species:Sediment_reversible', True)
-        elif self.get_config('chemical:transfer_setup')=='organics':
-            self.set_config('chemical:species:LMM',True)
-            self.set_config('chemical:species:Particle_reversible', True)
-            self.set_config('chemical:species:Particle_slowly_reversible', False)
-            self.set_config('chemical:species:Sediment_reversible', True)
-            self.set_config('chemical:species:Sediment_slowly_reversible', True)
-            self.set_config('chemical:species:Humic_colloid', True)
-        elif self.get_config('chemical:transfer_setup')=='custom':
-            # Do nothing, species must be set manually
-            pass
+        """Initialize specie types and build the species list.
+
+        For predefined transfer_setup values, species toggles are reset to a consistent
+        state to avoid stale/leftover activated species from previous runs or manual
+        configuration changes that are not compatible with the selected scheme.
+
+        For transfer_setup == 'custom', species toggles must be set manually.
+        """
+        transfer_setup = self.get_config('chemical:transfer_setup')
+
+        # Reset derived convenience flags
+        self.set_config('chemical:slowly_fraction', False)
+        self.set_config('chemical:irreversible_fraction', False)
+
+        all_species_keys = [
+            'LMM', 'LMMcation', 'LMManion',
+            'Colloid', 'Humic_colloid', 'Polymer',
+            'Particle_reversible', 'Particle_slowly_reversible', 'Particle_irreversible',
+            'Sediment_reversible', 'Sediment_slowly_reversible', 'Sediment_buried', 'Sediment_irreversible',
+        ]
+
+        if transfer_setup != 'custom':
+            # Preserve user choice for optional irreversible pools where supported
+            keep_particle_irrev = self.get_config('chemical:species:Particle_irreversible')
+            keep_sediment_irrev = self.get_config('chemical:species:Sediment_irreversible')
+
+            # Reset all known species toggles first (prevents stale state)
+            for key in all_species_keys:
+                self.set_config(f'chemical:species:{key}', False)
+
+            if transfer_setup == 'metals':
+                self.set_config('chemical:species:LMM', True)
+                self.set_config('chemical:species:Particle_reversible', True)
+                self.set_config('chemical:species:Particle_slowly_reversible', True)
+                self.set_config('chemical:species:Sediment_reversible', True)
+                self.set_config('chemical:species:Sediment_slowly_reversible', True)
+                self.set_config('chemical:species:Sediment_buried', True)
+
+                # Optional irreversible pools (only if user enabled them)
+                if keep_particle_irrev:
+                    self.set_config('chemical:species:Particle_irreversible', True)
+                if keep_sediment_irrev:
+                    self.set_config('chemical:species:Sediment_irreversible', True)
+
+            elif transfer_setup == '137Cs_rev':
+                self.set_config('chemical:species:LMM', True)
+                self.set_config('chemical:species:Particle_reversible', True)
+                self.set_config('chemical:species:Sediment_reversible', True)
+
+            elif transfer_setup == 'Sandnesfj_Al':
+                self.set_config('chemical:species:LMMcation', True)
+                self.set_config('chemical:species:LMManion', True)
+                self.set_config('chemical:species:Humic_colloid', True)
+                self.set_config('chemical:species:Polymer', True)
+                self.set_config('chemical:species:Particle_reversible', True)
+                self.set_config('chemical:species:Sediment_reversible', True)
+
+            elif transfer_setup == 'organics':
+                self.set_config('chemical:species:LMM', True)
+                self.set_config('chemical:species:Humic_colloid', True)
+                self.set_config('chemical:species:Particle_reversible', True)
+                self.set_config('chemical:species:Particle_slowly_reversible', True)
+                self.set_config('chemical:species:Sediment_reversible', True)
+                self.set_config('chemical:species:Sediment_slowly_reversible', True)
+                self.set_config('chemical:species:Sediment_buried', True)
+
+                # Optional irreversible pools (only if user enabled them)
+                if keep_particle_irrev:
+                    self.set_config('chemical:species:Particle_irreversible', True)
+                if keep_sediment_irrev:
+                    self.set_config('chemical:species:Sediment_irreversible', True)
+
+            else:
+                logger.error('No valid transfer_setup {}'.format(transfer_setup))
         else:
-            logger.error('No valid transfer_setup {}'.format(self.get_config('chemical:transfer_setup')))
+            # Custom setup: species must be set manually by the user
+            pass
 
-
+        # Build species list in fixed order
         self.name_species=[]
         if self.get_config('chemical:species:LMM'):
             self.name_species.append('LMM')
@@ -602,17 +660,22 @@ class ChemicalDrift(OceanDrift):
             self.name_species.append('Sediment reversible')
         if self.get_config('chemical:species:Sediment_slowly_reversible'):
             self.name_species.append('Sediment slowly reversible')
+        if self.get_config('chemical:species:Sediment_buried'):
+            self.name_species.append('Sediment buried')
         if self.get_config('chemical:species:Sediment_irreversible'):
             self.name_species.append('Sediment irreversible')
 
-
-        if self.get_config('chemical:species:Sediment_slowly_reversible') and \
-                    self.get_config('chemical:species:Particle_slowly_reversible'):
-            self.set_config('chemical:slowly_fraction', True)
-        if self.get_config('chemical:species:Sediment_irreversible') and \
-                    self.get_config('chemical:species:Particle_irreversible'):
-            self.set_config('chemical:irreversible_fraction', True)
-
+        # Derived convenience flags (always recomputed to avoid stale state)
+        self.set_config(
+            'chemical:slowly_fraction',
+            bool(self.get_config('chemical:species:Sediment_slowly_reversible') and
+                 self.get_config('chemical:species:Particle_slowly_reversible'))
+        )
+        self.set_config(
+            'chemical:irreversible_fraction',
+            bool(self.get_config('chemical:species:Sediment_irreversible') and
+                 self.get_config('chemical:species:Particle_irreversible'))
+        )
 
         self.nspecies      = len(self.name_species)
 
@@ -712,6 +775,7 @@ class ChemicalDrift(OceanDrift):
                 "Particle irreversible",
                 "Sediment reversible",
                 "Sediment slowly reversible",
+                "Sediment buried",
                 "Sediment irreversible",
             }
             diam_idx = {name_to_idx[n] for n in diam_names if n in name_to_idx}
@@ -860,10 +924,9 @@ class ChemicalDrift(OceanDrift):
         """
         Correction of KOC for SPM due to water pH (speciation in the water).
 
-        Note: keeps your existing assumption that SPM uses the sediment KOC parameters:
-          - KOC_sed_n used as neutral-form KOC for SPM
-          - KOC_sed_acid used as anionic-form KOC for SPM
-          - KOC_sed_base used as cationic-form KOC for SPM
+        KOC_sed_n: neutral-form KOC for SPM
+        KOC_sed_acid: anionic-form KOC for SPM
+        KOC_sed_base: cationic-form KOC for SPM
         """
         return self._koc_correction(
             KOC_initial=KOC_SPM_initial,
@@ -954,7 +1017,6 @@ class ChemicalDrift(OceanDrift):
                 print("Invalid TCorr values and corresponding TW values:")
                 print(f"TCorr[{invalid_indices}] = {TCorr[i:end][invalid_indices]}")
                 print(f"TW[{invalid_indices}] = {TW[i:end][invalid_indices]}")
-
                 raise ValueError("TCorr is not between 0 and 1")
             else:
                 pass
@@ -1217,6 +1279,17 @@ class ChemicalDrift(OceanDrift):
 
         transfer_setup=self.get_config('chemical:transfer_setup')
         logger.info( 'transfer setup: %s' % transfer_setup)
+        # Clear any stale species indices from previous runs / setups
+        for _attr in (
+            'num_lmm', 'num_lmmcation', 'num_lmmanion',
+            'num_col', 'num_humcol', 'num_polymer',
+            'num_prev', 'num_psrev', 'num_pirrev',
+            'num_srev', 'num_ssrev', 'num_sirrev',
+            'num_sburied',
+        ):
+            if hasattr(self, _attr):
+                delattr(self, _attr)
+
 
         self.transfer_rates = np.zeros([self.nspecies,self.nspecies])
         self.ntransformations = np.zeros([self.nspecies,self.nspecies])
@@ -1227,8 +1300,16 @@ class ChemicalDrift(OceanDrift):
             self.num_humcol = self.specie_name2num('Humic colloid')
             self.num_prev   = self.specie_name2num('Particle reversible')
             self.num_srev   = self.specie_name2num('Sediment reversible')
-            #self.num_psrev  = self.specie_name2num('Particle slowly reversible')
+            if self.get_config('chemical:species:Particle_slowly_reversible'):
+                self.num_psrev  = self.specie_name2num('Particle slowly reversible')
             self.num_ssrev  = self.specie_name2num('Sediment slowly reversible')
+            if self.get_config('chemical:species:Sediment_buried'):
+                self.num_sburied = self.specie_name2num('Sediment buried')
+            # Optional irreversible compartments (if enabled)
+            if self.get_config('chemical:species:Sediment_irreversible'):
+                self.num_sirrev = self.specie_name2num('Sediment irreversible')
+            if self.get_config('chemical:species:Particle_irreversible'):
+                self.num_pirrev = self.specie_name2num('Particle irreversible')
 
             # Values from EMERGE-Aquatox
             Org2C      = 0.526  # kgOC/KgOM
@@ -1259,7 +1340,8 @@ class ChemicalDrift(OceanDrift):
 
             # environmental / sediment constants
             # Values from Simonsen et al (2019a)
-            slow_coeff  = self.get_config('chemical:transformations:slow_coeff')
+            slow_coeff_ads = self.get_config('chemical:transformations:slow_coeff_ads')
+            slow_coeff_des = self.get_config('chemical:transformations:slow_coeff_des')
             concSPM     = 50.e-3                                                # available SPM (kg/m3)
             sed_L       = self.get_config('chemical:sediment:mixing_depth')     # sediment mixing depth (m)
             sed_dens    = self.get_config('chemical:sediment:density')          # default particle density (kg/m3)
@@ -1372,32 +1454,56 @@ class ChemicalDrift(OceanDrift):
             self.k21_0 = k_des_DOM
             self.k31_0 = k_des_SPM
             self.k41_0 = k_des_sed * sed_phi
+            self.k64_0 = slow_coeff_des
+            self.k53_0 = slow_coeff_des
+            # self.k46_0 = slow_coeff_ads
+            # self.k35_0 = slow_coeff_ads
+
             # TODO Use setconfig() to store these?
 
             # Fill transfer matrix (background at Tref, Sref)
+            #   Dissolved  <->  Humic colloid
             self.transfer_rates[self.num_lmm,self.num_humcol] = k_ads * concDOM             # k12
             self.transfer_rates[self.num_humcol,self.num_lmm] = k_des_DOM / TcorrDOM / Scorr# k21
 
+            #   Dissolved  <->  Particle reversible
             self.transfer_rates[self.num_lmm,self.num_prev] = k_ads * concSPM               # k13
             self.transfer_rates[self.num_prev,self.num_lmm] = k_des_SPM / TcorrSed / Scorr  # k31
 
+            #   Dissolved  <->  Sediment reversible
             self.transfer_rates[self.num_lmm,self.num_srev] = \
                 (k_ads *1e-3) * sed_L * sed_dens * (1.-sed_poro) * sed_phi / sed_H          # k14 # *1e-3, from L to m3, so k14 is 1/s
-
             self.transfer_rates[self.num_srev,self.num_lmm] = \
                 k_des_sed * sed_phi / TcorrSed / Scorr                                      # k41
 
-            #self.transfer_rates[self.num_srev,self.num_ssrev] = slow_coeff                 # k46
-            #self.transfer_rates[self.num_ssrev,self.num_srev] = slow_coeff*.1              # k64
+            #   Sediment reversible  <->  Sediment slowly reversible
+            self.transfer_rates[self.num_srev,self.num_ssrev] = slow_coeff_ads                     # k46
+            self.transfer_rates[self.num_ssrev,self.num_srev] = slow_coeff_des / TcorrSed / Scorr  # k64
 
-            # Burial/leaking using slowly reversible species (seconds per year)
-            # TODO buried sediment should be a new specie
-            self.transfer_rates[self.num_srev,self.num_ssrev] = sed_burial / sed_L / 31556926 # k46 (m/y) / m / (s/y) = s-1
-            self.transfer_rates[self.num_ssrev,self.num_srev] = sed_leaking_rate              # k64
+            #   Particle reversible  <->  Particle slowly reversible
+            if hasattr(self, 'num_psrev'):
+                self.transfer_rates[self.num_prev,self.num_psrev] = slow_coeff_ads                     # k35
+                self.transfer_rates[self.num_psrev,self.num_prev] = slow_coeff_des / TcorrSed / Scorr  # k53
 
-            # aggregation of DOC
+
+            # Burial/leaking using dedicated sediment buried species
+            # (m/y) / m / (s/y) = 1/s
+            if hasattr(self, 'num_sburied'):
+                burial_rate = sed_burial / sed_L / 31556926.0
+                self.transfer_rates[self.num_srev, self.num_sburied] = burial_rate             # k47
+                self.transfer_rates[self.num_ssrev, self.num_sburied] = burial_rate            # k57
+                # Also bury irreversible sediment pool if present
+                if hasattr(self, 'num_sirrev'):
+                    self.transfer_rates[self.num_sirrev, self.num_sburied] = burial_rate
+
+                leak_frac_to_ssrev = self.get_config('chemical:sediment:buried_leak_to_ssrev_fraction')
+                leak_frac_to_ssrev = np.clip(leak_frac_to_ssrev, 0.0, 1.0)
+                self.transfer_rates[self.num_sburied, self.num_srev] = sed_leaking_rate * (1.0 - leak_frac_to_ssrev)  # k74
+                self.transfer_rates[self.num_sburied, self.num_ssrev] = sed_leaking_rate * leak_frac_to_ssrev         # k75
+
+            #   Humic colloid   <->  Particle reversible (aggregation of DOC)
             self.transfer_rates[self.num_humcol,self.num_prev] = self.get_config('chemical:transformations:aggregation_rate')
-            self.transfer_rates[self.num_prev,self.num_humcol] = 0          # TODO check if valid for organics
+            self.transfer_rates[self.num_prev,self.num_humcol] = 0
 
         elif transfer_setup == 'metals':                                    # renamed from radionuclides Bokna_137Cs
 
@@ -1406,6 +1512,13 @@ class ChemicalDrift(OceanDrift):
             self.num_srev   = self.specie_name2num('Sediment reversible')
             self.num_psrev  = self.specie_name2num('Particle slowly reversible')
             self.num_ssrev  = self.specie_name2num('Sediment slowly reversible')
+            if self.get_config('chemical:species:Sediment_buried'):
+                self.num_sburied = self.specie_name2num('Sediment buried')
+            # Optional irreversible compartments (if enabled)
+            if self.get_config('chemical:species:Sediment_irreversible'):
+                self.num_sirrev = self.specie_name2num('Sediment irreversible')
+            if self.get_config('chemical:species:Particle_irreversible'):
+                self.num_pirrev = self.specie_name2num('Particle irreversible')
 
 
             # Values from Simonsen et al (2019a)
@@ -1426,17 +1539,28 @@ class ChemicalDrift(OceanDrift):
             self.transfer_rates[self.num_lmm,self.num_srev] = \
                 Dc * Kd * sed_L * sed_dens * (1.-sed_poro) * sed_f * sed_phi / sed_H
             self.transfer_rates[self.num_srev,self.num_lmm] = Dc * sed_phi
-            # Using slowly reversible specie for burial - TODO buried sediment should be a new specie
-            # self.transfer_rates[self.num_srev,self.num_ssrev] = slow_coeff
-            # self.transfer_rates[self.num_ssrev,self.num_srev] = slow_coeff*.1
-            logger.info( 'transfer setup: metals- Using slowly reversible specie for burial')
-            sed_L       = self.get_config('chemical:sediment:mixing_depth')     # sediment mixing depth (m)
-            sed_burial  = self.get_config('chemical:sediment:burial_rate')      # sediment burial rate (m/y)
-            sed_leaking_rate = self.get_config( 'chemical:sediment:buried_leaking_rate')
-            self.transfer_rates[self.num_srev,self.num_ssrev] = sed_burial / sed_L / 31556926
-            self.transfer_rates[self.num_ssrev,self.num_srev] = sed_leaking_rate
+
+            # Slow reversible sediment partitioning
+            self.transfer_rates[self.num_srev, self.num_ssrev] = slow_coeff
+            self.transfer_rates[self.num_ssrev, self.num_srev] = slow_coeff * 0.1
+
+            # Burial/leaking to/from buried-sediment species
+            if hasattr(self, 'num_sburied'):
+                sed_burial = self.get_config('chemical:sediment:burial_rate')
+                sed_leaking_rate = self.get_config('chemical:sediment:buried_leaking_rate')
+                burial_rate = sed_burial / sed_L / 31556926.0
+                self.transfer_rates[self.num_srev, self.num_sburied] = burial_rate
+                self.transfer_rates[self.num_ssrev, self.num_sburied] = burial_rate
+                # Also bury irreversible sediment pool if present
+                if hasattr(self, 'num_sirrev'):
+                    self.transfer_rates[self.num_sirrev, self.num_sburied] = burial_rate
+
+                leak_frac_to_ssrev = self.get_config('chemical:sediment:buried_leak_to_ssrev_fraction')
+                leak_frac_to_ssrev = np.clip(leak_frac_to_ssrev, 0.0, 1.0)
+                self.transfer_rates[self.num_sburied, self.num_srev] = sed_leaking_rate * (1.0 - leak_frac_to_ssrev)
+                self.transfer_rates[self.num_sburied, self.num_ssrev] = sed_leaking_rate * leak_frac_to_ssrev
+
             self.transfer_rates[self.num_prev,self.num_psrev] = slow_coeff
-            # self.transfer_rates[self.num_ssrev,self.num_srev] = slow_coeff*.1
             self.transfer_rates[self.num_psrev,self.num_prev] = slow_coeff*.1
 
         elif transfer_setup == '137Cs_rev':
@@ -1473,12 +1597,17 @@ class ChemicalDrift(OceanDrift):
                 self.num_prev  = self.specie_name2num('Particle reversible')
             if self.get_config('chemical:species:Sediment_reversible'):
                 self.num_srev  = self.specie_name2num('Sediment reversible')
-            if self.get_config('chemical:slowly_fraction'):
+            # Index optional species if present (independent toggles)
+            if self.get_config('chemical:species:Particle_slowly_reversible'):
                 self.num_psrev  = self.specie_name2num('Particle slowly reversible')
+            if self.get_config('chemical:species:Sediment_slowly_reversible'):
                 self.num_ssrev  = self.specie_name2num('Sediment slowly reversible')
-            if self.get_config('chemical:irreversible_fraction'):
+            if self.get_config('chemical:species:Particle_irreversible'):
                 self.num_pirrev  = self.specie_name2num('Particle irreversible')
+            if self.get_config('chemical:species:Sediment_irreversible'):
                 self.num_sirrev  = self.specie_name2num('Sediment irreversible')
+            if self.get_config('chemical:species:Sediment_buried'):
+                self.num_sburied = self.specie_name2num('Sediment buried')
 
             if self.get_config('chemical:species:Particle_reversible'):
                 self.transfer_rates[self.num_lmm,self.num_prev] = 5.e-6 #*0.
@@ -1490,11 +1619,38 @@ class ChemicalDrift(OceanDrift):
                     self.get_config('chemical:transformations:Dc') * self.get_config('chemical:sediment:corr_factor')
                 # self.transfer_rates[self.num_srev,self.num_lmm] = 5.e-6
 
-            if self.get_config('chemical:slowly_fraction'):
-                self.transfer_rates[self.num_prev,self.num_psrev] = 2.e-6
-                self.transfer_rates[self.num_srev,self.num_ssrev] = 2.e-6
-                self.transfer_rates[self.num_psrev,self.num_prev] = 2.e-7
-                self.transfer_rates[self.num_ssrev,self.num_srev] = 2.e-7
+            # Slow reversible partitioning
+            if hasattr(self, 'num_psrev'):
+                self.transfer_rates[self.num_prev, self.num_psrev] = 2.e-6
+                self.transfer_rates[self.num_psrev, self.num_prev] = 2.e-7
+            if hasattr(self, 'num_ssrev'):
+                self.transfer_rates[self.num_srev, self.num_ssrev] = 2.e-6
+                self.transfer_rates[self.num_ssrev, self.num_srev] = 2.e-7
+            # Burial/leaking using dedicated buried-sediment species (optional for custom setup)
+            if hasattr(self, 'num_sburied'):
+                sed_L = self.get_config('chemical:sediment:mixing_depth')  # m
+                sed_burial = self.get_config('chemical:sediment:burial_rate')  # m/y
+                sed_leaking_rate = self.get_config('chemical:sediment:buried_leaking_rate')  # 1/s
+                if sed_L > 0:
+                    burial_rate = sed_burial / sed_L / 31556926.0  # 1/s
+                    # Bury from all sediment pools present (srev, ssrev, sirrev)
+                    if hasattr(self, 'num_srev'):
+                        self.transfer_rates[self.num_srev, self.num_sburied] = burial_rate
+                    if hasattr(self, 'num_ssrev'):
+                        self.transfer_rates[self.num_ssrev, self.num_sburied] = burial_rate
+                    if hasattr(self, 'num_sirrev'):
+                        self.transfer_rates[self.num_sirrev, self.num_sburied] = burial_rate
+
+                    leak_frac_to_ssrev = self.get_config('chemical:sediment:buried_leak_to_ssrev_fraction')
+                    leak_frac_to_ssrev = np.clip(leak_frac_to_ssrev, 0.0, 1.0)
+
+                    # Leak back only to srev and (if present) ssrev
+                    if hasattr(self, 'num_srev'):
+                        if hasattr(self, 'num_ssrev'):
+                            self.transfer_rates[self.num_sburied, self.num_srev] = sed_leaking_rate * (1.0 - leak_frac_to_ssrev)
+                            self.transfer_rates[self.num_sburied, self.num_ssrev] = sed_leaking_rate * leak_frac_to_ssrev
+                        else:
+                            self.transfer_rates[self.num_sburied, self.num_srev] = sed_leaking_rate
 
         elif transfer_setup=='Sandnesfj_Al':
             # Use values from Simonsen et al (2019b)
@@ -1676,6 +1832,23 @@ class ChemicalDrift(OceanDrift):
             mask_SPM = (self.elements.specie == self.num_prev)
             mask_SED = (self.elements.specie == self.num_srev)
 
+            # Optional slow reversible species (activate only if present and enabled)
+            psrev_active = hasattr(self, 'num_psrev') and self.get_config('chemical:species:Particle_slowly_reversible')
+            ssrev_active = hasattr(self, 'num_ssrev') and self.get_config('chemical:species:Sediment_slowly_reversible')
+            if psrev_active:
+                mask_PSREV = (self.elements.specie == self.num_psrev)
+                # Ensure sorption to slow particle pool is active in per-element rates
+                self.elements.transfer_rates1D[mask_SPM, self.num_psrev] = self.transfer_rates[self.num_prev, self.num_psrev]
+            else:
+                mask_PSREV = None
+
+            if ssrev_active:
+                mask_SSREV = (self.elements.specie == self.num_ssrev)
+                # Ensure sorption to slow sediment pool is active in per-element rates
+                self.elements.transfer_rates1D[mask_SED, self.num_ssrev] = self.transfer_rates[self.num_srev, self.num_ssrev]
+            else:
+                mask_SSREV = None
+
             if diss == 'nondiss':
                 # Temperature and salinity correction for desorption rates (inversely proportional to Kd)
                 self.elements.transfer_rates1D[mask_DOM, self.num_lmm] = (
@@ -1687,6 +1860,16 @@ class ChemicalDrift(OceanDrift):
                 self.elements.transfer_rates1D[mask_SED, self.num_lmm] = (
                     self.k41_0 / tempcorrSed[mask_SED] / salinitycorr[mask_SED]
                 )
+
+                # Slow-desorption
+                if psrev_active and mask_PSREV is not None:
+                    self.elements.transfer_rates1D[mask_PSREV, self.num_prev] = (
+                        self.k53_0 / tempcorrSed[mask_PSREV] / salinitycorr[mask_PSREV]
+                    )
+                if ssrev_active and mask_SSREV is not None:
+                    self.elements.transfer_rates1D[mask_SSREV, self.num_srev] = (
+                        self.k64_0 / tempcorrSed[mask_SSREV] / salinitycorr[mask_SSREV]
+                    )
             else:
                 # pH-dependent KOC correction factors
                 pH_sed = self.environment.pH_sediment[mask_SED]
@@ -1706,7 +1889,12 @@ class ChemicalDrift(OceanDrift):
                 # Neutral/anionic/cationic KOC parameters (L/kgOC)
                 KOC_sed_n = self.get_config('chemical:transformations:KOC_sed')
                 if KOC_sed_n < 0:
-                    KOC_sed_n = 10 ** ((0.37 * np.log10(KOW)) + 1.70) # Franco et al. (2008)  https://doi.org/10.1897/07-583.1
+                    # Keep consistent with init_transfer_rates fallbacks (Franco et al., 2008)
+                    if diss == 'acid':
+                        KOC_sed_n = 10 ** ((0.54 * np.log10(KOW)) + 1.11)
+                    else:
+                        # diss == 'base' or 'amphoter'
+                        KOC_sed_n = 10 ** ((0.37 * np.log10(KOW)) + 1.70)
 
                 KOC_sed_acid = self.get_config('chemical:transformations:KOC_sed_acid')
                 if KOC_sed_acid < 0:
@@ -1752,16 +1940,26 @@ class ChemicalDrift(OceanDrift):
                     KOC_DOM_initial, KOC_DOM_n, pKa_acid, pKa_base, KOW, pH_water_DOM, diss, KOC_DOM_acid, KOC_DOM_base
                 )
 
-                # Apply: desorption ~ (1/Kd): multiply by KOC_corr and divide by T/S corr
+                # Apply: desorption ~ (1/Kd): divide by KOC_corr and divide by T/S corr
                 self.elements.transfer_rates1D[mask_DOM, self.num_lmm] = (
-                    self.k21_0 * KOC_watcorrDOM / tempcorrDOM[mask_DOM] / salinitycorr[mask_DOM]
+                    self.k21_0 / KOC_watcorrDOM / tempcorrDOM[mask_DOM] / salinitycorr[mask_DOM]
                 )
                 self.elements.transfer_rates1D[mask_SPM, self.num_lmm] = (
-                    self.k31_0 * KOC_watcorrSPM / tempcorrSed[mask_SPM] / salinitycorr[mask_SPM]
+                    self.k31_0 / KOC_watcorrSPM / tempcorrSed[mask_SPM] / salinitycorr[mask_SPM]
                 )
                 self.elements.transfer_rates1D[mask_SED, self.num_lmm] = (
-                    self.k41_0 * KOC_sedcorr / tempcorrSed[mask_SED] / salinitycorr[mask_SED]
+                    self.k41_0 / KOC_sedcorr / tempcorrSed[mask_SED] / salinitycorr[mask_SED]
                 )
+
+                # Slow-desorption: apply the same temperature/salinity corrections as for PREV/SREV.
+                if psrev_active and mask_PSREV is not None:
+                    self.elements.transfer_rates1D[mask_PSREV, self.num_prev] = (
+                        self.k53_0 / tempcorrSed[mask_PSREV] / salinitycorr[mask_PSREV]
+                    )
+                if ssrev_active and mask_SSREV is not None:
+                    self.elements.transfer_rates1D[mask_SSREV, self.num_srev] = (
+                        self.k64_0 / tempcorrSed[mask_SSREV] / salinitycorr[mask_SSREV]
+                    )
 
         # Update SORPTION rates
         if transfer_setup == 'organics':
@@ -1831,11 +2029,11 @@ class ChemicalDrift(OceanDrift):
 
             self.elements.transfer_rates1D[mask_LMM, self.num_prev] = Dc * Kd * concSPM[mask_LMM]  # k13
             self.elements.transfer_rates1D[mask_LMM, self.num_srev] = (
-                Dc * Kd * sed_L * sed_dens * (1.0 - sed_poro) * sed_f * sed_phi / sed_H
+                Dc * Kd * sed_L * sed_dens * (1.0 - sed_poro) * sed_f * sed_phi / sed_H            # k14
             )
 
         # Disable LMM:sediment interaction when too far from seabed (if enabled)
-        if self.get_config('chemical:species:Sediment_reversible'):
+        if self.get_config('chemical:species:Sediment_reversible') and hasattr(self, 'num_srev') and hasattr(self, 'num_lmm'):
             Zmin = -1.0 * self.environment.sea_floor_depth_below_sea_level
             interaction_thick = self.get_config('chemical:sediment:layer_thickness')
             dist_to_seabed = self.elements.z - Zmin
@@ -1858,9 +2056,7 @@ class ChemicalDrift(OceanDrift):
         # shape (N, nspecies), units [1/s]
         # Convention: for element e, K[e, j] is the rate of jumping FROM its current species TO species j
         # (typically with K[e, current_species] = 0)
-
         K = self.elements.transfer_rates1D        # shape (N, nspecies), rates [1/s]
-
 
         # Total rate of leaving the current state for each element:
         # k_tot[e] = sum_j K[e, j]  [1/s]
@@ -1872,7 +2068,6 @@ class ChemicalDrift(OceanDrift):
         #   P(no transition in dt) = exp(-k_tot * dt)
         #   P(at least one transition in dt) = 1 - exp(-k_tot * dt)
         p_any = 1.0 - np.exp(-k_tot * dt)
-
 
         # First Monte Carlo draw: decide which elements will undergo a phase/species change this step
         u = np.random.random(self.num_elements_active())
@@ -1898,7 +2093,6 @@ class ChemicalDrift(OceanDrift):
 
         # Second Monte Carlo draw: pick destination species using the CDF
         u2 = np.random.random(ntr)
-
 
         # idx is the first index where cdf >= u2
         # (cdf < u2).sum gives the count of bins strictly below u2, i.e. the chosen bin index
@@ -1930,17 +2124,23 @@ class ChemicalDrift(OceanDrift):
         self.desorption_from_sediments(specie_in, specie_out)
 
     def sorption_to_sediments(self,sp_in=None,sp_out=None):
-        '''Update Chemical properties  when sorption to sediments occurs'''
+        '''Update Chemical properties when sorption to sediments occurs'''
 
-        # Set z to local sea depth
-        if self.get_config('chemical:species:LMM'):
-            self.elements.z[(sp_out==self.num_srev) & (sp_in==self.num_lmm)] = \
-                -1.*self.environment.sea_floor_depth_below_sea_level[(sp_out==self.num_srev) & (sp_in==self.num_lmm)]
-            self.elements.moving[(sp_out==self.num_srev) & (sp_in==self.num_lmm)] = 0
-        if self.get_config('chemical:species:LMMcation'):
-            self.elements.z[(sp_out==self.num_srev) & (sp_in==self.num_lmmcation)] = \
-                -1.*self.environment.sea_floor_depth_below_sea_level[(sp_out==self.num_srev) & (sp_in==self.num_lmmcation)]
-            self.elements.moving[(sp_out==self.num_srev) & (sp_in==self.num_lmmcation)] = 0
+        # If sediment reversible compartment is not present, nothing to do
+        if not hasattr(self, 'num_srev'):
+            return
+
+        # Set z to local sea depth for particles that have sorbed to sediments
+        if self.get_config('chemical:species:LMM') and hasattr(self, 'num_lmm'):
+            mask = (sp_out==self.num_srev) & (sp_in==self.num_lmm)
+            self.elements.z[mask] = -1.0 * self.environment.sea_floor_depth_below_sea_level[mask]
+            self.elements.moving[mask] = 0
+
+        if self.get_config('chemical:species:LMMcation') and hasattr(self, 'num_lmmcation'):
+            mask = (sp_out==self.num_srev) & (sp_in==self.num_lmmcation)
+            self.elements.z[mask] = -1.0 * self.environment.sea_floor_depth_below_sea_level[mask]
+            self.elements.moving[mask] = 0
+
         # avoid setting positive z values
         if np.nansum(self.elements.z>0):
             logger.debug('Number of elements lowered down to sea surface: %s' % np.nansum(self.elements.z>0))
@@ -1949,25 +2149,29 @@ class ChemicalDrift(OceanDrift):
     def desorption_from_sediments(self,sp_in=None,sp_out=None):
         '''Update Chemical properties when desorption from sediments occurs'''
 
+        # If sediment reversible compartment is not present, nothing to do
+        if not hasattr(self, 'num_srev'):
+            return
+
         desorption_depth = self.get_config('chemical:sediment:desorption_depth')
         std = self.get_config('chemical:sediment:desorption_depth_uncert')
 
-        if self.get_config('chemical:species:LMM'):
-            self.elements.z[(sp_out==self.num_lmm) & (sp_in==self.num_srev)] = \
-                -1.*self.environment.sea_floor_depth_below_sea_level[(sp_out==self.num_lmm) & (sp_in==self.num_srev)] + desorption_depth
-            self.elements.moving[(sp_out==self.num_lmm) & (sp_in==self.num_srev)] = 1
+        if self.get_config('chemical:species:LMM') and hasattr(self, 'num_lmm'):
+            mask = (sp_out==self.num_lmm) & (sp_in==self.num_srev)
+            self.elements.z[mask] = -1.0 * self.environment.sea_floor_depth_below_sea_level[mask] + desorption_depth
+            self.elements.moving[mask] = 1
             if std > 0:
                 logger.debug('Adding uncertainty for desorption from sediments: %s m' % std)
-                self.elements.z[(sp_out==self.num_lmm) & (sp_in==self.num_srev)] += np.random.normal(
-                        0, std, sum((sp_out==self.num_lmm) & (sp_in==self.num_srev)))
-        if self.get_config('chemical:species:LMMcation'):
-            self.elements.z[(sp_out==self.num_lmmcation) & (sp_in==self.num_srev)] = \
-                -1.*self.environment.sea_floor_depth_below_sea_level[(sp_out==self.num_lmmcation) & (sp_in==self.num_srev)] + desorption_depth
-            self.elements.moving[(sp_out==self.num_lmmcation) & (sp_in==self.num_srev)] = 1
+                self.elements.z[mask] += np.random.normal(0, std, sum(mask))
+
+        if self.get_config('chemical:species:LMMcation') and hasattr(self, 'num_lmmcation'):
+            mask = (sp_out==self.num_lmmcation) & (sp_in==self.num_srev)
+            self.elements.z[mask] = -1.0 * self.environment.sea_floor_depth_below_sea_level[mask] + desorption_depth
+            self.elements.moving[mask] = 1
             if std > 0:
                 logger.debug('Adding uncertainty for desorption from sediments: %s m' % std)
-                self.elements.z[(sp_out==self.num_lmmcation) & (sp_in==self.num_srev)] += np.random.normal(
-                        0, std, sum((sp_out==self.num_lmmcation) & (sp_in==self.num_srev)))
+                self.elements.z[mask] += np.random.normal(0, std, sum(mask))
+
         # avoid setting positive z values
         if np.nansum(self.elements.z>0):
             logger.debug('Number of elements lowered down to sea surface: %s' % np.nansum(self.elements.z>0))
@@ -1976,26 +2180,28 @@ class ChemicalDrift(OceanDrift):
     def update_chemical_diameter(self,sp_in=None,sp_out=None):
         '''Update the diameter of the chemicals when specie is changed'''
 
-        dia_part=self.get_config('chemical:particle_diameter')
+        dia_part = self.get_config('chemical:particle_diameter')
         dia_DOM_part = self.get_config('chemical:doc_particle_diameter')
-        dia_diss=self.get_config('chemical:dissolved_diameter')
-
+        dia_diss = self.get_config('chemical:dissolved_diameter')
+        std = self.get_config('chemical:particle_diameter_uncertainty')
 
         # Transfer to reversible particles
-        self.elements.diameter[(sp_out==self.num_prev) & (sp_in!=self.num_prev)] = dia_part
+        if hasattr(self, 'num_prev'):
+            self.elements.diameter[(sp_out==self.num_prev) & (sp_in!=self.num_prev)] = dia_part
 
-        if self.get_config('chemical:species:Humic_colloid'):
-            self.elements.diameter[(sp_out==self.num_prev) & (sp_in==self.num_humcol)] = dia_DOM_part
+            if self.get_config('chemical:species:Humic_colloid') and hasattr(self, 'num_humcol'):
+                self.elements.diameter[(sp_out==self.num_prev) & (sp_in==self.num_humcol)] = dia_DOM_part
 
-        logger.debug('Updated particle diameter for %s elements' % len(self.elements.diameter[(sp_out==self.num_prev) & (sp_in!=self.num_prev)]))
+            logger.debug('Updated particle diameter for %s elements' %
+                         len(self.elements.diameter[(sp_out==self.num_prev) & (sp_in!=self.num_prev)]))
 
-        std = self.get_config('chemical:particle_diameter_uncertainty')
-        if std > 0:
-            logger.debug('Adding uncertainty for particle diameter: %s m' % std)
-            self.elements.diameter[(sp_out==self.num_prev) & (sp_in!=self.num_prev)] += np.random.normal(
-                    0, std, sum((sp_out==self.num_prev) & (sp_in!=self.num_prev)))
+            if std > 0:
+                logger.debug('Adding uncertainty for particle diameter: %s m' % std)
+                self.elements.diameter[(sp_out==self.num_prev) & (sp_in!=self.num_prev)] += np.random.normal(
+                        0, std, sum((sp_out==self.num_prev) & (sp_in!=self.num_prev)))
+
         # Transfer to slowly reversible particles
-        if self.get_config('chemical:slowly_fraction'):
+        if self.get_config('chemical:slowly_fraction') and hasattr(self, 'num_psrev'):
             self.elements.diameter[(sp_out==self.num_psrev) & (sp_in!=self.num_psrev)] = dia_part
             if std > 0:
                 logger.debug('Adding uncertainty for slowly rev particle diameter: %s m' % std)
@@ -2003,52 +2209,62 @@ class ChemicalDrift(OceanDrift):
                     0, std, sum((sp_out==self.num_psrev) & (sp_in!=self.num_psrev)))
 
         # Transfer to irreversible particles
-        if self.get_config('chemical:irreversible_fraction'):
+        if self.get_config('chemical:irreversible_fraction') and hasattr(self, 'num_pirrev'):
             self.elements.diameter[(sp_out==self.num_pirrev) & (sp_in!=self.num_pirrev)] = dia_part
             if std > 0:
                 logger.debug('Adding uncertainty for irrev particle diameter: %s m' % std)
                 self.elements.diameter[(sp_out==self.num_pirrev) & (sp_in!=self.num_pirrev)] += np.random.normal(
                     0, std, sum((sp_out==self.num_pirrev) & (sp_in!=self.num_pirrev)))
 
-        # Transfer to LMM
-        if self.get_config('chemical:species:LMM'):
+        # Transfer to dissolved species
+        if self.get_config('chemical:species:LMM') and hasattr(self, 'num_lmm'):
             self.elements.diameter[(sp_out==self.num_lmm) & (sp_in!=self.num_lmm)] = dia_diss
-        if self.get_config('chemical:species:LMManion'):
+        if self.get_config('chemical:species:LMManion') and hasattr(self, 'num_lmmanion'):
             self.elements.diameter[(sp_out==self.num_lmmanion) & (sp_in!=self.num_lmmanion)] = dia_diss
-        if self.get_config('chemical:species:LMMcation'):
+        if self.get_config('chemical:species:LMMcation') and hasattr(self, 'num_lmmcation'):
             self.elements.diameter[(sp_out==self.num_lmmcation) & (sp_in!=self.num_lmmcation)] = dia_diss
 
         # Transfer to colloids
-        if self.get_config('chemical:species:Colloid'):
+        if self.get_config('chemical:species:Colloid') and hasattr(self, 'num_col'):
             self.elements.diameter[(sp_out==self.num_col) & (sp_in!=self.num_col)] = dia_diss
-        if self.get_config('chemical:species:Humic_colloid'):
+        if self.get_config('chemical:species:Humic_colloid') and hasattr(self, 'num_humcol'):
             self.elements.diameter[(sp_out==self.num_humcol) & (sp_in!=self.num_humcol)] = dia_diss
-        if self.get_config('chemical:species:Polymer'):
+        if self.get_config('chemical:species:Polymer') and hasattr(self, 'num_polymer'):
             self.elements.diameter[(sp_out==self.num_polymer) & (sp_in!=self.num_polymer)] = dia_diss
 
     def bottom_interaction(self,Zmin=None):
         ''' Change partitioning of chemicals that reach bottom due to settling.
         particle specie -> sediment specie '''
-        if not  ((self.get_config('chemical:species:Particle_reversible')) &
-                  (self.get_config('chemical:species:Sediment_reversible')) or
-                  (self.get_config('chemical:slowly_fraction')) or
-                  (self.get_config('chemical:irreversible_fraction'))):
+
+        has_rev = (self.get_config('chemical:species:Particle_reversible') and
+                   self.get_config('chemical:species:Sediment_reversible') and
+                   hasattr(self, 'num_prev') and hasattr(self, 'num_srev'))
+        has_slow = (self.get_config('chemical:slowly_fraction') and
+                    hasattr(self, 'num_psrev') and hasattr(self, 'num_ssrev'))
+        has_irrev = (self.get_config('chemical:irreversible_fraction') and
+                     hasattr(self, 'num_pirrev') and hasattr(self, 'num_sirrev'))
+
+        if not (has_rev or has_slow or has_irrev):
             return
 
         bottom = np.array(np.where(self.elements.z <= Zmin)[0])
-        kktmp = np.array(np.where(self.elements.specie[bottom] == self.num_prev)[0])
-        self.elements.specie[bottom[kktmp]] = self.num_srev
-        self.ntransformations[self.num_prev,self.num_srev]+=len(kktmp)
-        self.elements.moving[bottom[kktmp]] = 0
-        if self.get_config('chemical:slowly_fraction'):
+
+        if has_rev:
+            kktmp = np.array(np.where(self.elements.specie[bottom] == self.num_prev)[0])
+            self.elements.specie[bottom[kktmp]] = self.num_srev
+            self.ntransformations[self.num_prev, self.num_srev] += len(kktmp)
+            self.elements.moving[bottom[kktmp]] = 0
+
+        if has_slow:
             kktmp = np.array(np.where(self.elements.specie[bottom] == self.num_psrev)[0])
             self.elements.specie[bottom[kktmp]] = self.num_ssrev
-            self.ntransformations[self.num_psrev,self.num_ssrev]+=len(kktmp)
+            self.ntransformations[self.num_psrev, self.num_ssrev] += len(kktmp)
             self.elements.moving[bottom[kktmp]] = 0
-        if self.get_config('chemical:irreversible_fraction'):
+
+        if has_irrev:
             kktmp = np.array(np.where(self.elements.specie[bottom] == self.num_pirrev)[0])
             self.elements.specie[bottom[kktmp]] = self.num_sirrev
-            self.ntransformations[self.num_pirrev,self.num_sirrev]+=len(kktmp)
+            self.ntransformations[self.num_pirrev, self.num_sirrev] += len(kktmp)
             self.elements.moving[bottom[kktmp]] = 0
 
     def resuspension(self):
@@ -2058,7 +2274,8 @@ class ChemicalDrift(OceanDrift):
         """
         # Exit function if particles and sediments not are present
         if not  ((self.get_config('chemical:species:Particle_reversible')) &
-                  (self.get_config('chemical:species:Sediment_reversible'))):
+                  (self.get_config('chemical:species:Sediment_reversible'))) or \
+                  (not hasattr(self, 'num_prev')) or (not hasattr(self, 'num_srev')):
             return
 
         specie_in = self.elements.specie.copy()
@@ -2074,9 +2291,9 @@ class ChemicalDrift(OceanDrift):
         bottom = (self.elements.z <= Zmin)
 
         resusp = ( (bottom) & (speed >= critvel) )
-        if self.get_config('chemical:slowly_fraction'):
-            resusp = ( resusp & (self.elements.specie!=self.num_ssrev) )    # Prevent ssrev (buried) to be resuspended
-                                                                        # TODO buried sediment should be a new specie
+        # Prevent buried sediment compartment from being resuspended
+        if hasattr(self, 'num_sburied'):
+            resusp = (resusp & (self.elements.specie != self.num_sburied))
         logger.info('Number of resuspended particles: {}'.format(np.sum(resusp)))
         self.elements.moving[resusp] = 1
 
@@ -2092,9 +2309,15 @@ class ChemicalDrift(OceanDrift):
 
         self.ntransformations[self.num_srev,self.num_prev]+=sum((resusp) & (self.elements.specie==self.num_srev))
         self.elements.specie[(resusp) & (self.elements.specie==self.num_srev)] = self.num_prev
-        if self.get_config('chemical:slowly_fraction'):
-            self.ntransformations[self.num_ssrev,self.num_psrev]+=sum((resusp) & (self.elements.specie==self.num_ssrev))
-            self.elements.specie[(resusp) & (self.elements.specie==self.num_ssrev)] = self.num_psrev
+        # Resuspend slowly reversible sediment
+        if hasattr(self, 'num_ssrev'):
+            if self.get_config('chemical:slowly_fraction') and hasattr(self, 'num_psrev'):
+                self.ntransformations[self.num_ssrev, self.num_psrev] += sum((resusp) & (self.elements.specie == self.num_ssrev))
+                self.elements.specie[(resusp) & (self.elements.specie == self.num_ssrev)] = self.num_psrev
+            else:
+                # Fallback when no Particle slowly reversible compartment exists: map to Particle reversible
+                self.ntransformations[self.num_ssrev, self.num_prev] += sum((resusp) & (self.elements.specie == self.num_ssrev))
+                self.elements.specie[(resusp) & (self.elements.specie == self.num_ssrev)] = self.num_prev
 
         if self.get_config('chemical:irreversible_fraction'):
             self.ntransformations[self.num_sirrev,self.num_pirrev]+=sum((resusp) & (self.elements.specie==self.num_sirrev))
@@ -2144,7 +2367,13 @@ class ChemicalDrift(OceanDrift):
                 Tref_kSt = self.get_config('chemical:transformations:Tref_kSt')
                 DH_kSt = self.get_config('chemical:transformations:DeltaH_kSt')
 
-                S =   (self.elements.specie == self.num_srev) | (self.elements.specie == self.num_ssrev)
+                # Sediment degradation applies to the active sediment layer (srev/ssrev)
+                # and (if enabled) the buried sediment compartment.
+                S = (self.elements.specie == self.num_srev) | (self.elements.specie == self.num_ssrev)
+                if hasattr(self, 'num_sburied'):
+                    S = S | (self.elements.specie == self.num_sburied)
+                if hasattr(self, 'num_sirrev'):
+                    S = S | (self.elements.specie == self.num_sirrev)
                 S_deg = np.any(S)
 
                 if S_deg:
@@ -2160,8 +2389,13 @@ class ChemicalDrift(OceanDrift):
                         if ssrev_slow_deg < 0:
                             ssrev_slow_deg = 0.0
 
-                        # mask k_S_fin within num_ssrev
-                        S_is_buried = (self.elements.specie[S] == self.num_ssrev)
+                        # Apply the slowdown to the buried sediment compartment (not ssrev)
+                        if hasattr(self, 'num_sburied'):
+                            S_is_buried = (self.elements.specie[S] == self.num_sburied)
+                        else:
+                            # Backward compatibility (older setups used ssrev as buried)
+                            # S_is_buried = (self.elements.specie[S] == self.num_ssrev)
+                            pass
                         k_S_fin[S_is_buried] *= ssrev_slow_deg
 
                     degraded_now[S] = np.minimum(self.elements.mass[S],
@@ -2214,8 +2448,13 @@ class ChemicalDrift(OceanDrift):
 
                 # Only "dissolved" and "DOC" elements will degrade in the water column
                 W = (self.elements.specie == self.num_lmm) | (self.elements.specie == self.num_humcol)
-                # All elements in sediments will degrade
-                S =   (self.elements.specie == self.num_srev) | (self.elements.specie == self.num_ssrev)
+                # All elements in the active sediment layer will degrade (srev/ssrev),
+                # and (if enabled) the buried sediment compartment as well.
+                S = (self.elements.specie == self.num_srev) | (self.elements.specie == self.num_ssrev)
+                if hasattr(self, 'num_sburied'):
+                    S = S | (self.elements.specie == self.num_sburied)
+                if hasattr(self, 'num_sirrev'):
+                    S = S | (self.elements.specie == self.num_sirrev)
                 W_deg = np.any(W)
                 S_deg = np.any(S)
 
@@ -2418,8 +2657,13 @@ class ChemicalDrift(OceanDrift):
                             if ssrev_slow_deg < 0:
                                 ssrev_slow_deg = 0.0
 
-                            # mask k_S_bio within num_ssrev
-                            S_is_buried = (self.elements.specie[S] == self.num_ssrev)
+                            # Apply the slowdown to the buried sediment compartment (not ssrev)
+                            if hasattr(self, 'num_sburied'):
+                                S_is_buried = (self.elements.specie[S] == self.num_sburied)
+                            else:
+                                # Backward compatibility (older setups used ssrev as buried)
+                                # S_is_buried = (self.elements.specie[S] == self.num_ssrev)
+                                pass
                             k_S_bio[S_is_buried] *= ssrev_slow_deg
 
                     else:
@@ -3211,12 +3455,14 @@ class ChemicalDrift(OceanDrift):
 
         for ti in range(H.shape[0]):
             for sp in range(self.nspecies):
-                if not self.name_species[sp].lower().startswith('sed'):
+                spname = self.name_species[sp].lower()
+                is_sediment = spname.startswith('sed')
+                if not is_sediment:
                     #print('divide by water volume')
                     H[ti,sp,:,:,:] = H[ti,sp,:,:,:] / pixel_volume
                     if horizontal_smoothing:
                         Hsm[ti,sp,:,:,:] = Hsm[ti,sp,:,:,:] / pixel_volume
-                elif self.name_species[sp].lower().startswith('sed'):
+                else:
                     #print('divide by sediment mass')
                     H[ti,sp,:,:,:] = H[ti,sp,:,:,:] / pixel_sed_mass
                     if horizontal_smoothing:
@@ -4604,6 +4850,7 @@ class ChemicalDrift(OceanDrift):
             "Sediment reversible",
             "Sediment slowly reversible",
             "Sediment irreversible",
+            "Sediment buried"
         }
 
         self.validate_speciation_input_allowed(water_speciation, WATER_ALLOWED, label="water_speciation")
@@ -5437,6 +5684,7 @@ class ChemicalDrift(OceanDrift):
                         "dissolved", "DOC", "SPM",
                         "Sediment reversible",
                         "Sediment slowly reversible",
+                     	"Sediment buried",
                         "Sediment irreversible",
                         "sediment", "buried"]
 
@@ -5692,6 +5940,7 @@ class ChemicalDrift(OceanDrift):
                         "dissolved", "DOC", "SPM"]
         sed_species = ["Sediment reversible",
                        "Sediment slowly reversible",
+                       "Sediment buried",
                        "Sediment irreversible",
                        "sediment", "buried"]
 
@@ -7650,7 +7899,7 @@ class ChemicalDrift(OceanDrift):
             sim_name,
             chemical_compound= None,
             mass_unit='g',
-            time_unit='hours',
+            time_unit='h',
             shp_file_path = None,
             load_timeseries_from_file = False,
             timeseries_file_path = None,
@@ -7678,8 +7927,8 @@ class ChemicalDrift(OceanDrift):
         chemical_compound:            string, name of chemical to be included into plot titles
         file_out_path:                string, file path where .csv and .png files will be saved. Must end with /
         sim_name:                     string, name of simulation that will be included in .csv and .png file names
-        mass_unit:                    string, 'kg' 'g','mg','ug'
-        time_unit:                    string, 'seconds', 'minutes', 'hours' , 'days'
+        mass_unit:                    string, 'kg' 'g','mg','ug', 'µg'
+        time_unit:                    string, 's'(seconds), 'm'(minutes), 'hr' or 'h'(hours) , 'd'(days)
         shp_file_path:                string, file path of shapefile. Must end with /
         load_timeseries_from_file:    boolean,select if timeseries are loaded from .csv (True) or not (False)
         timeseries_file_path:         string, file path of timeseries .csv file. Must end with /
@@ -7746,6 +7995,11 @@ class ChemicalDrift(OceanDrift):
         if shp_file_path is not None:
             import geopandas as gpd
             from shapely.geometry import Point
+            if not shp_file_path.endswith("/"):
+                shp_file_path=shp_file_path+"/"
+
+
+
 
         if timeseries_file_path is not None:
             if timeseries_file_path.endswith(".csv"):
@@ -7772,11 +8026,18 @@ class ChemicalDrift(OceanDrift):
 
             # Define id and name of species
             specie_ids_num = {"dissolved" : (self.num_lmm if hasattr(self, "num_lmm") else None),
-                              "DOC" : (self.num_humcol if hasattr(self, "num_humcol") else None),
-                              "SPM" : (self.num_prev if hasattr(self, "num_prev") else None),
-                              "SPM_srev": (self.num_psrev if hasattr(self, "num_psrev") else None),
+                              "dissolved_cation": (self.num_lmmcation if hasattr(self, "num_lmmcation") else None),
+                              "dissolved_anion": (self.num_lmmanion if hasattr(self, "num_lmmanion") else None),
+                              "doc" : (self.num_humcol if hasattr(self, "num_humcol") else None),
+                              "colloid": (self.num_col if hasattr(self, "num_col") else None),
+                              "spm_rev" : (self.num_prev if hasattr(self, "num_prev") else None),
+                              "spm_srev": (self.num_psrev if hasattr(self, "num_psrev") else None),
+                              "spm_irrev": (self.num_pirrev if hasattr(self, "num_pirrev") else None),
                               "sed_rev" : (self.num_srev if hasattr(self, "num_srev") else None),
-                              "buried": (self.num_ssrev if hasattr(self, "num_ssrev") else None)}
+                              "sed_srev": (self.num_ssrev if hasattr(self, "num_ssrev") else None),
+                              "sed_irrev": (self.num_sirrev if hasattr(self, "num_sirrev") else None),
+                              "sed_buried": (self.num_sburied if hasattr(self, "num_sburied") else None),
+                              "polymer": (self.num_polymer if hasattr(self, "num_polymer") else None)}
 
             specie_ids_name = {v: k for k, v in specie_ids_num.items() if v is not None}
 
@@ -7791,36 +8052,89 @@ class ChemicalDrift(OceanDrift):
             missing_data_idx  = status_categories.index('missing_data')    if 'missing_data'   in status_categories else None
             seeded_on_land_idx = status_categories.index('seeded_on_land') if 'seeded_on_land' in status_categories else None
 
-
-
-            # active_index = status_categories.index('active') if 'active' in status_categories else None
-            # removed_index = status_categories.index('removed') if 'removed' in status_categories else None
-            # missing_data_index = status_categories.index('missing_data') if 'missing_data' in status_categories else None
-            # out_of_bounds_index = status_categories.index('outside') if 'outside' in status_categories else None
-            # stranded_index = status_categories.index('stranded') if 'stranded' in status_categories else None
             # Define time and mass convertions
 
             # age_seconds = np.arange(self.time_step.total_seconds(), self.steps_calculation * self.time_step.total_seconds(), self.time_step.total_seconds())
 
-            mass_conversion_factor=1e-6
-            if mass_unit=='g' and self.elements.variables['mass']['units']=='ug':
-                mass_conversion_factor=1e-6
-            if mass_unit=='mg' and self.elements.variables['mass']['units']=='ug':
-                mass_conversion_factor=1e-3
-            if mass_unit=='ug' and self.elements.variables['mass']['units']=='ug':
-                mass_conversion_factor=1
-            if mass_unit=='kg' and self.elements.variables['mass']['units']=='ug':
-                mass_conversion_factor=1e-9
+            if mass_unit not in ['g','mg','ug','µg','kg']:
+                raise ValueError(f"Incorrect mass_unit: {mass_unit}, can be only 'g','mg','ug','µg','kg'")
 
-            time_conversion_factor = self.time_step_output.total_seconds() / (60*60)
-            if time_unit=='seconds':
-                time_conversion_factor = self.time_step_output.total_seconds()
-            if time_unit=='minutes':
-                time_conversion_factor = self.time_step_output.total_seconds() / 60
-            if time_unit=='hours':
-                time_conversion_factor = self.time_step_output.total_seconds() / (60*60)
-            if time_unit=='days':
-                time_conversion_factor = self.time_step_output.total_seconds() / (24*60*60)
+            _MASS_TO_GRAMS = {
+                            "ug": 1e-6,
+                            "µg": 1e-6,
+                            "mg": 1e-3,
+                            "g" :  1.0,
+                            "kg": 1e3
+                            }
+
+            def calc_mass_conversion_factor(self, mass_unit: str) -> float:
+                """
+                Returns factor f such that:
+                    value_in_requested_unit = value_in_current_unit * f
+                where current unit is self.elements.variables['mass']['units'].
+                """
+                src = str(self.elements.variables["mass"]["units"]).strip()
+                dst = str(mass_unit).strip()
+
+                # normalize common microgram spelling
+                src = "ug" if src == "µg" else src
+                dst = "ug" if dst == "µg" else dst
+
+                if src not in _MASS_TO_GRAMS:
+                    raise ValueError(f"Unsupported source mass unit: {src!r}")
+                if dst not in _MASS_TO_GRAMS:
+                    raise ValueError(f"Unsupported destination mass unit: {dst!r}")
+
+                # convert src -> grams -> dst
+                return _MASS_TO_GRAMS[src] / _MASS_TO_GRAMS[dst]
+
+            mass_conversion_factor = calc_mass_conversion_factor(mass_unit)
+
+
+
+            if time_unit not in ['s','m','hr','h','d']:
+                raise ValueError(f"Incorrect time_unit: {time_unit}, can be only 's', 'm', 'hr', 'h', 'd'")
+
+            _TIME_TO_SECONDS = {
+                            "s":  1.0,
+                            "m":  60.0,
+                            "hr": 3600.0,
+                            "h":  3600.0,
+                            "d":  86400.0,
+                        }
+
+            def calc_time_conversion_factor(self, time_unit: str) -> float:
+                """
+                Returns factor f such that:
+                    value_in_requested_unit = value_in_seconds * f
+                where value_in_seconds is based on self.time_step_output.
+                """
+                u = str(time_unit).strip()
+
+                # normalize optional aliases
+                if u == "h":
+                    u = "hr"
+
+                if u not in _TIME_TO_SECONDS:
+                    raise ValueError(
+                        f"Incorrect time_unit: {time_unit!r}, can be only {list(_TIME_TO_SECONDS.keys())}"
+                    )
+
+                seconds = self.time_step_output.total_seconds()
+                return seconds / _TIME_TO_SECONDS[u]
+
+            time_conversion_factor = calc_time_conversion_factor(time_unit)
+
+
+            # time_conversion_factor = self.time_step_output.total_seconds() / (60*60)
+            # if time_unit=='s':
+            #     time_conversion_factor = self.time_step_output.total_seconds()
+            # if time_unit=='m':
+            #     time_conversion_factor = self.time_step_output.total_seconds() / 60
+            # if time_unit=='hr':
+            #     time_conversion_factor = self.time_step_output.total_seconds() / (60*60)
+            # if time_unit=='d':
+            #     time_conversion_factor = self.time_step_output.total_seconds() / (24*60*60)
             print("Extracting data from simulation")
             # Extract properties from simulation
 
@@ -7876,13 +8190,21 @@ class ChemicalDrift(OceanDrift):
             specie = result_ds.specie.T.values                     # (T,N)
             in_water_column_ls = []
             in_water_column_ls = [
-                val for name in ('num_lmm', 'num_humcol', 'num_prev', 'num_psrev')
+                val for name in ('num_lmm', 'num_humcol', 'num_prev', 'num_psrev', 'num_pirrev')
                 if (val := getattr(self, name, None)) is not None
             ]
 
             in_water_column = np.any([specie == value for value in in_water_column_ls], axis=0)
-            in_sediment_layer = (specie==self.num_srev)
-            in_buried_sed = (specie==self.num_ssrev)
+            # Active (mixed) sediment layer includes all sediment pools that are in the mixed layer:
+            # reversible, slowly reversible, and (if enabled) irreversible.
+            in_sediment_layer = (specie == self.num_srev)
+            if hasattr(self, 'num_ssrev'):
+                in_sediment_layer |= (specie == self.num_ssrev)
+            if hasattr(self, 'num_sirrev'):
+                in_sediment_layer |= (specie == self.num_sirrev)
+
+            # Buried sediment compartment (deep storage)
+            in_buried_sed = (specie == self.num_sburied) if hasattr(self, 'num_sburied') else np.zeros_like(specie, dtype=bool)
             def status_mask(idx):
                 return (status == idx) if idx is not None else np.zeros_like(status, bool)
             # mask for elements active until the end of each timestep
@@ -8089,7 +8411,7 @@ class ChemicalDrift(OceanDrift):
                 extracted_active_dict_1d["mass_stranded_cumulative"] = cum_exit_stranded
 
             # ===== 7) Burial (multiple events allowed) =====
-            # Count mass each time an element transitions into buried state: specie id: num_ssrev
+            # Count mass each time an element transitions into buried state (sburied): specie id = num_sburied
             # - burial at t=0 is allowed (counts as an event if starts buried)
             # - multiple burial events per element are allowed (buried -> not buried -> buried again)
             # - only count events that occur while inside domain (priority to adv_out)
@@ -8116,26 +8438,13 @@ class ChemicalDrift(OceanDrift):
                 extracted_active_dict_1d["mass_buried_ts"] = buried_at_t
                 extracted_active_dict_1d["mass_buried_cumulative"] = buried_cum
 
-            # ===== 5) Assemble DataFrame =====
+            # ===== 8) Assemble DataFrame =====
+            # The function builds time-series arrays in extracted_active_dict_1d;
+            # assemble them into a dataframe for convenience.
             df = pd.DataFrame({
-                time
-
-                f'time_[{getattr(time_steps, "units", "user")}]' if hasattr(time_steps, 'units') else f'time_[user]': time_steps,
+                f'time-[{time_unit}]': time_steps,
                 'date_of_timestep': time_date_serie,
-                'emitted_mass': emitted_mass,
-                'mass_water': mass_water,
-                'mass_sed': mass_sed,
-                'mass_sed_buried': mass_bur,
-                'mass_actual': mass_actual,
-                'exit_degradation': exit_deg_at_t,
-                'exit_outside': exit_outside_at_t,
-                'exit_stranding': exit_stranding_at_t,
-                'exit_burial': exit_burial_at_t,
-                'cum_degradation_deactivated_only': cum_degradation_deactivated_only,
-                'cum_outside': cum_outside,
-                'cum_stranding': cum_strand,
-                'cum_burial': cum_burial,
-                'cum_total_exit': cum_total_exit,
+                **extracted_active_dict_1d,
             })
             return df
 
