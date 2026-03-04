@@ -425,8 +425,6 @@ class ChemicalDrift(OceanDrift):
                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Toggle biodegradation'},
             'chemical:transformations:Hydrolysis': {'type': 'bool', 'default': True,
                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Toggle hydrolysis'},
-            'chemical:transformations:Save_degr_now': {'type': 'bool', 'default': False,
-                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Toggle save of of mass degraded during each timestep (True) or cumulative (False). Does not affect mass_degraded and mass_volatilized as they are saved as separate new variables *_now'},
             # Biodegradation
             'chemical:transformations:k_DecayMax_water': {'type': 'float', 'default': 0.054,      # from AQUATOX Database (0.13 1/day)
                 'min': 0, 'max': None, 'units': '1/hours',
@@ -1198,37 +1196,27 @@ class ChemicalDrift(OceanDrift):
 
         return LightFactor
 
-    def assert_degradation_balance(self, degraded_now, W, S, Save_degr_now, check_single_mech=False):
-        ''' Common consistency checks for both degradation modes.
+    def assert_degradation_balance(self, degraded_now, W, S, check_single_mech=False):
+        """Common consistency checks for both degradation modes (cumulative-only).
 
         Checks:
-          1) total degraded equals water+sediment degraded (for this step or cumulatively)
-          2) if Save_degr_now: mass_degraded_now equals water+sediment for this step
-          3) if check_single_mech: total mechanisms equals degraded (step or cumulative)
-        '''
-        # computed step totals
+          1) computed degraded_now equals computed (water+sediment) split for this step
+          2) stored cumulative mass_degraded equals stored cumulative (water+sediment)
+          3) if check_single_mech and Save_single_degr_mass: cumulative mechanisms sum equals cumulative degraded
+        """
+        # 1) computed step totals
         degraded_step_sum = float(degraded_now.sum())
         degraded_step_ws_sum = float(degraded_now[W].sum() + degraded_now[S].sum())
         assert np.isclose(degraded_step_sum, degraded_step_ws_sum, rtol=1e-5, atol=1e-8), \
             "Computed degraded_now is inconsistent with computed water+sediment split"
 
-        # stored totals
-        if Save_degr_now:
-            stored_now_sum = float(self.elements.mass_degraded_now.sum())
-            stored_ws_sum = float(self.elements.mass_degraded_water.sum() + self.elements.mass_degraded_sediment.sum())
+        # 2) stored cumulative totals
+        stored_tot_sum = float(self.elements.mass_degraded.sum())
+        stored_ws_sum = float(self.elements.mass_degraded_water.sum() + self.elements.mass_degraded_sediment.sum())
+        assert np.isclose(stored_tot_sum, stored_ws_sum, rtol=1e-5, atol=1e-8), \
+            "Inconsistent cumulative mass_degraded vs (water+sediment)"
 
-            assert np.isclose(stored_now_sum, stored_ws_sum, rtol=1e-5, atol=1e-8), \
-                "Inconsistent sum of mass_degraded_now vs (water+sediment) for this timestep"
-            assert np.isclose(stored_now_sum, degraded_step_sum, rtol=1e-5, atol=1e-8), \
-                "Stored mass_degraded_now does not match computed degraded_now for this timestep"
-        else:
-            stored_tot_sum = float(self.elements.mass_degraded.sum())
-            stored_ws_sum = float(self.elements.mass_degraded_water.sum() + self.elements.mass_degraded_sediment.sum())
-
-            assert np.isclose(stored_tot_sum, stored_ws_sum, rtol=1e-5, atol=1e-8), \
-                "Inconsistent cumulative mass_degraded vs (water+sediment)"
-
-        # single-mechanism checks
+        # 3) single-mechanism checks (cumulative)
         if not (check_single_mech and self.get_config('chemical:transformations:Save_single_degr_mass') is True):
             return
 
@@ -1236,37 +1224,36 @@ class ChemicalDrift(OceanDrift):
 
         # Hydrolysis
         if self.get_config('chemical:transformations:Hydrolysis'):
-            # guard existence just in case
-            assert hasattr(self.elements, "mass_hydrolyzed_water") and hasattr(self.elements, "mass_hydrolyzed_sediment")
+            assert hasattr(self.elements, "mass_hydrolyzed")
+            assert hasattr(self.elements, "mass_hydrolyzed_water")
+            assert hasattr(self.elements, "mass_hydrolyzed_sediment")
+
             hyd = float(self.elements.mass_hydrolyzed.sum())
             hyd_ws = float(self.elements.mass_hydrolyzed_water.sum() + self.elements.mass_hydrolyzed_sediment.sum())
             assert np.isclose(hyd, hyd_ws, rtol=1e-5, atol=1e-8), \
-                "Inconsistent sum of mass hydrolyzed in water and sediment"
+                "Inconsistent sum of hydrolyzed mass: total vs (water+sediment)"
             mech_sum += hyd
 
         # Biodegradation
         if self.get_config('chemical:transformations:Biodegradation'):
-            assert hasattr(self.elements, "mass_biodegraded_water") and hasattr(self.elements, "mass_biodegraded_sediment")
+            assert hasattr(self.elements, "mass_biodegraded")
+            assert hasattr(self.elements, "mass_biodegraded_water")
+            assert hasattr(self.elements, "mass_biodegraded_sediment")
+
             bio = float(self.elements.mass_biodegraded.sum())
             bio_ws = float(self.elements.mass_biodegraded_water.sum() + self.elements.mass_biodegraded_sediment.sum())
             assert np.isclose(bio, bio_ws, rtol=1e-5, atol=1e-8), \
-                "Inconsistent sum of mass biodegraded in water and sediment"
+                "Inconsistent sum of biodegraded mass: total vs (water+sediment)"
             mech_sum += bio
 
-        # Photodegradation (water-only, no split check unless you add arrays)
+        # Photodegradation (water-only)
         if self.get_config('chemical:transformations:Photodegradation'):
             if hasattr(self.elements, "mass_photodegraded"):
                 mech_sum += float(self.elements.mass_photodegraded.sum())
 
-        # Mechanisms reconstruct total degraded
-        if Save_degr_now:
-            stored_now_sum = float(self.elements.mass_degraded_now.sum())
-            assert np.isclose(stored_now_sum, mech_sum, rtol=1e-5, atol=1e-8), \
-                "Inconsistent sum: degraded_now vs (enabled mechanisms) for this timestep"
-        else:
-            stored_tot_sum = float(self.elements.mass_degraded.sum())
-            assert np.isclose(stored_tot_sum, mech_sum, rtol=1e-5, atol=1e-8), \
-                "Inconsistent sum: cumulative degraded vs (enabled mechanisms)"
+        # Mechanisms reconstruct total degraded (cumulative)
+        assert np.isclose(stored_tot_sum, mech_sum, rtol=1e-5, atol=1e-8), \
+            "Inconsistent sum: cumulative degraded vs (enabled mechanisms)"
 
     def _koc_updated(self, KOC_neutral, KOC_anion, KOC_cation, pH, diss, pKa_acid, pKa_base):
         """Return pH-updated KOC = sum_i(KOC_i * phi_i). Vectorized."""
@@ -2330,11 +2317,7 @@ class ChemicalDrift(OceanDrift):
         '''degradation.'''
 
         if self.get_config('chemical:transformations:degradation') is True:
-            Save_degr_now = self.get_config('chemical:transformations:Save_degr_now')
-            if Save_degr_now:
-                self.elements.mass_degraded_now.fill(0.0)
-                self.elements.mass_degraded_water.fill(0.0)
-                self.elements.mass_degraded_sediment.fill(0.0)
+
             if self.get_config('chemical:transformations:degradation_mode')=='OverallRateConstants':
 
                 logger.debug('Calculating overall degradation using overall rate constants')
@@ -2389,49 +2372,37 @@ class ChemicalDrift(OceanDrift):
                         if ssrev_slow_deg < 0:
                             ssrev_slow_deg = 0.0
 
-                        # Apply the slowdown to the buried sediment compartment (not ssrev)
+                        # Apply the slowdown to the buried sediment compartment
                         if hasattr(self, 'num_sburied'):
                             S_is_buried = (self.elements.specie[S] == self.num_sburied)
+                            k_S_fin[S_is_buried] *= ssrev_slow_deg
                         else:
                             # Backward compatibility (older setups used ssrev as buried)
                             # S_is_buried = (self.elements.specie[S] == self.num_ssrev)
+                            # k_S_fin[S_is_buried] *= ssrev_slow_deg
                             pass
-                        k_S_fin[S_is_buried] *= ssrev_slow_deg
+
 
                     degraded_now[S] = np.minimum(self.elements.mass[S],
                                     self.elements.mass[S] * (1-np.exp(-k_S_fin * self.time_step.total_seconds()))) # avoid degradation of more mass than is present in element
 
                 if W_deg or S_deg:
-                    if Save_degr_now:
-                        # Update mass_degraded_*_now for this timestep
-                        self.elements.mass_degraded_now[W] = degraded_now[W]
-                        self.elements.mass_degraded_now[S] = degraded_now[S]
+                    self.elements.mass_degraded_water[W] += degraded_now[W]
+                    self.elements.mass_degraded_sediment[S] += degraded_now[S]
 
-                        self.elements.mass_degraded_water[W] = degraded_now[W]
-                        self.elements.mass_degraded_sediment[S] = degraded_now[S]
-
-                    else:
-                        self.elements.mass_degraded_water[W] = self.elements.mass_degraded_water[W] + degraded_now[W]
-                        self.elements.mass_degraded_sediment[S] = self.elements.mass_degraded_sediment[S] + degraded_now[S]
-
-                    self.elements.mass_degraded = self.elements.mass_degraded + degraded_now
-                    self.elements.mass = self.elements.mass - degraded_now
+                    self.elements.mass_degraded += degraded_now
+                    self.elements.mass -= degraded_now
 
                     self.elements.mass = np.maximum(self.elements.mass, 0.0)
                     self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/500,
-                                             reason='removed')
+                                            reason='removed')
                 else:
                     pass
 
                 if self.get_config("chemical:transformations:mass_checks"):
                     # Consistency checks (overall mode)
-                    self.assert_degradation_balance(degraded_now, W, S, Save_degr_now, check_single_mech=False)
+                    self.assert_degradation_balance(degraded_now, W, S, check_single_mech=False)
 
-                #to_deactivate = self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/100
-                #vol_morethan_degr = self.elements.mass_degraded >= self.elements.mass_volatilized
-                #
-                #self.deactivate_elements(to_deactivate +  vol_morethan_degr, reason='volatilized')
-                #self.deactivate_elements(to_deactivate + ~vol_morethan_degr, reason='degraded')
 
             elif self.get_config('chemical:transformations:degradation_mode')=='SingleRateConstants':
                 logger.debug('Calculating single degradation rates in water')
@@ -2589,7 +2560,6 @@ class ChemicalDrift(OceanDrift):
                         pass
 
                     # Calculate correction factors for degradation rates
-
                     if Bio_degr is True and k_DecayMax_water > 0:
                         k_W_bio = k_DecayMax_water * self.calc_DOCorr(HalfSatO_w, k_Anaerobic_water, k_DecayMax_water, Ox_water)
                         k_W_bio = k_W_bio * self.calc_pHCorr(pH_min_bio, pH_max_bio, pH_water)
@@ -2630,7 +2600,6 @@ class ChemicalDrift(OceanDrift):
                     k_W_fin_sum = 0
 
                 # Degradation in the sediments
-
                 if S_deg:
                     TS=self.environment.sea_water_temperature[S]
                     # if np.any(TS==0):
@@ -2657,15 +2626,15 @@ class ChemicalDrift(OceanDrift):
                             if ssrev_slow_deg < 0:
                                 ssrev_slow_deg = 0.0
 
-                            # Apply the slowdown to the buried sediment compartment (not ssrev)
+                            # Apply the slowdown to the buried sediment compartment
                             if hasattr(self, 'num_sburied'):
                                 S_is_buried = (self.elements.specie[S] == self.num_sburied)
+                                k_S_bio[S_is_buried] *= ssrev_slow_deg
                             else:
                                 # Backward compatibility (older setups used ssrev as buried)
                                 # S_is_buried = (self.elements.specie[S] == self.num_ssrev)
+                                # k_S_bio[S_is_buried] *= ssrev_slow_deg
                                 pass
-                            k_S_bio[S_is_buried] *= ssrev_slow_deg
-
                     else:
                         k_S_bio = np.zeros_like(TS)
 
@@ -2696,25 +2665,13 @@ class ChemicalDrift(OceanDrift):
                     k_W_hydro_fraction = 0
                     k_S_hydro_fraction = 0
 
-                    if Save_degr_now:
-                        self.elements.mass_photodegraded.fill(0.0)
-                        self.elements.mass_biodegraded.fill(0.0)
-                        self.elements.mass_biodegraded_water.fill(0.0)
-                        self.elements.mass_biodegraded_sediment.fill(0.0)
-                        self.elements.mass_hydrolyzed.fill(0.0)
-                        self.elements.mass_hydrolyzed_water.fill(0.0)
-                        self.elements.mass_hydrolyzed_sediment.fill(0.0)
-
-
                     if Photo_degr is True and k_Photo > 0:
                         if np.sum(k_W_photo) > 0:
                             photo_degraded_now = np.zeros(self.num_elements_active())
                             k_W_photo_fraction = np.minimum((k_W_photo / 3600) / np.maximum(k_W_fin, 1e-12), 1.0) # from 1/h to 1/s, clamp fraction to 1 to avoid breaking mass conservation
                             photo_degraded_now[W] = degraded_now[W] * k_W_photo_fraction
-                            if Save_degr_now is True:
-                                if W_deg:
-                                    self.elements.mass_photodegraded[W] = photo_degraded_now[W]
-                            else:
+
+                            if W_deg:
                                 self.elements.mass_photodegraded[W] = self.elements.mass_photodegraded[W] + photo_degraded_now[W]
                     else:
                         pass
@@ -2728,18 +2685,13 @@ class ChemicalDrift(OceanDrift):
                             if np.sum(k_S_bio) > 0:
                                 k_S_bio_fraction = np.minimum((k_S_bio / 3600) / np.maximum(k_S_fin, 1e-12), 1.0) # from 1/h to 1/s, clamp fraction to 1 to avoid breaking mass conservation
                                 bio_degraded_now[S] = degraded_now[S] * k_S_bio_fraction
-                            if Save_degr_now is True:
-                                if W_deg:
-                                    self.elements.mass_biodegraded[W] = bio_degraded_now[W]
-                                    self.elements.mass_biodegraded_water[W] = bio_degraded_now[W]
-                                if S_deg:
-                                    self.elements.mass_biodegraded[S] = bio_degraded_now[S]
-                                    self.elements.mass_biodegraded_sediment[S] = bio_degraded_now[S]
-                            else:
-                                self.elements.mass_biodegraded[W] = self.elements.mass_biodegraded[W] + bio_degraded_now[W]
-                                self.elements.mass_biodegraded[S] = self.elements.mass_biodegraded[S] + bio_degraded_now[S]
-                                self.elements.mass_biodegraded_water[W] = self.elements.mass_biodegraded_water[W] + bio_degraded_now[W]
-                                self.elements.mass_biodegraded_sediment[S] = self.elements.mass_biodegraded_sediment[S] + bio_degraded_now[S]
+
+                            if W_deg:
+                                self.elements.mass_biodegraded[W] += bio_degraded_now[W]
+                                self.elements.mass_biodegraded_water[W] += bio_degraded_now[W]
+                            if S_deg:
+                                self.elements.mass_biodegraded[S] += bio_degraded_now[S]
+                                self.elements.mass_biodegraded_sediment[S] += bio_degraded_now[S]
                     else:
                         pass
 
@@ -2753,18 +2705,12 @@ class ChemicalDrift(OceanDrift):
                                 k_S_hydro_fraction = np.minimum((k_S_hydro / 3600) / np.maximum(k_S_fin, 1e-12), 1.0) # from 1/h to 1/s, clamp fraction to 1 to avoid breaking mass conservation
                                 hydro_degraded_now[S] = degraded_now[S] * k_S_hydro_fraction
 
-                            if Save_degr_now is True:
-                                if W_deg:
-                                    self.elements.mass_hydrolyzed[W] = hydro_degraded_now[W]
-                                    self.elements.mass_hydrolyzed_water[W] = hydro_degraded_now[W]
-                                if S_deg:
-                                    self.elements.mass_hydrolyzed[S] = hydro_degraded_now[S]
-                                    self.elements.mass_hydrolyzed_sediment[S] = hydro_degraded_now[S]
-                            else:
-                                self.elements.mass_hydrolyzed[W] = self.elements.mass_hydrolyzed[W] + hydro_degraded_now[W]
-                                self.elements.mass_hydrolyzed[S] = self.elements.mass_hydrolyzed[S] + hydro_degraded_now[S]
-                                self.elements.mass_hydrolyzed_water[W] = self.elements.mass_hydrolyzed_water[W] + hydro_degraded_now[W]
-                                self.elements.mass_hydrolyzed_sediment[S] = self.elements.mass_hydrolyzed_sediment[S] + hydro_degraded_now[S]
+                            if W_deg:
+                                self.elements.mass_hydrolyzed[W] += hydro_degraded_now[W]
+                                self.elements.mass_hydrolyzed_water[W] += hydro_degraded_now[W]
+                            if S_deg:
+                                self.elements.mass_hydrolyzed[S] += hydro_degraded_now[S]
+                                self.elements.mass_hydrolyzed_sediment[S] += hydro_degraded_now[S]
                     else:
                         pass
 
@@ -2775,20 +2721,14 @@ class ChemicalDrift(OceanDrift):
 
 
                 if (k_S_fin_sum > 0) or (k_W_fin_sum > 0):
-                    self.elements.mass_degraded = self.elements.mass_degraded + degraded_now
 
-                    if Save_degr_now:
-                        if W_deg:
-                            self.elements.mass_degraded_now[W] = degraded_now[W]
-                            self.elements.mass_degraded_water[W] = degraded_now[W]
-                        if S_deg:
-                            self.elements.mass_degraded_now[S] = degraded_now[S]
-                            self.elements.mass_degraded_sediment[S] = degraded_now[S]
-                    else:
-                        self.elements.mass_degraded_water[W] = self.elements.mass_degraded_water[W] + degraded_now[W]
-                        self.elements.mass_degraded_sediment[S] = self.elements.mass_degraded_sediment[S] + degraded_now[S]
-
-                    self.elements.mass = self.elements.mass - degraded_now
+                    self.elements.mass_degraded += degraded_now
+                    if W_deg:
+                        self.elements.mass_degraded_water[W] += degraded_now[W]
+                    if S_deg:
+                        self.elements.mass_degraded_sediment[S] += degraded_now[S]
+                    # Update mass and clamp to 0
+                    self.elements.mass -= degraded_now
                     self.elements.mass = np.maximum(self.elements.mass, 0.0)
 
                     self.deactivate_elements(self.elements.mass < (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized)/500,
@@ -2796,10 +2736,9 @@ class ChemicalDrift(OceanDrift):
                 else:
                     pass
 
-
                 if self.get_config("chemical:transformations:mass_checks"):
                     # Consistency checks (single-mechanism mode)
-                    self.assert_degradation_balance(degraded_now, W, S, Save_degr_now, check_single_mech=True)
+                    self.assert_degradation_balance(degraded_now, W, S, check_single_mech=True)
 
                 # print(f"mass_hydrolyzed_sediment: {np.sum(self.elements.mass_hydrolyzed_sediment)/np.sum(self.elements.mass_hydrolyzed)}")
                 # print(f"mass_hydrolyzed_water: {np.sum(self.elements.mass_hydrolyzed_water)/np.sum(self.elements.mass_hydrolyzed)}")
@@ -2812,9 +2751,6 @@ class ChemicalDrift(OceanDrift):
 
     def volatilization(self):
         if self.get_config('chemical:transformations:volatilization') is True:
-            Save_degr_now = self.get_config('chemical:transformations:Save_degr_now')
-            if Save_degr_now:
-                self.elements.mass_volatilized_now = np.zeros(self.num_elements_active())
 
             logger.debug('Calculating: volatilization')
             volatilized_now = np.zeros(self.num_elements_active())
@@ -2950,8 +2886,6 @@ class ChemicalDrift(OceanDrift):
             #logger.debug('Thick: %s ' % Thick)
 
             volatilized_now[W] = self.elements.mass[W] * (1-np.exp(-K_volatilization * self.time_step.total_seconds()))
-            if Save_degr_now:
-                self.elements.mass_volatilized_now[W] = volatilized_now[W]
 
             self.elements.mass_volatilized = self.elements.mass_volatilized + volatilized_now
             self.elements.mass = self.elements.mass - volatilized_now
@@ -3099,7 +3033,8 @@ class ChemicalDrift(OceanDrift):
                                               elements_density=False,
                                               active_status=False,
                                               weight=None,
-                                              sim_description=None):
+                                              sim_description=None,
+                                              timestep_values=False):
         '''Write netCDF file with map of Chemical species densities and concentrations
         Arguments:
             pixelsize_m:           float32, lenght of gridcells in m (default mode)
@@ -3132,6 +3067,7 @@ class ChemicalDrift(OceanDrift):
             active_status:         boolean, only active elements will be considered
             weight:                string, elements property to be extracted to produce maps
             sim_description:       string, descrition of simulation to be included in netcdf attributes
+            timestep_values:       boolean, only active elements will be considered
         '''
 
         from netCDF4 import Dataset, date2num #, stringtochar
@@ -3158,6 +3094,9 @@ class ChemicalDrift(OceanDrift):
         elif sum(x is None for x in [lat_resol, lon_resol]) == 0:
             if pixelsize_m is not None:
                 raise ValueError("If lat/lon_resol are specified pixelsize_m must be None")
+
+        if timestep_values and weight =="mass":
+            raise ValueError("timestep sholud be used only with cumulative properties")
 
         if self.mode != opendrift.models.basemodel.Mode.Config:
             self.mode = opendrift.models.basemodel.Mode.Config
@@ -3378,7 +3317,8 @@ class ChemicalDrift(OceanDrift):
                                            elements_density=elements_density,
                                            time_start=time_start,
                                            time_end=time_end,
-                                           time_chunk_size = time_chunk_size)
+                                           time_chunk_size = time_chunk_size,
+                                           timestep_values = timestep_values)
 
         # calculating center point for each pixel
         lon_array = (lon_array[:-1,:-1] + lon_array[1:,1:])/2
@@ -3790,6 +3730,62 @@ class ChemicalDrift(OceanDrift):
         gc.collect()
 
 
+    @staticmethod
+    def _cumulative_to_deltas_ffill(w_cum, chunk_cols = 20000, out = None):
+        """
+        Compute per-timestep increments from cumulative values with forward-fill over NaNs (post-deactivation),
+        processing columns in chunks.
+
+        w_cum:       np.ndarray, (T, N) cumulative values, may contain NaNs after deactivation (and even at start).
+        chunk_cols:  int, number of columns (trajectories/elements) to process per chunk.
+        out:         np.ndarray or None, optional preallocated output array of shape (T, N), dtype float32 recommended.
+                     If None, a new float32 array is allocated.
+
+        Returns
+        out:         np.ndarray, (T, N) float32 per-timestep increments, with negatives/non-finite set to 0.
+        """
+        w_cum = np.asarray(w_cum)
+        if w_cum.ndim != 2:
+            raise ValueError("w_cum must be a 2D array (T, N)")
+
+        T, N = w_cum.shape
+
+        if out is None:
+            out = np.empty((T, N), dtype=np.float32)
+        else:
+            if out.shape != (T, N):
+                raise ValueError(f"out must have shape {(T, N)}, got {out.shape}")
+            if out.dtype != np.float32:
+                raise ValueError("out must be dtype float32")
+
+        for start in range(0, N, chunk_cols):
+            end = min(start + chunk_cols, N)
+            width = end - start
+
+            # forward-filled previous cumulative value (per element in this chunk)
+            prev_ff = np.zeros((width,), dtype=w_cum.dtype)
+            cur_ff = np.empty((width,), dtype=w_cum.dtype)
+
+            for t in range(T):
+                cur = w_cum[t, start:end]
+                finite = np.isfinite(cur)              # bool[width]
+                # cur_ff = prev_ff; then replace finite entries with cur
+                np.copyto(cur_ff, prev_ff)
+                if finite.any():
+                    cur_ff[finite] = cur[finite]
+
+                out_row = out[t, start:end]            # view into output
+
+                # out_row = cur_ff - prev_ff  (cast into float32 output)
+                np.subtract(cur_ff, prev_ff, out=out_row, casting="unsafe")
+                # clamp negatives to 0
+                np.maximum(out_row, 0.0, out=out_row)
+                # safety: clear non-finite (should be rare given prev_ff starts finite)
+                out_row[~np.isfinite(out_row)] = 0.0
+                # update prev_ff for next timestep
+                np.copyto(prev_ff, cur_ff)
+        return out
+
     def get_chemical_density_array(self, pixelsize_m, z_array, z,
                                    lat_resol=None, lon_resol=None,
                                    density_proj=None, llcrnrlon=None,llcrnrlat=None,
@@ -3798,9 +3794,10 @@ class ChemicalDrift(OceanDrift):
                                    active_status = False,
                                    elements_density = False,
                                    time_start=None, time_end=None,
-                                   time_chunk_size = 50):
+                                   time_chunk_size = 50,
+                                   timestep_values = False):
         '''
-        compute a particle concentration map from particle positions
+        Compute a particle concentration map from particle positions
         Use user defined projection (density_proj=<proj4_string>)
         or create a lon/lat grid (density_proj=None)
             Arguments are described at write_netcdf_chemical_density_map
@@ -3824,12 +3821,79 @@ class ChemicalDrift(OceanDrift):
         else:
             tmask = slice(None)
 
-        lon_2d    = (self.result.lon.T).values[tmask, :]
-        lat_2d    = (self.result.lat.T).values[tmask, :]
-        z_2d      = (self.result.z.T).values[tmask, :]
-        specie_2d = (self.result.specie.T).values[tmask, :]
+        # Decide time selection once (same window as lon_2d/lat_2d/etc.)
+        time_filtered = not isinstance(tmask, slice)
+        time_sel = slice(None) if not time_filtered else np.flatnonzero(tmask)
 
-        # In-place validity mask (no extra array allocations)
+        weight_2d = None
+        keep_idx = None  # integer indices of trajectories to keep (columns)
+
+        if weight is not None:
+            # (time, traj) view (DataArray is (trajectory, time))
+            w_T = self.result[weight].transpose("time", "trajectory").data  # (n_time, n_traj)
+
+            if timestep_values:
+                # Build extended time index (include previous timestep if possible)
+                if isinstance(time_sel, slice):
+                    idx_ext = slice(None)
+                    drop_first = False
+                else:
+                    idx_sel = time_sel
+                    i0 = idx_sel[0]
+                    if i0 > 0:
+                        idx_ext = np.concatenate(([i0 - 1], idx_sel))
+                        drop_first = True
+                    else:
+                        idx_ext = idx_sel
+                        drop_first = False
+
+                w_cum_ext = w_T[idx_ext, :]  # (T_ext, n_traj)
+
+                # this function returns per-timestep deltas already
+                dW_ext = self._cumulative_to_deltas_ffill(w_cum_ext, chunk_cols=20000)
+                dW = dW_ext[1:, :] if drop_first else dW_ext  # align to requested window
+
+                # Drop trajectories with zero contribution across the whole selected window
+                elem_keep = np.any(dW > 0, axis=0)
+                keep_idx = np.flatnonzero(elem_keep)
+                if keep_idx.size == 0:
+                    raise ValueError("All trajectories have zero timestep increments in the selected window.")
+
+                weight_2d = dW[:, keep_idx].astype(np.float32, copy=False)
+            else:
+                # Raw values in the selected time window
+                w_sel = w_T[time_sel, :]  # (n_timef, n_traj) (copy if fancy index, view if slice)
+
+                if time_filtered:
+                    # Drop trajectories that are ALL NaN in the selected window
+                    elem_keep = np.any(np.isfinite(w_sel), axis=0)
+                    # Optional: also drop trajectories that are all zeros
+                    elem_keep &= np.any(w_sel != 0, axis=0)
+                    keep_idx = np.flatnonzero(elem_keep)
+                    if keep_idx.size == 0:
+                        raise ValueError("All trajectories are NaN (or zero) in the selected window.")
+
+                    w_sel = w_sel[:, keep_idx]
+
+                weight_2d = w_sel.astype(np.float32, copy=False)
+
+        def _slice_time_traj(arr_T, time_sel, keep_idx):
+            out = arr_T[time_sel, :] if not isinstance(time_sel, slice) else arr_T[:, :]
+            if keep_idx is not None:
+                out = out[:, keep_idx]
+            return out
+
+        lon_2d    = _slice_time_traj(self.result.lon.transpose("time","trajectory").data,    time_sel, keep_idx)
+        lat_2d    = _slice_time_traj(self.result.lat.transpose("time","trajectory").data,    time_sel, keep_idx)
+        z_2d      = _slice_time_traj(self.result.z.transpose("time","trajectory").data,      time_sel, keep_idx)
+        specie_2d = _slice_time_traj(self.result.specie.transpose("time","trajectory").data, time_sel, keep_idx)
+
+        if origin_marker is not None:
+            originmarker_2d = _slice_time_traj(self.result.origin_marker.transpose("time","trajectory").data, time_sel, keep_idx)
+        if active_status:
+            status_2d = _slice_time_traj(self.result.status.transpose("time","trajectory").data, time_sel, keep_idx)
+
+        # lat/lon validity mask
         valid_lon = (lon_2d >= -180) & (lon_2d <= 180)
         valid_lat = (lat_2d >= -90)  & (lat_2d <= 90)
         valid_mask = valid_lon & valid_lat
@@ -3838,16 +3902,11 @@ class ChemicalDrift(OceanDrift):
         del valid_lon, valid_lat, valid_mask
         gc.collect()
 
-        if weight is not None:
-            weight_2d = (self.result[weight].T).values[tmask, :]
-        if origin_marker is not None:
-            originmarker_2d = (self.result.origin_marker.T).values[tmask, :]
-        if active_status:
-            status_2d = (self.result.status.T).values[tmask, :]
-
         # Keep mask in (n_timef, n_elem)
         n_timef, n_elem = lon_2d.shape
         keep_mask = np.ones((n_timef, n_elem), dtype=bool)
+        if (weight is not None) and timestep_values:
+            keep_mask &= (weight_2d > 0)
 
         if origin_marker is not None:
             if isinstance(origin_marker, (list, tuple, np.ndarray)):
