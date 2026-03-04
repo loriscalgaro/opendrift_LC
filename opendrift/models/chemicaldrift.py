@@ -7893,6 +7893,48 @@ class ChemicalDrift(OceanDrift):
         filtered_df['time'+"-["+ time_unit +"]"] = np.array(filtered_df['time'+"-["+ time_unit +"]"]) - time_delta_filter
         return filtered_df
 
+    def calc_mass_conversion_factor(self, mass_unit, _MASS_TO_GRAMS) -> float:
+        """
+        Returns factor f such that:
+            value_in_requested_unit = value_in_current_unit * f
+        where current unit is self.elements.variables['mass']['units'].
+        """
+        src = str(self.elements.variables["mass"]["units"]).strip()
+        dst = str(mass_unit).strip()
+
+        # normalize common microgram spelling
+        src = "ug" if src == "µg" else src
+        dst = "ug" if dst == "µg" else dst
+
+        if src not in _MASS_TO_GRAMS:
+            raise ValueError(f"Unsupported source mass unit: {src!r}")
+        if dst not in _MASS_TO_GRAMS:
+            raise ValueError(f"Unsupported destination mass unit: {dst!r}")
+
+        # convert src -> grams -> dst
+        return _MASS_TO_GRAMS[src] / _MASS_TO_GRAMS[dst]
+
+    def calc_time_conversion_factor(self, time_unit, _TIME_TO_SECONDS) -> float:
+        """
+        Returns factor f such that:
+            value_in_requested_unit = value_in_seconds * f
+        where value_in_seconds is based on self.time_step_output.
+        """
+        u = str(time_unit).strip()
+
+        # normalize optional aliases
+        if u == "h":
+            u = "hr"
+
+        if u not in _TIME_TO_SECONDS:
+            raise ValueError(
+                f"Incorrect time_unit: {time_unit!r}, can be only {list(_TIME_TO_SECONDS.keys())}"
+            )
+
+        seconds = self.time_step_output.total_seconds()
+        return seconds / _TIME_TO_SECONDS[u]
+
+
 
     def extract_summary_timeseries(self,
             file_out_path,
@@ -7998,455 +8040,502 @@ class ChemicalDrift(OceanDrift):
             if not shp_file_path.endswith("/"):
                 shp_file_path=shp_file_path+"/"
 
-
-
-
         if timeseries_file_path is not None:
             if timeseries_file_path.endswith(".csv"):
                 csv_file_name = ""
         else:
             csv_file_name = sim_name + "_extracted_timeseries.csv"
 
-        if load_timeseries_from_file is False:
-            # Initialize init_species() and init_transfer_rates() if they were not stored in self.result
-            if not np.all([(hasattr(self.result, attr)) for attr in ['nspecies', 'name_species', 'transfer_rates', 'ntransformations',
-                                                                     'num_srev', 'num_ssrev', 'num_prev','num_psrev', 'num_lmm', 'num_col']]):
-                # Init species and transfer rates
-                if self.mode != opendrift.models.basemodel.Mode.Config:
-                    self.mode = opendrift.models.basemodel.Mode.Config
-                self.init_species()
-                self.init_transfer_rates()
-                if self.mode != opendrift.models.basemodel.Mode.Result:
-                    self.mode = opendrift.models.basemodel.Mode.Result
 
-            # Check if deactivate_N/S/E/W_of where specified
-            deactivate_coords = any(self.get_config(k) for k in (
-                    'drift:deactivate_north_of', 'drift:deactivate_south_of',
-                    'drift:deactivate_east_of', 'drift:deactivate_west_of'))
+        # Initialize init_species() and init_transfer_rates() if they were not stored in self.result
+        if not np.all([(hasattr(self.result, attr)) for attr in ['nspecies', 'name_species', 'transfer_rates', 'ntransformations',
+                                                                 'num_srev', 'num_ssrev', 'num_prev','num_psrev', 'num_lmm', 'num_col']]):
+            # Init species and transfer rates
+            if self.mode != opendrift.models.basemodel.Mode.Config:
+                self.mode = opendrift.models.basemodel.Mode.Config
+            self.init_species()
+            self.init_transfer_rates()
+            if self.mode != opendrift.models.basemodel.Mode.Result:
+                self.mode = opendrift.models.basemodel.Mode.Result
 
-            # Define id and name of species
-            specie_ids_num = {"dissolved" : (self.num_lmm if hasattr(self, "num_lmm") else None),
-                              "dissolved_cation": (self.num_lmmcation if hasattr(self, "num_lmmcation") else None),
-                              "dissolved_anion": (self.num_lmmanion if hasattr(self, "num_lmmanion") else None),
-                              "doc" : (self.num_humcol if hasattr(self, "num_humcol") else None),
-                              "colloid": (self.num_col if hasattr(self, "num_col") else None),
-                              "spm_rev" : (self.num_prev if hasattr(self, "num_prev") else None),
-                              "spm_srev": (self.num_psrev if hasattr(self, "num_psrev") else None),
-                              "spm_irrev": (self.num_pirrev if hasattr(self, "num_pirrev") else None),
-                              "sed_rev" : (self.num_srev if hasattr(self, "num_srev") else None),
-                              "sed_srev": (self.num_ssrev if hasattr(self, "num_ssrev") else None),
-                              "sed_irrev": (self.num_sirrev if hasattr(self, "num_sirrev") else None),
-                              "sed_buried": (self.num_sburied if hasattr(self, "num_sburied") else None),
-                              "polymer": (self.num_polymer if hasattr(self, "num_polymer") else None)}
+        # Check if deactivate_N/S/E/W_of where specified
+        deactivate_coords = any(self.get_config(k) for k in (
+                'drift:deactivate_north_of', 'drift:deactivate_south_of',
+                'drift:deactivate_east_of', 'drift:deactivate_west_of'))
 
-            specie_ids_name = {v: k for k, v in specie_ids_num.items() if v is not None}
+        # Define id and name of species
+        specie_ids_num = {"dissolved" : (self.num_lmm if hasattr(self, "num_lmm") else None),
+                          "dissolved_cation": (self.num_lmmcation if hasattr(self, "num_lmmcation") else None),
+                          "dissolved_anion": (self.num_lmmanion if hasattr(self, "num_lmmanion") else None),
+                          "doc" : (self.num_humcol if hasattr(self, "num_humcol") else None),
+                          "colloid": (self.num_col if hasattr(self, "num_col") else None),
+                          "spm_rev" : (self.num_prev if hasattr(self, "num_prev") else None),
+                          "spm_srev": (self.num_psrev if hasattr(self, "num_psrev") else None),
+                          "spm_irrev": (self.num_pirrev if hasattr(self, "num_pirrev") else None),
+                          "sed_rev" : (self.num_srev if hasattr(self, "num_srev") else None),
+                          "sed_srev": (self.num_ssrev if hasattr(self, "num_ssrev") else None),
+                          "sed_irrev": (self.num_sirrev if hasattr(self, "num_sirrev") else None),
+                          "sed_buried": (self.num_sburied if hasattr(self, "num_sburied") else None),
+                          "polymer": (self.num_polymer if hasattr(self, "num_polymer") else None)}
 
-            # Check if degraded mass was saved for each timestep (true) or only cumulative (false)
-            Save_degr_now = self.get_config('chemical:transformations:Save_degr_now')
+        specie_ids_name = {v: k for k, v in specie_ids_num.items() if v is not None}
 
-            status_categories = self.status_categories
-            active_idx        = status_categories.index('active')          if 'active'   in status_categories else None
-            outside_idx       = status_categories.index('outside')         if 'outside'  in status_categories else None
-            stranded_idx      = status_categories.index('stranded')        if 'stranded' in status_categories else None
-            removed_idx       = status_categories.index('removed')         if 'removed'  in status_categories else None
-            missing_data_idx  = status_categories.index('missing_data')    if 'missing_data'   in status_categories else None
-            seeded_on_land_idx = status_categories.index('seeded_on_land') if 'seeded_on_land' in status_categories else None
+        # Check if degraded mass was saved for each timestep (true) or only cumulative (false)
+        Save_degr_now = self.get_config('chemical:transformations:Save_degr_now')
 
-            # Define time and mass convertions
+        status_categories = self.status_categories
+        active_idx        = status_categories.index('active')          if 'active'   in status_categories else None
+        outside_idx       = status_categories.index('outside')         if 'outside'  in status_categories else None
+        stranded_idx      = status_categories.index('stranded')        if 'stranded' in status_categories else None
+        removed_idx       = status_categories.index('removed')         if 'removed'  in status_categories else None
+        missing_data_idx  = status_categories.index('missing_data')    if 'missing_data'   in status_categories else None
+        seeded_on_land_idx = status_categories.index('seeded_on_land') if 'seeded_on_land' in status_categories else None
 
-            # age_seconds = np.arange(self.time_step.total_seconds(), self.steps_calculation * self.time_step.total_seconds(), self.time_step.total_seconds())
+        # Define time and mass convertions
 
-            if mass_unit not in ['g','mg','ug','µg','kg']:
-                raise ValueError(f"Incorrect mass_unit: {mass_unit}, can be only 'g','mg','ug','µg','kg'")
+        # age_seconds = np.arange(self.time_step.total_seconds(), self.steps_calculation * self.time_step.total_seconds(), self.time_step.total_seconds())
 
-            _MASS_TO_GRAMS = {
-                            "ug": 1e-6,
-                            "µg": 1e-6,
-                            "mg": 1e-3,
-                            "g" :  1.0,
-                            "kg": 1e3
-                            }
+        if mass_unit not in ['g','mg','ug','µg','kg']:
+            raise ValueError(f"Incorrect mass_unit: '{mass_unit}', can be only 'g','mg','ug','µg','kg'")
 
-            def calc_mass_conversion_factor(self, mass_unit: str) -> float:
-                """
-                Returns factor f such that:
-                    value_in_requested_unit = value_in_current_unit * f
-                where current unit is self.elements.variables['mass']['units'].
-                """
-                src = str(self.elements.variables["mass"]["units"]).strip()
-                dst = str(mass_unit).strip()
-
-                # normalize common microgram spelling
-                src = "ug" if src == "µg" else src
-                dst = "ug" if dst == "µg" else dst
-
-                if src not in _MASS_TO_GRAMS:
-                    raise ValueError(f"Unsupported source mass unit: {src!r}")
-                if dst not in _MASS_TO_GRAMS:
-                    raise ValueError(f"Unsupported destination mass unit: {dst!r}")
-
-                # convert src -> grams -> dst
-                return _MASS_TO_GRAMS[src] / _MASS_TO_GRAMS[dst]
-
-            mass_conversion_factor = calc_mass_conversion_factor(mass_unit)
-
-
-
-            if time_unit not in ['s','m','hr','h','d']:
-                raise ValueError(f"Incorrect time_unit: {time_unit}, can be only 's', 'm', 'hr', 'h', 'd'")
-
-            _TIME_TO_SECONDS = {
-                            "s":  1.0,
-                            "m":  60.0,
-                            "hr": 3600.0,
-                            "h":  3600.0,
-                            "d":  86400.0,
+        _MASS_TO_GRAMS = {
+                        "ug": 1e-6,
+                        "µg": 1e-6,
+                        "mg": 1e-3,
+                        "g" : 1.0,
+                        "kg": 1e3
                         }
+        mass_conversion_factor = self.calc_mass_conversion_factor(mass_unit, _MASS_TO_GRAMS)
 
-            def calc_time_conversion_factor(self, time_unit: str) -> float:
-                """
-                Returns factor f such that:
-                    value_in_requested_unit = value_in_seconds * f
-                where value_in_seconds is based on self.time_step_output.
-                """
-                u = str(time_unit).strip()
+        if time_unit not in ['s','m','hr','h','d']:
+            raise ValueError(f"Incorrect time_unit: '{time_unit}', can be only 's', 'm', 'hr', 'h', 'd'")
 
-                # normalize optional aliases
-                if u == "h":
-                    u = "hr"
-
-                if u not in _TIME_TO_SECONDS:
-                    raise ValueError(
-                        f"Incorrect time_unit: {time_unit!r}, can be only {list(_TIME_TO_SECONDS.keys())}"
-                    )
-
-                seconds = self.time_step_output.total_seconds()
-                return seconds / _TIME_TO_SECONDS[u]
-
-            time_conversion_factor = calc_time_conversion_factor(time_unit)
+        _TIME_TO_SECONDS = {
+                        "s":  1.0,
+                        "m":  60.0,
+                        "hr": 3600.0,
+                        "h":  3600.0,
+                        "d":  86400.0,
+                    }
+        time_conversion_factor = self.calc_time_conversion_factor(time_unit, _TIME_TO_SECONDS)
 
 
-            # time_conversion_factor = self.time_step_output.total_seconds() / (60*60)
-            # if time_unit=='s':
-            #     time_conversion_factor = self.time_step_output.total_seconds()
-            # if time_unit=='m':
-            #     time_conversion_factor = self.time_step_output.total_seconds() / 60
-            # if time_unit=='hr':
-            #     time_conversion_factor = self.time_step_output.total_seconds() / (60*60)
-            # if time_unit=='d':
-            #     time_conversion_factor = self.time_step_output.total_seconds() / (24*60*60)
-            print("Extracting data from simulation")
-            # Extract properties from simulation
+        print("Extracting data from simulation")
+        # Extract properties from simulation
 
-            ds = self.result
-            steps=len(self.result.time)
-            vars_time = [v for v in ds.data_vars if ds[v].dims == ("trajectory", "time")]
-            if not vars_time:
-                raise ValueError("No (trajectory, time) variables found.")
+        ds = self.result
+        steps=len(self.result.time)
+        vars_time = [v for v in ds.data_vars if ds[v].dims == ("trajectory", "time")]
+        if not vars_time:
+            raise ValueError("No (trajectory, time) variables found.")
 
-            # Check only lat/lon
-            valid_traj = (
-                ds["lon"].notnull().any("time") | ds["lat"].notnull().any("time")
+        # Check only lat/lon
+        valid_traj = (
+            ds["lon"].notnull().any("time") | ds["lat"].notnull().any("time")
+            )
+        removed = ds.trajectory.where(~valid_traj, drop=True).values
+        if len(removed) > 0:
+            print(f"Removed IDs {removed} from self.result  as lat/lon were NaN")
+
+        # keep only valid trajectories
+        ds_clean = ds.isel(trajectory=valid_traj)
+        self.result = ds_clean
+        del ds_clean, ds
+
+
+        # vars_time = [v for v in ds.data_vars if ds[v].dims == ("trajectory", "time")]
+        # tr = ds[vars_time].sel(trajectory=141)   # xarray DataSet for trajectory 141
+        # tr = self.result[["lon","lat","z","status","specie"]].sel(trajectory=141)
+        # df = tr.to_dataframe().reset_index().drop(columns=["trajectory"])
+
+
+        attrs_ls = ['lat', 'lon', 'mass',
+                    'mass_degraded','mass_degraded_water', 'mass_degraded_sediment',
+                    'mass_degraded_now', 'mass_volatilized_now',
+                    'mass_volatilized', 'mass_photodegraded', 'mass_biodegraded',
+                    'mass_biodegraded_water', 'mass_biodegraded_sediment',
+                    'mass_hydrolyzed', 'mass_hydrolyzed_water', 'mass_hydrolyzed_sediment'
+                    ]
+        # Dynamically create variables and assign values
+        result_ds=self.result
+        extracted_attrs_dict_2d = {}
+        for attr in attrs_ls:
+            extracted_attrs_dict_2d[attr] = ((getattr(result_ds, attr).T.values)
+                               if hasattr(result_ds, attr) else None)
+        #####
+        # deac_ds = self.elements_deactivated
+        # extracted_attrs_dict_2d_deac = {}
+        # for attr in attrs_ls:
+        #     extracted_attrs_dict_2d_deac[attr] = ((getattr(deac_ds, attr))
+        #                        if hasattr(deac_ds, attr) else None)
+        ####
+
+        # Get mask for elements in water column and sedments for each timestep
+        N_elem = extracted_attrs_dict_2d['mass'].shape[1]
+        status = result_ds.status.T.values                     # (T,N)
+        specie = result_ds.specie.T.values                     # (T,N)
+        in_water_column_ls = []
+        in_water_column_ls = [
+            val for name in ('num_lmm', 'num_humcol', 'num_prev', 'num_psrev', 'num_pirrev')
+            if (val := getattr(self, name, None)) is not None
+        ]
+
+        in_water_column = np.any([specie == value for value in in_water_column_ls], axis=0)
+        # Active (mixed) sediment layer includes all sediment pools that are in the mixed layer:
+        # reversible, slowly reversible, and (if enabled) irreversible.
+        in_sediment_layer = (specie == self.num_srev)
+        if hasattr(self, 'num_ssrev'):
+            in_sediment_layer |= (specie == self.num_ssrev)
+        if hasattr(self, 'num_sirrev'):
+            in_sediment_layer |= (specie == self.num_sirrev)
+
+        # Buried sediment compartment (deep storage)
+        in_buried_sed = (specie == self.num_sburied) if hasattr(self, 'num_sburied') else np.zeros_like(specie, dtype=bool)
+        def status_mask(idx):
+            return (status == idx) if idx is not None else np.zeros_like(status, bool)
+        # mask for elements active until the end of each timestep
+        active         = status_mask(active_idx)
+        # mask for elements seeded_on_land or stranded
+        seeded_on_land = status_mask(seeded_on_land_idx) if seeded_on_land_idx is not None else None
+        stranded       = status_mask(stranded_idx) if stranded_idx is not None else None
+
+        # Find which elements are advected out of the domain
+        print("Calculating mass advected out of the simulation")
+
+        # (i) Use shapefile if provided
+        if shp_file_path is not None:
+            gdf_shapefile = gpd.read_file(shp_file_path)
+
+            ntraj = extracted_attrs_dict_2d['lon'].shape[1]
+            adv_out = np.empty((steps, ntraj), dtype=bool)
+
+            for t in range(steps):
+                lon_ = extracted_attrs_dict_2d['lon'][t]
+                lat_ = extracted_attrs_dict_2d['lat'][t]
+
+                pts = gpd.GeoDataFrame(
+                    geometry=gpd.points_from_xy(lon_, lat_, crs=gdf_shapefile.crs)
                 )
-            removed = ds.trajectory.where(~valid_traj, drop=True).values
-            if len(removed) > 0:
-                print(f"Removed IDs {removed} from self.result  as lat/lon were NaN")
+                joined = gpd.sjoin(pts, gdf_shapefile, predicate='within', how='left')
+                inside = joined["index_right"].notna().to_numpy()
+                adv_out[t] = ~inside
 
-            # keep only valid trajectories
-            ds_clean = ds.isel(trajectory=valid_traj)
-            self.result = ds_clean
-            del ds_clean, ds
-
-
-            # vars_time = [v for v in ds.data_vars if ds[v].dims == ("trajectory", "time")]
-            # tr = ds[vars_time].sel(trajectory=141)   # xarray DataSet for trajectory 141
-            # tr = self.result[["lon","lat","z","status","specie"]].sel(trajectory=141)
-            # df = tr.to_dataframe().reset_index().drop(columns=["trajectory"])
-
-
-            attrs_ls = ['lat', 'lon', 'mass',
-                        'mass_degraded','mass_degraded_water', 'mass_degraded_sediment',
-                        'mass_volatilized', 'mass_photodegraded', 'mass_biodegraded',
-                        'mass_biodegraded_water', 'mass_biodegraded_sediment',
-                        'mass_hydrolyzed', 'mass_hydrolyzed_water', 'mass_hydrolyzed_sediment'
-                        ]
-            # Dynamically create variables and assign values
-            result_ds=self.result
-            extracted_attrs_dict_2d = {}
-            for attr in attrs_ls:
-                extracted_attrs_dict_2d[attr] = ((getattr(result_ds, attr).T.values)
-                                   if hasattr(result_ds, attr) else None)
-            #####
-            deac_ds = self.elements_deactivated
-            extracted_attrs_dict_2d_deac = {}
-            for attr in attrs_ls:
-                extracted_attrs_dict_2d_deac[attr] = ((getattr(deac_ds, attr))
-                                   if hasattr(deac_ds, attr) else None)
-            ####
-
-            # Get mask for elements in water column and sedments for each timestep
-            N_elem = extracted_attrs_dict_2d['mass'].shape[1]
-            status = result_ds.status.T.values                     # (T,N)
-            specie = result_ds.specie.T.values                     # (T,N)
-            in_water_column_ls = []
-            in_water_column_ls = [
-                val for name in ('num_lmm', 'num_humcol', 'num_prev', 'num_psrev', 'num_pirrev')
-                if (val := getattr(self, name, None)) is not None
-            ]
-
-            in_water_column = np.any([specie == value for value in in_water_column_ls], axis=0)
-            # Active (mixed) sediment layer includes all sediment pools that are in the mixed layer:
-            # reversible, slowly reversible, and (if enabled) irreversible.
-            in_sediment_layer = (specie == self.num_srev)
-            if hasattr(self, 'num_ssrev'):
-                in_sediment_layer |= (specie == self.num_ssrev)
-            if hasattr(self, 'num_sirrev'):
-                in_sediment_layer |= (specie == self.num_sirrev)
-
-            # Buried sediment compartment (deep storage)
-            in_buried_sed = (specie == self.num_sburied) if hasattr(self, 'num_sburied') else np.zeros_like(specie, dtype=bool)
-            def status_mask(idx):
-                return (status == idx) if idx is not None else np.zeros_like(status, bool)
-            # mask for elements active until the end of each timestep
-            active         = status_mask(active_idx)
-            # mask for elements seeded_on_land or stranded
-            seeded_on_land = status_mask(seeded_on_land_idx) if seeded_on_land_idx is not None else None
-            stranded       = status_mask(stranded_idx) if stranded_idx is not None else None
-
-            # Find which elements are advected out of the domain
-            print("Calculating mass advected out of the simulation")
-
-            # (i) Use shapefile if provided
-            if shp_file_path is not None:
-                gdf_shapefile = gpd.read_file(shp_file_path)
-
-                ntraj = extracted_attrs_dict_2d['lon'].shape[1]
-                adv_out = np.empty((steps, ntraj), dtype=bool)
-
-                for t in range(steps):
-                    lon_ = extracted_attrs_dict_2d['lon'][t]
-                    lat_ = extracted_attrs_dict_2d['lat'][t]
-
-                    pts = gpd.GeoDataFrame(
-                        geometry=gpd.points_from_xy(lon_, lat_, crs=gdf_shapefile.crs)
-                    )
-                    joined = gpd.sjoin(pts, gdf_shapefile, predicate='within', how='left')
-                    inside = joined["index_right"].notna().to_numpy()
-                    adv_out[t] = ~inside
-
-            # (ii) deactivate_coords + outside status
-            elif deactivate_coords:
-                print("deactivate_north_of/south_of/_east_of/_west_of parameters used")
-                if ('outside' in status_categories):
-                    adv_out = (status == outside_idx)
-                else:
-                    adv_out = np.zeros_like(status, dtype=bool)
-            # (iii) polygon built from (lon_min/lon_max/lat_min/lat_max)
-            elif (lat_min is not None and lat_max is not None and lon_min is not None and lon_max is not None):
-                print("lat_min, lat_max, lon_min, lon_max used")
-                lon = extracted_attrs_dict_2d['lon']
-                lat = extracted_attrs_dict_2d['lat']
-                adv_out = ~( (lon >= lon_min) & (lon <= lon_max) & (lat >= lat_min) & (lat <= lat_max) )
-                # adv_out |= ~(np.isfinite(lon) & np.isfinite(lat))  # mark NaNs as outside if desired
-            # (iv) missing_data status
-            elif 'missing_data' in status_categories:
-                print("missing_data used")
-                adv_out = (status == missing_data_idx)
+        # (ii) deactivate_coords + outside status
+        elif deactivate_coords:
+            print("deactivate_north_of/south_of/_east_of/_west_of parameters used")
+            if ('outside' in status_categories):
+                adv_out = (status == outside_idx)
             else:
-                error = (
-                    "shp_file_path and lat/lon limits not specified when "
-                    "deactivate_north_/south_/_east_/_west_of parameters "
-                    "were not used"
-                )
-                raise ValueError(error)
+                adv_out = np.zeros_like(status, dtype=bool)
+        # (iii) polygon built from (lon_min/lon_max/lat_min/lat_max)
+        elif (lat_min is not None and lat_max is not None and lon_min is not None and lon_max is not None):
+            print("lat_min, lat_max, lon_min, lon_max used")
+            lon = extracted_attrs_dict_2d['lon']
+            lat = extracted_attrs_dict_2d['lat']
+            adv_out = ~( (lon >= lon_min) & (lon <= lon_max) & (lat >= lat_min) & (lat <= lat_max) )
+            # adv_out |= ~(np.isfinite(lon) & np.isfinite(lat))  # mark NaNs as outside if desired
+        # (iv) missing_data status
+        elif 'missing_data' in status_categories:
+            print("missing_data used")
+            adv_out = (status == missing_data_idx)
+        else:
+            error = (
+                "shp_file_path and lat/lon limits not specified when "
+                "deactivate_north_/south_/_east_/_west_of parameters "
+                "were not used"
+            )
+            raise ValueError(error)
 
-            # age_seconds_output = np.array(((result_ds.time - result_ds.time[0]) / np.timedelta64(1, 's')) + (result_ds.time[1] - result_ds.time[0]) / np.timedelta64(1, 's'))
+        # age_seconds_output = np.array(((result_ds.time - result_ds.time[0]) / np.timedelta64(1, 's')) + (result_ds.time[1] - result_ds.time[0]) / np.timedelta64(1, 's'))
 
-            time_steps =np.array(range(0, steps))*time_conversion_factor
-            start_date = pd.Timestamp(self.start_time.year,
-                                      self.start_time.month,
-                                      self.start_time.day,
-                                      self.start_time.hour,
-                                      self.start_time.minute)
-            time_date_serie = pd.date_range(start=start_date, periods=steps, freq=self.time_step_output)
-
-
-            adv_out=adv_out.astype(bool)
-            in_water_column=in_water_column.astype(bool)
-            in_sediment_layer=in_sediment_layer.astype(bool)
-            in_buried_sed=in_buried_sed.astype(bool)
-
-
-            def masked_nansum(arr, mask, axis):
-                """Sum arr over axis, only where mask==True; ignore NaNs inside mask."""
-                return np.nansum(np.where(mask, arr, np.nan), axis=axis)
-
-
-            # Dynamically create variables and assign values
-            # ===== 1) Inside-system mass (not outside/seeded_on_land/stranded elements) =====
-            inside_mask = ~adv_out
-            if seeded_on_land_idx is not None:
-                inside_mask &= (status != seeded_on_land_idx)
-            if stranded_idx is not None:
-                inside_mask &= (status != stranded_idx)
-
-            mass = np.nan_to_num(extracted_attrs_dict_2d['mass'])
-
-            extracted_active_dict_1d = {}
-            extracted_active_dict_1d["mass_water_ts"] = masked_nansum(extracted_attrs_dict_2d['mass'], in_water_column  & inside_mask, axis=1) * mass_conversion_factor
-            extracted_active_dict_1d["mass_sed_ts"] = masked_nansum(extracted_attrs_dict_2d['mass'], in_sediment_layer  & inside_mask, axis=1) * mass_conversion_factor
-            extracted_active_dict_1d["mass_buried_ts"] = masked_nansum(extracted_attrs_dict_2d['mass'], in_buried_sed   & inside_mask, axis=1) * mass_conversion_factor
-            extracted_active_dict_1d["mass_actual_ts"] = extracted_active_dict_1d["mass_water_ts"] + extracted_active_dict_1d["mass_sed_ts"]
-
-            # ===== 2) Emitted mass (first timestep each element is finite) =====
-            valid = np.isfinite(extracted_attrs_dict_2d['mass'])
-            first_seen_idx = valid.argmax(axis=0)                 # 0 if never seen; guard with has_seen
-            has_seen = valid.any(axis=0)
-            # weight by mass at first_seen
-            rows = first_seen_idx[has_seen]
-            cols = np.arange(N_elem)[has_seen]
-            first_seen_mass = np.zeros(N_elem); first_seen_mass[has_seen] = mass[rows, cols]
-            emitted_mass = np.bincount(first_seen_idx[has_seen], weights=first_seen_mass[has_seen], minlength=steps)
-            extracted_active_dict_1d["mass_emitted_ts"] = emitted_mass * mass_conversion_factor
-            extracted_active_dict_1d["mass_emitted_cumulative"] = np.cumsum(extracted_active_dict_1d["mass_emitted_ts"])
-
-            # ===== 3) Degraded mass ===== CONTROLLARE COME GESTIRE MASS DI ELEMENTI ADV OUT/STRADED ECC
-            attrs_ls_1d_general = ['mass_degraded','mass_degraded_water', 'mass_degraded_sediment', 'mass_volatilized']
-            attrs_ls_1d_general_now = ['mass_degraded_now', 'mass_degraded_water_now', 'mass_degraded_sediment_now', 'mass_volatilized_now']
-            attrs_ls_1d_single_process = ['mass_photodegraded', 'mass_biodegraded',
-                        'mass_biodegraded_water', 'mass_biodegraded_sediment',
-                        'mass_hydrolyzed', 'mass_hydrolyzed_water', 'mass_hydrolyzed_sediment'
-                        ]
-
-            # mass_degraded* and mass_volatilized are cumulative for active elements, then in self.results they are NaN for deactivated elements
-            def forward_fill_with_pandas(md):
-                """
-                md: np.ndarray (T, N)
-                returns: np.ndarray (T, N) forward-filled per column
-                """
-                # Convert to DataFrame (columns = trajectories); ffill along index (rows)
-                df = pd.DataFrame(md)          # shape (T,N) -> DataFrame T x N
-                df = df.ffill(axis=0)         # forward-fill along rows
-                return df.values
-
-            def forward_fill_chunked(md, chunk_cols=20000):
-                T, N = md.shape
-                out = np.empty_like(md)
-                for start in range(0, N, chunk_cols):
-                    end = min(start + chunk_cols, N)
-                    out[:, start:end] = forward_fill_with_pandas(md[:, start:end])
-                return out
-
-            for attr in  attrs_ls_1d_general:
-                # attr = 'mass_degraded'
-                # mass_degraded* is cumulative for active elements, then in self. results it is NaN for deacticated elements
-                md = extracted_attrs_dict_2d[attr]    # shape (T, N), with NaNs after deactivation
-                md_ff = forward_fill_with_pandas(md)
-                extracted_active_dict_1d[f"{attr}_cumulative"] = np.nansum(md_ff, axis=1) * mass_conversion_factor
+        time_steps =np.array(range(0, steps))*time_conversion_factor
+        start_date = pd.Timestamp(self.start_time.year,
+                                  self.start_time.month,
+                                  self.start_time.day,
+                                  self.start_time.hour,
+                                  self.start_time.minute)
+        time_date_serie = pd.date_range(start=start_date, periods=steps, freq=self.time_step_output)
 
 
-            for attr in  attrs_ls_1d_general_now:
-                extracted_active_dict_1d[f"{attr.replace('_now', '_ts')}"] = (
-                (np.nansum(extracted_attrs_dict_2d.get(attr), axis=1) * mass_conversion_factor)
-                if extracted_attrs_dict_2d.get(attr) is not None else np.zeros_like(extracted_active_dict_1d["mass_actual_ts"]))
+        adv_out=adv_out.astype(bool)
+        in_water_column=in_water_column.astype(bool)
+        in_sediment_layer=in_sediment_layer.astype(bool)
+        in_buried_sed=in_buried_sed.astype(bool)
 
-            for attr in  attrs_ls_1d_single_process:
-                extracted = (
-                (np.nansum(extracted_attrs_dict_2d.get(attr), axis=1) * mass_conversion_factor)
-                if extracted_attrs_dict_2d.get(attr) is not None else np.zeros_like(extracted_active_dict_1d["mass_actual_ts"]))
-                if Save_degr_now:
-                    extracted_active_dict_1d[f"{attr}_ts"] = extracted
-                    extracted_active_dict_1d[f"{attr}_cumulative"] = np.cumsum(extracted)
-                else:
-                    extracted_active_dict_1d[f"{attr}_ts"] = np.zeros_like(extracted_active_dict_1d["mass_actual_ts"])
-                    extracted_active_dict_1d[f"{attr}_cumulative"] = extracted
 
-            # ===== 4) Mass by specie (not outside/seeded_on_land/stranded elements) =====
-            for sp in specie_ids_name.keys():
-                extracted_active_dict_1d[f"mass_{specie_ids_name.get(sp)}"] = \
-                masked_nansum(extracted_attrs_dict_2d['mass'], ((specie == sp)  & (inside_mask)), axis=1) * mass_conversion_factor
+        def masked_nansum(arr, mask, axis):
+            """Sum arr over axis, only where mask==True; ignore NaNs inside mask."""
+            return np.nansum(np.where(mask, arr, np.nan), axis=axis)
 
-            # ===== 5) Outside/advection  =====
-            # compute mass exiting by advection (ignore initial outside at t=0)
-            mass_ff = None
-            if adv_out.any() is False:
-                extracted_active_dict_1d["mass_adv_out_ts"] = np.zeros(steps)
-                extracted_active_dict_1d["mass_adv_out_cumulative"] = np.zeros(steps)
+
+        # Dynamically create variables and assign values
+        # ===== 1) Inside-system mass (not outside/seeded_on_land/stranded elements) =====
+        inside_mask = ~adv_out
+        if seeded_on_land_idx is not None:
+            inside_mask &= (status != seeded_on_land_idx)
+        if stranded_idx is not None:
+            inside_mask &= (status != stranded_idx)
+
+        mass = np.nan_to_num(extracted_attrs_dict_2d['mass'])
+
+        extracted_active_dict_1d = {}
+        extracted_active_dict_1d["mass_water_ts"] = masked_nansum(extracted_attrs_dict_2d['mass'], in_water_column  & inside_mask, axis=1) * mass_conversion_factor
+        extracted_active_dict_1d["mass_sed_ts"] = masked_nansum(extracted_attrs_dict_2d['mass'], in_sediment_layer  & inside_mask, axis=1) * mass_conversion_factor
+        extracted_active_dict_1d["mass_buried_ts"] = masked_nansum(extracted_attrs_dict_2d['mass'], in_buried_sed   & inside_mask, axis=1) * mass_conversion_factor
+        extracted_active_dict_1d["mass_actual_ts"] = extracted_active_dict_1d["mass_water_ts"] + extracted_active_dict_1d["mass_sed_ts"]
+
+        # ===== 2) Emitted mass (first timestep each element is finite) =====
+        valid = np.isfinite(extracted_attrs_dict_2d['mass'])
+        first_seen_idx = valid.argmax(axis=0)                 # 0 if never seen; guard with has_seen
+        has_seen = valid.any(axis=0)
+        # weight by mass at first_seen
+        rows = first_seen_idx[has_seen]
+        cols = np.arange(N_elem)[has_seen]
+        first_seen_mass = np.zeros(N_elem); first_seen_mass[has_seen] = mass[rows, cols]
+        emitted_mass = np.bincount(first_seen_idx[has_seen], weights=first_seen_mass[has_seen], minlength=steps)
+        extracted_active_dict_1d["mass_emitted_ts"] = emitted_mass * mass_conversion_factor
+        extracted_active_dict_1d["mass_emitted_cumulative"] = np.cumsum(extracted_active_dict_1d["mass_emitted_ts"])
+
+        # ===== 3) Degraded mass =====
+        # Always cumulative
+        attrs_ls_1d = ['mass_degraded', 'mass_volatilized']
+        # Present if Save_degr_now is True
+        attrs_ls_1d_now = ['mass_degraded_now',  'mass_volatilized_now']
+        # Cumulative if Save_degr_now is False
+        attrs_ls_1d_general_now = [ 'mass_degraded_water', 'mass_degraded_sediment']
+        attrs_ls_1d_single_process = ['mass_photodegraded', 'mass_biodegraded',
+                    'mass_biodegraded_water', 'mass_biodegraded_sediment',
+                    'mass_hydrolyzed', 'mass_hydrolyzed_water', 'mass_hydrolyzed_sediment'
+                    ]
+
+        # 'mass_degraded' and 'mass_volatilized' are cumulative for active elements,
+        # then in self.results they are NaN for deactivated elements
+        def forward_fill_with_pandas(md):
+            """
+            md: np.ndarray (T, N)
+            returns: np.ndarray (T, N) forward-filled per column
+            """
+            # Convert to DataFrame (columns = trajectories); ffill along index (rows)
+            df = pd.DataFrame(md)          # shape (T,N) -> DataFrame T x N
+            df = df.ffill(axis=0)         # forward-fill along rows
+            return df.values
+
+        def forward_fill_chunked(md, chunk_cols=20000):
+            T, N = md.shape
+            out = np.empty_like(md)
+            for start in range(0, N, chunk_cols):
+                end = min(start + chunk_cols, N)
+                out[:, start:end] = forward_fill_with_pandas(md[:, start:end])
+            return out
+
+        for attr in attrs_ls_1d:
+            # attr = 'mass_degraded'
+            #'mass_degraded', 'mass_volatilized' are cumulative for active elements, then in self. results it is NaN for deacticated elements
+            md = extracted_attrs_dict_2d[attr]    # shape (T, N), with NaNs after deactivation
+            md_ff = forward_fill_with_pandas(md)
+            extracted_active_dict_1d[f"{attr}_cumulative"] = np.nansum(md_ff, axis=1) * mass_conversion_factor
+
+        for attr in attrs_ls_1d_now:
+            extracted_active_dict_1d[(f"{attr}").replace('now', 'ts')] = (
+            (np.nansum(extracted_attrs_dict_2d.get(attr), axis=1) * mass_conversion_factor)
+            if extracted_attrs_dict_2d.get(attr) is not None else np.zeros_like(extracted_active_dict_1d["mass_actual_ts"]))
+
+        TESTmd = (
+        (np.nansum(extracted_attrs_dict_2d.get('mass_degraded'), axis=1) * mass_conversion_factor)
+        if extracted_attrs_dict_2d.get('mass_degraded') is not None else np.zeros_like(extracted_active_dict_1d["mass_actual_ts"]))
+
+        TESTts = (
+        (np.nansum(extracted_attrs_dict_2d.get('mass_degraded_now'), axis=1) * mass_conversion_factor)
+        if extracted_attrs_dict_2d.get('mass_degraded_now') is not None else np.zeros_like(extracted_active_dict_1d["mass_actual_ts"]))
+
+
+
+        #### DEBUG check
+        import numpy as np
+        import pandas as pd
+
+        T = steps
+        md = extracted_attrs_dict_2d['mass_degraded']            # (T,N)
+        md_now = extracted_attrs_dict_2d.get('mass_degraded_now')  # (T,N) or None
+
+        print("shapes:", "md", getattr(md, "shape", None), "md_now", getattr(md_now, "shape", None))
+
+        # forward-fill md (what you currently use)
+        md_ff = pd.DataFrame(md).ffill(axis=0).values
+
+        t = 1   # second timestep (index 1)
+        sum_md_ff_t = np.nansum(md_ff[t, :]) * mass_conversion_factor
+        sum_md_now_t = None
+        if md_now is not None:
+            sum_md_now_t = np.nansum(md_now[t, :]) * mass_conversion_factor
+
+        print(f"SUM at t={t}: forward-filled cumulative (mass_degraded) = {sum_md_ff_t}")
+        print(f"SUM at t={t}: mass_degraded_now (per-timestep)    = {sum_md_now_t}")
+
+        # Per-element comparison at t: which elements contribute to each sum?
+        finite_md_idx = np.where(np.isfinite(md_ff[t, :]))[0]
+        finite_mdnow_idx = np.where(np.isfinite(md_now[t, :]))[0] if md_now is not None else np.array([], dtype=int)
+
+        print("n finite in md_ff[t]:", len(finite_md_idx))
+        print("n finite in md_now[t]:", len(finite_mdnow_idx))
+
+        if md_now is not None:
+            # reconstruct cumulative from per-step md_now
+            md_now_filled = np.nan_to_num(md_now, nan=0.0)   # treat missing per-step as 0
+            reconstructed_cum = np.cumsum(md_now_filled, axis=0)  # (T,N)
+
+            recon_sum_t = np.nansum(reconstructed_cum[t, :]) * mass_conversion_factor
+            print("reconstructed cumulative (cumsum of md_now) sum at t =", recon_sum_t)
+
+            # per-element arrays for inspection
+            per_elem_md_ff = md_ff[t, :]
+            per_elem_recon = reconstructed_cum[t, :]
+            diff = per_elem_md_ff - per_elem_recon
+
+            print("diff sum (md_ff - reconstructed_cum) =", np.nansum(diff) * mass_conversion_factor)
+
+            # How many columns differ substantially?
+            absdiff = np.abs(diff)
+            n_bad_cols = np.sum(absdiff > 1e-9)
+            print("columns where md_ff != reconstructed_cum at t (abs diff > 1e-9):", n_bad_cols)
+
+            # top contributors where md_ff >> reconstructed
+            idx_sort = np.argsort(-diff)[:30]
+            print("Top contributors (where md_ff > reconstructed_cum):")
+            for i in idx_sort[:10]:
+                if diff[i] <= 1e-12:
+                    break
+                print(f"  col {i:6d}: md_ff={per_elem_md_ff[i]:12.6g}, recon={per_elem_recon[i]:12.6g}, diff={diff[i]:12.6g}")
+
+            # any columns where reconstructed > md_ff ? (unexpected)
+            neg_count = np.sum(diff < -1e-12)
+            print("columns where reconstructed_cum > md_ff (count):", neg_count)
+
+        else:
+            print("mass_degraded_now not present to compare.")
+
+
+
+
+
+
+
+####
+
+
+
+
+
+
+
+        for attr in  attrs_ls_1d_general_now:
+            extracted = (
+            (np.nansum(extracted_attrs_dict_2d.get(attr), axis=1) * mass_conversion_factor)
+            if extracted_attrs_dict_2d.get(attr) is not None else np.zeros_like(extracted_active_dict_1d["mass_actual_ts"]))
+            if Save_degr_now:
+                extracted_active_dict_1d[f"{attr}_ts"] = extracted
+                extracted_active_dict_1d[f"{attr}_cumulative"] = np.cumsum(extracted)
             else:
-                # Build prev so that prev[0] == adv_out[0] so that adv_out[0]==True is NOT considered as a transition
-                prev = np.vstack([adv_out[0:1, :], adv_out[:-1, :]])   # shape (T,N)
-                # became_out True exactly when adv_out flips False -> True during the run (t>0 transitions)
-                became_out = (~prev) & adv_out                         # shape (T,N)
-                # Forward-fill last-known mass up to each timestep to calculate "mass at exit".
-                mass_ff = pd.DataFrame(mass).ffill(axis=0).values      # shape (T,N); entries still NaN if never seen
+                extracted_active_dict_1d[f"{attr}_ts"] = np.zeros_like(extracted_active_dict_1d["mass_actual_ts"])
+                extracted_active_dict_1d[f"{attr}_cumulative"] = extracted
 
-                # Per-timestep mass of elements that became outside at that timestep (same mass units as mass)
-                exit_outside_at_t = np.nansum(mass_ff * became_out, axis=1) * mass_conversion_factor
-                # Cumulative sum
-                cum_exit_outside = np.cumsum(exit_outside_at_t)
-
-                extracted_active_dict_1d["mass_adv_out_ts"] = exit_outside_at_t
-                extracted_active_dict_1d["mass_adv_out_cumulative"] = cum_exit_outside
-
-            # ===== 6) Stranding (priority to adv_out) =====
-            # compute mass exiting by stranding (ignore initial stranded at t=0)
-            if stranded_idx is None:
-                extracted_active_dict_1d["mass_stranded_ts"] = np.zeros(steps)
-                extracted_active_dict_1d["mass_stranded_cumulative"] = np.zeros(steps)
+        for attr in attrs_ls_1d_single_process:
+            extracted = (
+            (np.nansum(extracted_attrs_dict_2d.get(attr), axis=1) * mass_conversion_factor)
+            if extracted_attrs_dict_2d.get(attr) is not None else np.zeros_like(extracted_active_dict_1d["mass_actual_ts"]))
+            if Save_degr_now:
+                extracted_active_dict_1d[f"{attr}_ts"] = extracted
+                extracted_active_dict_1d[f"{attr}_cumulative"] = np.cumsum(extracted)
             else:
-                prev_str = np.vstack([stranded[0:1, :], stranded[:-1, :]])
-                became_stranded = (~prev_str) & stranded
+                extracted_active_dict_1d[f"{attr}_ts"] = np.zeros_like(extracted_active_dict_1d["mass_actual_ts"])
+                extracted_active_dict_1d[f"{attr}_cumulative"] = extracted
 
-                # Only count stranding events that occur while inside domain
-                prev_adv = np.vstack([adv_out[0:1, :], adv_out[:-1, :]])
-                became_stranded &= (~adv_out) & (~prev_adv)
+        # ===== 4) Mass by specie (not outside/seeded_on_land/stranded elements) =====
+        for sp in specie_ids_name.keys():
+            extracted_active_dict_1d[f"mass_{specie_ids_name.get(sp)}"] = \
+            masked_nansum(extracted_attrs_dict_2d['mass'], ((specie == sp)  & (inside_mask)), axis=1) * mass_conversion_factor
 
-                if mass_ff is None:
-                    mass_ff = pd.DataFrame(mass).ffill(axis=0).values
+        # ===== 5) Outside/advection  =====
+        # compute mass exiting by advection (ignore initial outside at t=0)
+        mass_ff = None
+        if adv_out.any() is False:
+            extracted_active_dict_1d["mass_adv_out_ts"] = np.zeros(steps)
+            extracted_active_dict_1d["mass_adv_out_cumulative"] = np.zeros(steps)
+        else:
+            # Build prev so that prev[0] == adv_out[0] so that adv_out[0]==True is NOT considered as a transition
+            prev = np.vstack([adv_out[0:1, :], adv_out[:-1, :]])   # shape (T,N)
+            # became_out True exactly when adv_out flips False -> True during the run (t>0 transitions)
+            became_out = (~prev) & adv_out                         # shape (T,N)
+            # Forward-fill last-known mass up to each timestep to calculate "mass at exit".
+            mass_ff = pd.DataFrame(mass).ffill(axis=0).values      # shape (T,N); entries still NaN if never seen
 
-                exit_stranded_at_t = np.nansum(mass_ff * became_stranded, axis=1) * mass_conversion_factor
-                cum_exit_stranded = np.cumsum(exit_stranded_at_t)
+            # Per-timestep mass of elements that became outside at that timestep (same mass units as mass)
+            exit_outside_at_t = np.nansum(mass_ff * became_out, axis=1) * mass_conversion_factor
+            # Cumulative sum
+            cum_exit_outside = np.cumsum(exit_outside_at_t)
 
-                extracted_active_dict_1d["mass_stranded_ts"] = exit_stranded_at_t
-                extracted_active_dict_1d["mass_stranded_cumulative"] = cum_exit_stranded
+            extracted_active_dict_1d["mass_adv_out_ts"] = exit_outside_at_t
+            extracted_active_dict_1d["mass_adv_out_cumulative"] = cum_exit_outside
 
-            # ===== 7) Burial (multiple events allowed) =====
-            # Count mass each time an element transitions into buried state (sburied): specie id = num_sburied
-            # - burial at t=0 is allowed (counts as an event if starts buried)
-            # - multiple burial events per element are allowed (buried -> not buried -> buried again)
-            # - only count events that occur while inside domain (priority to adv_out)
+        # ===== 6) Stranding (priority to adv_out) =====
+        # compute mass exiting by stranding (ignore initial stranded at t=0)
+        if stranded_idx is None:
+            extracted_active_dict_1d["mass_stranded_ts"] = np.zeros(steps)
+            extracted_active_dict_1d["mass_stranded_cumulative"] = np.zeros(steps)
+        else:
+            prev_str = np.vstack([stranded[0:1, :], stranded[:-1, :]])
+            became_stranded = (~prev_str) & stranded
 
-            if in_buried_sed is None or (np.asarray(in_buried_sed).any() is False):
-                extracted_active_dict_1d["mass_buried_ts"] = np.zeros(steps)
-                extracted_active_dict_1d["mass_buried_cumulative"] = np.zeros(steps)
-            else:
-                in_buried_sed = np.asarray(in_buried_sed, dtype=bool)
-                # False->True transitions (t>0)
-                prev_bur = np.vstack([in_buried_sed[0:1, :], in_buried_sed[:-1, :]])
-                became_buried = (~prev_bur) & in_buried_sed
-                # Allow burial at first timestep as an event
-                became_buried[0, :] = in_buried_sed[0, :]
-                # Only count burial events occurring inside the domain at that timestep
-                became_buried &= (~adv_out)
-                # Forward-fill mass once if needed (mass at event time = last known finite mass)
-                if mass_ff is None:
-                    mass_ff = pd.DataFrame(mass).ffill(axis=0).values
+            # Only count stranding events that occur while inside domain
+            prev_adv = np.vstack([adv_out[0:1, :], adv_out[:-1, :]])
+            became_stranded &= (~adv_out) & (~prev_adv)
 
-                buried_at_t = np.nansum(mass_ff * became_buried, axis=1) * mass_conversion_factor
-                buried_cum = np.cumsum(buried_at_t)
+            if mass_ff is None:
+                mass_ff = pd.DataFrame(mass).ffill(axis=0).values
 
-                extracted_active_dict_1d["mass_buried_ts"] = buried_at_t
-                extracted_active_dict_1d["mass_buried_cumulative"] = buried_cum
+            exit_stranded_at_t = np.nansum(mass_ff * became_stranded, axis=1) * mass_conversion_factor
+            cum_exit_stranded = np.cumsum(exit_stranded_at_t)
 
-            # ===== 8) Assemble DataFrame =====
-            # The function builds time-series arrays in extracted_active_dict_1d;
-            # assemble them into a dataframe for convenience.
-            df = pd.DataFrame({
-                f'time-[{time_unit}]': time_steps,
-                'date_of_timestep': time_date_serie,
-                **extracted_active_dict_1d,
-            })
-            return df
+            extracted_active_dict_1d["mass_stranded_ts"] = exit_stranded_at_t
+            extracted_active_dict_1d["mass_stranded_cumulative"] = cum_exit_stranded
+
+        # ===== 7) Burial (multiple events allowed) =====
+        # Count mass each time an element transitions into buried state (sburied): specie id = num_sburied
+        # - burial at t=0 is allowed (counts as an event if starts buried)
+        # - multiple burial events per element are allowed (buried -> not buried -> buried again)
+        # - only count events that occur while inside domain (priority to adv_out)
+
+        if in_buried_sed is None or (np.asarray(in_buried_sed).any() is False):
+            extracted_active_dict_1d["mass_buried_ts"] = np.zeros(steps)
+            extracted_active_dict_1d["mass_buried_cumulative"] = np.zeros(steps)
+        else:
+            in_buried_sed = np.asarray(in_buried_sed, dtype=bool)
+            # False->True transitions (t>0)
+            prev_bur = np.vstack([in_buried_sed[0:1, :], in_buried_sed[:-1, :]])
+            became_buried = (~prev_bur) & in_buried_sed
+            # Allow burial at first timestep as an event
+            became_buried[0, :] = in_buried_sed[0, :]
+            # Only count burial events occurring inside the domain at that timestep
+            became_buried &= (~adv_out)
+            # Forward-fill mass once if needed (mass at event time = last known finite mass)
+            if mass_ff is None:
+                mass_ff = pd.DataFrame(mass).ffill(axis=0).values
+
+            buried_at_t = np.nansum(mass_ff * became_buried, axis=1) * mass_conversion_factor
+            buried_cum = np.cumsum(buried_at_t)
+
+            extracted_active_dict_1d["mass_buried_ts"] = buried_at_t
+            extracted_active_dict_1d["mass_buried_cumulative"] = buried_cum
+
+        # ===== 8) Assemble DataFrame =====
+        # The function builds time-series arrays in extracted_active_dict_1d;
+        # assemble them into a dataframe for convenience.
+        df = pd.DataFrame({
+            f'time-[{time_unit}]': time_steps,
+            'date_of_timestep': time_date_serie,
+            **extracted_active_dict_1d,
+        })
+        return df
 
 
 
