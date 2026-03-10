@@ -7895,86 +7895,8 @@ class ChemicalDrift(OceanDrift):
         if filename is not None:
             plt.savefig(filename, format=filename[-3:], transparent=True, bbox_inches="tight", dpi=300)
 
-    @staticmethod
-    def _change_datetime_format(datetime_str, new_format):
-        '''
-        Change format of datetime string to a specified format
 
-        Parameters
-        ----------
-        datetime_str: str, datetime string to be reformatted
-        new_format:  str, specified datetime format
-        '''
-        possible_formats = ["%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y/%m/%d %H", "%Y/%m/%d",
-                            "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d %H", "%Y-%m-%d",
-                            "%d-%m-%Y %H:%M:%S", "%d-%m-%Y %H:%M", "%d-%m-%Y %H", "%d-%m-%Y",
-                            "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y %H", "%d/%m/%Y",
-                            "%m-%d-%Y %H:%M:%S", "%m-%d-%Y %H:%M", "%m-%d-%Y %H", "%m-%d%Y",
-                            "%m/%d/%Y %H:%M:%S", "%m/%d/%Y %H:%M", "%m/%d/%Y %H", "%m/%d/%Y"
-                            ]
-        for fmt in possible_formats:
-            try:
-                # Attempt to parse the datetime string
-                dt = datetime.strptime(datetime_str, fmt)
-                # If parsing is successful, format the datetime object
-                formatted_datetime = dt.strftime(new_format)
-                # Return the formatted datetime string
-                return formatted_datetime
-            except ValueError:
-                pass  # Continue to the next format if parsing fails
-        # Return None if parsing fails for all formats
-        raise ValueError("Unknown format of date_of_timestep")
-
-
-
-    @staticmethod
-    def _select_df_column(col_name, dataframe):
-        '''
-        Select a column of mass_fin_df based on name
-        '''
-        return dataframe[dataframe.columns[dataframe.columns.str.contains(col_name)]]
-
-
-
-    def filter_dataframe(self, df, time_unit, start_date=None, end_date=None):
-        '''
-        Filter dataframe based on start and end date
-
-        df:                     Pandas dataframe, mass_fin_df
-        start_date:                   pd.Datetime, start of plotted timeserie
-                                      (e.g., pd.to_datetime("2018-01-01 00:00:00", format = '%Y-%m-%d %H:%M:%S'))
-        end_date:                     pd.Datetime, end of plotted timeserie
-        '''
-        import pandas as pd
-
-        # Check if both start_date and end_date are None
-        if start_date is None and end_date is None:
-            return df
-
-        date_of_timestep_ls = []
-        for element in df['date_of_timestep']:
-            if isinstance(element, pd.Timestamp):
-                element = element.strftime('%Y-%m-%d %H:%M:%S')
-
-            date_of_timestep_ls.append(self._change_datetime_format(datetime_str = element,
-                                        new_format = "%Y-%m-%d %H:%M:%S"))
-        df['date_of_timestep'] = date_of_timestep_ls
-        del date_of_timestep_ls
-
-        date_column = pd.to_datetime(df['date_of_timestep'], format='%Y-%m-%d %H:%M:%S')
-
-        # Filter based on start_date and/or end_date
-        if start_date is not None and end_date is not None:
-            filtered_df = df[( date_column >= start_date) & (date_column <= end_date)]
-        elif start_date is not None:
-            filtered_df = df[(date_column >= start_date)]
-        else:  # end_date is not None
-            filtered_df = df[(date_column <= end_date)]
-        # Correct 'time'+"-["+ time_unit +"]" column to start at new start_date
-        time_delta_filter = filtered_df['time'+"-["+ time_unit +"]"].iloc[0] - df['time'+"-["+ time_unit +"]"].iloc[0]
-        filtered_df['time'+"-["+ time_unit +"]"] = np.array(filtered_df['time'+"-["+ time_unit +"]"]) - time_delta_filter
-        return filtered_df
-
+    ### Helpers for extract_summary_timeseries
     def calc_mass_conversion_factor(self, mass_unit):
         """
         Returns factor f such that:
@@ -8019,7 +7941,6 @@ class ChemicalDrift(OceanDrift):
                     }
 
         u = str(time_unit).strip()
-
         # normalize optional aliases
         if u == "h":
             u = "hr"
@@ -8083,7 +8004,6 @@ class ChemicalDrift(OceanDrift):
                 np.copyto(prev_ff, cur_ff)
 
         return m_ts
-
 
     @staticmethod
     def adv_out_mass_ts(mass, adv_out, mass_conversion_factor=1.0, chunk_cols=20000):
@@ -8243,15 +8163,14 @@ class ChemicalDrift(OceanDrift):
             mass_unit='g',
             time_unit='h',
             shp_file_path = None,
-            sub_domain = False,
             lon_min = None,
             lon_max = None,
             lat_min = None,
             lat_max = None,
             start_date = None,
             end_date = None,
-            time_start=None,   # NEW: in requested time_unit (e.g. hours if time_unit='h')
-            time_end=None,     # NEW: in requested time_unit
+            time_start=None,
+            time_end=None,
             save_files = True,
             verbose = False
             ):
@@ -8338,7 +8257,6 @@ class ChemicalDrift(OceanDrift):
               Initial stranded at t=0 is ignored.
             - Burial: counts transitions into buried state (can count at t=0 if starts buried), only when inside
               now (~adv_out[t]). Multiple burial events per element are allowed if it leaves and re-enters burial.
-
 
         Returns
         -------
@@ -8450,7 +8368,7 @@ class ChemicalDrift(OceanDrift):
         # removed_idx       = status_categories.index('removed')         if 'removed'  in status_categories else None
         # specie_ids_name = {v: k for k, v in specie_ids_num.items() if v is not None}
 
-        # Define time and mass convertions
+        # ===== Define time and mass convertions
         if mass_unit not in ['g','mg','ug','µg','kg']:
             raise ValueError(f"Incorrect mass_unit: '{mass_unit}', can be only 'g','mg','ug','µg','kg'")
         mass_conversion_factor = self.calc_mass_conversion_factor(mass_unit)
@@ -8482,7 +8400,7 @@ class ChemicalDrift(OceanDrift):
         self.result = ds_clean
         del ds_clean, ds
 
-        # ===== Optional time filtering =====
+        # ===== Optional time filtering
         result_ds = self.result
 
         # Build full time axes on the *current* (cleaned) dataset
@@ -8535,6 +8453,7 @@ class ChemicalDrift(OceanDrift):
         # Number of timesteps (after optional filtering)
         steps = len(self.result.time)
 
+        # ===== Dynamically extract attributes and create dictionary
         attrs_ls = ['lat', 'lon', 'mass',
                     'mass_degraded','mass_degraded_water', 'mass_degraded_sediment',
                     'mass_volatilized', 'mass_photodegraded', 'mass_biodegraded',
@@ -8542,14 +8461,14 @@ class ChemicalDrift(OceanDrift):
                     'mass_hydrolyzed', 'mass_hydrolyzed_water', 'mass_hydrolyzed_sediment'
                     ]
 
-        # Dynamically create variables and assign values
+
         result_ds=self.result
         extracted_attrs_dict_2d = {}
         for attr in attrs_ls:
             extracted_attrs_dict_2d[attr] = ((getattr(result_ds, attr).T.values)
                                if hasattr(result_ds, attr) else None)
 
-        # Get mask for elements in water column and sedments for each timestep
+        # ===== Get mask for elements in water column and sedments for each timestep
         N_elem = extracted_attrs_dict_2d['mass'].shape[1]
         status = result_ds.status.T.values                     # (T,N)
         specie = result_ds.specie.T.values                     # (T,N)
@@ -8583,7 +8502,7 @@ class ChemicalDrift(OceanDrift):
         # seeded_on_land = status_mask(seeded_on_land_idx) if seeded_on_land_idx is not None else None
         stranded       = status_mask(stranded_idx) if stranded_idx is not None else None
 
-        # Find which elements are advected out of the domain
+        # ===== Find which elements are advected out of the domain
         if verbose:
             print("Calculating mass advected out of the simulation")
         # (i) Use shapefile if provided
@@ -8648,13 +8567,14 @@ class ChemicalDrift(OceanDrift):
             """Sum arr over axis, only where mask==True; ignore NaNs inside mask."""
             return np.nansum(np.where(mask, arr, np.nan), axis=axis)
 
-        # Dynamically create variables and assign values
+        # ===== Dynamically extract 1D timeseries
         mass_dict_1d = {}
         mass_eliminated_dict_1d = {}
         mass_sp_dict_1d = {}
         perc_sp_dict_1d = {}
+        perc_elim_dict_1d = {}
 
-        # ===== 1) Inside-system mass (not outside/seeded_on_land/stranded elements) =====
+        # 1) Inside-system mass (not outside/seeded_on_land/stranded elements)
         inside_mask = ~adv_out
         if seeded_on_land_idx is not None:
             inside_mask &= (status != seeded_on_land_idx)
@@ -8665,7 +8585,7 @@ class ChemicalDrift(OceanDrift):
         mass_dict_1d["mass_sed_ts"] = masked_nansum(extracted_attrs_dict_2d['mass'], in_sediment_layer  & inside_mask, axis=1) * mass_conversion_factor
         mass_dict_1d["mass_actual_ts"] = mass_dict_1d["mass_water_ts"] + mass_dict_1d["mass_sed_ts"]
 
-        # ===== 2) Inside-system mass for each specie (not buried/outside/seeded_on_land/stranded elements) =====
+        # 2) Inside-system mass for each specie (not buried/outside/seeded_on_land/stranded elements)
         mass = np.asarray(extracted_attrs_dict_2d['mass'])   # (T,N)
         T = mass.shape[0]
         zeros_ts = np.zeros(T, dtype=float)
@@ -8692,7 +8612,7 @@ class ChemicalDrift(OceanDrift):
             else:
                 perc_sp_dict_1d[f"perc_sp_{key}_ts"] = np.nan_to_num((m_ts / den_safe) * 100.0, nan=0.0)
 
-        # ===== 3) Emitted mass (first timestep each element is finite) =====
+        # 3) Emitted mass (first timestep each element is finite)
         valid = np.isfinite(extracted_attrs_dict_2d['mass'])
         first_seen_idx = valid.argmax(axis=0)                 # 0 if never seen; guard with has_seen
         has_seen = valid.any(axis=0)
@@ -8704,7 +8624,7 @@ class ChemicalDrift(OceanDrift):
         mass_dict_1d["mass_emitted_ts"] = emitted_mass * mass_conversion_factor
         mass_dict_1d["mass_emitted_cumulative"] = np.cumsum(mass_dict_1d["mass_emitted_ts"])
 
-        # ===== 4) Mass eliminated =====
+        # 4) Mass eliminated
         # Always cumulative in self.result
         attrs_ls_1d = [
             'mass_degraded', 'mass_degraded_water', 'mass_degraded_sediment',
@@ -8727,7 +8647,7 @@ class ChemicalDrift(OceanDrift):
             mass_eliminated_dict_1d[f"{attr}_ts"] = m_ts
             mass_eliminated_dict_1d[f"{attr}_cumulative"] = np.cumsum(m_ts, dtype=np.float64).astype(np.float32)
 
-        # ===== 5) Outside/advection  =====
+        # 5) Outside/advection
         # compute mass exiting by advection (ignore initial outside at t=0)
         if not adv_out.any():
             mass_eliminated_dict_1d["mass_adv_out_ts"] = np.zeros(steps)
@@ -8742,7 +8662,7 @@ class ChemicalDrift(OceanDrift):
             mass_eliminated_dict_1d["mass_adv_out_ts"] = exit_outside_at_t.astype(np.float32, copy=False)
             mass_eliminated_dict_1d["mass_adv_out_cumulative"] = cum_exit_outside.astype(np.float32, copy=False)
 
-        # ===== 6) Stranding (priority to adv_out) =====
+        # 6) Stranding (priority to adv_out)
         # compute mass exiting by stranding (ignore initial stranded at t=0)
         if stranded_idx is None:
             mass_eliminated_dict_1d["mass_stranded_ts"] = np.zeros(steps)
@@ -8761,7 +8681,7 @@ class ChemicalDrift(OceanDrift):
             mass_eliminated_dict_1d["mass_stranded_ts"] = exit_stranded_at_t.astype(np.float32, copy=False)
             mass_eliminated_dict_1d["mass_stranded_cumulative"] = cum_exit_stranded.astype(np.float32, copy=False)
 
-        # ===== 7) Burial (multiple events allowed) =====
+        # 7) Burial (multiple events allowed)
         # Count mass each time an element transitions into buried state (sburied): specie id = num_sburied
         # - burial at t=0 is allowed (counts as an event if starts buried)
         # - multiple burial events per element are allowed (buried -> not buried -> buried again)
@@ -8783,12 +8703,33 @@ class ChemicalDrift(OceanDrift):
             mass_eliminated_dict_1d["mass_buried_ts"] = exit_buried_at_t.astype(np.float32, copy=False)
             mass_eliminated_dict_1d["mass_buried_cumulative"] = cum_buried.astype(np.float32, copy=False)
 
-        # ===== Drop padding row (if used) and recompute window cumulatives =====
+        # 8) Percentage contribution of each elimination term (per time step)
+        ts_keys = [k for k in mass_eliminated_dict_1d.keys() if k.endswith("_ts")]
+
+        # total elimination during each ts (same length as steps)
+        total_elim_ts = np.zeros(steps, dtype=np.float64)
+        for k in ts_keys:
+            total_elim_ts += np.asarray(mass_eliminated_dict_1d[k], dtype=np.float64)
+        # compute per-term percentages
+        for k in ts_keys:
+            term_ts = np.asarray(mass_eliminated_dict_1d[k], dtype=np.float64)
+            base = k[:-3]  # drop "_ts"
+            perc_key = f"perc_elim_{base}_ts"
+
+            perc = np.divide(
+                term_ts,
+                total_elim_ts,
+                out=np.zeros_like(term_ts, dtype=np.float64),
+                where=total_elim_ts > 0.0,
+            ) * 100.0
+
+            perc_elim_dict_1d[perc_key] = perc.astype(np.float32, copy=False)
+
+        # ===== Drop padding row (if used) and recompute window cumulatives
         if pad_rows:
             # slice time axes
             time_steps = time_steps[pad_rows:]
             time_date_serie = time_date_serie[pad_rows:]
-
             # slice 1D dicts
             for d in (mass_dict_1d, mass_sp_dict_1d, perc_sp_dict_1d):
                 for k in list(d.keys()):
@@ -8799,7 +8740,6 @@ class ChemicalDrift(OceanDrift):
                 mass_dict_1d["mass_emitted_cumulative"] = np.cumsum(
                     mass_dict_1d["mass_emitted_ts"], dtype=np.float64
                 )
-
             # slice eliminated ts and recompute eliminated cumulative within the window
             for k in list(mass_eliminated_dict_1d.keys()):
                 if k.endswith("_ts"):
@@ -8810,7 +8750,7 @@ class ChemicalDrift(OceanDrift):
                     if cum_key in mass_eliminated_dict_1d:
                         mass_eliminated_dict_1d[cum_key] = np.cumsum(ts, dtype=np.float64).astype(np.float32)
 
-        # ===== 8) Assemble DataFrame =====
+        # ===== Assemble DataFrame
         # The function builds time-series arrays in *_dict_1d;
         # assemble them into a dataframe for convenience.
         mass_UM = f"[{mass_unit}]"
@@ -8820,7 +8760,8 @@ class ChemicalDrift(OceanDrift):
         mass_dict              = {f"{k} {mass_UM}": v for k, v in mass_dict_1d.items()}
         mass_eliminated_dict   = {f"{k} {mass_UM}": v for k, v in mass_eliminated_dict_1d.items()}
         mass_sp_dict           = {f"{k} {mass_UM}": v for k, v in mass_sp_dict_1d.items()}
-        perc_sp_dict           = {f"{k} [%]":     v for k, v in perc_sp_dict_1d.items()}
+        perc_sp_dict           = {f"{k} [%]":       v for k, v in perc_sp_dict_1d.items()}
+        perc_elim_dict         = {f"{k} [%]":       v for k, v in perc_elim_dict_1d.items()}
 
         # UM column: only first row filled
         n = len(time_steps)
@@ -8833,6 +8774,7 @@ class ChemicalDrift(OceanDrift):
             **mass_eliminated_dict,
             **mass_sp_dict,
             **perc_sp_dict,
+            **perc_elim_dict,
             "UM": um_col,
         })
 
@@ -8840,8 +8782,8 @@ class ChemicalDrift(OceanDrift):
             df.to_csv(timeseries_file_path, index=False)
         else:
             return df
-# %%
 
+    ### Helpers for plot_summary_timeseries
     @staticmethod
     def _existing(df, cols):
         return [c for c in cols if c in df.columns]
@@ -9064,9 +9006,7 @@ class ChemicalDrift(OceanDrift):
 
         cmap = {}
 
-        # ----------------------------
         # 1) Fixed "main" variables
-        # ----------------------------
         fixed = {
             "mass_actual_ts": "#000000",
             "mass_water_ts":  "#0d47a1",
@@ -9089,10 +9029,7 @@ class ChemicalDrift(OceanDrift):
         }
         cmap.update(fixed)
 
-
-        # ----------------------------
         # 2) Process families with water/sed shading
-        # ----------------------------
         hydro_base = "#7a0000"  # dark red
         bio_base   = "#2e7d32"  # green
         photo_base = "#fb8c00"  # orange
@@ -9124,13 +9061,12 @@ class ChemicalDrift(OceanDrift):
         cmap["biodegraded sediment"] = bio_s
         cmap["biodegraded"] = bio_base
 
-        # Photolysis / photodegradation (no water/sed in your table)
+        # Photolysis / photodegradation
         for k in ("mass_photodegraded_ts", "mass_photodegraded_cumulative"):
             cmap[k] = photo_base
         cmap["photodegraded"] = photo_base
 
-        # "total degraded" (not requested explicitly but you plot it a lot):
-        # choose a distinct deep violet so it doesn't collide with hydrolysis purple
+        # "total degraded"
         deg_base = "#4a148c"
         deg_w = self._mix_with_white(deg_base, 0.60)
         deg_s = self._mix_with_white(deg_base, 0.40)
@@ -9144,15 +9080,13 @@ class ChemicalDrift(OceanDrift):
         cmap["degraded sediment"] = deg_s
         cmap["degraded"] = deg_base
 
-        # Volatilization / advection / stranded bar labels (consistent with the fixed ones)
+        # Volatilization / advection / stranded bar labels
         cmap["volatilized"]  = fixed["mass_volatilized_cumulative"]
         cmap["advected out"] = fixed["mass_adv_out_cumulative"]
         cmap["stranded"]     = fixed["mass_stranded_cumulative"]
 
-        # ----------------------------
         # 3) Speciation palettes by topic
         #    (mass_sp_* and perc_sp_* share same colors)
-        # ----------------------------
         # Canonical SP keys are like: sp_dissolved_ts, sp_spm_rev_ts, sp_sed_irrev_ts, etc.
         sp_keys = set()
         for lab in labels:
@@ -9194,9 +9128,7 @@ class ChemicalDrift(OceanDrift):
         other_mix = [0.75, 0.60, 0.48, 0.36, 0.26, 0.18, 0.10]
         assign_sp_group_fixed(other_sp_order, gray_base, other_mix)
 
-        # ----------------------------
         # 4) Fallback for anything not covered
-        # ----------------------------
         # Use 60-color palette; deterministic assignment for remaining labels
         fallback_palette = (
             list(plt.get_cmap("tab20").colors) +
@@ -9235,7 +9167,7 @@ class ChemicalDrift(OceanDrift):
         if k in bar_map:
             return bar_map[k]
 
-        # --- Speciation keys: mass_sp_* and perc_sp_* ---
+        # --- Speciation keys: mass_sp_* and perc_sp_*
         if k.startswith("mass_sp_") or k.startswith("perc_sp_"):
             # strip mass_/perc_
             sp = k.split("_", 1)[1]  # -> "sp_..."
@@ -9262,7 +9194,7 @@ class ChemicalDrift(OceanDrift):
             }
             return sp_map.get(sp, sp.replace("_", " ").replace("sp ", "").title())
 
-        # --- Other mass keys: merge time + compartment into one suffix like "(ts-water)" ---
+        # --- Other mass keys: merge time + compartment into one suffix like "(ts-water)"
         time_tag = None
         base = k
 
@@ -9311,7 +9243,6 @@ class ChemicalDrift(OceanDrift):
         suffix = f" ({'-'.join(parts)})" if parts else ""
         return nice + suffix
 
-    # %%
     def plot_summary_timeseries(self, df=None,
                         timeseries_file_path=None,
                         target_mass_unit=None,
@@ -9332,6 +9263,9 @@ class ChemicalDrift(OceanDrift):
         - Two columns of panels.
         """
         import matplotlib.pyplot as plt
+        from matplotlib.backends.backend_pdf import PdfPages
+        from matplotlib.gridspec import GridSpec
+        import numpy as np
         import pandas as pd
 
         if df is None:
@@ -9340,7 +9274,7 @@ class ChemicalDrift(OceanDrift):
             else:
                 raise ValueError("Both df and timeseries_file_path are None")
 
-        # ---- font sizes (defaults) ----
+        # ---- font sizes (defaults)
         fs = {
             "legend": 10,
             "xlabel": 12,
@@ -9409,7 +9343,7 @@ class ChemicalDrift(OceanDrift):
             if col in dfc.columns:
                 sp_mass_cols.append(col)
 
-        # Add any remaining mass_sp_*_ts columns not covered above (future-proof)
+        # Add any remaining mass_sp_*_ts columns not covered above
         extra_sp = [
             c for c in dfc.columns
             if c.startswith("mass_sp_") and c.endswith(f"_ts [{UM_mass}]") and c not in sp_mass_cols
@@ -9576,17 +9510,7 @@ class ChemicalDrift(OceanDrift):
 
         color_map = self._build_explicit_color_map(all_labels)
 
-        # nrows = len(panels) // 2
-        from matplotlib.backends.backend_pdf import PdfPages
-        import numpy as np
-
-        # Build colors once (already done above)
-        # color_map = self._build_explicit_color_map(all_labels)
-
-        # --- Pagination + rendering on A4 portrait with fixed panel sizes ---
-        from matplotlib.backends.backend_pdf import PdfPages
-        from matplotlib.gridspec import GridSpec
-        import numpy as np
+        # --- Pagination + rendering on A4 portrait with fixed panel sizes
 
         # Force A4 portrait for every page
         A4_PORTRAIT = (8.27, 11.69)  # inches
@@ -9921,10 +9845,7 @@ class ChemicalDrift(OceanDrift):
 
             return fig, ax_plots
 
-
-        # --------------------------
-        # Topic grouping + pagination
-        # --------------------------
+        # --- Topic grouping + pagination
         rows = [panels[i:i+2] for i in range(0, len(panels), 2)]
 
         def find_row(startswith):
@@ -9967,7 +9888,6 @@ class ChemicalDrift(OceanDrift):
             topic_pages.append(('Mass-budget checks', rows[i_sanity:]))
 
         # If not splitting to multiple pages, render everything into ONE A4 portrait figure
-        # (keeps your old return contract: fig, axes, dfc)
         if not split_a4:
             nrows_local = len(rows)
             fig = plt.figure(figsize=A4_PORTRAIT)
@@ -10038,10 +9958,7 @@ class ChemicalDrift(OceanDrift):
 
         return figs, dfc
 
-
-
-# %%
-
+    ### Helpers for sum_summary_timeseries
     @staticmethod
     def _as_timedelta64(x):
         '''
@@ -10279,7 +10196,7 @@ class ChemicalDrift(OceanDrift):
         den = pd.to_numeric(df[denom_col], errors="coerce").to_numpy()
         den_safe = np.where(den > 0, den, np.nan)
 
-        # ---------- MASS closure ----------
+        # --- MASS closure
         mass_sp_cols = [c for c in df.columns if c.startswith("mass_sp_") and c.endswith(dst_tag)]
         kept_mass_cols = []
         for c in mass_sp_cols:
@@ -10316,7 +10233,7 @@ class ChemicalDrift(OceanDrift):
             "max_rel_residual_pct": float(np.nanmax(np.abs(residual_rel))) if np.isfinite(residual_rel).any() else np.nan,
         })
 
-        # ---------- PERCENT sum ----------
+        # ---PERCENT sum
         perc_cols = [c for c in df.columns if c.startswith("perc_sp_") and c.endswith("[%]")]
         kept_perc_cols = []
         for c in perc_cols:
@@ -10345,7 +10262,7 @@ class ChemicalDrift(OceanDrift):
             "max_abs_err": float(np.nanmax(np.abs(perc_sum - target))) if np.isfinite(perc_sum).any() else np.nan,
         })
 
-        # ---------- optional QC columns ----------
+        # --- optional QC columns
         if add_qc_columns:
             out[f"{qc_prefix}mass_sp_sum_ts {dst_tag}"] = mass_sp_sum
             out[f"{qc_prefix}mass_sp_residual_ts {dst_tag}"] = residual
@@ -10355,7 +10272,7 @@ class ChemicalDrift(OceanDrift):
             out[f"{qc_prefix}perc_sp_sum_ts [%]"] = perc_sum
             out[f"{qc_prefix}perc_sp_sum_ok"] = perc_ok
 
-        # ---------- failure handling ----------
+        # ---failure handling
         any_fail = (report["mass"]["n_fail"] > 0) or (report["perc"]["n_fail"] > 0)
         if any_fail and on_fail != "ignore":
             # find a representative “worst” index to point at
@@ -10477,7 +10394,7 @@ class ChemicalDrift(OceanDrift):
         add_qc_columns=False,
         qc_on_fail="warn",
         return_qc_report=False,
-        normalize_perc_to_100=False,   # <-- add this arg (fixes your self.normalize_perc_to_100 bug)
+        normalize_perc_to_100=False,
     ):
         '''
         Align and sum multiple summary time series DataFrames, then recompute perc_sp_*.
@@ -10552,7 +10469,6 @@ class ChemicalDrift(OceanDrift):
                 tname = date_col
                 dfc[tname] = pd.to_datetime(dfc[tname])
                 dfc = dfc.set_index(tname)
-                # IMPORTANT: don't sum numeric time columns if date is index
                 time_like_cols = [c for c in dfc.columns if c.startswith("time [") and c.endswith("]")]
             else:
                 if detected_time_col is None:
@@ -10566,7 +10482,7 @@ class ChemicalDrift(OceanDrift):
             if "UM" in dfc.columns:
                 drop_cols.append("UM")
             drop_cols += [c for c in dfc.columns if c.startswith("perc_") and c.endswith("[%]")]
-            drop_cols += time_like_cols  # <-- key fix
+            drop_cols += time_like_cols
 
             dfc2 = dfc.drop(columns=[c for c in drop_cols if c in dfc.columns], errors="ignore")
 
@@ -10649,7 +10565,7 @@ class ChemicalDrift(OceanDrift):
             out,
             mass_unit=UM_mass,
             denom_base="mass_actual_ts",
-            normalize_to_100=normalize_perc_to_100,  # <-- fixed
+            normalize_to_100=normalize_perc_to_100,
             exclude_keys=("sed_buried",),
         )
 
@@ -10692,8 +10608,6 @@ class ChemicalDrift(OceanDrift):
             out.loc[out.index[0], "UM"] = f"[{UM_mass}] [{UM_time}]"
 
         return (out, qc_report) if return_qc_report else out
-
-
 
 
     ### Helpers for sum_DataArray_list
