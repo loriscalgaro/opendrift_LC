@@ -8275,30 +8275,23 @@ class ChemicalDrift(OceanDrift):
 
         Parameters
         ----------
-        timeseries_file_path : str
-            Output CSV file path. Must end with ".csv" when save_files is True.
-        mass_unit : str, optional
-            Mass unit for outputs. Allowed: 'kg', 'g', 'mg', 'ug', 'µg'. Default is 'g'.
-            The conversion is performed from the unit stored in self.elements.variables['mass']['units'].
-        time_unit : str, optional
-            Time unit for the exported time axis. Allowed: 's' (seconds), 'm' (minutes), 'hr' or 'h' (hours),
-            'd' (days). Default is 'h'.
-            The conversion is based on self.time_step_output (the model output interval).
-        shp_file_path : str, optional
-            Path to a shapefile defining the “inside” domain polygon(s). If provided, adv_out is computed as
-            NOT-within shapefile. Default is None.
-        lon_min, lon_max, lat_min, lat_max : float, optional
-            Geographic bounding box used to define the inside domain when no shapefile is provided.
-            Take precedence over deactivate_coords. Default is None.
-        start_date, end_date : pandas.Timestamp/np.datetime64, optional
-            Start/end dates for slicing the exported period.
-        time_start, time_end : int, optional. Take precedence over start_date, end_date
-            Start/end of slicing window for the exported period.In requested time_unit (e.g. hours if time_unit='h')
-        save_files : bool, optional
-            If True, export the resulting DataFrame to timeseries_file_path and return None.
-            If False, return the DataFrame and do not write files. Default is True.
-        verbose : bool, optional
-            Print progress information. Default is False.
+        timeseries_file_path: str, Output CSV file path. Must end with ".csv" when save_files is True.
+        mass_unit:            str, Mass unit for outputs. Allowed: 'kg', 'g', 'mg', 'ug', 'µg'. Default is 'g'.
+                                       The conversion is performed from the unit stored in self.elements.variables['mass']['units'].
+        time_unit:            str, Time unit for the exported time axis.
+                                       Allowed: 's' (seconds), 'm' (minutes), 'hr' or 'h' (hours), 'd' (days). Default is 'h'.
+                                       The conversion is based on self.time_step_output (the model output interval).
+        shp_file_path:        str, Path to a shapefile defining the “inside” domain polygon(s).
+                                       If provided, adv_out is computed as NOT-within shapefile.
+        lon_min, lon_max,
+        lat_min, lat_max:     float, Geographic bounding box used to define the inside domain when no shapefile is provided.
+                                      Take precedence over deactivate_coords. Default is None.
+        start_date, end_date: pandas.Timestamp/np.datetime64, Start/end dates for slicing the exported period.
+        time_start, time_end: int,.Start/end of slicing window for the exported period.In requested time_unit (e.g. hours if time_unit='h')
+                                      Take precedence over start_date, end_date
+        save_files:           bool, If True, export the resulting DataFrame to timeseries_file_path and return None.
+                                    If False, return the DataFrame and do not write files.
+        verbose:              bool, Print progress information.
 
         Processes / logic
         -----------------
@@ -10049,325 +10042,659 @@ class ChemicalDrift(OceanDrift):
 
 # %%
 
-
-        # Example:
-
-
-
-
-
-
-
-
-
-    def sum_summary_timeseries(self,
-                               ts_file_path,
-                               sim_name = None,
-                               csv_suffix = None,
-                               start_date = None,
-                               end_date = None,
-                               freq_time = None,
-                               mass_unit_out = "g"):
+    @staticmethod
+    def _as_timedelta64(x):
         '''
-        Sum all .csv files produced by extract_summary_timeseries with the same suffix present in a folder and return a
-        .csv file
+        Convert a duration-like input into a NumPy timedelta64.
 
-        Parameters
-        ----------
-        timeseries_file_path:         string, folder path .csv files produced by extract_summary_timeseries. Must end with /
-        sim_name:                     string, name of simulation that will be included in sum .csv file name
-        csv_suffix:                   string, suffix of .csv file names that will be summed
-        start_date:                   pd.Datetime, start of reconstructed timeseries when .csv have different timesteps
-                                      (e.g., ("2018-01-01 00:00:00", format = '%Y-%m-%d %H:%M:%S'))
-        end_date:                     pd.Datetime, end of reconstructed timeseries when .csv have different timesteps
-        freq_time:                    string, frequency of reconstructed timeseries when .csv have different timesteps expressed as hours (e.g., "6H")
-        mass_unit_out:                string, mass unit of uotput .csv file ('kg' 'g','mg','ug')
+        x:   None|np.timedelta64|pandas.Timedelta|str, Duration value to convert.
+                - None -> returns None
+                - np.timedelta64 -> returned unchanged
+                - pandas.Timedelta -> converted via to_timedelta64()
+                - str -> parsed with pandas.to_timedelta (e.g. "3h", "24h", "2D")
 
-        Returns a Pandas Dataframe equal to extract_summary_timeseries
+        Returns:
+            np.timedelta64|None, Converted duration, or None if x is None.
+
+        Raises:
+            TypeError, If x is not one of the supported types.
         '''
-
         import pandas as pd
-        from datetime import datetime
-        import os
+        if x is None:
+            return None
+        if isinstance(x, np.timedelta64):
+            return x
+        if isinstance(x, pd.Timedelta):
+            return x.to_timedelta64()
+        if isinstance(x, str):
+            return pd.to_timedelta(x).to_timedelta64()
+        raise TypeError(f"Unsupported timedelta type: {type(x)}")
 
-        if csv_suffix is None:
-            csv_suffix = "_extracted_timeseries.csv"
+    @staticmethod
+    def _infer_freq_step(times_list, verbose=False):
+        '''
+        Infer the minimal positive timestep across multiple time vectors.
 
-        # list of timeseries filenames
-        ts_file_name_ls = []
-        for filename in os.listdir(ts_file_path):
-            if filename.endswith(csv_suffix):
-                ts_file_name_ls.append(filename)
+        times_list:   list[array-like], List of time arrays.
+                        Each element is converted with np.asarray and differenced with np.diff.
+                        Works with datetime64 (returns np.timedelta64) and numeric time (returns float/int).
+                        Non-positive diffs (duplicates/non-monotonic artifacts) are ignored.
+        verbose:      bool, If True, prints whether a frequency was inferred.
 
-        if len(ts_file_name_ls) == 0:
-            raise ValueError("No .csv files were loaded, check csv_suffix")
+        Returns:
+            np.timedelta64|float|int|None, Minimal positive step if inferable; otherwise None.
+        '''
+        steps = []
+        for t in times_list:
+            t = np.asarray(t)
+            if t.size > 1:
+                d = np.diff(t)
 
-        if sim_name is None:
-            sim_name = ts_file_name_ls[0][:-3]
-        csv_file_name_fin = sim_name + "_extracted_sum_timeseries.csv"
-
-        # list of timeseries Pandas Dataframe imported
-        mass_fin_df_ls = []
-        for csv_file_name in ts_file_name_ls:
-            df = pd.read_csv(ts_file_path + csv_file_name).fillna(0)
-            # Correction for naming mistake. to be removed
-            if any(name == "mass_degr_sed" for name in df.columns):
-                df = df.rename(columns={"mass_degr_sed":"mass_degr_sed_adv-[g]"})
-            if any("Unnamed" in column_name for column_name in df.columns):
-                df = df.filter(regex='^(?!Unnamed).*$')
-            mass_fin_df_ls.append(df)
-
-        check_time_conv_factor = []
-        check_mass_conv_factor = []
-        check_time_step = []
-        for df_mass in mass_fin_df_ls:
-            check_time_conv_factor.append(df_mass.loc[0, ('convertion_factors-[time_mass]')])
-            check_mass_conv_factor.append(df_mass.loc[1, ('convertion_factors-[time_mass]')])
-            time_col_ind = int(np.where(df_mass.columns.str.contains("time-"))[0])
-            check_time_step.append(df_mass.iloc[1, time_col_ind] - df_mass.iloc[0, time_col_ind])
-
-        check_time_convertion_factor = all(element == check_time_conv_factor[0] for element in check_time_conv_factor)
-        check_mass_convertion_factor = all(element == check_mass_conv_factor[0] for element in check_mass_conv_factor)
-        check_time_step = all(element == check_time_step[0] for element in check_time_step)
-
-        if check_time_step is True:
-            if (check_time_convertion_factor and check_mass_convertion_factor) is False:
-                raise ValueError("time/mass_conversion_factor is not equal for all extracted timeseries")
-            time_conv_factor = mass_fin_df_ls[0].loc[0, ('convertion_factors-[time_mass]')]
-            mass_conv_factor = mass_fin_df_ls[0].loc[1, ('convertion_factors-[time_mass]')]
-
-            # Merge pd.Dataframes and sort by time
-            merged_df = pd.concat(mass_fin_df_ls, axis = 0)
-            merged_df.reset_index(drop = True, inplace = True)
-            merged_df["date_of_timestep"] = pd.to_datetime(merged_df["date_of_timestep"])
-            merged_df = merged_df.sort_values(by = ["date_of_timestep"])
-            # Sum rows of the same timestep
-            merged_df = pd.DataFrame(merged_df.groupby("date_of_timestep").sum())
-            merged_df.insert(0,('date_of_timestep'), merged_df.index)
-            merged_df["date_of_timestep"] = merged_df.index
-
-            # Reconstruct ["date_of_timestep"] column
-            time_start = (pd.to_datetime(merged_df["date_of_timestep"][0])).to_pydatetime()
-            time_delta_ls = []
-            for time_ind in range(1, len(merged_df["date_of_timestep"])):
-                time_delta_ls.append(merged_df["date_of_timestep"][time_ind] - time_start)
-
-            list_dates_fin = []
-            list_dates_fin.append(time_start)
-            for time_ind in time_delta_ls:
-                list_dates_fin.append((time_start) + time_ind)
-            merged_df["date_of_timestep"] = (list_dates_fin)
-
-            # Reconstruct ["time-[]"] column
-            new_time  = time_conv_factor * (range(0, len(merged_df["date_of_timestep"])))
-            time_col = [col for col in merged_df.columns if "time-[" in col]
-            merged_df.loc[:, time_col] = new_time
-            merged_df.reset_index(drop = True, inplace = True)
-
-            # Correct time/mass convertion factors
-            merged_df.loc[0, ('convertion_factors-[time_mass]')] = time_conv_factor
-            merged_df.loc[1, ('convertion_factors-[time_mass]')] = mass_conv_factor
-            # Recalculate percentages
-            merged_df_fin = self._correct_percentages_ts(merged_df)
-
-        elif ((check_time_step is False) and (start_date is not None) and\
-            (end_date is not None) and (freq_time is not None)):
-
-            # Set mass_conv_factor to NaN if df have different mass units
-            if all (element == check_mass_conv_factor[0] for element in check_mass_conv_factor):
-                mass_conv_factor = check_mass_conv_factor[0]
-            else:
-                mass_conv_factor = np.nan
-
-            # final row for each timestep that will be concatenated
-            ts_sum_ls = []
-            time_date_serie = pd.date_range(start=start_date, end = end_date, freq=freq_time)
-
-            for df_index in range(0, len(mass_fin_df_ls)):
-                df_mass = mass_fin_df_ls[df_index]
-
-                # Check format of ['date_of_timestep']
-                date_of_timestep_ls = []
-                for element in df_mass['date_of_timestep']:
-                    date_of_timestep_ls.append(self._change_datetime_format(datetime_str = element,
-                                                new_format = "%Y-%m-%d %H:%M:%S"))
-                df_mass['date_of_timestep'] = date_of_timestep_ls
-
-                # Remove mass degraded or removed before start_date
-                df_mass_date_column = pd.to_datetime(df_mass['date_of_timestep'], format='%Y-%m-%d %H:%M:%S')
-                # 'date_of_timestep' column must be ordered increasingly
-                df_mass_date_column = df_mass_date_column.sort_values(ascending=True)
-                if start_date < df_mass_date_column.min():
-                    start_date_index = df_mass.index[0]
+                if np.issubdtype(d.dtype, np.timedelta64):
+                    d = d[d > np.timedelta64(0, "ns")]
                 else:
-                    start_date_index = (df_mass_date_column <= start_date)[::-1].idxmax()
+                    d = d[d > 0]
 
-                filtered_df = df_mass[df_mass.index >= start_date_index]
-                # Select mass to remove
-                first_ts_to_remove = pd.DataFrame(filtered_df.iloc[0]).T
-                mass_col_ind = int(np.where(filtered_df.columns.str.contains("dissolved-"))[0])
-                mass_unit =  filtered_df.columns[mass_col_ind][11:-1]
+                if d.size:
+                    steps.append(d.min())
 
-                degr_columns_names_ls = ['mass_sed_buried'+ "-["+ mass_unit +"]", 'mass_degr_tot'+ "-["+ mass_unit +"]",
-                'mass_degr_wat'+ "-["+ mass_unit +"]", 'mass_degr_sed'+ "-["+ mass_unit +"]", 'mass_vol'+ "-["+ mass_unit +"]",
-                'adv_out_ts'+"-["+ mass_unit +"]", 'adv_out_cumul'+"-["+ mass_unit +"]", 'mass_removed'+ "-["+ mass_unit +"]",
-                'mass_vol_adv'+ "-["+ mass_unit +"]", 'mass_degr_wat_adv'+ "-["+ mass_unit +"]",'mass_degr_sed_adv'+ "-["+ mass_unit +"]"]
+        if steps:
+            freq = np.min(steps)
+            if verbose:
+                print("freq inferred:", freq)
+            return freq
 
-                for degr_columns_name in degr_columns_names_ls:
-                    filtered_df[degr_columns_name] = np.array(filtered_df[degr_columns_name]) - np.array(first_ts_to_remove[degr_columns_name])
+        if verbose:
+            print("freq could not be inferred")
+        return None
 
-                mass_emitted_delta = (filtered_df["mass_emitted"+ "-["+ mass_unit +"]"].iloc[0] -
-                                      filtered_df["mass_current" + "-["+ mass_unit +"]"].iloc[0])
-                filtered_df["mass_emitted"+ "-["+ mass_unit +"]"] = np.array(filtered_df["mass_emitted"+ "-["+ mass_unit +"]"]) - mass_emitted_delta
 
-                time_col_ind = int(np.where(filtered_df.columns.str.contains("time-"))[0])
-                time_unit = filtered_df.columns[time_col_ind][6:-1]
-                time_delta = (filtered_df["time"+ "-["+ time_unit +"]"].iloc[0])
-                filtered_df["time"+ "-["+ time_unit +"]"] = np.array(filtered_df["time"+ "-["+ time_unit +"]"]) - time_delta
+    def _make_target_time(self, DataArray_ls, time_name,
+                          start_date=None, end_date=None,
+                          freq_time=None, verbose=False):
+        '''
+        Construct a common target time grid for aligning/summing multiple series.
 
-                if mass_unit_out != mass_unit:
-                    print(f"converted mass from {mass_unit} to {mass_unit_out}")
-                    if mass_unit_out == "ug":
-                        if mass_unit=='kg':
-                            mass_conversion_factor= 1e-9
-                        if mass_unit=='g':
-                            mass_conversion_factor= 1e-6
-                        if mass_unit=='mg':
-                            mass_conversion_factor= 1e-3
-                        if mass_unit=='ug':
-                            mass_conversion_factor= 1
-                    elif mass_unit_out == "mg":
-                        if mass_unit=='kg':
-                            mass_conversion_factor= 1e-6
-                        if mass_unit=='g':
-                            mass_conversion_factor= 1e3
-                        if mass_unit=='mg':
-                            mass_conversion_factor= 1
-                        if mass_unit=='ug':
-                            mass_conversion_factor= 1e-3
-                    elif mass_unit_out == "g":
-                        if mass_unit=='kg':
-                            mass_conversion_factor= 1e3
-                        if mass_unit=='g':
-                            mass_conversion_factor= 1
-                        if mass_unit=='mg':
-                            mass_conversion_factor=1e-3
-                        if mass_unit=='ug':
-                            mass_conversion_factor= 1e-6
-                    elif mass_unit_out == "kg":
-                        if mass_unit=='kg':
-                            mass_conversion_factor= 1
-                        if mass_unit=='g':
-                            mass_conversion_factor= 1e-3
-                        if mass_unit=='mg':
-                            mass_conversion_factor=1e-6
-                        if mass_unit=='ug':
-                            mass_conversion_factor= 1e-9
-                    else:
-                        raise ValueError("wrong mass_unit_out specified")
+        DataArray_ls: list[xarray.DataArray], List of DataArrays containing coordinate/dimension time_name.
+                        Only the time coordinate values are used.
+        time_name:    str, Name of the time coordinate/dimension to align on.
+        start_date:   np.datetime64|float|int|None, Start of target grid.
+                        If None, inferred as the minimum start across DataArray_ls.
+        end_date:     np.datetime64|float|int|None, End of target grid.
+                        If None, inferred as the maximum end across DataArray_ls.
+        freq_time:    np.timedelta64|float|int|None, Target timestep.
+                        If None, inferred from inputs using _infer_freq_step.
+                        If it cannot be inferred, uses the union of timestamps (irregular grid).
+                        Must be timedelta-like for datetime axes, numeric for numeric axes.
+        verbose:      bool, If True, prints inference/progress information.
 
-                    # Update column names with mass_unit_out
-                    new_column_names = list(filtered_df.columns)
-                    for i in range(len(new_column_names)):
-                       new_column_names[i] = new_column_names[i].replace(("-["+ mass_unit +"]"), "-["+ mass_unit_out +"]")
-                    filtered_df.columns =  new_column_names
+        Returns:
+            np.ndarray, Target time coordinate (regular grid if freq_time available; else union of timestamps).
+        '''
+        times = [da[time_name].values for da in DataArray_ls]
 
-                    for col_name in list(filtered_df.columns):
-                        if col_name.endswith ("-["+ mass_unit_out +"]"):
-                            # Multiply mass columns by mass_conversion_factor
-                            filtered_df[col_name] = np.array(filtered_df[col_name]) * mass_conversion_factor
-                        else:
-                            pass
-                else:
-                    pass
+        if start_date is None:
+            start_date = np.min([t.min() for t in times])
+            if verbose:
+                print("start_date set from DataArray_ls:", start_date)
 
-                # Update df in mass_fin_df_ls
-                # print(df_index)
-                mass_fin_df_ls[df_index] = filtered_df
+        if end_date is None:
+            end_date = np.max([t.max() for t in times])
+            if verbose:
+                print("end_date set from DataArray_ls:", end_date)
 
-            for time_step in time_date_serie:
-                # rows for each timestep
-                mass_row_ls = []
-                for df_mass in mass_fin_df_ls:
-                    # df_mass = mass_fin_df_ls[2]
-                    date_row = self._find_date_row(data_frame=df_mass,
-                                                specified_date = pd.to_datetime(time_step))
-                    mass_row_ls.append(date_row)
-                # Concatenate the row of each df and sum
-                concat_df = pd.concat(mass_row_ls)
-                concat_df['date_of_timestep'] = 0
-                concat_df['convertion_factors-[time_mass]'] = np.nan
-                concat_df_sum = concat_df.sum(axis=0)
-                concat_df_sum = pd.DataFrame(np.array(concat_df_sum)).T
-                concat_df_sum.columns = concat_df.columns
-                concat_df_sum.loc[0, 'date_of_timestep'] = time_step
+        target_time = None
 
-                ts_sum_ls.append(concat_df_sum)
+        if freq_time is None:
+            freq_time = self._infer_freq_step(times, verbose=verbose)
+            if freq_time is None:
+                # fallback: union (non-regular)
+                target_time = np.unique(np.concatenate(times))
+                if verbose:
+                    print("Using union of timestamps (non-regular grid)")
 
-            # Concatenate all timesteps
-            mass_df_fin = pd.concat(ts_sum_ls)
-            # Correct time-[] column
-            time_col_ind = int(np.where(mass_df_fin.columns.str.contains("time-"))[0])
-            time_unit = mass_df_fin.columns[time_col_ind][6:-1]
+        if target_time is None:
+            target_time = np.arange(start_date, end_date + freq_time, freq_time)
 
-            if time_unit=='seconds':
-                time_conversion_factor_ls = [(60*60*24), (1)]
-                time_conv_factor = pd.Timedelta(freq_time).seconds
-            if time_unit=='minutes':
-                time_conversion_factor_ls = [(60*24), (60)]
-                time_conv_factor = pd.Timedelta(freq_time).seconds / (60)
-            if time_unit=='hours':
-                time_conversion_factor_ls = [(24), (60*60)]
-                time_conv_factor = pd.Timedelta(freq_time).seconds / (60*60)
-            if time_unit=='days':
-                time_conversion_factor_ls = [(1), (60*60*24)]
-                time_conv_factor = pd.Timedelta(freq_time).seconds / (60*60*24)
-
-            time_series = mass_df_fin['date_of_timestep']
-            time_series_diff = np.array(time_series) - np.array(time_series.iloc[0])
-
-            time_unit_col_ls = []
-            for time_d in time_series_diff:
-                n_days = time_d.days*time_conversion_factor_ls[0]
-                n_seconds = time_d.seconds/time_conversion_factor_ls[1]
-                time_unit_col_ls.append(n_days + n_seconds)
-
-            time_unit_col = np.array(time_unit_col_ls)
-
-            mass_df_fin.iloc[:, time_col_ind] = time_unit_col
-            # Recalculate percentages
-            merged_df_fin = self._correct_percentages_ts(mass_df_fin)
-            merged_df_fin.loc[0, ('convertion_factors-[time_mass]')] = time_conv_factor
-            merged_df_fin.loc[1, ('convertion_factors-[time_mass]')] = mass_conv_factor
-        else:
-            raise ValueError("start_date, end_date, and freq_time must be specified")
-
-        merged_df_fin.to_csv(ts_file_path + csv_file_name_fin)
-        print(f"saved sum file to {ts_file_path + csv_file_name_fin}")
+        return target_time
 
 
     @staticmethod
-    def _check_dims_values(dims_values):
+    def _reindex_ds(ds, time_name, target_time,
+                    nearest_tol_time=None, align_mode="pad",
+                    clip_to_original=True):
         '''
-        Check if each dimension within DataArrays_ls has the same values for all DataArrays in the list
+        Reindex an xarray.Dataset onto a target time grid.
 
-        dims_values:        list of dict, [{dimension name: dimension values}, ...]
+        ds:                  xarray.Dataset, Dataset to reindex.
+        time_name:           str, Name of the time coordinate/dimension.
+        target_time:         np.ndarray, Target timestamps to reindex onto.
+        nearest_tol_time:    np.timedelta64|None, Max allowed distance for align_mode="nearest".
+                                           Ignored for "pad" and "exact".
+        align_mode:          str, Reindexing mode. Allowed: "pad"|"nearest"|"exact".
+                                           - "exact": exact matches only (no filling)
+                                           - "pad": forward-fill from previous timestamp
+                                           - "nearest": nearest timestamp (optionally within nearest_tol_time)
+        clip_to_original:    bool, If True, masks values outside the original ds time range after reindexing.
+
+        Returns:
+            xarray.Dataset, Reindexed (and optionally clipped) Dataset.
         '''
-        # Get the intersection of keys from all dictionaries
-        common_keys = set.intersection(*(set(d.keys()) for d in dims_values))
-        if len(common_keys) == 0:
-            raise ValueError('No common dimensions are present in DataArray_ls')
+        if align_mode in {"pad", "nearest"}:
+            idx = ds[time_name].to_index()
+            if not idx.is_monotonic_increasing:
+                ds = ds.sortby(time_name)
+
+        if align_mode == "exact":
+            out = ds.reindex({time_name: target_time}, method=None)
+        elif align_mode == "pad":
+            out = ds.reindex({time_name: target_time}, method="pad")
+        else:  # "nearest"
+            kwargs = {}
+            if nearest_tol_time is not None:
+                kwargs["tolerance"] = nearest_tol_time
+            out = ds.reindex({time_name: target_time}, method="nearest", **kwargs)
+
+        if clip_to_original:
+            t_orig = ds[time_name].values
+            t_min = t_orig.min()
+            t_max = t_orig.max()
+            valid = (out[time_name] >= t_min) & (out[time_name] <= t_max)
+            out = out.where(valid)
+
+        return out
+
+    @staticmethod
+    def _speciation_qc_check(
+        df,
+        mass_unit,
+        *,
+        denom_base = "mass_actual_ts",
+        exclude_keys = ("sed_buried",),
+        abs_tol_mass = 1e-9,     # in target mass units
+        rel_tol_mass = 1e-6,     # fraction of denom
+        abs_tol_perc = 1e-6,     # percentage points
+        add_qc_columns = False,   # default: don't add columns
+        qc_prefix = "qc_",
+        on_fail= "warn",          # "warn" | "raise" | "ignore"
+        return_report = False,    # default: don't return anything extra
+        time_hint_col = None,  # e.g. "date_of_timestep" for nicer reporting
+    ):
+        '''
+        Run QC checks for speciation consistency (mass closure + percent sum).
+
+        df:              pandas.DataFrame, DataFrame to validate.
+                             Expected columns:
+                               Denominator: f"{denom_base} [{mass_unit}]"
+                               Species masses: "mass_sp_<key>_ts [{mass_unit}]"
+                               Species percents: "perc_sp_<key>_ts [%]"
+        mass_unit:       str, Mass unit token (without brackets), e.g. "g", "mg", "ug".
+                             Used to find the unit-tagged columns in df.
+        denom_base:      str, Base name for the denominator (default "mass_actual_ts").
+                             If denom_base already contains brackets, it is used as-is.
+                             Otherwise the denominator column is f"{denom_base} [{mass_unit}]".
+        exclude_keys:    tuple[str,...], Species keys excluded from QC (default includes "sed_buried").
+                             These are treated as outside-system and not part of the 100% partition.
+        abs_tol_mass:    float, Absolute tolerance for mass closure residual (in target mass units).
+        rel_tol_mass:    float, Relative tolerance for mass closure residual (fraction of denominator when denom>0).
+        abs_tol_perc:    float, Absolute tolerance for percent-sum error (percentage points).
+        add_qc_columns:  bool, If True, append diagnostic columns (prefixed with qc_prefix) to df.
+        qc_prefix:       str, Prefix for diagnostic columns when add_qc_columns is True.
+        on_fail:         str, Failure behavior. Allowed: "warn"|"raise"|"ignore".
+                            "warn": emit RuntimeWarning
+                            "raise": raise ValueError
+                            "ignore": do nothing
+        return_report:   bool, If True, return a summary report dict (and df if add_qc_columns=True).
+        time_hint_col:   str|None, Optional column used only to include a timestamp/value in warning/error messages.
+
+        Returns:
+            None, If return_report=False and add_qc_columns=False (only warns/raises as configured).
+            pandas.DataFrame, If return_report=False and add_qc_columns=True (df with QC columns).
+            dict, If return_report=True and add_qc_columns=False (QC report).
+            (pandas.DataFrame, dict), If return_report=True and add_qc_columns=True (df with QC columns + report).
+        '''
+        import numpy as np
+        import pandas as pd
+        import re
+        import warnings
+
+        out = df.copy() if add_qc_columns else df
+        dst_tag = f"[{mass_unit}]"
+        denom_col = denom_base if "[" in denom_base else f"{denom_base} {dst_tag}"
+
+        report = {
+            "denom_col": denom_col,
+            "mass_unit": mass_unit,
+            "n_rows": len(df),
+            "mass": {},
+            "perc": {},
+        }
+
+        if denom_col not in df.columns or len(df) == 0:
+            # nothing to check
+            if return_report:
+                return (out, report) if add_qc_columns else report
+            return out if add_qc_columns else None
+
+        den = pd.to_numeric(df[denom_col], errors="coerce").to_numpy()
+        den_safe = np.where(den > 0, den, np.nan)
+
+        # ---------- MASS closure ----------
+        mass_sp_cols = [c for c in df.columns if c.startswith("mass_sp_") and c.endswith(dst_tag)]
+        kept_mass_cols = []
+        for c in mass_sp_cols:
+            m = re.match(r"^mass_sp_(.+)_ts\s*\[[^\]]+\]\s*$", c)
+            key = m.group(1) if m else None
+            if key and (key not in exclude_keys):
+                kept_mass_cols.append(c)
+
+        if kept_mass_cols:
+            mass_sp_sum = (
+                df[kept_mass_cols]
+                .apply(pd.to_numeric, errors="coerce")
+                .fillna(0.0)
+                .sum(axis=1)
+                .to_numpy(dtype=float)
+            )
         else:
-            pass
+            mass_sp_sum = np.full(len(df), np.nan, dtype=float)
 
-        for key in common_keys:
-            # Get the value associated with the key in the first dictionary
-            value = dims_values[0][key]
-            # Check if all dictionaries have the same value for this key
-            if not all(np.array_equal(d[key], value) for d in dims_values):
-                raise ValueError(f'Dimension "{key}" has different values across DataArray_ls')
+        denom = pd.to_numeric(df[denom_col], errors="coerce").to_numpy(dtype=float)
+        residual = denom - mass_sp_sum
+        abs_res = np.abs(residual)
+
+        # rel bound only meaningful when denom>0
+        rel_bound = rel_tol_mass * np.where(denom > 0, denom, np.nan)
+        mass_ok = (abs_res <= abs_tol_mass) | ((denom > 0) & (abs_res <= rel_bound))
+
+        residual_rel = np.nan_to_num((residual / den_safe) * 100.0, nan=0.0)
+
+        report["mass"].update({
+            "kept_mass_cols": kept_mass_cols,
+            "n_fail": int((~mass_ok).sum()),
+            "max_abs_residual": float(np.nanmax(abs_res)) if np.isfinite(abs_res).any() else np.nan,
+            "max_rel_residual_pct": float(np.nanmax(np.abs(residual_rel))) if np.isfinite(residual_rel).any() else np.nan,
+        })
+
+        # ---------- PERCENT sum ----------
+        perc_cols = [c for c in df.columns if c.startswith("perc_sp_") and c.endswith("[%]")]
+        kept_perc_cols = []
+        for c in perc_cols:
+            m = re.match(r"^perc_sp_(.+)_ts\s*\[%\]\s*$", c)
+            key = m.group(1) if m else None
+            if key and (key not in exclude_keys):
+                kept_perc_cols.append(c)
+
+        if kept_perc_cols:
+            perc_sum = (
+                df[kept_perc_cols]
+                .apply(pd.to_numeric, errors="coerce")
+                .fillna(0.0)
+                .sum(axis=1)
+                .to_numpy(dtype=float)
+            )
+        else:
+            perc_sum = np.full(len(df), np.nan, dtype=float)
+
+        target = np.where(denom > 0, 100.0, 0.0)
+        perc_ok = np.abs(perc_sum - target) <= abs_tol_perc
+
+        report["perc"].update({
+            "kept_perc_cols": kept_perc_cols,
+            "n_fail": int((~perc_ok).sum()),
+            "max_abs_err": float(np.nanmax(np.abs(perc_sum - target))) if np.isfinite(perc_sum).any() else np.nan,
+        })
+
+        # ---------- optional QC columns ----------
+        if add_qc_columns:
+            out[f"{qc_prefix}mass_sp_sum_ts {dst_tag}"] = mass_sp_sum
+            out[f"{qc_prefix}mass_sp_residual_ts {dst_tag}"] = residual
+            out[f"{qc_prefix}mass_sp_residual_rel [%]"] = residual_rel
+            out[f"{qc_prefix}mass_sp_closure_ok"] = mass_ok
+
+            out[f"{qc_prefix}perc_sp_sum_ts [%]"] = perc_sum
+            out[f"{qc_prefix}perc_sp_sum_ok"] = perc_ok
+
+        # ---------- failure handling ----------
+        any_fail = (report["mass"]["n_fail"] > 0) or (report["perc"]["n_fail"] > 0)
+        if any_fail and on_fail != "ignore":
+            # find a representative “worst” index to point at
+            worst_i = None
+            if report["mass"]["n_fail"] > 0 and np.isfinite(abs_res).any():
+                worst_i = int(np.nanargmax(abs_res))
+            elif report["perc"]["n_fail"] > 0 and np.isfinite(np.abs(perc_sum - target)).any():
+                worst_i = int(np.nanargmax(np.abs(perc_sum - target)))
+
+            where = f"row={worst_i}"
+            if time_hint_col and time_hint_col in df.columns:
+                where = f"{where}, {time_hint_col}={df[time_hint_col].iloc[worst_i]!r}"
+
+            msg = (
+                f"Speciation QC failed ({where}). "
+                f"Mass closure fails: {report['mass']['n_fail']}/{len(df)} "
+                f"(max |res|={report['mass']['max_abs_residual']}, "
+                f"max |res_rel|%={report['mass']['max_rel_residual_pct']}). "
+                f"Percent-sum fails: {report['perc']['n_fail']}/{len(df)} "
+                f"(max abs err={report['perc']['max_abs_err']})."
+            )
+
+            if on_fail == "raise":
+                raise ValueError(msg)
+            else:  # warn
+                warnings.warn(msg, RuntimeWarning)
+
+        if return_report:
+            return (out, report) if add_qc_columns else report
+        return out if add_qc_columns else None
+
+    @staticmethod
+    def _recompute_perc_sp(
+        df,
+        mass_unit,
+        *,
+        denom_base="mass_actual_ts",
+        normalize_to_100=False,
+        exclude_keys=("sed_buried",),
+    ):
+        '''
+        Recompute perc_sp_*_ts [%] from mass_sp_*_ts and the denominator.
+
+        df:               pandas.DataFrame, DataFrame containing denominator and mass_sp/perc_sp columns.
+                            perc_sp columns are recomputed in the returned copy.
+        mass_unit:        str, Mass unit token (without brackets), e.g. "g", "mg", "ug".
+                            Used to map "mass_sp_*_ts [{mass_unit}]" columns.
+        denom_base:       str, Base name for denominator (default "mass_actual_ts").
+                            Denominator column is f"{denom_base} [{mass_unit}]" unless denom_base already has brackets.
+                            Percent rule matches generator semantics:
+                              den_safe = where(den > 0, den, nan)
+                              perc = nan_to_num((mass_sp/den_safe)*100, nan=0)
+        normalize_to_100: bool, If True, renormalize computed perc_sp columns so row-wise sum is exactly 100
+                            (only when denom>0 and row-sum>0). Useful to remove tiny FP drift.
+        exclude_keys:     tuple[str,...], Species keys to skip (default includes "sed_buried").
+
+        Returns:
+            pandas.DataFrame, Copy of df with recomputed perc_sp_*_ts [%] columns.
+        '''
+        import numpy as np   # <-- add
+        import pandas as pd
+        import re
+
+        out = df.copy()
+        dst_tag = f"[{mass_unit}]"
+        denom_col = denom_base if "[" in denom_base else f"{denom_base} {dst_tag}"
+        if denom_col not in out.columns:
+            return out
+
+        den = pd.to_numeric(out[denom_col], errors="coerce").to_numpy()
+        den_safe = np.where(den > 0, den, np.nan)
+
+        perc_cols = [c for c in out.columns if c.startswith("perc_sp_") and c.endswith("[%]")]
+        if not perc_cols:
+            return out
+
+        def key_from_perc(col):
+            m = re.match(r"^perc_sp_(.+)_ts\s*\[%\]\s*$", col)
+            return m.group(1) if m else None
+
+        computed = []
+        for pc in sorted(perc_cols):
+            k = key_from_perc(pc)
+            if (k is None) or (k in exclude_keys):
+                continue
+
+            mass_col = pc.replace("perc_", "mass_").replace("[%]", dst_tag)
+            if mass_col not in out.columns:
+                out[pc] = np.nan
+                continue
+
+            num = pd.to_numeric(out[mass_col], errors="coerce").to_numpy()
+            out[pc] = np.nan_to_num((num / den_safe) * 100.0, nan=0.0)
+            computed.append(pc)
+
+        if normalize_to_100 and computed:
+            row_sum = out[computed].sum(axis=1).to_numpy(dtype=float)
+            scale = np.where((den > 0) & (row_sum > 0), 100.0 / row_sum, 1.0)
+            out[computed] = out[computed].multiply(scale, axis=0)
+
+        return out
+
+
+    def sum_summary_timeseries(
+        self,
+        df_list,
+        target_mass_unit="g",
+        target_time_unit="hr",
+        date_col="date_of_timestep",
+        time_col=None,
+        align_mode="pad",
+        nearest_tol_time=None,
+        clip_to_original=True,
+        start_date=None, end_date=None,
+        freq_time=None,
+        rebuild_time_from_date=True,
+        verbose=False,
+        qc_check=True,
+        add_qc_columns=False,
+        qc_on_fail="warn",
+        return_qc_report=False,
+        normalize_perc_to_100=False,   # <-- add this arg (fixes your self.normalize_perc_to_100 bug)
+    ):
+        '''
+        Align and sum multiple summary time series DataFrames, then recompute perc_sp_*.
+
+        df_list:             list[pandas.DataFrame], Input summary DataFrames to align and sum.
+                                           Each DF is converted to common units using convert_units().
+                                           Percent columns (perc_*) are dropped before summation and recomputed after.
+        target_mass_unit:    str, Mass unit for outputs. Allowed (per your converter): 'kg','g','mg','ug','µg'.
+        target_time_unit:    str, Time unit for output bookkeeping / optional rebuilt numeric time column.
+                                           Allowed: 's','m','hr'/'h','d' (per your converter).
+        date_col:            str, Name of datetime column used as time axis when present in all inputs.
+                                           If present in all DFs, it is used as the alignment index.
+        time_col:            str|None, Explicit numeric time column name to use.
+                                           If None, convert_units() auto-detects a column like "time [..]".
+                                           When date_col is used as index, any numeric "time [..]" columns are dropped
+                                           to prevent summing time values across runs.
+        align_mode:          str, Time alignment mode for reindexing. Allowed: "pad"|"nearest"|"exact".
+        nearest_tol_time:    np.timedelta64|pandas.Timedelta|str|None, Tolerance for align_mode="nearest".
+                                           Strings like "3h" are supported.
+        clip_to_original:    bool, If True, masks values outside each run's original time range after reindexing.
+        start_date, end_date: np.datetime64|pandas.Timestamp|float|int|None, Start/end bounds for the target grid.
+                                           If None, inferred from the input series.
+        freq_time:           np.timedelta64|pandas.Timedelta|str|float|int|None, Target timestep.
+                                           If None, inferred; if not inferable, uses union of timestamps.
+                                           Must be timedelta-like when aligning on date_col; numeric when aligning on numeric time.
+        rebuild_time_from_date: bool, If True and using date_col axis, rebuild a numeric "time [target_time_unit]" column
+                                           measured from the first timestamp.
+        verbose:             bool, Print progress/inference information.
+        qc_check:            bool, If True, run _speciation_qc_check after recomputing perc_sp.
+        add_qc_columns:      bool, If True, append QC diagnostic columns to the output.
+                                           Default False (QC runs but output schema is unchanged).
+        qc_on_fail:          str, QC failure behavior. Allowed: "warn"|"raise"|"ignore".
+        return_qc_report:    bool, If True, return a QC report dict in addition to the output DataFrame.
+        normalize_perc_to_100: bool, If True, renormalize perc_sp columns to sum exactly to 100 when denom>0.
+
+        Returns:
+            pandas.DataFrame, Summed and post-processed DataFrame (units converted, aligned, summed, perc_sp recomputed).
+            (pandas.DataFrame, dict), If return_qc_report=True, returns (output_df, qc_report_dict).
+        '''
+        import numpy as np
+        import pandas as pd
+        import xarray as xr
+
+        if not df_list:
+            raise ValueError("df_list is empty")
+
+        nearest_tol_time = self._as_timedelta64(nearest_tol_time)
+
+        ds_list = []
+        perc_sp_cols_union = set()
+        time_name = None
+        UM_mass = UM_time = None
+        used_date_axis = None
+
+        for df in df_list:
+            dfc, UM_mass_i, UM_time_i, detected_time_col = self.convert_units(
+                df,
+                target_mass_unit=target_mass_unit,
+                target_time_unit=target_time_unit,
+                time_col=time_col,
+            )
+
+            perc_sp_cols_union.update([c for c in dfc.columns if c.startswith("perc_sp_") and c.endswith("[%]")])
+
+            has_date = (date_col in dfc.columns)
+            if used_date_axis is None:
+                used_date_axis = has_date
+            if used_date_axis != has_date:
+                raise ValueError(f"Inconsistent time axis: {date_col!r} present in some dataframes but not all.")
+
+            if has_date:
+                tname = date_col
+                dfc[tname] = pd.to_datetime(dfc[tname])
+                dfc = dfc.set_index(tname)
+                # IMPORTANT: don't sum numeric time columns if date is index
+                time_like_cols = [c for c in dfc.columns if c.startswith("time [") and c.endswith("]")]
             else:
-                pass
+                if detected_time_col is None:
+                    raise ValueError("No date_col present and no time column detected.")
+                tname = detected_time_col
+                dfc[tname] = pd.to_numeric(dfc[tname], errors="coerce")
+                dfc = dfc.set_index(tname)
+                time_like_cols = []  # time axis is the index already
+
+            drop_cols = []
+            if "UM" in dfc.columns:
+                drop_cols.append("UM")
+            drop_cols += [c for c in dfc.columns if c.startswith("perc_") and c.endswith("[%]")]
+            drop_cols += time_like_cols  # <-- key fix
+
+            dfc2 = dfc.drop(columns=[c for c in drop_cols if c in dfc.columns], errors="ignore")
+
+            ds = dfc2.to_xarray()
+            numeric_vars = [v for v in ds.data_vars if np.issubdtype(ds[v].dtype, np.number)]
+            if not numeric_vars:
+                raise ValueError("A dataframe had no numeric variables after dropping perc/UM/time.")
+            ds = ds[numeric_vars].astype("float64")
+
+            ds_list.append(ds)
+
+            if time_name is None:
+                time_name = tname
+            elif time_name != tname:
+                raise ValueError(f"Time coordinate name mismatch: {time_name!r} vs {tname!r}")
+
+            UM_mass, UM_time = UM_mass_i, UM_time_i
+
+        # convert freq_time only if datetime axis
+        freq_time_used = self._as_timedelta64(freq_time) if used_date_axis else freq_time
+
+        DataArray_ls = [ds[next(iter(ds.data_vars))] for ds in ds_list]
+        target_time = self._make_target_time(
+            DataArray_ls=DataArray_ls,
+            time_name=time_name,
+            start_date=start_date,
+            end_date=end_date,
+            freq_time=freq_time_used,
+            verbose=verbose,
+        )
+
+        reindexed = [
+            self._reindex_ds(
+                ds=ds,
+                time_name=time_name,
+                target_time=target_time,
+                nearest_tol_time=nearest_tol_time,
+                align_mode=align_mode,
+                clip_to_original=clip_to_original,
+            )
+            for ds in ds_list
+        ]
+
+        all_vars = sorted(set().union(*[set(ds.data_vars) for ds in reindexed]))
+        standardized = []
+        for ds in reindexed:
+            for v in all_vars:
+                if v not in ds:
+                    ds[v] = xr.DataArray(
+                        np.full(ds[time_name].shape, np.nan, dtype="float64"),
+                        coords={time_name: ds[time_name]},
+                        dims=(time_name,),
+                    )
+            standardized.append(ds[all_vars])
+
+        aligned = xr.align(*standardized, join="exact", copy=False)
+
+        if verbose:
+            print("Summing datasets...")
+        summed = aligned[0].fillna(0.0)
+        for ds in aligned[1:]:
+            summed = summed + ds.fillna(0.0)
+
+        out = summed.to_dataframe().reset_index()
+
+        # enforce mass closure for denom
+        dst_tag = f"[{UM_mass}]"
+        mw = f"mass_water_ts {dst_tag}"
+        ms = f"mass_sed_ts {dst_tag}"
+        ma = f"mass_actual_ts {dst_tag}"
+        if mw in out.columns and ms in out.columns:
+            out[ma] = pd.to_numeric(out[mw], errors="coerce").fillna(0.0) + pd.to_numeric(out[ms], errors="coerce").fillna(0.0)
+
+        # ensure perc_sp columns exist, then recompute
+        for pc in sorted(perc_sp_cols_union):
+            if pc not in out.columns:
+                out[pc] = np.nan
+
+        out = self._recompute_perc_sp(
+            out,
+            mass_unit=UM_mass,
+            denom_base="mass_actual_ts",
+            normalize_to_100=normalize_perc_to_100,  # <-- fixed
+            exclude_keys=("sed_buried",),
+        )
+
+        # QC
+        qc_report = None
+        if qc_check:
+            qc_result = self._speciation_qc_check(
+                out,
+                mass_unit=UM_mass,
+                denom_base="mass_actual_ts",
+                exclude_keys=("sed_buried",),
+                add_qc_columns=add_qc_columns,
+                on_fail=qc_on_fail,
+                return_report=return_qc_report,
+                time_hint_col=(date_col if date_col in out.columns else None),
+            )
+            if return_qc_report:
+                if add_qc_columns:
+                    out, qc_report = qc_result
+                else:
+                    qc_report = qc_result
+
+        # rebuild time [unit] from date axis
+        if used_date_axis and rebuild_time_from_date and target_time_unit and date_col in out.columns:
+            unit = "hr" if target_time_unit == "h" else target_time_unit
+            unit_to_ns = {"s": 1e9, "m": 60e9, "hr": 3600e9, "d": 86400e9}
+            if unit not in unit_to_ns:
+                raise ValueError(f"Unsupported target_time_unit for rebuild: {target_time_unit!r}")
+
+            old_time_cols = [c for c in out.columns if c.startswith("time [") and c.endswith("]")]
+            out = out.drop(columns=old_time_cols, errors="ignore")
+
+            t0 = pd.to_datetime(out[date_col]).min()
+            dt_ns = (pd.to_datetime(out[date_col]) - t0).astype("timedelta64[ns]").astype("int64")
+            out.insert(0, f"time [{unit}]", dt_ns / unit_to_ns[unit])
+
+        # UM
+        out["UM"] = pd.NA
+        if len(out):
+            out.loc[out.index[0], "UM"] = f"[{UM_mass}] [{UM_time}]"
+
+        return (out, qc_report) if return_qc_report else out
+
+
+
 
     ### Helpers for sum_DataArray_list
     @staticmethod
@@ -11838,7 +12165,28 @@ class ChemicalDrift(OceanDrift):
         else:
             raise ValueError("Final_sum is None")
 
+    @staticmethod
+    def _check_dims_values(dims_values):
+        '''
+        Check if each dimension within DataArrays_ls has the same values for all DataArrays in the list
 
+        dims_values:        list of dict, [{dimension name: dimension values}, ...]
+        '''
+        # Get the intersection of keys from all dictionaries
+        common_keys = set.intersection(*(set(d.keys()) for d in dims_values))
+        if len(common_keys) == 0:
+            raise ValueError('No common dimensions are present in DataArray_ls')
+        else:
+            pass
+
+        for key in common_keys:
+            # Get the value associated with the key in the first dictionary
+            value = dims_values[0][key]
+            # Check if all dictionaries have the same value for this key
+            if not all(np.array_equal(d[key], value) for d in dims_values):
+                raise ValueError(f'Dimension "{key}" has different values across DataArray_ls')
+            else:
+                pass
 
     def vertical_depth_mean(self,
                             Dataset,
