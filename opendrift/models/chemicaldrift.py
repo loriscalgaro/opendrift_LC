@@ -8706,9 +8706,9 @@ class ChemicalDrift(OceanDrift):
         # 8) Percentage contribution of each elimination term (per time step)
         ts_keys = [k for k in mass_eliminated_dict_1d.keys() if k.endswith("_ts")]
 
-        # total elimination during each ts (same length as steps)
+        # total elimination during each ts
         total_elim_ts = np.zeros(steps, dtype=np.float64)
-        for k in ts_keys:
+        for k in ["mass_degraded_ts", "mass_volatilized_ts", "mass_adv_out_ts", "mass_stranded_ts", "mass_buried_ts"]:
             total_elim_ts += np.asarray(mass_eliminated_dict_1d[k], dtype=np.float64)
         # compute per-term percentages
         for k in ts_keys:
@@ -8722,7 +8722,6 @@ class ChemicalDrift(OceanDrift):
                 out=np.zeros_like(term_ts, dtype=np.float64),
                 where=total_elim_ts > 0.0,
             ) * 100.0
-
             perc_elim_dict_1d[perc_key] = perc.astype(np.float32, copy=False)
 
         # ===== Drop padding row (if used) and recompute window cumulatives
@@ -9977,6 +9976,8 @@ class ChemicalDrift(OceanDrift):
             TypeError, If x is not one of the supported types.
         '''
         import pandas as pd
+        import numpy as np
+
         if x is None:
             return None
         if isinstance(x, np.timedelta64):
@@ -10375,6 +10376,62 @@ class ChemicalDrift(OceanDrift):
 
         return out
 
+    @staticmethod
+    def _recompute_perc_elim(
+        df,
+        mass_unit,
+        *,
+        perc_cols=None,
+        denom_terms=("mass_degraded_ts", "mass_volatilized_ts",
+                     "mass_adv_out_ts", "mass_stranded_ts", "mass_buried_ts"),
+    ):
+        '''
+    Recompute perc_elim_* [%] from the corresponding mass_*_ts and a chosen elimination denominator.
+
+    df:            pandas.DataFrame, DataFrame containing elimination mass time-series columns and perc_elim columns.
+                      perc_elim columns are recomputed in the returned copy.
+    mass_unit:     str, Mass unit token (without brackets), e.g. "g", "mg", "ug".
+                      Used to build the unit tag "[{mass_unit}]" when mapping perc_elim columns
+                      to their corresponding mass columns and when building the denominator.
+    perc_cols:     list[str]|None, List of perc_elim columns to recompute.
+                      If None, recomputes all columns in df matching:
+                        startswith("perc_elim_") and endswith("[%]").
+    denom_terms:   tuple[str,...], Base names (without unit tag) of elimination mass terms used
+                      to form the denominator, e.g.: ("mass_degraded_ts", "mass_volatilized_ts",
+                         "mass_adv_out_ts", "mass_stranded_ts", "mass_buried_ts")
+                      The denominator is computed row-wise as:
+                        den = sum( df[f"{term} [{mass_unit}]"] )   (missing terms treated as 0)
+
+    Returns:
+        pandas.DataFrame, Copy of df with recomputed perc_elim_* [%] columns.
+    '''
+        import numpy as np
+        import pandas as pd
+
+        out = df.copy()
+        dst_tag = f"[{mass_unit}]"
+
+        if perc_cols is None:
+            perc_cols = [c for c in out.columns if c.startswith("perc_elim_") and c.endswith("[%]")]
+
+        # denominator: sum of selected elimination mass terms (missing -> 0)
+        den = np.zeros(len(out), dtype=float)
+        for base in denom_terms:
+            col = f"{base} {dst_tag}"
+            if col in out.columns:
+                den += pd.to_numeric(out[col], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+
+        for pc in perc_cols:
+            # "perc_elim_mass_degraded_ts [%]" -> "mass_degraded_ts [g]"
+            mass_col = pc.replace("perc_elim_", "").replace("[%]", dst_tag)
+            if mass_col not in out.columns:
+                out[pc] = np.nan
+                continue
+
+            num = pd.to_numeric(out[mass_col], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+            out[pc] = np.divide(num, den, out=np.zeros_like(num), where=den > 0.0) * 100.0
+
+        return out
 
     def sum_summary_timeseries(
         self,
@@ -10445,6 +10502,7 @@ class ChemicalDrift(OceanDrift):
 
         ds_list = []
         perc_sp_cols_union = set()
+        perc_elim_cols_union = set()
         time_name = None
         UM_mass = UM_time = None
         used_date_axis = None
@@ -10458,6 +10516,7 @@ class ChemicalDrift(OceanDrift):
             )
 
             perc_sp_cols_union.update([c for c in dfc.columns if c.startswith("perc_sp_") and c.endswith("[%]")])
+            perc_elim_cols_union.update([c for c in dfc.columns if c.startswith("perc_elim_") and c.endswith("[%]")])
 
             has_date = (date_col in dfc.columns)
             if used_date_axis is None:
@@ -10567,6 +10626,19 @@ class ChemicalDrift(OceanDrift):
             denom_base="mass_actual_ts",
             normalize_to_100=normalize_perc_to_100,
             exclude_keys=("sed_buried",),
+        )
+
+        # ensure perc_elim columns exist, then recompute
+        for pc in sorted(perc_elim_cols_union):
+            if pc not in out.columns:
+                out[pc] = np.nan
+
+        out = self._recompute_perc_elim(
+            out,
+            mass_unit=UM_mass,
+            perc_cols=sorted(perc_elim_cols_union),
+            denom_terms=("mass_degraded_ts", "mass_volatilized_ts",
+                         "mass_adv_out_ts", "mass_stranded_ts", "mass_buried_ts"),
         )
 
         # QC
