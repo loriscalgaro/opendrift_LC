@@ -3034,7 +3034,8 @@ class ChemicalDrift(OceanDrift):
                                               active_status=False,
                                               weight=None,
                                               sim_description=None,
-                                              timestep_values=False):
+                                              timestep_values=False,
+                                              compress_species=False):
         '''Write netCDF file with map of Chemical species densities and concentrations
         Arguments:
             pixelsize_m:           float32, lenght of gridcells in m (default mode)
@@ -3068,6 +3069,7 @@ class ChemicalDrift(OceanDrift):
             weight:                string, elements property to be extracted to produce maps
             sim_description:       string, descrition of simulation to be included in netcdf attributes
             timestep_values:       boolean, only active elements will be considered
+            compress_species:      boolean, onl species present in self.result will be used to construct netCDF file
         '''
 
         from netCDF4 import Dataset, date2num #, stringtochar
@@ -3204,14 +3206,13 @@ class ChemicalDrift(OceanDrift):
         else:
             raise ValueError('A reader for ''sea_floor_depth_below_sea_level'' must be specified')
 
-
-        if self.mode != opendrift.models.basemodel.Mode.Result:
-            self.mode = opendrift.models.basemodel.Mode.Result
-            logger.debug("Changed self.mode to Result")
-
         # Temporary workaround if self.nspecies and self.name_species are not defined
         # TODO Make sure that these are saved when the simulation data is saved to the ncdf file
         # Then this workaround can be removed
+
+        if not hasattr(self, "name_species"):
+            self.init_species()
+
         if not hasattr(self,'nspecies'):
             self.nspecies=4
         if not hasattr(self,'name_species'):
@@ -3219,6 +3220,10 @@ class ChemicalDrift(OceanDrift):
                                  'DOC',
                                  'SPM',
                                  'sediment']
+
+        if self.mode != opendrift.models.basemodel.Mode.Result:
+            self.mode = opendrift.models.basemodel.Mode.Result
+            logger.debug("Changed self.mode to Result")
 
         logger.info('Postprocessing: Write density and concentration to netcdf file')
 
@@ -3238,7 +3243,6 @@ class ChemicalDrift(OceanDrift):
                 time = reader_sea_depth.times[0] if reader_sea_depth.times is not None else None
                 )[0]['sea_floor_depth_below_sea_level'].reshape(self.conc_lon.shape)
 
-
         if pixelsize_m == 'auto':
             # lon = self.result.lon
             lat = self.result.lat
@@ -3257,17 +3261,16 @@ class ChemicalDrift(OceanDrift):
             if latspan > 5:
                 pixelsize_m = 4000
 
-
         if density_proj is None: # add default projection with equal-area property
             density_proj_str = ('+proj=moll +ellps=WGS84 +lon_0=0.0')
-            density_proj = pyproj.Proj('+proj=moll +ellps=WGS84 +lon_0=0.0')
+            density_proj = Proj('+proj=moll +ellps=WGS84 +lon_0=0.0')
         else:
             density_proj_str = density_proj
-            density_proj = pyproj.Proj(is_valid_proj4(density_proj))
+            density_proj = Proj(is_valid_proj4(density_proj))
 
         if sum(x is None for x in [lat_resol, lon_resol]) == 0:
-            if density_proj != pyproj.Proj('+proj=moll +ellps=WGS84 +lon_0=0.0'):
-                if density_proj != pyproj.Proj("+proj=longlat +datum=WGS84 +no_defs"):
+            if density_proj != Proj('+proj=moll +ellps=WGS84 +lon_0=0.0'):
+                if density_proj != Proj("+proj=longlat +datum=WGS84 +no_defs"):
                     # lat/lon_resol are calculated at the centre of the grid
                     # Unexpected behaviour may arise with large grids
                     source_proj = Proj("+proj=longlat +datum=WGS84 +no_defs")
@@ -3279,11 +3282,8 @@ class ChemicalDrift(OceanDrift):
                     lat_resol = abs(y2 - y1)
                     logger.info(f'Changed lon_resol, lat_resol to reference system: {density_proj}')
 
-
         if mass_unit==None:
             mass_unit='microgram'  # default unit for chemicals
-
-
 
         z = (self.result.z.T).values
         # Move elements above sea level below the surface (-1 mm)
@@ -3304,21 +3304,26 @@ class ChemicalDrift(OceanDrift):
         # H_count is array containing the number of elements within each box defined by lon_array, lat_array and z_array
         if weight is None:
             weight = 'mass'
-        H, lon_array, lat_array, H_count = \
-            self.get_chemical_density_array(pixelsize_m=pixelsize_m,
-                                           z_array=z_array, z=z,
-                                           lat_resol=lat_resol,
-                                           lon_resol=lon_resol,
-                                           density_proj=density_proj,
-                                           llcrnrlon=llcrnrlon, llcrnrlat=llcrnrlat,
-                                           urcrnrlon=urcrnrlon, urcrnrlat=urcrnrlat,
-                                           weight=weight, origin_marker=origin_marker,
-                                           active_status=active_status,
-                                           elements_density=elements_density,
-                                           time_start=time_start,
-                                           time_end=time_end,
-                                           time_chunk_size = time_chunk_size,
-                                           timestep_values = timestep_values)
+
+        out = self.get_chemical_density_array(pixelsize_m=pixelsize_m,
+                                               z_array=z_array, z=z,
+                                               lat_resol=lat_resol,
+                                               lon_resol=lon_resol,
+                                               density_proj=density_proj,
+                                               llcrnrlon=llcrnrlon, llcrnrlat=llcrnrlat,
+                                               urcrnrlon=urcrnrlon, urcrnrlat=urcrnrlat,
+                                               weight=weight, origin_marker=origin_marker,
+                                               active_status=active_status,
+                                               elements_density=elements_density,
+                                               time_start=time_start,
+                                               time_end=time_end,
+                                               time_chunk_size = time_chunk_size,
+                                               timestep_values = timestep_values,
+                                               compress_species=compress_species)
+
+        H, lon_array, lat_array, H_count, keep_species, name_species_out = out
+
+        nspecies_out = len(name_species_out)
 
         # calculating center point for each pixel
         lon_array = (lon_array[:-1,:-1] + lon_array[1:,1:])/2
@@ -3346,26 +3351,23 @@ class ChemicalDrift(OceanDrift):
             Hsm = np.array([
                             [[self.horizontal_smooth(H[ti, sp, zi, :, :], n=smoothing_cells)
                               for zi in range(len(z_array) - 1)]
-                             for sp in range(self.nspecies)]
+                             for sp in range(nspecies_out)]
                             for ti in range(H.shape[0])
-                        ])
+                        ], dtype=np.float32)
 
         # Compute mean depth and volume in each pixel grid cell
         pixel_mean_depth, pixel_area  =  self.get_pixel_mean_depth(lon_array, lat_array,
                                                       density_proj_str,
                                                       lat_resol, lon_resol)
 
-        def _remove_reader_by_object(self, rdr_obj):
-            for key, rdr in list(self.env.readers.items()):
-                if rdr is rdr_obj:
-                    self.env.readers.pop(key, None)
-                    if hasattr(rdr, "close"):
-                        try: rdr.close()
-                        except: pass
-                    break
-        _remove_reader_by_object(self, 'shape')
-        _remove_reader_by_object(self, 'global_landmask')
-        _remove_reader_by_object(self, 'reader_sea_depth')
+        def _remove_reader_by_key(self, key):
+            rdr = self.env.readers.pop(key, None)
+            if rdr is not None and hasattr(rdr, "close"):
+                try: rdr.close()
+                except: pass
+
+        _remove_reader_by_key(self, 'shape')
+        _remove_reader_by_key(self, 'global_landmask')
 
         pixel_volume = np.zeros_like(H[0,0,:,:,:])
 
@@ -3394,8 +3396,8 @@ class ChemicalDrift(OceanDrift):
         # TODO this should be multiplied for the fraction of grid cell are that is not on land
 
         for ti in range(H.shape[0]):
-            for sp in range(self.nspecies):
-                spname = self.name_species[sp].lower()
+            for sp in range(nspecies_out):
+                spname = name_species_out[sp].lower()
                 is_sediment = spname.startswith('sed')
                 if not is_sediment:
                     #print('divide by water volume')
@@ -3503,13 +3505,31 @@ class ChemicalDrift(OceanDrift):
 
         # Save outputs to netCDF Dataset
         compound = self.get_config('chemical:compound')
-        species_str = ' '.join([f"{isp}:{sp}" for isp, sp in enumerate(self.name_species)])
+        if compound is None:
+            compound = "None"
+        species_str = ' '.join([f"{isp}:{sp}" for isp, sp in enumerate(name_species_out)])
 
         nc = Dataset(filename, 'w')
         nc.createDimension('x', lon_array.shape[0])
         nc.createDimension('y', lon_array.shape[1])
         nc.createDimension('depth', len(z_array)-1)
-        nc.createDimension('specie', self.nspecies)
+        nc.createDimension('specie', nspecies_out)
+
+        # Preserve mapping to original species ids
+        nc.species_axis_compressed = int(bool(compress_species))
+        nc.createVariable('specie_original_id', 'i4', ('specie',))
+        nc.variables['specie_original_id'][:] = keep_species.astype('i4')
+        nc.variables['specie_original_id'].long_name = 'Original species id in model indexing'
+
+        # Create a fixed string length dimension
+        maxlen = max(len(s) for s in name_species_out) if name_species_out else 1
+        if 'name_strlen' not in nc.dimensions:
+            nc.createDimension('name_strlen', maxlen)
+        specie_name_var = nc.createVariable('specie_name', 'S1', ('specie', 'name_strlen'))
+        specie_name_bytes = np.array([list(s.ljust(maxlen)) for s in name_species_out], dtype='S1')
+        specie_name_var[:] = specie_name_bytes
+        specie_name_var.long_name = 'Species name (aligned with specie axis)'
+
         timestr = 'seconds since 1970-01-01 00:00:00'
         if time_avg_conc is False:
             nc.createDimension('time', H.shape[0])
@@ -3523,11 +3543,9 @@ class ChemicalDrift(OceanDrift):
             nc.variables['avg_time'][:] = date2num(times2, timestr)
             nc.variables['avg_time'].units = timestr
 
-
         # Projection
         nc.createVariable('projection', 'i8')
         nc.variables['projection'].proj4 = density_proj.definition_string()
-
 
         # Cell size
         if pixelsize_m is not None:
@@ -3552,7 +3570,6 @@ class ChemicalDrift(OceanDrift):
             nc.variables['smoothing_cells'].long_name = 'Number of cells in each direction for horizontal smoothing'
             nc.variables['smoothing_cells'].units = '1'
 
-
         # Coordinates
         nc.createVariable('lon', 'f8', ('y','x'))
         nc.createVariable('lat', 'f8', ('y','x'))
@@ -3567,14 +3584,14 @@ class ChemicalDrift(OceanDrift):
         nc.variables['lat'].short_name = 'latitude'
         nc.variables['lat'].units = 'degrees_north'
         nc.variables['depth'][:] = z_array[1:]
-        nc.variables['specie'][:] = np.arange(self.nspecies)
-        nc.variables['specie'].long_name = ' '.join(['{}:{}'.format(isp,sp) for isp,sp in enumerate(self.name_species)])
+        nc.variables['specie'][:] = np.arange(nspecies_out)
+        nc.variables['specie'].long_name = ' '.join([f"{isp}:{sp}" for isp, sp in enumerate(name_species_out)])
 
         # Create final landmask
         if time_avg_conc is False:
-            Landmask = np.tile(landmask, (len(times), self.nspecies, len(z_array)-1, 1, 1))
+            Landmask = np.tile(landmask, (len(times), nspecies_out, len(z_array)-1, 1, 1))
         else:
-            Landmask = np.tile(landmask, (odt, self.nspecies, len(z_array)-1, 1, 1))
+            Landmask = np.tile(landmask, (odt, nspecies_out, len(z_array)-1, 1, 1))
         Landmask = np.swapaxes(Landmask, 3, 4)
         landmask_depth = np.tile(landmask[np.newaxis, :, :], (len(z_array)-1, 1, 1))
         landmask_depth = np.swapaxes(landmask_depth, 1, 2)
@@ -3606,7 +3623,6 @@ class ChemicalDrift(OceanDrift):
                 if sim_description is not None:
                     nc.variables['density_avg'].sim_description = str(sim_description)
 
-
         # Chemical concentration
         if time_avg_conc is False:
             nc.createVariable('concentration', 'f8',
@@ -3633,7 +3649,6 @@ class ChemicalDrift(OceanDrift):
             nc.variables['concentration_avg'].units = mass_unit+'/m3'+' (sed '+mass_unit+'/Kg)'
             if sim_description is not None:
                 nc.variables['concentration_avg'].sim_description = str(sim_description)
-
 
         # Chemical concentration, horizontally smoothed
         if horizontal_smoothing is True:
@@ -3665,7 +3680,6 @@ class ChemicalDrift(OceanDrift):
                 if sim_description is not None:
                     nc.variables['concentration_smooth_avg'].sim_description = str(sim_description)
 
-
         # Volume of boxes
         nc.createVariable('volume', 'f8',
                           ('depth','y', 'x'),fill_value=0)
@@ -3680,7 +3694,6 @@ class ChemicalDrift(OceanDrift):
         nc.variables['volume'].grid_mapping = density_proj_str
         nc.variables['volume'].units = 'm3'
 
-
         # Topography
         nc.createVariable('topo', 'f8', ('y', 'x'),fill_value=0)
         pixel_mean_depth = np.ma.masked_where(landmask==1, pixel_mean_depth)
@@ -3691,7 +3704,6 @@ class ChemicalDrift(OceanDrift):
         if sim_description is not None:
             nc.variables['topo'].sim_description = str(sim_description)
 
-
         # Gridcell area
         if pixelsize_m is None:
             nc.createVariable('area', 'f8', ('y', 'x'),fill_value=0)
@@ -3700,7 +3712,6 @@ class ChemicalDrift(OceanDrift):
             nc.variables['area'].long_name = 'Area of grid point'
             nc.variables['area'].grid_mapping = density_proj_str
             nc.variables['area'].units = 'm2'
-
 
         # Binary mask
         nc.createVariable('land', 'i4', ('y', 'x'),fill_value=-1)
@@ -3818,7 +3829,8 @@ class ChemicalDrift(OceanDrift):
                                    elements_density = False,
                                    time_start=None, time_end=None,
                                    time_chunk_size = 50,
-                                   timestep_values = False):
+                                   timestep_values = False,
+                                   compress_species=False):
         '''
         Compute a particle concentration map from particle positions
         Use user defined projection (density_proj=<proj4_string>)
@@ -3948,22 +3960,79 @@ class ChemicalDrift(OceanDrift):
             keep_mask &= (status_2d == active_index)
             logger.warning(f'only active elements were considered for concentration, status: {active_index}')
 
+        # ensure integer species ids with invalid -> -1
+        if np.issubdtype(specie_2d.dtype, np.integer):
+            specie_i = specie_2d.astype(np.int32, copy=False)
+            # guard keep_mask might not to include include invalids
+            keep_mask &= (specie_i >= 0) & (specie_i < self.nspecies)
+        else:
+            specie_i = np.full(specie_2d.shape, -1, dtype=np.int32)
+            finite = np.isfinite(specie_2d)
+            vals = specie_2d[finite]
+            if not np.allclose(vals, np.round(vals), atol=0, rtol=0):
+                logger.warning("specie_2d contains non-integer values; casting will truncate.")
+            specie_i[finite] = vals.astype(np.int32)
+            keep_mask &= (specie_i >= 0) & (specie_i < self.nspecies)
+
+        if compress_species:
+            sp_present = specie_i[keep_mask]
+            # sp_present = specie_i[(specie_i >= 0) & (specie_i < self.nspecies)]
+            keep_species = np.unique(sp_present)
+            keep_species.sort()
+
+            if keep_species.size == 0:
+                raise ValueError("No species found after filtering (keep_mask empty).")
+
+            old2new = -np.ones(self.nspecies, dtype=np.int32)
+            old2new[keep_species] = np.arange(keep_species.size, dtype=np.int32)
+
+            # remap specie ids to compact range; invalid -> -1
+            valid_sp = (specie_i >= 0) & (specie_i < self.nspecies)
+
+            specie_new = -np.ones_like(specie_i, dtype=np.int32)
+            specie_new[valid_sp] = old2new[specie_i[valid_sp]]
+
+            keep_mask &= (specie_new >= 0)   # stays correct
+            specie_2d = specie_new
+            Nspecies = int(keep_species.size)
+            name_species_out = [self.name_species[i] for i in keep_species]
+        else:
+            specie_2d = specie_i
+            keep_species = np.arange(self.nspecies, dtype=np.int32)
+            Nspecies = int(self.nspecies)
+            name_species_out = list(self.name_species)
+
         # Create a grid in the specified projection
         if llcrnrlon is not None:
             llcrnrx,llcrnry = density_proj(llcrnrlon,llcrnrlat)
             urcrnrx,urcrnry = density_proj(urcrnrlon,urcrnrlat)
         else:
-            x,y = density_proj(lon_2d, lat_2d)
-            if density_proj == pyproj.Proj('+proj=moll +ellps=WGS84 +lon_0=0.0'):
-                llcrnrx,llcrnry = x.min()-pixelsize_m, y.min()-pixelsize_m
-                urcrnrx,urcrnry = x.max()+pixelsize_m, y.max()+pixelsize_m
+            mll = np.isfinite(lon_2d) & np.isfinite(lat_2d)
+            if not mll.any():
+                raise ValueError("No finite lon/lat points available to build grid bounds.")
+
+            lon_v = lon_2d[mll]
+            lat_v = lat_2d[mll]
+            x, y = density_proj(lon_v, lat_v)  # 1D only
+
+            mxy = np.isfinite(x) & np.isfinite(y)
+            if not mxy.any():
+                raise ValueError("No finite projected coordinates to build grid bounds.")
+
+            xmin, xmax = np.nanmin(x[mxy]), np.nanmax(x[mxy])
+            ymin, ymax = np.nanmin(y[mxy]), np.nanmax(y[mxy])
+
+            is_moll = ("+proj=moll" in density_proj.srs)
+            if is_moll:
+                llcrnrx, llcrnry = xmin - pixelsize_m, ymin - pixelsize_m
+                urcrnrx, urcrnry = xmax + pixelsize_m, ymax + pixelsize_m
             else:
-                llcrnrx,llcrnry = x.min()-lon_resol, y.min()-lat_resol
-                urcrnrx,urcrnry = x.max()+lon_resol, y.max()+lat_resol
-            del x,y
+                llcrnrx, llcrnry = xmin - lon_resol, ymin - lat_resol
+                urcrnrx, urcrnry = xmax + lon_resol, ymax + lat_resol
+            del lon_v, lat_v, x, y
             gc.collect()
 
-        if density_proj == pyproj.Proj('+proj=moll +ellps=WGS84 +lon_0=0.0'):
+        if density_proj == Proj('+proj=moll +ellps=WGS84 +lon_0=0.0'):
             if pixelsize_m == None:
                 raise ValueError("If density_proj is '+proj=moll +ellps=WGS84 +lon_0=0.0', pixelsize_m must be specified")
             else:
@@ -3978,13 +4047,13 @@ class ChemicalDrift(OceanDrift):
         z_array = np.asarray(z_array, dtype=np.float32)
 
         # Prepare projection once
-        need_proj = (density_proj != pyproj.Proj("+proj=longlat +datum=WGS84 +no_defs"))
+        need_proj = (density_proj != Proj("+proj=longlat +datum=WGS84 +no_defs"))
         if need_proj:
             source_proj = Proj("+proj=longlat +datum=WGS84 +no_defs")
             transformer = Transformer.from_proj(source_proj, density_proj)
 
         # Allocate outputs
-        Nspecies = self.nspecies
+        # Nspecies is compuded based on compress_species
         Tx = n_timef
         Zx = len(z_array) - 1
         Xx = len(x_array) - 1
@@ -4069,8 +4138,8 @@ class ChemicalDrift(OceanDrift):
             Y, X = np.meshgrid(y_array, x_array)
             lon_array, lat_array = density_proj(X, Y, inverse=True)
 
-        return H, lon_array, lat_array, H_count
 
+        return H, lon_array, lat_array, H_count, keep_species, name_species_out
 
     def get_pixel_mean_depth(self,lons,lats,density_proj_str,lat_resol,lon_resol):
         from scipy import interpolate
@@ -4092,26 +4161,29 @@ class ChemicalDrift(OceanDrift):
         # Interpolate topography to new grid
         h = interpolate.griddata((lon_grd.flatten(),lat_grd.flatten()), h_grd.flatten(), (lons, lats), method='linear')
 
+        # Mollweide case
+        if "+proj=moll" in density_proj_str:
+            return h, None
 
-
-        if density_proj_str != ('+proj=moll +ellps=WGS84 +lon_0=0.0'):
-        # Calculate the area of each grid cell in square meters (m²)
-            Radius = 6.371e6  # Earth's radius in meters
+        # EPSG:4326 / longlat case: spherical area
+        if "+proj=longlat" in density_proj_str:
+            # Calculate the area of each grid cell in square meters (m²)
+            Radius = 6.371e6
             # Convert degrees to radians
             lat_resol_rad = np.radians(lat_resol)
             lon_resol_rad = np.radians(lon_resol)
             # Convert latitude centers to radians
             lat_array_rad = np.radians(lats)
             # Compute lat edges
-            lat1 = lat_array_rad - (lat_resol_rad / 2)  # Lower latitude boundary
-            lat2 = lat_array_rad + (lat_resol_rad / 2)  # Upper latitude boundary
+            lat1 = lat_array_rad - (lat_resol_rad / 2) # Lower latitude boundary
+            lat2 = lat_array_rad + (lat_resol_rad / 2) # Upper latitude boundary
             # Calculate area using the spherical formula
             area = (Radius**2) * lon_resol_rad * (np.sin(lat2) - np.sin(lat1))
             return h, area
-        else:
-            area = None
-            return h, area
 
+        # Projected CRS: lat_resol/lon_resol are in projected units (typically meters)
+        area = np.full_like(lats, abs(lat_resol * lon_resol), dtype=np.float64)
+        return h, area
 
     def horizontal_smooth(self, a, n=0):
         if n==0:
@@ -5422,7 +5494,6 @@ class ChemicalDrift(OceanDrift):
         """
         return np.einsum('nj,nj->n', np.take(values, vtx), wts)
 
-
     def regrid_dataarray(self,
                          mode,
                          ds,
@@ -5842,6 +5913,8 @@ class ChemicalDrift(OceanDrift):
             if Verbose:
                 print("No water species matched; returning None.")
             return None, []
+        if Verbose:
+            print("Included water species:", ", ".join(name for name, _ in included))
 
         # Drop singleton depth if present
         if "depth" in out.dims and out.sizes.get("depth", 0) == 1:
@@ -5912,6 +5985,16 @@ class ChemicalDrift(OceanDrift):
 
     @staticmethod
     def _sim_description_attr(src_da, Sim_description):
+        """
+        Resolve the simulation description string to attach to derived outputs.
+          1) If `src_da` (typically an xarray DataArray from the concentration file)
+             has attribute `sim_description`, return it.
+          2) Else, if `Sim_description` argument is provided, return it as `str(...)`.
+          3) Else return None.
+
+        src_da : xarray.DataArray, Source data array from which metadata may be inherited.
+        Sim_description : Any, User-provided simulation description.
+        """
         if hasattr(src_da, "sim_description"):
             return src_da.sim_description
         if Sim_description is not None:
@@ -5920,12 +6003,30 @@ class ChemicalDrift(OceanDrift):
 
     @staticmethod
     def _base_long_name(src_da, Chemical_name, variable):
+        """
+        Build a base `long_name` prefix for derived water/sediment products using the `long_name` attribute,
+        otherwise, it constructs a fallback base name using the provided chemical name and  and variable label: "<Chemical_name> <variable>".
+
+        src_da:         xarray.DataArray, Source data array from which metadata may be inherited.
+        Chemical_name:  str or None, Chemical name used in fallback naming.
+        variable:       str, variable name (e.g., "concentration", "density", ...).
+        """
         if hasattr(src_da, "long_name"):
             return src_da.long_name.split("specie")[0].strip()
         return (Chemical_name or "") + f" {variable}"
 
     @staticmethod
     def _water_units(src_da, variable, default="ug/m3 (assumed default)"):
+        """
+        Extract the water-column unit string from a source variable's `units` attribute.
+
+        Intended for variables containing "concentration". For non-concentration variables
+        (e.g., "density"), this returns "1".
+
+        src_da:   xarray.DataArray, Source data array providing the `units` attribute.
+        variable: str, variable name used to decide if this is a concentration-like variable.
+        default:  str, returned if no valid water unit can be parsed.
+        """
         import re
         units_raw = getattr(src_da, "units", None)
         if "concentration" not in variable:
@@ -5939,6 +6040,16 @@ class ChemicalDrift(OceanDrift):
 
     @staticmethod
     def _sed_units(src_da, variable, default="ug/Kg d.w (assumed default)"):
+        """
+        Extract the sediment unit string from a source variable's `units` attribute.
+
+        Intended for variables containing "concentration". For non-concentration variables
+        (e.g., "density"), this returns "1".
+
+        src_da:   xarray.DataArray, Source data array providing the `units` attribute.
+        variable: str, variable name used to decide if this is a concentration-like variable.
+        default:  str, returned if no valid water unit can be parsed.
+        """
         import re
         units_raw = getattr(src_da, "units", None)
         if "concentration" not in variable:
@@ -5954,6 +6065,21 @@ class ChemicalDrift(OceanDrift):
     def _apply_common_attrs(out_da, Sim_description,
                             projection_proj4=None, grid_mapping=None,
                             longitude=None, latitude=None):
+        """
+        Apply common metadata attributes to a derived output DataArray.
+          - "sim_description" if provided,
+          - "projection" as a proj4 string if provided,
+          - "grid_mapping" if provided,
+          - "lon_resol" and "lat_resol" (in degrees) if coordinate vectors are provided
+            and contain at least two elements.
+
+        out_da:           xarray.DataArray, Output data array to be annotated.
+        Sim_description:  str, simulation description to store in attributes.
+        projection_proj4: str, projection definition (proj4 string) to store in attributes.
+        grid_mapping:     str, grid mapping attribute (often points to a CF grid mapping variable).
+        longitude:        array-like, longitude coordinate vector used to infer resolution.
+        latitude:         array-like, latitude coordinate vector used to infer resolution.
+        """
         import numpy as np
 
         if Sim_description is not None:
@@ -5971,6 +6097,178 @@ class ChemicalDrift(OceanDrift):
             out_da.attrs["lat_resol"] = f"{np.around(abs(latitude[0]-latitude[1]), decimals=8)} degrees N"
 
         return out_da
+
+    def specie_ids_num_from_ds(self, DS, TOT_Conc=None):
+        """
+        Build a `{species_name: species_index}` mapping from an xarray Dataset.
+
+        If present, `specie_name` is interpreted as the canonical list of species names
+        aligned with the `specie` axis of the concentration variables. This function
+        supports common NetCDF encodings for strings:
+          - 2D char arrays (specie, strlen) stored as bytes ('S1'), unicode ('U1'),
+            or integer ASCII codes (uint8/int).
+          - 1D arrays of strings/bytes.
+          - Masked arrays (filled safely).
+
+        If `specie_name` is not present, and `TOT_Conc` has attribute `long_name`, the
+        mapping is parsed from the species listing embedded in that string using
+        `self._species_dict(...)`. The keys are normalized to clean strings as above.
+
+        DS : xarray.Dataset, dataset containing concentration variables and, ideally, a `specie_name` variable.
+        TOT_Conc : xarray.DataArray, source variable (e.g., DS["concentration"]) used for fallback parsing from `long_name`.
+        """
+        import numpy as np
+
+        def _clean_name(x) -> str:
+            """Return a clean python str name (no b'' wrappers, no nulls, trimmed)."""
+            # bytes -> decode
+            if isinstance(x, (bytes, bytearray, np.bytes_)):
+                s = bytes(x).decode("utf-8", errors="ignore")
+            else:
+                s = str(x)
+            s = s.replace("\x00", "").strip()
+            # unwrap string representation of bytes:  b'NAME   '  or  b"NAME"
+            if (s.startswith("b'") and s.endswith("'")) or (s.startswith('b"') and s.endswith('"')):
+                s = s[2:-1].replace("\x00", "").strip()
+            return s
+
+        if "specie_name" in DS.variables:
+            a = np.asarray(DS["specie_name"].values)
+            # If masked, fill with 0
+            if np.ma.isMaskedArray(a):
+                a = a.filled(0)
+
+            names = []
+            # Case 1: 1D strings/bytes
+            if a.ndim == 1:
+                if a.dtype.kind == "S":
+                    # numpy bytes scalars -> decode properly
+                    names = [_clean_name(s) for s in a.tolist()]
+                elif a.dtype.kind == "U":
+                    names = [_clean_name(s) for s in a.tolist()]
+                else:
+                    # 1D of numbers/objects
+                    names = [_clean_name(x) for x in a.tolist()]
+            # Case 2: (specie, strlen) char array
+            elif a.ndim == 2:
+                if a.dtype.kind == "S":
+                    # bytes per char
+                    for row in a:
+                        s = row.tobytes().decode("utf-8", errors="ignore")
+                        names.append(_clean_name(s))
+                elif a.dtype.kind == "U":
+                    for row in a:
+                        s = "".join(row)
+                        names.append(_clean_name(s))
+                elif a.dtype.kind in ("i", "u"):
+                    # integer ASCII codes
+                    a8 = a.astype(np.uint8, copy=False)
+                    for row in a8:
+                        s = bytes(row.tolist()).decode("utf-8", errors="ignore")
+                        names.append(_clean_name(s))
+                else:
+                    # object array rows (bytes/ints/str mix)
+                    for row in a:
+                        if len(row) == 0:
+                            names.append("")
+                            continue
+                        first = row[0]
+                        if isinstance(first, (bytes, np.bytes_)):
+                            b = b"".join([x if isinstance(x, (bytes, np.bytes_)) else bytes([int(x)]) for x in row])
+                            names.append(_clean_name(b))
+                        elif isinstance(first, (int, np.integer)):
+                            b = bytes([int(x) & 0xFF for x in row])
+                            names.append(_clean_name(b))
+                        else:
+                            names.append(_clean_name("".join([str(x) for x in row])))
+            else:
+                # Unexpected shape
+                names = [_clean_name(x) for x in a.reshape(-1).tolist()]
+
+            # Drop empties and keep order
+            names = [n for n in names if n]
+            return {name: int(i) for i, name in enumerate(names)}
+
+        # Fallback: parse long_name
+        if TOT_Conc is not None and hasattr(TOT_Conc, "long_name"):
+            # ensure keys are clean strings too
+            raw = self._species_dict(TOT_Conc.long_name)
+            return {_clean_name(k): int(v) for k, v in raw.items()}
+
+        raise ValueError("Cannot build species mapping: missing specie_name and long_name.")
+
+    def fallback_specie_ids_num_from_flags(self):
+        """
+        Build fallback specie_ids_num using ONLY:
+          - transfer_setup = self.get_config('chemical:transfer_setup')
+          - slowly_fraction flag (chemical:slowly_fraction)
+          - irreversible_fraction flag (chemical:irreversible_fraction)
+
+        Returns:
+            dict: {species_name: idx} matching the canonical build order
+        """
+        transfer_setup = self.get_config("chemical:transfer_setup")
+        slowly = bool(self.get_config("chemical:slowly_fraction"))
+        irrev  = bool(self.get_config("chemical:irreversible_fraction"))
+
+        # Canonical order (must match self.name_species builder)
+        order = [
+            "LMM", "LMMcation", "LMManion",
+            "Colloid", "Humic colloid",
+            "Polymer",
+            "Particle reversible", "Particle slowly reversible", "Particle irreversible",
+            "Sediment reversible", "Sediment slowly reversible", "Sediment buried",
+            "Sediment irreversible",
+        ]
+        # Base sets per transfer_setup (minimum guaranteed pools)
+        base = {
+            "metals": {
+                "LMM",
+                "Particle reversible",
+                "Sediment reversible",
+                "Sediment buried",
+            },
+            "organics": {
+                "LMM",
+                "Humic colloid",
+                "Particle reversible",
+                "Sediment reversible",
+                "Sediment buried",
+            },
+            "137Cs_rev": {
+                "LMM",
+                "Particle reversible",
+                "Sediment reversible",
+            },
+            "Sandnesfj_Al": {
+                "LMMcation",
+                "LMManion",
+                "Humic colloid",
+                "Polymer",
+                "Particle reversible",
+                "Sediment reversible",
+            },
+        }
+
+        if transfer_setup == "custom":
+            raise ValueError("Cannot build fallback for transfer_setup='custom' from flags alone.")
+        if transfer_setup not in base:
+            raise ValueError(f"Unknown transfer_setup: {transfer_setup!r}")
+
+        species = set(base[transfer_setup])
+        # Slowly pools exist only for metals/organics setups and require BOTH particle+sediment slow
+        if slowly and transfer_setup in ("metals", "organics"):
+            species.add("Particle slowly reversible")
+            species.add("Sediment slowly reversible")
+        # Irreversible pools require both particle+sediment irreversible
+        if irrev and transfer_setup in ("metals", "organics"):
+            species.add("Particle irreversible")
+            species.add("Sediment irreversible")
+
+        # Build list+mapping in canonical order
+        name_species_out = [s for s in order if s in species]
+        specie_ids_num = {name: i for i, name in enumerate(name_species_out)}
+        return specie_ids_num
 
 
     def calculate_water_sediment_conc(self,
@@ -6018,13 +6316,11 @@ class ChemicalDrift(OceanDrift):
                         "Colloid", "Humic colloid",
                         "Polymer", "Particle reversible",
                         "Particle slowly reversible",
-                        "Particle irreversible",
-                        "dissolved", "DOC", "SPM"]
+                        "Particle irreversible"]
         sed_species = ["Sediment reversible",
                        "Sediment slowly reversible",
                        "Sediment buried",
-                       "Sediment irreversible",
-                       "sediment", "buried"]
+                       "Sediment irreversible"]
 
         # Exclude specified species from water/sediment concentration maps
         if Excluded_species is None:
@@ -6075,7 +6371,6 @@ class ChemicalDrift(OceanDrift):
                        'density', 'density_avg']]):
             raise ValueError("No valid variables")
 
-
         if "time" in DS.dims:
             time_name = "time"
         else:
@@ -6107,21 +6402,40 @@ class ChemicalDrift(OceanDrift):
                 TOT_Conc = DS[variable]
 
                 try:
-                    specie_ids_num = self._species_dict(TOT_Conc.long_name)
+                    specie_ids_num = self.specie_ids_num_from_ds(DS, TOT_Conc)
                 except:
                     print("Used default specie_ids_num dictionary")
-                    specie_ids_num = {'dissolved':0,
-                                      'DOC':1,
-                                      'SPM':2,
-                                      'sediment':3,
-                                      'buried':4}
+                    specie_ids_num = self.fallback_specie_ids_num_from_flags()
+
+                # keep only names that exist in the current file mapping
+                legacy_alias = {
+                    "dissolved": "LMM",
+                    "DOC": "Humic colloid",
+                    "SPM": "Particle reversible",
+                    "sediment": "Sediment reversible",
+                    "buried": "Sediment buried",
+                }
+
+                def _alias_and_filter(species_list, specie_ids_num, legacy_alias):
+                    out = []
+                    seen = set()
+                    for s in species_list:
+                        s2 = legacy_alias.get(s, s)
+                        if s2 in specie_ids_num and s2 not in seen:
+                            out.append(s2)
+                            seen.add(s2)
+                    return out
+
+                water_species_eff = _alias_and_filter(water_species, specie_ids_num, legacy_alias)
+                sed_species_eff   = _alias_and_filter(sed_species,   specie_ids_num, legacy_alias)
+
                 if Verbose:
                     log("Running sum of water concentration")
 
                 DA_Conc_array_wat, included_wat = self._water_column_conc(
                     TOT_Conc=TOT_Conc,
                     specie_ids_num=specie_ids_num,
-                    water_species=water_species,
+                    water_species=water_species_eff,
                     Verbose=Verbose
                     )
 
@@ -6131,7 +6445,7 @@ class ChemicalDrift(OceanDrift):
                 DA_Conc_array_sed, included_sed = self._sediment_conc_sum(
                     TOT_Conc=TOT_Conc,
                     specie_ids_num=specie_ids_num,
-                    sed_species=sed_species,
+                    sed_species=sed_species_eff,
                     Verbose=Verbose
                     )
 
@@ -10472,7 +10786,7 @@ class ChemicalDrift(OceanDrift):
         nearest_tol_time:    np.timedelta64|pandas.Timedelta|str|None, Tolerance for align_mode="nearest".
                                            Strings like "3h" are supported.
         clip_to_original:    bool, If True, masks values outside each run's original time range after reindexing.
-        start_date, end_date: np.datetime64|pandas.Timestamp|float|int|None, Start/end bounds for the target grid.
+        start_date,end_date: np.datetime64|pandas.Timestamp|float|int|None, Start/end bounds for the target grid.
                                            If None, inferred from the input series.
         freq_time:           np.timedelta64|pandas.Timedelta|str|float|int|None, Target timestep.
                                            If None, inferred; if not inferable, uses union of timestamps.
