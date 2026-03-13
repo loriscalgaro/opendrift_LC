@@ -3014,28 +3014,28 @@ class ChemicalDrift(OceanDrift):
 
 
     def write_netcdf_chemical_density_map(self, filename, pixelsize_m='auto', zlevels=None,
-                                              lat_resol=None, lon_resol=None,
-                                              deltat=None,
-                                              density_proj=None,
-                                              llcrnrlon=None, llcrnrlat=None,
-                                              urcrnrlon=None, urcrnrlat=None,
-                                              mass_unit=None,
-                                              time_avg_conc=False,
-                                              time_start=None,
-                                              time_end=None,
-                                              time_chunk_size=50,
-                                              horizontal_smoothing=False,
-                                              smoothing_cells=0,
-                                              reader_sea_depth=None,
-                                              landmask_shapefile=None,
-                                              landmask_bathymetry_thr=None,
-                                              origin_marker=None,
-                                              elements_density=False,
-                                              active_status=False,
-                                              weight=None,
-                                              sim_description=None,
-                                              timestep_values=False,
-                                              compress_species=False):
+                                          lat_resol=None, lon_resol=None,
+                                          deltat=None,
+                                          density_proj=None,
+                                          llcrnrlon=None, llcrnrlat=None,
+                                          urcrnrlon=None, urcrnrlat=None,
+                                          mass_unit=None,
+                                          time_avg_conc=False,
+                                          time_start=None,
+                                          time_end=None,
+                                          time_chunk_size=50,
+                                          horizontal_smoothing=False,
+                                          smoothing_cells=0,
+                                          reader_sea_depth=None,
+                                          landmask_shapefile=None,
+                                          landmask_bathymetry_thr=None,
+                                          origin_marker=None,
+                                          elements_density=False,
+                                          active_status=False,
+                                          weight=None,
+                                          sim_description=None,
+                                          timestep_values=False,
+                                          compress_species=False):
         '''Write netCDF file with map of Chemical species densities and concentrations
         Arguments:
             pixelsize_m:           float32, lenght of gridcells in m (default mode)
@@ -3072,38 +3072,41 @@ class ChemicalDrift(OceanDrift):
             compress_species:      boolean, onl species present in self.result will be used to construct netCDF file
         '''
 
-        from netCDF4 import Dataset, date2num #, stringtochar
+        import numpy as np
+        from netCDF4 import Dataset, date2num
         import opendrift
         from pyproj import CRS, Proj, Transformer
         import pandas as pd
         import gc
         from datetime import timedelta
 
-
         def is_valid_proj4(density_proj):
             try:
-                CRS.from_string(density_proj)  # Try to create a CRS object
+                CRS.from_string(density_proj)
                 return density_proj
-            except:
+            except Exception:
                 try:
-                    density_proj = (CRS.from_epsg(density_proj)).to_proj4() # Try to create a CRS object from EPSG number
+                    density_proj = (CRS.from_epsg(density_proj)).to_proj4()
                     return density_proj
-                except:
+                except Exception:
                     raise ValueError(f"Invalid density_proj: {density_proj}")
 
+
+        # Input checks
         if sum(x is None for x in [lat_resol, lon_resol]) == 1:
             raise ValueError("Both lat/lon_resol must be specified")
         elif sum(x is None for x in [lat_resol, lon_resol]) == 0:
             if pixelsize_m is not None:
                 raise ValueError("If lat/lon_resol are specified pixelsize_m must be None")
 
-        if timestep_values and weight =="mass":
+        if timestep_values and weight == "mass":
             raise ValueError("timestep sholud be used only with cumulative properties")
 
         if self.mode != opendrift.models.basemodel.Mode.Config:
             self.mode = opendrift.models.basemodel.Mode.Config
             logger.debug("Changed self.mode to Config")
 
+        # Time filtering
         all_times = pd.to_datetime(self.result.time).to_pydatetime()
         if time_start is not None:
             time_start = pd.to_datetime(time_start).to_pydatetime()
@@ -3119,17 +3122,15 @@ class ChemicalDrift(OceanDrift):
             if not tmask.any():
                 logger.warning(f"No timesteps fall within time_start: {time_start} and time_end: {time_end}.")
                 return
-            # Save for later use when writing 'time' coords and averaging
             filtered_times = np.array(all_times)[tmask]
         else:
             tmask = None
             filtered_times = all_times
 
+        # Landmask readers
         if landmask_shapefile is not None:
             if 'shape' in self.env.readers.keys():
-                # removing previously stored landmask
                 del self.env.readers['shape']
-            # Adding new landmask
             from opendrift.readers import reader_shape
             custom_landmask = reader_shape.Reader.from_shpfiles(landmask_shapefile)
             self.add_reader(custom_landmask)
@@ -3138,116 +3139,124 @@ class ChemicalDrift(OceanDrift):
             global_landmask = reader_global_landmask.Reader()
             self.add_reader(global_landmask)
 
+        # Bathymetry reader
         if reader_sea_depth is not None:
             from opendrift.readers import reader_netCDF_CF_generic
             import xarray as xr
+            if any(v is None for v in (llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat)):
+                raise ValueError("llcrnrlon/llcrnrlat/urcrnrlon/urcrnrlat must be provided when reader_sea_depth is used.")
 
-            reader_sea_depth_res = xr.open_dataset(reader_sea_depth)
-            reader_sea_depth_res = (reader_sea_depth_res[list(reader_sea_depth_res.data_vars)[0]])
+            with xr.open_dataset(reader_sea_depth) as  reader_sea_depth_res:
+                reader_sea_depth_res = (reader_sea_depth_res[list(reader_sea_depth_res.data_vars)[0]])
 
-            lat_names = ["latitude", "lat", "y"]
-            lat_name = next((name for name in lat_names if name in reader_sea_depth_res.coords), None)
-            lon_names = ["longitude","lon", "x", "long"]
-            lon_name = next((name for name in lon_names if name in reader_sea_depth_res.coords), None)
+                lat_names = ["latitude", "lat", "y"]
+                lat_name = next((name for name in lat_names if name in reader_sea_depth_res.coords), None)
+                lon_names = ["longitude", "lon", "x", "long"]
+                lon_name = next((name for name in lon_names if name in reader_sea_depth_res.coords), None)
 
-            if any(x is None for x in [lat_name, lon_name]):
-                raise ValueError("Latitude/Longitude coordinate names not found in bathimetry")
+                if any(x is None for x in [lat_name, lon_name]):
+                    raise ValueError("Latitude/Longitude coordinate names not found in bathimetry")
 
-            # Check if corners are covered by bathimetry
-            reader_sea_depth_lat_values = reader_sea_depth_res.coords[lat_name].values
-            reader_sea_depth_lon_values = reader_sea_depth_res.coords[lon_name].values
+                # Check if corners are covered by bathymetry
+                reader_sea_depth_lat_values = reader_sea_depth_res.coords[lat_name].values
+                reader_sea_depth_lon_values = reader_sea_depth_res.coords[lon_name].values
 
-            reader_sea_depth_lon_min = min(reader_sea_depth_lon_values)
-            reader_sea_depth_lat_min = min(reader_sea_depth_lat_values)
-            reader_sea_depth_lon_max = max(reader_sea_depth_lon_values)
-            reader_sea_depth_lat_max = max(reader_sea_depth_lat_values)
+                lat_f = reader_sea_depth_lat_values[np.isfinite(reader_sea_depth_lat_values)]
+                lon_f = reader_sea_depth_lon_values[np.isfinite(reader_sea_depth_lon_values)]
 
-            if ((llcrnrlat < reader_sea_depth_lat_min) or (urcrnrlat > reader_sea_depth_lat_max)\
-            or (llcrnrlon < reader_sea_depth_lon_min) or  (urcrnrlon > reader_sea_depth_lon_max)):
-                if llcrnrlat < reader_sea_depth_lat_min:
-                    logger.warning(f"Changed llcrnrlat from {llcrnrlat} to {str(reader_sea_depth_lat_values[1])[:8]}")
-                    llcrnrlat = reader_sea_depth_lat_values[1]
-                if urcrnrlat > reader_sea_depth_lat_max:
-                    logger.warning(f"Changed urcrnrlat from {urcrnrlat} to {str(reader_sea_depth_lat_values[-2])[:8]}")
-                    urcrnrlat = reader_sea_depth_lat_values[-2]
-                if llcrnrlon < reader_sea_depth_lon_min:
-                    logger.warning(f"Changed llcrnrlon from {llcrnrlon} to {str(reader_sea_depth_lon_values[1])[:8]}")
-                    llcrnrlon = reader_sea_depth_lon_values[1]
-                if urcrnrlon > reader_sea_depth_lon_max:
-                    logger.warning(f"Changed urcrnrlon from {urcrnrlon} to {str(reader_sea_depth_lon_values[-2])[:8]}")
-                    urcrnrlon = reader_sea_depth_lon_values[-2]
-            else:
-                pass
+                lat_sorted = np.sort(lat_f)
+                lon_sorted = np.sort(lon_f)
+                if lat_sorted.size < 3 or lon_sorted.size < 3:
+                    raise ValueError("Bathymetry grid too small after loading to safely adjust corners.")
 
-            # Find resolution of bathimetry's selected section
-            reader_sea_depth_res=reader_sea_depth_res.where(
-                                            (reader_sea_depth_res[lon_name] > llcrnrlon) &
-                                            (reader_sea_depth_res[lon_name] < urcrnrlon) &
-                                            (reader_sea_depth_res[lat_name] > llcrnrlat) &
-                                            (reader_sea_depth_res[lat_name] < urcrnrlat),
-                                            drop=True)
-            # Update lat/lon values of final selection
-            reader_sea_depth_lat_values = reader_sea_depth_res.coords[lat_name].values
-            reader_sea_depth_lon_values = reader_sea_depth_res.coords[lon_name].values
+                lat_min, lat_max = lat_sorted[0], lat_sorted[-1]
+                lon_min, lon_max = lon_sorted[0], lon_sorted[-1]
 
-            num_x = None
-            num_y = None
+                if llcrnrlat < lat_min:
+                    new = lat_sorted[1]
+                    logger.warning(f"Changed llcrnrlat from {llcrnrlat} to {new}")
+                    llcrnrlat = new
+                if urcrnrlat > lat_max:
+                    new = lat_sorted[-2]
+                    logger.warning(f"Changed urcrnrlat from {urcrnrlat} to {new}")
+                    urcrnrlat = new
 
-            num_x = reader_sea_depth_lon_values.size
-            if num_x == 0:
-                raise ValueError("No longitude coordinate found in bathimetry")
-            num_y = reader_sea_depth_lat_values.size
-            if num_y == 0:
-                raise ValueError("No latitude coordinate found in bathimetry")
+                if llcrnrlon < lon_min:
+                    new = lon_sorted[1]
+                    logger.warning(f"Changed llcrnrlon from {llcrnrlon} to {new}")
+                    llcrnrlon = new
+                if urcrnrlon > lon_max:
+                    new = lon_sorted[-2]
+                    logger.warning(f"Changed urcrnrlon from {urcrnrlon} to {new}")
+                    urcrnrlon = new
 
-            del reader_sea_depth_res
-            # Load bathimetry as reader for interpolation
-            reader_sea_depth = reader_netCDF_CF_generic.Reader(reader_sea_depth)
+                # final sanity
+                if not (lat_min <= llcrnrlat <= urcrnrlat <= lat_max) or not (lon_min <= llcrnrlon <= urcrnrlon <= lon_max):
+                    raise ValueError(
+                        "Adjusted corners are still outside bathymetry bounds; check input corners or bathymetry coverage."
+                    )
+
+                # Find resolution of bathimetry's selected section
+                reader_sea_depth_res = reader_sea_depth_res.where(
+                    (reader_sea_depth_res[lon_name] >= llcrnrlon) &
+                    (reader_sea_depth_res[lon_name] <= urcrnrlon) &
+                    (reader_sea_depth_res[lat_name] >= llcrnrlat) &
+                    (reader_sea_depth_res[lat_name] <= urcrnrlat),
+                    drop=True
+                )
+
+                reader_sea_depth_lat_values = reader_sea_depth_res.coords[lat_name].values
+                reader_sea_depth_lon_values = reader_sea_depth_res.coords[lon_name].values
+
+                num_x = reader_sea_depth_lon_values.size
+                if num_x == 0:
+                    raise ValueError("No longitude coordinate found in bathimetry")
+                num_y = reader_sea_depth_lat_values.size
+                if num_y == 0:
+                    raise ValueError("No latitude coordinate found in bathimetry")
+
+                reader_sea_depth = reader_netCDF_CF_generic.Reader(reader_sea_depth)
         else:
-            raise ValueError('A reader for ''sea_floor_depth_below_sea_level'' must be specified')
+            raise ValueError("A reader for 'sea_floor_depth_below_sea_level' must be specified")
 
-        # Temporary workaround if self.nspecies and self.name_species are not defined
-        # TODO Make sure that these are saved when the simulation data is saved to the ncdf file
-        # Then this workaround can be removed
-
+        # Species init
         if not hasattr(self, "name_species"):
             self.init_species()
-
-        if not hasattr(self,'nspecies'):
-            self.nspecies=4
-        if not hasattr(self,'name_species'):
-            self.name_species = ['dissolved',
-                                 'DOC',
-                                 'SPM',
-                                 'sediment']
+        if not hasattr(self, "nspecies"):
+            self.nspecies = 4
+        if not hasattr(self, "name_species"):
+            self.name_species = ['dissolved', 'DOC', 'SPM', 'sediment']
 
         if self.mode != opendrift.models.basemodel.Mode.Result:
             self.mode = opendrift.models.basemodel.Mode.Result
             logger.debug("Changed self.mode to Result")
 
-        logger.info('Postprocessing: Write density and concentration to netcdf file')
+        logger.info("Postprocessing: Write density and concentration to netcdf file")
 
-        # Default bathymetry resolution 500x500. Can be increased (carefully) if high-res data is available and needed
+        # Bathymetry interpolation grid
         bathimetry_res = 500
         if num_x > 500 and num_y > 500:
-            bathimetry_res = min(num_x, num_y)-1
+            bathimetry_res = min(num_x, num_y) - 1
             logger.warning(f"Changed bathymetry resolution to {bathimetry_res}")
 
-        grid=np.meshgrid(np.linspace(llcrnrlon,urcrnrlon,bathimetry_res), np.linspace(llcrnrlat,urcrnrlat,bathimetry_res))
-        # grid=np.meshgrid(np.linspace(llcrnrlon,urcrnrlon,500), np.linspace(llcrnrlat,urcrnrlat,500))
-        self.conc_lon=grid[0]
-        self.conc_lat=grid[1]
-        self.conc_topo=reader_sea_depth.get_variables_interpolated_xy(['sea_floor_depth_below_sea_level'],
-                x = self.conc_lon.flatten(),
-                y = self.conc_lat.flatten(),
-                time = reader_sea_depth.times[0] if reader_sea_depth.times is not None else None
-                )[0]['sea_floor_depth_below_sea_level'].reshape(self.conc_lon.shape)
+        grid = np.meshgrid(
+            np.linspace(llcrnrlon, urcrnrlon, bathimetry_res),
+            np.linspace(llcrnrlat, urcrnrlat, bathimetry_res)
+        )
+        self.conc_lon = grid[0]
+        self.conc_lat = grid[1]
+        self.conc_topo = reader_sea_depth.get_variables_interpolated_xy(
+            ['sea_floor_depth_below_sea_level'],
+            x=self.conc_lon.flatten(),
+            y=self.conc_lat.flatten(),
+            time=reader_sea_depth.times[0] if reader_sea_depth.times is not None else None
+        )[0]['sea_floor_depth_below_sea_level'].reshape(self.conc_lon.shape)
 
+        # pixelsize auto
         if pixelsize_m == 'auto':
-            # lon = self.result.lon
             lat = self.result.lat
-            latspan = lat.max()-lat.min()
-            pixelsize_m=30
+            latspan = lat.max() - lat.min()
+            pixelsize_m = 30
             if latspan > .05:
                 pixelsize_m = 50
             if latspan > .1:
@@ -3261,163 +3270,187 @@ class ChemicalDrift(OceanDrift):
             if latspan > 5:
                 pixelsize_m = 4000
 
-        if density_proj is None: # add default projection with equal-area property
-            density_proj_str = ('+proj=moll +ellps=WGS84 +lon_0=0.0')
-            density_proj = Proj('+proj=moll +ellps=WGS84 +lon_0=0.0')
+        # Projection handling
+        if density_proj is None:
+            density_proj_str = '+proj=moll +ellps=WGS84 +lon_0=0.0'
         else:
-            density_proj_str = density_proj
-            density_proj = Proj(is_valid_proj4(density_proj))
+            density_proj_str = is_valid_proj4(density_proj)
+
+        density_proj = Proj(density_proj_str)
+
+        is_moll    = ("+proj=moll" in density_proj_str)
+        is_latlon = ("+proj=longlat" in density_proj_str)
+        if not is_moll and (lat_resol is None or lon_resol is None):
+            raise ValueError("lat_resol and lon_resol must be set for non-moll projections.")
 
         if sum(x is None for x in [lat_resol, lon_resol]) == 0:
-            if density_proj != Proj('+proj=moll +ellps=WGS84 +lon_0=0.0'):
-                if density_proj != Proj("+proj=longlat +datum=WGS84 +no_defs"):
-                    # lat/lon_resol are calculated at the centre of the grid
-                    # Unexpected behaviour may arise with large grids
-                    source_proj = Proj("+proj=longlat +datum=WGS84 +no_defs")
-                    transformer = Transformer.from_proj(source_proj, density_proj)
-                    dummy_lon, dummy_lat = (llcrnrlon + urcrnrlon)/2, (llcrnrlat + urcrnrlat)/2
-                    x1, y1 = transformer.transform(dummy_lon, dummy_lat)
-                    x2, y2 = transformer.transform(dummy_lon + lon_resol, dummy_lat + lat_resol)
-                    lon_resol = abs(x2 - x1)
-                    lat_resol = abs(y2 - y1)
-                    logger.info(f'Changed lon_resol, lat_resol to reference system: {density_proj}')
+            if (not is_moll) and (not is_latlon):
+                source_proj = Proj("+proj=longlat +datum=WGS84 +no_defs")
+                transformer = Transformer.from_proj(source_proj, density_proj)
+                dummy_lon, dummy_lat = (llcrnrlon + urcrnrlon) / 2, (llcrnrlat + urcrnrlat) / 2
+                x1, y1 = transformer.transform(dummy_lon, dummy_lat)
+                x2, y2 = transformer.transform(dummy_lon + lon_resol, dummy_lat + lat_resol)
+                lon_resol = abs(x2 - x1)
+                lat_resol = abs(y2 - y1)
+                logger.info(f"Changed lon_resol, lat_resol to reference system: {density_proj}")
 
-        if mass_unit==None:
-            mass_unit='microgram'  # default unit for chemicals
+        if mass_unit is None:
+            mass_unit = 'microgram'
 
-        z = (self.result.z.T).values
-        # Move elements above sea level below the surface (-1 mm)
-        z_mask = np.isfinite(z) & (z >= 0)
-        if z_mask.any():
-            z_positive = int(z_mask.sum())
-            z[z_mask] = -1e-4
-            logger.warning(f'{z_positive} elements were above surface level and were moved to z = -0.0001')
-        del z_mask
-        if not zlevels==None:
-            zlevels = np.sort(zlevels)
-            z_array = np.append(np.append(-10000, zlevels) , max(0,np.nanmax(z)))
-        else:
-            z_array = [min(-10000,np.nanmin(z)), max(0,np.nanmax(z))]
-        logger.info('vertical grid boundaries: {}'.format([str(item) for item in z_array]))
+        # Vertical grid
+        z_array = self._build_z_array(zlevels, zmin_cap=-10000.0, ztop=0.0)
+        logger.info("vertical grid boundaries: {}".format([str(item) for item in z_array]))
 
-        # H is array containing the mass of chemical within each box defined by lon_array, lat_array and z_array
-        # H_count is array containing the number of elements within each box defined by lon_array, lat_array and z_array
         if weight is None:
             weight = 'mass'
 
-        out = self.get_chemical_density_array(pixelsize_m=pixelsize_m,
-                                               z_array=z_array, z=z,
-                                               lat_resol=lat_resol,
-                                               lon_resol=lon_resol,
-                                               density_proj=density_proj,
-                                               llcrnrlon=llcrnrlon, llcrnrlat=llcrnrlat,
-                                               urcrnrlon=urcrnrlon, urcrnrlat=urcrnrlat,
-                                               weight=weight, origin_marker=origin_marker,
-                                               active_status=active_status,
-                                               elements_density=elements_density,
-                                               time_start=time_start,
-                                               time_end=time_end,
-                                               time_chunk_size = time_chunk_size,
-                                               timestep_values = timestep_values,
-                                               compress_species=compress_species)
+        # Compute density arrays
+        # H is array containing the mass of chemical within each box defined by lon_array, lat_array and z_array
+        # H_count is array containing the number of elements within each box defined by lon_array, lat_array and z_array
+        out = self.get_chemical_density_array(
+            pixelsize_m=pixelsize_m,
+            is_moll=is_moll, is_latlon=is_latlon,
+            z_array=z_array,
+            lat_resol=lat_resol,
+            lon_resol=lon_resol,
+            density_proj=density_proj,
+            llcrnrlon=llcrnrlon, llcrnrlat=llcrnrlat,
+            urcrnrlon=urcrnrlon, urcrnrlat=urcrnrlat,
+            weight=weight, origin_marker=origin_marker,
+            active_status=active_status,
+            elements_density=elements_density,
+            time_start=time_start,
+            time_end=time_end,
+            time_chunk_size=time_chunk_size,
+            timestep_values=timestep_values,
+            compress_species=compress_species
+        )
 
         H, lon_array, lat_array, H_count, keep_species, name_species_out = out
-
         nspecies_out = len(name_species_out)
 
-        # calculating center point for each pixel
-        lon_array = (lon_array[:-1,:-1] + lon_array[1:,1:])/2
-        lat_array = (lat_array[:-1,:-1] + lat_array[1:,1:])/2
+        # center points for each pixel (still (x,y) after this)
+        lon_array = (lon_array[:-1, :-1] + lon_array[1:, 1:]) / 2
+        lat_array = (lat_array[:-1, :-1] + lat_array[1:, 1:]) / 2
 
-        landmask = np.zeros_like(H[0,0,0,:,:])
+        # Build landmask on 2D grid (x,y) then transpose to (y,x) for NetCDF
+        landmask = np.zeros_like(lon_array, dtype=bool)
+        # get raw mask first
         if (landmask_bathymetry_thr is not None) and (reader_sea_depth is not None):
-            landmask = reader_sea_depth.get_variables_interpolated_xy(['sea_floor_depth_below_sea_level'],
-                x = np.clip(lon_array.flatten(),reader_sea_depth.xmin,reader_sea_depth.xmax),
-                y = np.clip(lat_array.flatten(),reader_sea_depth.ymin,reader_sea_depth.ymax),
-                time = reader_sea_depth.times[0] if reader_sea_depth.times is not None else None
-                )[0]['sea_floor_depth_below_sea_level'] <= landmask_bathymetry_thr #.reshape(self.conc_lon.shape)
+            vals = reader_sea_depth.get_variables_interpolated_xy(
+                ['sea_floor_depth_below_sea_level'],
+                x=np.clip(lon_array.ravel(), reader_sea_depth.xmin, reader_sea_depth.xmax),
+                y=np.clip(lat_array.ravel(), reader_sea_depth.ymin, reader_sea_depth.ymax),
+                time=reader_sea_depth.times[0] if reader_sea_depth.times is not None else None
+            )[0]['sea_floor_depth_below_sea_level']
+            landmask_raw = (vals <= landmask_bathymetry_thr).reshape(lon_array.shape)  # already boolean
         elif landmask_shapefile is not None:
-            landmask = self.env.readers['shape'].get_variables('land_binary_mask', x=lon_array,y=lat_array)['land_binary_mask']
+            landmask_raw = self.env.readers['shape'].get_variables(
+                'land_binary_mask', x=lon_array, y=lat_array
+            )['land_binary_mask']
         else:
-            landmask = self.env.readers['global_landmask'].get_variables('land_binary_mask', x=lon_array,y=lat_array)['land_binary_mask']
+            landmask_raw = self.env.readers['global_landmask'].get_variables(
+                'land_binary_mask', x=lon_array, y=lat_array
+            )['land_binary_mask']
 
-        if landmask.shape !=  lon_array.shape:
-            landmask = landmask.reshape(lon_array.shape)
+        if landmask_raw.shape != lon_array.shape:
+            landmask_raw = landmask_raw.reshape(lon_array.shape)
 
-        if horizontal_smoothing:
-            # Compute horizontally smoother field
-            logger.debug('H.shape: ' + str(H.shape))
+        # warn on raw values (only if not bool)
+        raw = np.asarray(landmask_raw)
+        if raw.dtype != np.bool_:
+            if np.issubdtype(raw.dtype, np.floating):
+                raw_f = raw[np.isfinite(raw)]
+            else:
+                raw_f = raw.ravel()
+            vals = np.unique(raw_f)[:10]
+            if vals.size and not np.all(np.isin(vals, [0, 1])):
+                logger.warning(f"Landmask contained non-binary values (sample: {vals}). Normalizing with policy=auto")
 
-            Hsm = np.array([
-                            [[self.horizontal_smooth(H[ti, sp, zi, :, :], n=smoothing_cells)
-                              for zi in range(len(z_array) - 1)]
-                             for sp in range(nspecies_out)]
-                            for ti in range(H.shape[0])
-                        ], dtype=np.float32)
+        # normalize landmask after warning
+        landmask = self._normalize_landmask(landmask_raw, policy="auto", thr=0.5)  # True=land
+        landmask_yx = landmask.T
 
-        # Compute mean depth and volume in each pixel grid cell
-        pixel_mean_depth, pixel_area  =  self.get_pixel_mean_depth(lon_array, lat_array,
-                                                      density_proj_str,
-                                                      lat_resol, lon_resol)
+        # Mean depth + pixel area
+        pixel_mean_depth, pixel_area = self.get_pixel_mean_depth(
+            lon_array, lat_array,
+            is_moll, is_latlon,
+            lat_resol, lon_resol
+        )
 
         def _remove_reader_by_key(self, key):
             rdr = self.env.readers.pop(key, None)
             if rdr is not None and hasattr(rdr, "close"):
-                try: rdr.close()
-                except: pass
+                try:
+                    rdr.close()
+                except Exception:
+                    pass
 
-        _remove_reader_by_key(self, 'shape')
-        _remove_reader_by_key(self, 'global_landmask')
+        _remove_reader_by_key(self,'shape')
+        _remove_reader_by_key(self,'global_landmask')
 
-        pixel_volume = np.zeros_like(H[0,0,:,:,:])
+        # Pixel volume (depth, x, y)
+        pixel_volume = np.zeros_like(H[0, 0, :, :, :], dtype=np.float32)  # (Z, X, Y)
 
-        for zi,zz in enumerate(z_array[:-1]):
-            topotmp = -pixel_mean_depth.copy()
-            topotmp[np.where(topotmp < zz)] = zz
-            topotmp = z_array[zi+1] - topotmp
-            topotmp[np.where(topotmp < .1)] = 0.
-            if density_proj_str == ('+proj=moll +ellps=WGS84 +lon_0=0.0'):
-                pixel_volume[zi,:,:] = topotmp * pixelsize_m**2
+        for zi, zz in enumerate(z_array[:-1]):
+            topotmp = -pixel_mean_depth.copy()  # pixel_mean_depth is (x,y)
+            topotmp[topotmp < zz] = zz
+            topotmp = z_array[zi + 1] - topotmp
+            topotmp[topotmp < 0.1] = 0.0
+
+            if is_moll:
+                pixel_volume[zi, :, :] = topotmp * (pixelsize_m ** 2)
             else:
-                pixel_volume[zi,:,:] = topotmp * pixel_area
+                pixel_volume[zi, :, :] = topotmp * pixel_area
 
-        pixel_volume[np.where(pixel_volume==0.)] = np.nan
+        pixel_volume[pixel_volume == 0.0] = np.nan
 
-        # Compute mass of dry sediment in each pixel grid cell
-        sed_L       = self.get_config('chemical:sediment:mixing_depth')
-        sed_dens    = self.get_config('chemical:sediment:density')
-        sed_poro    = self.get_config('chemical:sediment:porosity')
-        if density_proj_str == ('+proj=moll +ellps=WGS84 +lon_0=0.0'):
-            pixel_sed_mass = (pixelsize_m**2 *sed_L)*(1-sed_poro)*sed_dens      # mass in kg dry weight
+        # Sediment mass # mass in kg dry weight
+        sed_L = self.get_config('chemical:sediment:mixing_depth')
+        sed_dens = self.get_config('chemical:sediment:density')
+        sed_poro = self.get_config('chemical:sediment:porosity')
+
+        if is_moll:
+            pixel_sed_mass = (pixelsize_m ** 2 * sed_L) * (1 - sed_poro) * sed_dens  # scalar
         else:
-            pixel_sed_mass = (pixel_area *sed_L)*(1-sed_poro)*sed_dens
-            pixel_sed_mass = np.tile(pixel_sed_mass, (len(z_array[:-1]), 1, 1))
+            pixel_sed_mass = (pixel_area * sed_L) * (1 - sed_poro) * sed_dens        # (x,y)
 
-        # TODO this should be multiplied for the fraction of grid cell are that is not on land
+        Hsm = None
+        # Optional horizontal smoothing
+        if horizontal_smoothing:
+            Hsm = np.empty_like(H, dtype=np.float32)
 
+        # Divide to concentrations, then smooth the concentration field
         for ti in range(H.shape[0]):
             for sp in range(nspecies_out):
                 spname = name_species_out[sp].lower()
                 is_sediment = spname.startswith('sed')
-                if not is_sediment:
-                    #print('divide by water volume')
-                    H[ti,sp,:,:,:] = H[ti,sp,:,:,:] / pixel_volume
-                    if horizontal_smoothing:
-                        Hsm[ti,sp,:,:,:] = Hsm[ti,sp,:,:,:] / pixel_volume
-                else:
-                    #print('divide by sediment mass')
-                    H[ti,sp,:,:,:] = H[ti,sp,:,:,:] / pixel_sed_mass
-                    if horizontal_smoothing:
-                        Hsm[ti,sp,:,:,:] = Hsm[ti,sp,:,:,:] / pixel_sed_mass
 
+                if not is_sediment:
+                    H[ti, sp, :, :, :] = H[ti, sp, :, :, :] / pixel_volume
+                else:
+                    if np.isscalar(pixel_sed_mass):
+                        H[ti, sp, :, :, :] = H[ti, sp, :, :, :] / pixel_sed_mass
+                    else:
+                        # pixel_sed_mass is (x,y) already; matches H[..., X, Y]
+                        H[ti, sp, :, :, :] = H[ti, sp, :, :, :] / pixel_sed_mass[None, :, :]
+
+                if horizontal_smoothing:
+                    for zi in range(len(z_array) - 1):
+                        Hsm[ti, sp, zi, :, :] = self.horizontal_smooth(
+                            H[ti, sp, zi, :, :],
+                            n=smoothing_cells,
+                            landmask=landmask,
+                        ).astype(np.float32, copy=False)
+
+        # Time averaging
         times = filtered_times
 
         if time_avg_conc:
-            conctmp = H[:-1,:,:,:,:]
+            conctmp = H[:-1, :, :, :, :]
             cshape = conctmp.shape
-            Tconc = cshape[0]  # number of timesteps actually averaged
+            Tconc = cshape[0]
 
-            # compute ndt robustly
             if len(times) < 2:
                 logger.warning("Only one timestep available; cannot time-average concentrations.")
                 ndt = 1
@@ -3434,85 +3467,79 @@ class ChemicalDrift(OceanDrift):
                         ndt = 1
                         deltat_hours = None
                     else:
-                        deltat_hours = float(deltat)  # hours
+                        deltat_hours = float(deltat)
                         ndt = max(1, int(np.ceil(deltat_hours / mdt_hours)))
 
             ndt = max(1, ndt)
-
-            # include partial last window
             odt = int(np.ceil(Tconc / ndt)) if Tconc > 0 else 0
             if odt == 0:
                 logger.warning("No timesteps available for averaging (Tconc=0).")
                 deltat_hours = None
                 return
 
-            # for full windows: times[::ndt][1:]  (i.e., ndt, 2*ndt, ...)
-            # avoid duplicated last timestamp by setting last timestamp to: last_full + deltat_hours
             times_arr = np.asarray(times)
-
             idx = (np.arange(odt) + 1) * ndt
-            idx = np.minimum(idx, len(times_arr) - 1)   # safe clamp
-            times2 = times_arr[idx]                     # len(times2) == odt always
+            idx = np.minimum(idx, len(times_arr) - 1)
+            times2 = times_arr[idx]
 
-            # If last window is partial, fix duplicate timestamp due to clamping
             if odt >= 2 and idx[-1] == idx[-2] and deltat_hours is not None:
                 times2 = times2.copy()
                 times2[-1] = times2[-2] + timedelta(hours=deltat_hours)
 
-            logger.debug ('ndt '+ str(ndt))   # number of time steps over which to average in conc file
-            logger.debug ('odt '+ str(odt))   # number of average slices
+            logger.debug('ndt ' + str(ndt))
+            logger.debug('odt ' + str(odt))
 
-            # time averaging
             try:
                 mean_conc = np.mean(conctmp.reshape(odt, ndt, *cshape[1:]), axis=1)
             except Exception: # If (times) is not a perfect multiple of deltat
                 mean_conc = np.zeros([odt, cshape[1], cshape[2], cshape[3], cshape[4]], dtype=conctmp.dtype)
                 for ii in range(odt):
                     s0 = ii * ndt
-                    s1 = min((ii + 1) * ndt, Tconc)  # partial last window handled here
+                    s1 = min((ii + 1) * ndt, Tconc)
                     if s0 >= s1:
                         continue
-                    mean_conc[ii,:,:,:,:] = np.mean(conctmp[s0:s1, :, :, :, :], axis=0)
+                    mean_conc[ii, :, :, :, :] = np.mean(conctmp[s0:s1, :, :, :, :], axis=0)
 
             if elements_density is True:
-                denstmp = H_count[:-1,:,:,:,:]
+                denstmp = H_count[:-1, :, :, :, :]
                 dshape = denstmp.shape
                 try:
                     mean_dens = np.mean(denstmp.reshape(odt, ndt, *dshape[1:]), axis=1)
-                except Exception: # If (times) is not a perfect multiple of deltat
+                except Exception:
                     mean_dens = np.zeros([odt, dshape[1], dshape[2], dshape[3], dshape[4]], dtype=denstmp.dtype)
                     for ii in range(odt):
                         s0 = ii * ndt
                         s1 = min((ii + 1) * ndt, Tconc)
                         if s0 >= s1:
                             continue
-                        mean_dens[ii,:,:,:,:] = np.mean(denstmp[s0:s1,:,:,:,:], axis=0)
+                        mean_dens[ii, :, :, :, :] = np.mean(denstmp[s0:s1, :, :, :, :], axis=0)
 
             if horizontal_smoothing is True:
-                Hsmtmp = Hsm[:-1,:,:,:,:]
+                Hsmtmp = Hsm[:-1, :, :, :, :]
                 Hsmshape = Hsmtmp.shape
                 try:
                     mean_Hsm = np.mean(Hsmtmp.reshape(odt, ndt, *Hsmshape[1:]), axis=1)
-                except Exception: # If (times) is not a perfect multiple of deltat
+                except Exception:
                     mean_Hsm = np.zeros([odt, Hsmshape[1], Hsmshape[2], Hsmshape[3], Hsmshape[4]], dtype=Hsmtmp.dtype)
                     for ii in range(odt):
                         s0 = ii * ndt
                         s1 = min((ii + 1) * ndt, Tconc)
                         if s0 >= s1:
                             continue
-                        mean_Hsm[ii,:,:,:,:] = np.mean(Hsmtmp[s0:s1,:,:,:,:], axis=0)
+                        mean_Hsm[ii, :, :, :, :] = np.mean(Hsmtmp[s0:s1, :, :, :, :], axis=0)
 
-
-        # Save outputs to netCDF Dataset
+        # NetCDF writing
         compound = self.get_config('chemical:compound')
         if compound is None:
             compound = "None"
         species_str = ' '.join([f"{isp}:{sp}" for isp, sp in enumerate(name_species_out)])
 
         nc = Dataset(filename, 'w')
+
+        # Dimensions
         nc.createDimension('x', lon_array.shape[0])
         nc.createDimension('y', lon_array.shape[1])
-        nc.createDimension('depth', len(z_array)-1)
+        nc.createDimension('depth', len(z_array) - 1)
         nc.createDimension('specie', nspecies_out)
 
         # Preserve mapping to original species ids
@@ -3521,7 +3548,7 @@ class ChemicalDrift(OceanDrift):
         nc.variables['specie_original_id'][:] = keep_species.astype('i4')
         nc.variables['specie_original_id'].long_name = 'Original species id in model indexing'
 
-        # Create a fixed string length dimension
+        # Fixed string length dimension for specie names
         maxlen = max(len(s) for s in name_species_out) if name_species_out else 1
         if 'name_strlen' not in nc.dimensions:
             nc.createDimension('name_strlen', maxlen)
@@ -3530,6 +3557,7 @@ class ChemicalDrift(OceanDrift):
         specie_name_var[:] = specie_name_bytes
         specie_name_var.long_name = 'Species name (aligned with specie axis)'
 
+        # Time coordinates
         timestr = 'seconds since 1970-01-01 00:00:00'
         if time_avg_conc is False:
             nc.createDimension('time', H.shape[0])
@@ -3547,146 +3575,143 @@ class ChemicalDrift(OceanDrift):
         nc.createVariable('projection', 'i8')
         nc.variables['projection'].proj4 = density_proj.definition_string()
 
-        # Cell size
+        # Cell size / resolution
         if pixelsize_m is not None:
-            nc.createVariable('cell_size','f8')
+            nc.createVariable('cell_size', 'f8')
             nc.variables['cell_size'][:] = pixelsize_m
             nc.variables['cell_size'].long_name = 'Length of cell'
             nc.variables['cell_size'].unit = 'm'
         else:
-            nc.createVariable('lat_resol','f8')
+            nc.createVariable('lat_resol', 'f8')
             nc.variables['lat_resol'][:] = lat_resol
             nc.variables['lat_resol'].long_name = 'Latitude resolution'
             nc.variables['lat_resol'].unit = 'degrees_north'
-            nc.createVariable('lon_resol','f8')
+
+            nc.createVariable('lon_resol', 'f8')
             nc.variables['lon_resol'][:] = lon_resol
             nc.variables['lon_resol'].long_name = 'Longitude resolution'
             nc.variables['lon_resol'].unit = 'degrees_east'
 
+        # Horizontal smoothing metadata
         if horizontal_smoothing:
-            # Horizontal smoothing cells
-            nc.createVariable('smoothing_cells','i8')
+            nc.createVariable('smoothing_cells', 'i8')
             nc.variables['smoothing_cells'][:] = smoothing_cells
             nc.variables['smoothing_cells'].long_name = 'Number of cells in each direction for horizontal smoothing'
             nc.variables['smoothing_cells'].units = '1'
 
-        # Coordinates
-        nc.createVariable('lon', 'f8', ('y','x'))
-        nc.createVariable('lat', 'f8', ('y','x'))
+        # Coordinate variables
+        nc.createVariable('lon', 'f8', ('y', 'x'))
+        nc.createVariable('lat', 'f8', ('y', 'x'))
         nc.createVariable('depth', 'f8', ('depth',))
         nc.createVariable('specie', 'i4', ('specie',))
+
         nc.variables['lon'][:] = lon_array.T
         nc.variables['lon'].long_name = 'longitude'
         nc.variables['lon'].short_name = 'longitude'
         nc.variables['lon'].units = 'degrees_east'
+
         nc.variables['lat'][:] = lat_array.T
         nc.variables['lat'].long_name = 'latitude'
         nc.variables['lat'].short_name = 'latitude'
         nc.variables['lat'].units = 'degrees_north'
+
         nc.variables['depth'][:] = z_array[1:]
         nc.variables['specie'][:] = np.arange(nspecies_out)
         nc.variables['specie'].long_name = ' '.join([f"{isp}:{sp}" for isp, sp in enumerate(name_species_out)])
 
-        # Create final landmask
-        if time_avg_conc is False:
-            Landmask = np.tile(landmask, (len(times), nspecies_out, len(z_array)-1, 1, 1))
-        else:
-            Landmask = np.tile(landmask, (odt, nspecies_out, len(z_array)-1, 1, 1))
-        Landmask = np.swapaxes(Landmask, 3, 4)
-        landmask_depth = np.tile(landmask[np.newaxis, :, :], (len(z_array)-1, 1, 1))
-        landmask_depth = np.swapaxes(landmask_depth, 1, 2)
+        # Helpers: broadcast-mask writes
+        def _write_masked_5d(var_nc, arr_5d_tsdxy, *, landmask_yx, fill_value):
+            # Internal: (T,S,D,X,Y) -> NetCDF: (T,S,D,Y,X)
+            arr = np.swapaxes(arr_5d_tsdxy, 3, 4)
+            m = landmask_yx[None, None, None, :, :]  # (1,1,1,Y,X)
+            marr = np.ma.array(arr, mask=m, copy=False)
+            if fill_value is not None:
+                try:
+                    marr.set_fill_value(fill_value)
+                except Exception:
+                    pass
+            var_nc[:] = marr
 
-        # Density
+        def _write_masked_3d(var_nc, arr_3d_dxy, *, landmask_yx, fill_value):
+            # Internal: (D,X,Y) -> NetCDF: (D,Y,X)
+            arr = np.swapaxes(arr_3d_dxy, 1, 2)
+            m = landmask_yx[None, :, :]  # (1,Y,X)
+            marr = np.ma.array(arr, mask=m, copy=False)
+            if fill_value is not None:
+                try:
+                    marr.set_fill_value(fill_value)
+                except Exception:
+                    pass
+            var_nc[:] = marr
+
+        # DENSITY
         if elements_density is True:
             if time_avg_conc is False:
-                nc.createVariable('density', 'i4',
-                                  ('time','specie','depth','y', 'x'),fill_value=99999)
-                H_count = np.swapaxes(H_count, 3, 4)
-                H_count = np.nan_to_num(H_count, nan=0, posinf=0, neginf=0).astype('i4')
-                H_count = np.ma.masked_where(Landmask==1, H_count)
-                nc.variables['density'][:] = H_count
+                nc.createVariable('density', 'i4', ('time', 'specie', 'depth', 'y', 'x'), fill_value=99999)
+                H_count_i4 = np.nan_to_num(H_count, nan=0, posinf=0, neginf=0).astype('i4', copy=False)
+                _write_masked_5d(nc.variables['density'], H_count_i4, landmask_yx=landmask_yx, fill_value=99999)
                 nc.variables['density'].long_name = 'Number of elements in grid cell'
                 nc.variables['density'].grid_mapping = density_proj_str
                 nc.variables['density'].units = '1'
                 if sim_description is not None:
                     nc.variables['density'].sim_description = str(sim_description)
             else:
-                nc.createVariable('density_avg', 'i4',
-                                  ('avg_time','specie','depth','y', 'x'),fill_value=99999)
-                mean_dens = np.swapaxes(mean_dens, 3, 4)
-                mean_dens = np.nan_to_num(mean_dens, nan=0, posinf=0, neginf=0).astype('i4')
-                mean_dens = np.ma.masked_where(Landmask==1, mean_dens)
-                nc.variables['density_avg'][:] = mean_dens
-                nc.variables['density_avg'].long_name = "Number of elements in grid cell at avg_time"
+                nc.createVariable('density_avg', 'i4', ('avg_time', 'specie', 'depth', 'y', 'x'), fill_value=99999)
+                mean_dens_i4 = np.nan_to_num(mean_dens, nan=0, posinf=0, neginf=0).astype('i4', copy=False)
+                _write_masked_5d(nc.variables['density_avg'], mean_dens_i4, landmask_yx=landmask_yx, fill_value=99999)
+                nc.variables['density_avg'].long_name = 'Number of elements in grid cell at avg_time'
                 nc.variables['density_avg'].grid_mapping = density_proj_str
                 nc.variables['density_avg'].units = '1'
                 if sim_description is not None:
                     nc.variables['density_avg'].sim_description = str(sim_description)
 
-        # Chemical concentration
+        # CONCENTRATION
         if time_avg_conc is False:
-            nc.createVariable('concentration', 'f8',
-                          ('time','specie','depth','y', 'x'),fill_value=1.e36)
-            H = np.swapaxes(H, 3, 4)
-            H = np.ma.masked_where(Landmask==1,H)
-            nc.variables['concentration'][:] = H
-            nc.variables['concentration'].long_name = (f"{compound} concentration of {weight}\n"
-                                                           f"specie {species_str}")
+            nc.createVariable('concentration', 'f8', ('time', 'specie', 'depth', 'y', 'x'), fill_value=1.e36)
+            _write_masked_5d(nc.variables['concentration'], H, landmask_yx=landmask_yx, fill_value=1.e36)
+            nc.variables['concentration'].long_name = f"{compound} concentration of {weight}\nspecie {species_str}"
             nc.variables['concentration'].grid_mapping = density_proj_str
-            nc.variables['concentration'].units = mass_unit+'/m3'+' (sed '+mass_unit+'/Kg d.w.)'
+            nc.variables['concentration'].units = mass_unit + '/m3' + ' (sed ' + mass_unit + '/Kg d.w.)'
             if sim_description is not None:
                 nc.variables['concentration'].sim_description = str(sim_description)
         else:
-        # Chemical concentration, time averaged
-            nc.createVariable('concentration_avg', 'f8',
-                              ('avg_time','specie','depth','y', 'x'),fill_value=+1.e36)
-            mean_conc = np.swapaxes(mean_conc, 3, 4)
-            mean_conc = np.ma.masked_where(Landmask==1, mean_conc)
-            nc.variables['concentration_avg'][:] = mean_conc
-            nc.variables['concentration_avg'].long_name = (f"{compound} time averaged concentration of {weight}\n"
-                                                           f"specie {species_str}")
+            nc.createVariable('concentration_avg', 'f8', ('avg_time', 'specie', 'depth', 'y', 'x'), fill_value=1.e36)
+            _write_masked_5d(nc.variables['concentration_avg'], mean_conc, landmask_yx=landmask_yx, fill_value=1.e36)
+            nc.variables['concentration_avg'].long_name = f"{compound} time averaged concentration of {weight}\nspecie {species_str}"
             nc.variables['concentration_avg'].grid_mapping = density_proj_str
-            nc.variables['concentration_avg'].units = mass_unit+'/m3'+' (sed '+mass_unit+'/Kg)'
+            nc.variables['concentration_avg'].units = mass_unit + '/m3' + ' (sed ' + mass_unit + '/Kg)'
             if sim_description is not None:
                 nc.variables['concentration_avg'].sim_description = str(sim_description)
 
-        # Chemical concentration, horizontally smoothed
+        # SMOOTHED CONCENTRATION
         if horizontal_smoothing is True:
             if time_avg_conc is False:
-                nc.createVariable('concentration_smooth', 'f8',
-                                  ('time','specie','depth','y', 'x'),fill_value=1.e36)
-                Hsm = np.swapaxes(Hsm, 3, 4)
-                Hsm = np.ma.masked_where(Landmask==1, Hsm)
-                nc.variables['concentration_smooth'][:] = Hsm
-                nc.variables['concentration_smooth'].long_name = (f"{compound} horizontally smoothed concentration of {weight}\n"
-                                                               f"specie {species_str}")
+                nc.createVariable('concentration_smooth', 'f8', ('time', 'specie', 'depth', 'y', 'x'), fill_value=1.e36)
+                _write_masked_5d(nc.variables['concentration_smooth'], Hsm, landmask_yx=landmask_yx, fill_value=1.e36)
+                nc.variables['concentration_smooth'].long_name = f"{compound} horizontally smoothed concentration of {weight}\nspecie {species_str}"
                 nc.variables['concentration_smooth'].grid_mapping = density_proj_str
-                nc.variables['concentration_smooth'].units = mass_unit+'/m3'+' (sed '+mass_unit+'/Kg)'
-                nc.variables['concentration_smooth'].comment = 'Smoothed over '+str(smoothing_cells)+' grid points in all horizontal directions'
+                nc.variables['concentration_smooth'].units = mass_unit + '/m3' + ' (sed ' + mass_unit + '/Kg)'
+                nc.variables['concentration_smooth'].comment = (
+                    'Smoothed over ' + str(smoothing_cells) + ' grid points in all horizontal directions'
+                )
                 if sim_description is not None:
                     nc.variables['concentration_smooth'].sim_description = str(sim_description)
             else:
-            # Chemical concentration, horizontally smoothed, time averaged
-                nc.createVariable('concentration_smooth_avg', 'f8',
-                                  ('avg_time','specie','depth','y', 'x'),fill_value=+1.e36)
-                mean_Hsm = np.swapaxes(mean_Hsm, 3, 4)
-                mean_Hsm = np.ma.masked_where(Landmask==1, mean_Hsm)
-                nc.variables['concentration_smooth_avg'][:] = mean_Hsm
-                nc.variables['concentration_smooth_avg'].long_name = (f"{compound} horizontally smoothed time averaged concentration of {weight}\n"
-                                                               f"specie {species_str}")
+                nc.createVariable('concentration_smooth_avg', 'f8', ('avg_time', 'specie', 'depth', 'y', 'x'), fill_value=1.e36)
+                _write_masked_5d(nc.variables['concentration_smooth_avg'], mean_Hsm, landmask_yx=landmask_yx, fill_value=1.e36)
+                nc.variables['concentration_smooth_avg'].long_name = f"{compound} horizontally smoothed time averaged concentration of {weight}\nspecie {species_str}"
                 nc.variables['concentration_smooth_avg'].grid_mapping = density_proj_str
-                nc.variables['concentration_smooth_avg'].units = mass_unit+'/m3'+' (sed '+mass_unit+'/Kg)'
-                nc.variables['concentration_smooth_avg'].comment = 'Smoothed over '+str(smoothing_cells)+' grid points in all horizontal directions'
+                nc.variables['concentration_smooth_avg'].units = mass_unit + '/m3' + ' (sed ' + mass_unit + '/Kg)'
+                nc.variables['concentration_smooth_avg'].comment = (
+                    'Smoothed over ' + str(smoothing_cells) + ' grid points in all horizontal directions'
+                )
                 if sim_description is not None:
                     nc.variables['concentration_smooth_avg'].sim_description = str(sim_description)
 
-        # Volume of boxes
-        nc.createVariable('volume', 'f8',
-                          ('depth','y', 'x'),fill_value=0)
-        pixel_volume = np.swapaxes(pixel_volume, 1, 2) #.astype('i4')
-        pixel_volume = np.ma.masked_where(pixel_volume==0, pixel_volume)
-        # pixel_volume = np.ma.masked_where(landmask_depth==1, pixel_volume)
-        nc.variables['volume'][:] = pixel_volume
+        # VOLUME
+        nc.createVariable('volume', 'f8', ('depth', 'y', 'x'), fill_value=0)
+        pv = np.ma.masked_invalid(pixel_volume)  # masks NaNs/Infs
+        _write_masked_3d(nc.variables['volume'], pv, landmask_yx=landmask_yx, fill_value=0)
         if pixelsize_m is not None:
             nc.variables['volume'].long_name = f'Volume of grid cell ({str(pixelsize_m)} x {str(pixelsize_m)} m)'
         else:
@@ -3694,37 +3719,37 @@ class ChemicalDrift(OceanDrift):
         nc.variables['volume'].grid_mapping = density_proj_str
         nc.variables['volume'].units = 'm3'
 
-        # Topography
-        nc.createVariable('topo', 'f8', ('y', 'x'),fill_value=0)
-        pixel_mean_depth = np.ma.masked_where(landmask==1, pixel_mean_depth)
-        nc.variables['topo'][:] = pixel_mean_depth.T
+        # TOPO
+        nc.createVariable('topo', 'f8', ('y', 'x'), fill_value=0)
+        topo_ma = np.ma.array(pixel_mean_depth.T, mask=landmask_yx, copy=False)
+        nc.variables['topo'][:] = topo_ma
         nc.variables['topo'].long_name = 'Depth of grid point'
         nc.variables['topo'].grid_mapping = density_proj_str
         nc.variables['topo'].units = 'm'
         if sim_description is not None:
             nc.variables['topo'].sim_description = str(sim_description)
 
-        # Gridcell area
+        # AREA
         if pixelsize_m is None:
-            nc.createVariable('area', 'f8', ('y', 'x'),fill_value=0)
-            pixel_area = np.ma.masked_where(landmask==1, pixel_area)
-            nc.variables['area'][:] = pixel_area.T
+            nc.createVariable('area', 'f8', ('y', 'x'), fill_value=0)
+            area_ma = np.ma.array(pixel_area.T, mask=landmask_yx, copy=False)
+            nc.variables['area'][:] = area_ma
             nc.variables['area'].long_name = 'Area of grid point'
             nc.variables['area'].grid_mapping = density_proj_str
             nc.variables['area'].units = 'm2'
 
-        # Binary mask
-        nc.createVariable('land', 'i4', ('y', 'x'),fill_value=-1)
-        #landmask = np.ma.masked_where(landmask==0, landmask)
-        nc.variables['land'][:] = np.swapaxes(landmask,0,1).astype('i4')
+        # LAND MASK
+        nc.createVariable('land', 'i4', ('y', 'x'), fill_value=-1)
+        nc.variables['land'][:] = landmask_yx.astype('i4', copy=False)
         nc.variables['land'].long_name = 'Binary land mask'
         nc.variables['land'].grid_mapping = density_proj_str
         nc.variables['land'].units = 'm'
 
         nc.close()
-        logger.info('Wrote to '+filename)
+        logger.info('Wrote to ' + filename)
 
-        del H, pixel_volume, pixel_mean_depth
+        # Cleanup
+        del H, pixel_volume, pixel_mean_depth, lon_array, lat_array, landmask, landmask_yx
         if time_avg_conc is True:
             del mean_conc
         if elements_density is True:
@@ -3736,9 +3761,80 @@ class ChemicalDrift(OceanDrift):
                 del mean_Hsm
             else:
                 del Hsm
-
-        del lon_array, lat_array, landmask, Landmask
         gc.collect()
+
+    @staticmethod
+    def _normalize_landmask(mask, policy="auto", thr=0.5):
+        """
+        Returns boolean array: True = land, False = water.
+        policy:
+          - "auto"    : choose based on values
+          - "eq1"     : land iff == 1
+          - "nonzero" : land iff != 0
+          - "thr"     : land iff >= thr
+        NaNs/Infs -> water
+        """
+        import numpy as np
+        m = np.asarray(mask)
+
+        if m.dtype == np.bool_:
+            return m
+
+        if np.issubdtype(m.dtype, np.floating):
+            m = np.where(np.isfinite(m), m, 0.0)
+
+        if policy == "auto":
+            v = m[np.isfinite(m)].ravel()
+            if v.size == 0:
+                return np.zeros(m.shape, dtype=bool)
+            # common cases
+            if v.size > 100000:  # tune
+                step = max(1, v.size // 100000)
+                v = v[::step]
+            u = np.unique(v)
+            if np.all(np.isin(u, [0, 1])):
+                policy = "eq1"
+            elif np.issubdtype(m.dtype, np.integer) and u.max() > 1:
+                # e.g. 0/255, 0/127, etc.
+                policy = "nonzero"
+            elif np.issubdtype(m.dtype, np.floating) and (v.min() >= 0.0) and (v.max() <= 1.0):
+                policy = "thr"
+            else:
+                policy = "nonzero"
+
+        if policy == "eq1":
+            return (m == 1)
+        elif policy == "nonzero":
+            return (m != 0)
+        elif policy == "thr":
+            return (m >= thr)
+        else:
+            raise ValueError(f"Unknown policy: {policy}")
+
+    @staticmethod
+    def _build_z_array(zlevels, *, zmin_cap=-10000.0, ztop=0.0):
+        """
+        Build strictly increasing bin edges (more negative -> less negative),
+        always including zmin_cap and ztop exactly once.
+        """
+        import numpy as np
+        if zlevels is None:
+            return np.array([zmin_cap, ztop], dtype=np.float32)
+
+        zlev = np.asarray(zlevels, dtype=np.float32)
+        # Remove NaNs/Infs
+        zlev = zlev[np.isfinite(zlev)]
+        # Force anything > ztop down to ztop
+        zlev = np.minimum(zlev, ztop)
+        # Ensure caps are included
+        zlev = np.concatenate(([zmin_cap], zlev, [ztop]))
+        # Prevents duplicate 0
+        zlev = np.unique(np.sort(zlev))
+        # Ensure strictly increasing
+        if zlev.size < 2:
+            zlev = np.array([zmin_cap, ztop], dtype=np.float32)
+
+        return zlev.astype(np.float32, copy=False)
 
     @staticmethod
     def _cumulative_to_deltas_ffill(w_cum, chunk_cols=20000, out=None, mode="deltas", out_ff=None):
@@ -3820,7 +3916,8 @@ class ChemicalDrift(OceanDrift):
         return out, out_ff
 
 
-    def get_chemical_density_array(self, pixelsize_m, z_array, z,
+    def get_chemical_density_array(self, pixelsize_m, z_array,
+                                   is_moll, is_latlon,
                                    lat_resol=None, lon_resol=None,
                                    density_proj=None, llcrnrlon=None,llcrnrlat=None,
                                    urcrnrlon=None,urcrnrlat=None,
@@ -3835,46 +3932,63 @@ class ChemicalDrift(OceanDrift):
         Compute a particle concentration map from particle positions
         Use user defined projection (density_proj=<proj4_string>)
         or create a lon/lat grid (density_proj=None)
-            Arguments are described at write_netcdf_chemical_density_map
+        Two-pass implementation:
+          Pass 1: global species discovery + global bounds discovery (if corners not provided)
+          Pass 2: histogram fill into H using globally-fixed bounds and globally-computed keep_species
+
         '''
 
-        from pyproj import Proj, Transformer
-        import pandas as  pd
+        import numpy as np
+        import pandas as pd
         import gc
+        from pyproj import Proj, Transformer
 
-        # Time window (inclusive)
+        if density_proj is None:
+            raise ValueError("density_proj must be a pyproj.Proj instance (or compatible)")
+
+        Nspecies_total = int(self.nspecies)
+
+        if is_moll and pixelsize_m is None:
+            raise ValueError("pixelsize_m must be provided for Mollweide grids (is_moll=True).")
+        if (not is_moll) and (lat_resol is None or lon_resol is None):
+            raise ValueError("lat_resol and lon_resol must be provided for non-moll grids (is_moll=False).")
+
+        # Time window selection
         times_1d = pd.to_datetime(self.result.time.values)  # (n_time,)
-        if time_start is not None: time_start = pd.to_datetime(time_start)
-        if time_end   is not None: time_end   = pd.to_datetime(time_end)
+        if time_start is not None:
+            time_start = pd.to_datetime(time_start)
+        if time_end is not None:
+            time_end = pd.to_datetime(time_end)
 
         if (time_start is not None) or (time_end is not None):
             tmask = np.ones(times_1d.shape, dtype=bool)
-            if time_start is not None: tmask &= (times_1d >= time_start)
-            if time_end   is not None: tmask &= (times_1d <= time_end)
+            if time_start is not None:
+                tmask &= (times_1d >= time_start)
+            if time_end is not None:
+                tmask &= (times_1d <= time_end)
             if not tmask.any():
                 raise ValueError("No timesteps fall within [time_start, time_end].")
+            time_sel = np.flatnonzero(tmask)
+            time_filtered = True
         else:
-            tmask = slice(None)
+            time_sel = slice(None)
+            time_filtered = False
 
-        # Decide time selection once (same window as lon_2d/lat_2d/etc.)
-        time_filtered = not isinstance(tmask, slice)
-        time_sel = slice(None) if not time_filtered else np.flatnonzero(tmask)
-
+        # Weight extraction + optional trajectory filtering
         weight_2d = None
-        keep_idx = None  # integer indices of trajectories to keep (columns)
+        keep_idx = None  # columns/trajectories kept after filtering by weight window
 
         if weight is not None:
-            # (time, traj) view (DataArray is (trajectory, time))
             w_T = self.result[weight].transpose("time", "trajectory").data  # (n_time, n_traj)
 
             if timestep_values:
-                # Build extended time index (include previous timestep if possible)
+                # include previous timestep for delta computation if possible
                 if isinstance(time_sel, slice):
                     idx_ext = slice(None)
                     drop_first = False
                 else:
                     idx_sel = time_sel
-                    i0 = idx_sel[0]
+                    i0 = int(idx_sel[0])
                     if i0 > 0:
                         idx_ext = np.concatenate(([i0 - 1], idx_sel))
                         drop_first = True
@@ -3882,266 +3996,411 @@ class ChemicalDrift(OceanDrift):
                         idx_ext = idx_sel
                         drop_first = False
 
-                w_cum_ext = w_T[idx_ext, :]  # (T_ext, n_traj)
-
-                # this function returns per-timestep deltas already
-                dW_ext = self._cumulative_to_deltas_ffill(w_cum_ext, chunk_cols=20000, out=None, mode="deltas", out_ff=None)
-                dW = dW_ext[1:, :] if drop_first else dW_ext  # align to requested window
-
-                # Drop trajectories with zero contribution across the whole selected window
+                w_cum_ext = w_T[idx_ext, :]
+                dW_ext = self._cumulative_to_deltas_ffill(
+                    w_cum_ext, chunk_cols=20000, out=None, mode="deltas", out_ff=None
+                )
+                dW = dW_ext[1:, :] if drop_first else dW_ext
+                # drop trajectories with no positive deltas across selected window
                 elem_keep = np.any(dW > 0, axis=0)
                 keep_idx = np.flatnonzero(elem_keep)
                 if keep_idx.size == 0:
                     raise ValueError("All trajectories have zero timestep increments in the selected window.")
-
                 weight_2d = dW[:, keep_idx].astype(np.float32, copy=False)
+
             else:
-                # Raw values in the selected time window
-                w_sel = w_T[time_sel, :]  # (n_timef, n_traj) (copy if fancy index, view if slice)
+                w_sel = w_T[time_sel, :]  # view for slice, copy for fancy time_sel
 
                 if time_filtered:
-                    # Drop trajectories that are ALL NaN in the selected window
                     elem_keep = np.any(np.isfinite(w_sel), axis=0)
-                    # Optional: also drop trajectories that are all zeros
                     elem_keep &= np.any(w_sel != 0, axis=0)
                     keep_idx = np.flatnonzero(elem_keep)
                     if keep_idx.size == 0:
                         raise ValueError("All trajectories are NaN (or zero) in the selected window.")
-
                     w_sel = w_sel[:, keep_idx]
 
                 weight_2d = w_sel.astype(np.float32, copy=False)
 
-        def _slice_time_traj(arr_T, time_sel, keep_idx):
-            out = arr_T[time_sel, :] if not isinstance(time_sel, slice) else arr_T[:, :]
+        # Slice helpers
+        def _slice_time_traj(arr_T, time_sel, keep_idx, *, readonly=False):
+            out = arr_T[time_sel, :]  # works for slice and fancy index
             if keep_idx is not None:
-                out = out[:, keep_idx]
+                out = out[:, keep_idx]  # fancy indexing -> copy already
+            if readonly:
+                try:
+                    out.setflags(write=False)
+                except Exception:
+                    pass
             return out
 
-        lon_2d    = _slice_time_traj(self.result.lon.transpose("time","trajectory").data,    time_sel, keep_idx)
-        lat_2d    = _slice_time_traj(self.result.lat.transpose("time","trajectory").data,    time_sel, keep_idx)
-        z_2d      = _slice_time_traj(self.result.z.transpose("time","trajectory").data,      time_sel, keep_idx)
-        specie_2d = _slice_time_traj(self.result.specie.transpose("time","trajectory").data, time_sel, keep_idx)
+        lon_T = self.result.lon.transpose("time", "trajectory").data
+        lat_T = self.result.lat.transpose("time", "trajectory").data
+        z_T = self.result.z.transpose("time", "trajectory").data
+        sp_T = self.result.specie.transpose("time", "trajectory").data
 
+        lon_2d = _slice_time_traj(lon_T, time_sel, keep_idx, readonly=True)
+        lat_2d = _slice_time_traj(lat_T, time_sel, keep_idx, readonly=True)
+        z_2d = _slice_time_traj(z_T, time_sel, keep_idx, readonly=True)
+        specie_2d = _slice_time_traj(sp_T, time_sel, keep_idx, readonly=True)
+
+        originmarker_2d = None
+        status_2d = None
         if origin_marker is not None:
-            originmarker_2d = _slice_time_traj(self.result.origin_marker.transpose("time","trajectory").data, time_sel, keep_idx)
+            om_T = self.result.origin_marker.transpose("time", "trajectory").data
+            originmarker_2d = _slice_time_traj(om_T, time_sel, keep_idx, readonly=True)
         if active_status:
-            status_2d = _slice_time_traj(self.result.status.transpose("time","trajectory").data, time_sel, keep_idx)
+            st_T = self.result.status.transpose("time", "trajectory").data
+            status_2d = _slice_time_traj(st_T, time_sel, keep_idx, readonly=True)
 
-        # lat/lon validity mask
-        valid_lon = (lon_2d >= -180) & (lon_2d <= 180)
-        valid_lat = (lat_2d >= -90)  & (lat_2d <= 90)
-        valid_mask = valid_lon & valid_lat
-        lon_2d[~valid_mask] = np.nan
-        lat_2d[~valid_mask] = np.nan
-        del valid_lon, valid_lat, valid_mask
-        gc.collect()
-
-        # Keep mask in (n_timef, n_elem)
         n_timef, n_elem = lon_2d.shape
-        keep_mask = np.ones((n_timef, n_elem), dtype=bool)
-        if (weight is not None) and timestep_values:
-            keep_mask &= (weight_2d > 0)
 
-        if origin_marker is not None:
-            if isinstance(origin_marker, (list, tuple, np.ndarray)):
-                origin_mask = np.isin(originmarker_2d, origin_marker)
-            else:
-                origin_mask = (originmarker_2d == origin_marker)
-            keep_mask &= origin_mask
-            logger.warning(f'only active elements with origin_marker: {origin_marker} were considered for concentration')
-            del origin_mask
+        # Projection transformer (only if not lat/lon grid)
+        transformer = None
+        if not is_latlon:
+            source_proj = Proj("+proj=longlat +datum=WGS84 +no_defs")
+            transformer = Transformer.from_proj(source_proj, density_proj, always_xy=True)
 
+
+        ### PASS 1: global bounds (if corners not given) + global species discovery
+        present_species = np.zeros(Nspecies_total, dtype=bool)
+
+        bounds_from_corners = all(v is not None for v in (llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat))
+        if any(v is not None for v in (llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat)) and not bounds_from_corners:
+            raise ValueError("Either provide all four corners or none.")
+        if bounds_from_corners:
+            # fixed bounds from input corners
+            llcrnrx, llcrnry = density_proj(llcrnrlon, llcrnrlat)
+            urcrnrx, urcrnry = density_proj(urcrnrlon, urcrnrlat)
+            xmin = xmax = ymin = ymax = None
+        else:
+            xmin, ymin = np.inf, np.inf
+            xmax, ymax = -np.inf, -np.inf
+
+        # scratch buffers reused per timestep
+        m = np.empty(n_elem, dtype=bool)
+        tmp = np.empty(n_elem, dtype=bool)
+
+        # active status index once
         if active_status:
             status_categories = self.status_categories
-            if 'active' not in status_categories:
+            if "active" not in status_categories:
                 raise ValueError("No active elements in simulation")
-            active_index = status_categories.index('active')
-            keep_mask &= (status_2d == active_index)
-            logger.warning(f'only active elements were considered for concentration, status: {active_index}')
-
-        # ensure integer species ids with invalid -> -1
-        if np.issubdtype(specie_2d.dtype, np.integer):
-            specie_i = specie_2d.astype(np.int32, copy=False)
-            # guard keep_mask might not to include include invalids
-            keep_mask &= (specie_i >= 0) & (specie_i < self.nspecies)
+            active_index = status_categories.index("active")
         else:
-            specie_i = np.full(specie_2d.shape, -1, dtype=np.int32)
-            finite = np.isfinite(specie_2d)
-            vals = specie_2d[finite]
-            if not np.allclose(vals, np.round(vals), atol=0, rtol=0):
-                logger.warning("specie_2d contains non-integer values; casting will truncate.")
-            specie_i[finite] = vals.astype(np.int32)
-            keep_mask &= (specie_i >= 0) & (specie_i < self.nspecies)
+            active_index = None
+
+        for t0i in range(0, n_timef, time_chunk_size):
+            t1i = min(t0i + time_chunk_size, n_timef)
+            blk_T = t1i - t0i
+
+            lon_blk = lon_2d[t0i:t1i, :]
+            lat_blk = lat_2d[t0i:t1i, :]
+            z_blk = z_2d[t0i:t1i, :]
+            sp_blk = specie_2d[t0i:t1i, :]
+
+            w_blk = None
+            if weight_2d is not None:
+                w_blk = weight_2d[t0i:t1i, :]
+            om_blk = None
+            if originmarker_2d is not None:
+                om_blk = originmarker_2d[t0i:t1i, :]
+            st_blk = None
+            if status_2d is not None:
+                st_blk = status_2d[t0i:t1i, :]
+
+            for t_rel in range(blk_T):
+                lon_row = lon_blk[t_rel, :]
+                lat_row = lat_blk[t_rel, :]
+                z_row = z_blk[t_rel, :]
+                sp_row = sp_blk[t_rel, :]
+                w_row = None if w_blk is None else w_blk[t_rel, :]
+                om_row = None if om_blk is None else om_blk[t_rel, :]
+                st_row = None if st_blk is None else st_blk[t_rel, :]
+
+                # start: all True
+                m.fill(True)
+                # weight gating (match pass 2)
+                if w_row is not None:
+                    np.isfinite(w_row, out=tmp)
+                    m &= tmp
+                    if timestep_values:
+                        np.greater(w_row, 0.0, out=tmp)
+                        m &= tmp
+                # origin_marker gating
+                if om_row is not None:
+                    if isinstance(origin_marker, (list, tuple, np.ndarray)):
+                        m &= np.isin(om_row, origin_marker)
+                    else:
+                        m &= (om_row == origin_marker)
+
+                # active gating
+                if st_row is not None:
+                    m &= (st_row == active_index)
+                # finite checks
+                np.isfinite(lon_row, out=tmp)
+                m &= tmp
+                np.isfinite(lat_row, out=tmp)
+                m &= tmp
+                np.isfinite(z_row, out=tmp)
+                m &= tmp
+
+                # lat/lon range checks (only meaningful when lon/lat are degrees)
+                np.greater_equal(lon_row, -180.0, out=tmp)
+                m &= tmp
+                np.less_equal(lon_row, 180.0, out=tmp)
+                m &= tmp
+                np.greater_equal(lat_row, -90.0, out=tmp)
+                m &= tmp
+                np.less_equal(lat_row, 90.0, out=tmp)
+                m &= tmp
+
+                if not m.any():
+                    continue
+
+                idx = np.flatnonzero(m)
+                sp_vals = sp_row[idx]
+
+                # species int + validity (per timestep, no big specie arrays)
+                if np.issubdtype(sp_vals.dtype, np.integer):
+                    sp_int = sp_vals.astype(np.int32, copy=False)
+                    valid_sp = (sp_int >= 0) & (sp_int < Nspecies_total)
+                else:
+                    finite_sp = np.isfinite(sp_vals)
+                    sp_round = np.rint(sp_vals)
+                    intlike = finite_sp & (sp_vals == sp_round)
+                    sp_int = sp_round.astype(np.int32, copy=False)
+                    valid_sp = intlike & (sp_int >= 0) & (sp_int < Nspecies_total)
+
+                if not valid_sp.any():
+                    continue
+
+                idx = idx[valid_sp]
+                sp_int = sp_int[valid_sp]
+
+                present_species[sp_int] = True
+
+                if not bounds_from_corners:
+                    xs = lon_row[idx]
+                    ys = lat_row[idx]
+                    if not is_latlon:
+                        xs, ys = transformer.transform(xs, ys)
+
+                    # xs/ys already finite by construction
+                    xmn = xs.min()
+                    xmx = xs.max()
+                    ymn = ys.min()
+                    ymx = ys.max()
+                    if xmn < xmin:
+                        xmin = xmn
+                    if xmx > xmax:
+                        xmax = xmx
+                    if ymn < ymin:
+                        ymin = ymn
+                    if ymx > ymax:
+                        ymax = ymx
 
         if compress_species:
-            sp_present = specie_i[keep_mask]
-            # sp_present = specie_i[(specie_i >= 0) & (specie_i < self.nspecies)]
-            keep_species = np.unique(sp_present)
-            keep_species.sort()
-
+            keep_species = np.flatnonzero(present_species).astype(np.int32)
             if keep_species.size == 0:
-                raise ValueError("No species found after filtering (keep_mask empty).")
-
-            old2new = -np.ones(self.nspecies, dtype=np.int32)
-            old2new[keep_species] = np.arange(keep_species.size, dtype=np.int32)
-
-            # remap specie ids to compact range; invalid -> -1
-            valid_sp = (specie_i >= 0) & (specie_i < self.nspecies)
-
-            specie_new = -np.ones_like(specie_i, dtype=np.int32)
-            specie_new[valid_sp] = old2new[specie_i[valid_sp]]
-
-            keep_mask &= (specie_new >= 0)   # stays correct
-            specie_2d = specie_new
-            Nspecies = int(keep_species.size)
+                raise ValueError("No species found after filtering (across all chunks).")
             name_species_out = [self.name_species[i] for i in keep_species]
         else:
-            specie_2d = specie_i
-            keep_species = np.arange(self.nspecies, dtype=np.int32)
-            Nspecies = int(self.nspecies)
+            keep_species = np.arange(Nspecies_total, dtype=np.int32)
             name_species_out = list(self.name_species)
 
-        # Create a grid in the specified projection
-        if llcrnrlon is not None:
-            llcrnrx,llcrnry = density_proj(llcrnrlon,llcrnrlat)
-            urcrnrx,urcrnry = density_proj(urcrnrlon,urcrnrlat)
-        else:
-            mll = np.isfinite(lon_2d) & np.isfinite(lat_2d)
-            if not mll.any():
-                raise ValueError("No finite lon/lat points available to build grid bounds.")
+        # build old->new mapping (global)
+        old2new = -np.ones(Nspecies_total, dtype=np.int32)
+        old2new[keep_species] = np.arange(keep_species.size, dtype=np.int32)
+        Nout = int(keep_species.size)
 
-            lon_v = lon_2d[mll]
-            lat_v = lat_2d[mll]
-            x, y = density_proj(lon_v, lat_v)  # 1D only
+        # finalize bounds and bins (global; used for ALL timesteps)
+        if not bounds_from_corners:
+            if not np.isfinite([xmin, xmax, ymin, ymax]).all():
+                raise ValueError("Could not infer bounds from data (no valid points after filtering).")
 
-            mxy = np.isfinite(x) & np.isfinite(y)
-            if not mxy.any():
-                raise ValueError("No finite projected coordinates to build grid bounds.")
-
-            xmin, xmax = np.nanmin(x[mxy]), np.nanmax(x[mxy])
-            ymin, ymax = np.nanmin(y[mxy]), np.nanmax(y[mxy])
-
-            is_moll = ("+proj=moll" in density_proj.srs)
             if is_moll:
                 llcrnrx, llcrnry = xmin - pixelsize_m, ymin - pixelsize_m
                 urcrnrx, urcrnry = xmax + pixelsize_m, ymax + pixelsize_m
             else:
                 llcrnrx, llcrnry = xmin - lon_resol, ymin - lat_resol
                 urcrnrx, urcrnry = xmax + lon_resol, ymax + lat_resol
-            del lon_v, lat_v, x, y
-            gc.collect()
 
-        if density_proj == Proj('+proj=moll +ellps=WGS84 +lon_0=0.0'):
-            if pixelsize_m == None:
-                raise ValueError("If density_proj is '+proj=moll +ellps=WGS84 +lon_0=0.0', pixelsize_m must be specified")
-            else:
-                x_array = np.arange(llcrnrx,urcrnrx, pixelsize_m)
-                y_array = np.arange(llcrnry,urcrnry, pixelsize_m)
+        if is_moll:
+            x_array = np.arange(llcrnrx, urcrnrx, pixelsize_m, dtype=np.float32)
+            y_array = np.arange(llcrnry, urcrnry, pixelsize_m, dtype=np.float32)
         else:
-            x_array = np.arange(llcrnrx,urcrnrx, lon_resol)
-            y_array = np.arange(llcrnry,urcrnry, lat_resol)
+            x_array = np.arange(llcrnrx, urcrnrx, lon_resol, dtype=np.float32)
+            y_array = np.arange(llcrnry, urcrnry, lat_resol, dtype=np.float32)
 
         x_array = np.asarray(x_array, dtype=np.float32)
         y_array = np.asarray(y_array, dtype=np.float32)
         z_array = np.asarray(z_array, dtype=np.float32)
 
-        # Prepare projection once
-        need_proj = (density_proj != Proj("+proj=longlat +datum=WGS84 +no_defs"))
-        if need_proj:
-            source_proj = Proj("+proj=longlat +datum=WGS84 +no_defs")
-            transformer = Transformer.from_proj(source_proj, density_proj)
+        if x_array.size < 2 or y_array.size < 2 or z_array.size < 2:
+            raise ValueError(
+                f"Invalid bin edges: x={x_array.size}, y={y_array.size}, z={z_array.size}. "
+                "Check bounds/resolution and/or data coverage."
+            )
 
-        # Allocate outputs
-        # Nspecies is compuded based on compress_species
-        Tx = n_timef
         Zx = len(z_array) - 1
         Xx = len(x_array) - 1
         Yx = len(y_array) - 1
 
-        H = np.zeros((Tx, Nspecies, Zx, Xx, Yx), dtype=np.float32)
-        H_count = None
-        if elements_density is True:
-            logger.info('Calculating element density')
-            H_count = np.zeros_like(H, dtype=np.uint32)
+        ### PASS 2: fill H with the globally fixed bounds and globally computed keep_species
+        H = np.zeros((n_timef, Nout, Zx, Xx, Yx), dtype=np.float32)
+        H_count = np.zeros_like(H, dtype=np.uint32) if elements_density else None
 
-        # Chunk over time
+        # reuse scratch buffers
+        m.fill(False)
+        tmp.fill(False)
+
         for t0i in range(0, n_timef, time_chunk_size):
             t1i = min(t0i + time_chunk_size, n_timef)
             blk_T = t1i - t0i
-            logger.debug(f"Computing time_chunk {t0i} - {t1i}")
 
-            # views (no copies) for this time block
-            lon_blk    = lon_2d[t0i:t1i, :]           # (blk_T, n_elem)
-            lat_blk    = lat_2d[t0i:t1i, :]
-            z_blk      = z_2d[t0i:t1i, :]
-            specie_blk = specie_2d[t0i:t1i, :]
-            keep_blk   = keep_mask[t0i:t1i, :]
+            lon_blk = lon_2d[t0i:t1i, :]
+            lat_blk = lat_2d[t0i:t1i, :]
+            z_blk = z_2d[t0i:t1i, :]
+            sp_blk = specie_2d[t0i:t1i, :]
 
             w_blk = None
-            if weight is not None:
+            if weight_2d is not None:
                 w_blk = weight_2d[t0i:t1i, :]
 
-            # prefilter NaNs early
-            finite_blk = np.isfinite(lon_blk) #& np.isfinite(lat_blk) & np.isfinite(z_blk)
-            keep_blk &= finite_blk
-            del finite_blk
+            om_blk = None
+            if originmarker_2d is not None:
+                om_blk = originmarker_2d[t0i:t1i, :]
 
-            # project the entire chunk once where needed
-            if need_proj:
-                # Flatten → project → reshape back to (blk_T, n_elem)
-                lonp, latp = transformer.transform(lon_blk.reshape(-1), lat_blk.reshape(-1))
-                lon_blk_p = lonp.reshape(blk_T, n_elem)
-                lat_blk_p = latp.reshape(blk_T, n_elem)
-                del lonp, latp
-            else:
-                lon_blk_p = lon_blk
-                lat_blk_p = lat_blk
+            st_blk = None
+            if status_2d is not None:
+                st_blk = status_2d[t0i:t1i, :]
 
-            # inner loops: small discrete sets (species) and timesteps in the block
-            for sp in range(Nspecies):
-                # time-slice loop inside the block (≤ 50 iterations)
-                for t_rel in range(blk_T):
-                    ti = t0i + t_rel  # absolute time index in H
+            for t_rel in range(blk_T):
+                ti = t0i + t_rel
 
-                    # select surviving samples for this (time, species)
-                    mask = keep_blk[t_rel, :] & (specie_blk[t_rel, :] == sp)
-                    if not mask.any():
+                lon_row = lon_blk[t_rel, :]
+                lat_row = lat_blk[t_rel, :]
+                z_row = z_blk[t_rel, :]
+                sp_row = sp_blk[t_rel, :]
+                w_row = None if w_blk is None else w_blk[t_rel, :]
+                om_row = None if om_blk is None else om_blk[t_rel, :]
+                st_row = None if st_blk is None else st_blk[t_rel, :]
+
+                # start: all True
+                m.fill(True)
+
+                # weight gating (same as pass 1)
+                if w_row is not None:
+                    np.isfinite(w_row, out=tmp)
+                    m &= tmp
+                    if timestep_values:
+                        np.greater(w_row, 0.0, out=tmp)
+                        m &= tmp
+                # origin_marker gating
+                if om_row is not None:
+                    if isinstance(origin_marker, (list, tuple, np.ndarray)):
+                        m &= np.isin(om_row, origin_marker)
+                    else:
+                        m &= (om_row == origin_marker)
+                # active gating
+                if st_row is not None:
+                    m &= (st_row == active_index)
+                # finite checks
+                np.isfinite(lon_row, out=tmp)
+                m &= tmp
+                np.isfinite(lat_row, out=tmp)
+                m &= tmp
+                np.isfinite(z_row, out=tmp)
+                m &= tmp
+                # lat/lon range checks
+                np.greater_equal(lon_row, -180.0, out=tmp)
+                m &= tmp
+                np.less_equal(lon_row, 180.0, out=tmp)
+                m &= tmp
+                np.greater_equal(lat_row, -90.0, out=tmp)
+                m &= tmp
+                np.less_equal(lat_row, 90.0, out=tmp)
+                m &= tmp
+
+                if not m.any():
+                    continue
+
+                idx = np.flatnonzero(m)
+                sp_vals = sp_row[idx]
+
+                # species -> int + valid in original axis
+                if np.issubdtype(sp_vals.dtype, np.integer):
+                    sp_int = sp_vals.astype(np.int32, copy=False)
+                    valid_sp = (sp_int >= 0) & (sp_int < Nspecies_total)
+                else:
+                    finite_sp = np.isfinite(sp_vals)
+                    sp_round = np.rint(sp_vals)
+                    intlike = finite_sp & (sp_vals == sp_round)
+                    sp_int = sp_round.astype(np.int32, copy=False)
+                    valid_sp = intlike & (sp_int >= 0) & (sp_int < Nspecies_total)
+
+                if not valid_sp.any():
+                    continue
+
+                idx = idx[valid_sp]
+                sp_int = sp_int[valid_sp]
+
+                # remap to compact (or identity if compress_species=False)
+                sp_new = old2new[sp_int]
+                ok = (sp_new >= 0)
+                if not ok.any():
+                    continue
+
+                idx = idx[ok]
+                sp_new = sp_new[ok]
+
+                # only iterate species present at this timestep
+                for sp_out in np.unique(sp_new):
+                    sel = (sp_new == sp_out)
+                    if not sel.any():
                         continue
+                    idx_sp = idx[sel]
 
-                    xs = lon_blk_p[t_rel, mask]
-                    ys = lat_blk_p[t_rel, mask]
-                    zs = z_blk[t_rel, mask]
-                    ws = None if w_blk is None else w_blk[t_rel, mask]
+                    xs = lon_row[idx_sp]
+                    ys = lat_row[idx_sp]
+                    zs = z_row[idx_sp].astype(np.float32, copy=True)  # small copy, safe to edit
 
-                    # histogram over (x, y, z) only
+                    # move above-surface to -1e-4
+                    pos = (zs >= 0.0)
+                    if pos.any():
+                        zs[pos] = -1e-4
+
+                    ws = None
+                    if w_row is not None:
+                        ws = w_row[idx_sp]
+
+                    # project only the extracted 1D points if needed
+                    if not is_latlon:
+                        xs, ys = transformer.transform(xs, ys)
+
                     if ws is None:
                         H_xyz, _ = np.histogramdd((xs, ys, zs), bins=(x_array, y_array, z_array))
-                        # histogramdd returns (X, Y, Z) → transpose to (Z, X, Y)
-                        H[ti, sp, :, :, :] += H_xyz.transpose(2, 0, 1)
-
+                        H[ti, sp_out, :, :, :] += H_xyz.transpose(2, 0, 1).astype(np.float32, copy=False)
                         if H_count is not None:
-                            H_count[ti, sp, :, :, :] += H_xyz.transpose(2, 0, 1).astype(H_count.dtype, copy=False)
-
+                            H_count[ti, sp_out, :, :, :] += H_xyz.transpose(2, 0, 1).astype(np.uint32, copy=False)
                     else:
-                        # weighted sum in H
                         H_xyz_w, _ = np.histogramdd((xs, ys, zs), bins=(x_array, y_array, z_array), weights=ws)
-                        H[ti, sp, :, :, :] += H_xyz_w.transpose(2, 0, 1)
-
+                        H[ti, sp_out, :, :, :] += H_xyz_w.transpose(2, 0, 1).astype(np.float32, copy=False)
                         if H_count is not None:
-                            # counts (unweighted pass) for the same slice
                             H_xyz_c, _ = np.histogramdd((xs, ys, zs), bins=(x_array, y_array, z_array))
-                            H_count[ti, sp, :, :, :] += H_xyz_c.transpose(2, 0, 1).astype(H_count.dtype, copy=False)
+                            H_count[ti, sp_out, :, :, :] += H_xyz_c.transpose(2, 0, 1).astype(np.uint32, copy=False)
 
-        # Grid lon/lat arrays for output
-        if density_proj is not None:
-            Y, X = np.meshgrid(y_array, x_array)
-            lon_array, lat_array = density_proj(X, Y, inverse=True)
+        # Output lon/lat arrays for grid edges
+        Yg, Xg = np.meshgrid(y_array, x_array)  # (X_edges, Y_edges)
+        lon_array, lat_array = density_proj(Xg, Yg, inverse=True)
 
+        gc.collect()
 
         return H, lon_array, lat_array, H_count, keep_species, name_species_out
 
-    def get_pixel_mean_depth(self,lons,lats,density_proj_str,lat_resol,lon_resol):
+    def get_pixel_mean_depth(self,lons,lats,
+                             is_moll, is_latlon,
+                             lat_resol,lon_resol):
         from scipy import interpolate
         import gc
         # Ocean model depth and lat/lon
@@ -4162,11 +4421,11 @@ class ChemicalDrift(OceanDrift):
         h = interpolate.griddata((lon_grd.flatten(),lat_grd.flatten()), h_grd.flatten(), (lons, lats), method='linear')
 
         # Mollweide case
-        if "+proj=moll" in density_proj_str:
+        if is_moll:
             return h, None
 
         # EPSG:4326 / longlat case: spherical area
-        if "+proj=longlat" in density_proj_str:
+        if is_latlon:
             # Calculate the area of each grid cell in square meters (m²)
             Radius = 6.371e6
             # Convert degrees to radians
@@ -4185,41 +4444,54 @@ class ChemicalDrift(OceanDrift):
         area = np.full_like(lats, abs(lat_resol * lon_resol), dtype=np.float64)
         return h, area
 
-    def horizontal_smooth(self, a, n=0):
-        if n==0:
-            num_coarse=a
-            return num_coarse
+    def horizontal_smooth(self, a, n=0, landmask=None, pad_mode="edge", land_value=0.0):
+        """
+        2D box smoothing (mean over (2n+1)x(2n+1)), no wrap.
+        - Ignores NaNs
+        - If landmask is provided (True=land), land is excluded from averages
+        - Land cells in output are set to land_value (default 0.0)
+        """
+        import numpy as np
+        a = np.asarray(a, dtype=np.float64)
+        if n <= 0:
+            return a
 
-        # if np.isnan(a).any() or np.isinf(a).any():
-        #     a = np.nan_to_num(a, nan=0, posinf=0, neginf=0)
+        n = int(n)
+        ydm, xdm = a.shape
 
-        xdm=a.shape[1]
-        ydm=a.shape[0]
-        #msk = self.conc_mask
-        b=np.zeros([ydm+2*n,xdm+2*n],dtype=int)
-        b[n:-n,n:-n]=a
+        valid = np.isfinite(a)
+        lm = None
+        if landmask is not None:
+            lm = np.asarray(landmask, dtype=bool)
+            if lm.shape != a.shape and lm.T.shape == a.shape:
+                lm = lm.T
+            if lm.shape != a.shape:
+                raise ValueError(f"landmask shape {lm.shape} != a shape {a.shape}")
+            valid &= ~lm
 
-        num_coarse = np.zeros([ydm,xdm],dtype=float)
-        smo_tmp1=np.zeros([ydm,xdm])
-        #smo_msk1=np.zeros([ydm-2*n,xdm-2*n],dtype=float)
-        nlayers = 0
-        for ism in np.arange(-n,n+1):
-            for jsm in np.arange(-n,n+1):
-                smo_tmp = b[n+jsm:ydm+n+jsm, n+ism:xdm+n+ism]
-                smo_tmp1+=smo_tmp
-                # Must preferrably take care of land points
-                # smo_msk = msk[n+jsm:ydm-n+jsm, n+ism:xdm-n+ism]
-                # smo_msk1+=smo_msk
-                nlayers+=1
+        a0 = np.where(valid, a, 0.0)
+        w0 = valid.astype(np.float64)
 
-        if n>0:
-            # num_coarse[n:-n,n:-n] = smo_tmp1 / smo_msk1
-            num_coarse[:,:] = smo_tmp1 / nlayers
-        else:
-            num_coarse = smo_tmp1
-        # num_coarse = num_coarse*msk
+        a_pad = np.pad(a0, ((n, n), (n, n)), mode=pad_mode)
+        w_pad = np.pad(w0, ((n, n), (n, n)), mode=pad_mode)
 
-        return num_coarse
+        # integral images with leading zeros
+        S = np.pad(a_pad, ((1, 0), (1, 0)), mode="constant").cumsum(0).cumsum(1)
+        W = np.pad(w_pad, ((1, 0), (1, 0)), mode="constant").cumsum(0).cumsum(1)
+
+        k = 2 * n + 1
+        num = S[k:, k:] - S[:-k, k:] - S[k:, :-k] + S[:-k, :-k]
+        den = W[k:, k:] - W[:-k, k:] - W[k:, :-k] + W[:-k, :-k]
+
+        out = np.full((ydm, xdm), np.nan, dtype=np.float64)
+        ok = den > 0
+        out[ok] = num[ok] / den[ok]
+
+        if lm is not None:
+            out[lm] = land_value # keep land clean
+
+        return out
+
 
     def emission_factors(self, scrubber_type, chemical_compound):
         """Emission factors for heavy metals and PAHs in
@@ -4536,7 +4808,6 @@ class ChemicalDrift(OceanDrift):
     ''' Alias of seed_from_DataArray method for backward compatibility
     '''
     ### Helpers for seed_from_NETCDF ###
-
     @staticmethod
     def _get_number_of_elements(g_mode, mass_element_ug=None, data_point=None, n_elements=None):
         """
@@ -4926,60 +5197,60 @@ class ChemicalDrift(OceanDrift):
             last_depth_until_bathimetry=True,
             sed_seafloor_eps=0.001
     ):
-        """Seed elements based on a dataarray with water/sediment concentration or direct emissions to water
+        """
+        Seed elements based on a dataarray with water/sediment concentration or direct emissions to water.
 
-            Arguments:
-                NETCDF_data:          dataarray with concentration or emission data, with coordinates
-                    * latitude        (latitude) float32
-                    * longitude       (longitude) float32
-                    * time            (time) datetime64[ns]
-                Bathimetry_data:      dataarray with bathimetry data, MUST have the same grid of NETCDF_data, no time dimension, and positive values
-                    * latitude        (latitude) float32
-                    * longitude       (longitude) float32
-                Bathimetry_seed_data: dataarray with bathimetry data, MUST be the same used for running the simulation, no time dimension, and positive values
-                    * latitude        (latitude) float32
-                    * longitude       (longitude) float32
-                mode:                 "water_conc" (seed from concentration in water column, in ug/L),
-                                      "sed_conc" (seed from sediment concentration, in ug/kg d.w.),
-                                      "emission" (seed from direct discharge to water, in kg)
-                radius:               float32, unit: meters, elements will be created in a circular area around coordinates
-                lowerbound:           float32 elements with lower values are discarded
-                higherbound:          float32, elements with higher values are discarded
-                number_of_elements:   int, number of elements created for each vertical layer at each gridpoint
-                mass_element_ug:      float32, maximum mass of elements if number_of_elements is not specificed
-                lon_resol:            float32, longitude resolution of the NETCDF dataset
-                lat_resol:            float32, latitude resolution of the NETCDF dataset
-                gen_mode:             string, "mass" (elements generated from mass), "fixed" (fixed number of elements for each data point)
-                water_speciation:     Controls initial species assignment for elements seeded in water_conc and emission modes.
-                                        Accepted values:
-                                          - None or "config": do not pass 'specie' to ChemicalDrift.seed_elements;
-                                            triggers ChemicalDrift's config-driven initial partitioning
-                                            (seed:LMM_fraction and seed:particle_fraction, plus any transfer_setup logic).
-                                          - "default": pass specie=self.num_lmm for water_conc and emission modes
-                                          - int: force all seeded elements to the given species index.
-                                          - array-like of int or species names (length = number of elements seeded at that datapoint):
-                                            explicit per-element species indices or names.
-                                          - dict: {species: fraction, ...} to randomly assign species according to fractions.
-                                            Keys may be species indices (int) or species names (str) in self.name_species.
-                                            Fractions are normalized if they do not sum exactly to 1.
-                sed_speciation:       Controls initial species assignment for elements seeded in sed_conc mode.
-                                          - Same accepted values and behavior as water_speciation, but applied to sediment
-                                            seeding (default species is self.num_srev).
-                                          - Cannot be None or "config", as partitioning to sediments from config is not implemented in ChemicalDrift.seed_elements
-                origin_marker:        int, or string "single", assign a marker to seeded elements. If "single" a different origin_marker will be assigned to each datapoint
-                last_depth_until_bathimetry: boolean, when depth is specified in NETCDF_data using "water_conc" mode
-                                            the water column below the highest depth value is considered the same as the last
-                                            available layer (True) or is consedered without chemical (False)
-                sed_seafloor_eps:     float32, sediments will be seeded sed_seafloor_eps (m) above seafloor,
-
-            """
+        Arguments:
+        NETCDF_data:          dataarray with concentration or emission data, with coordinates
+            * latitude        (latitude) float32
+            * longitude       (longitude) float32
+            * time            (time) datetime64[ns]
+        Bathimetry_data:      dataarray with bathimetry data, MUST have the same grid of NETCDF_data, no time dimension, and positive values
+            * latitude        (latitude) float32
+            * longitude       (longitude) float32
+        Bathimetry_seed_data: dataarray with bathimetry data, MUST be the same used for running the simulation, no time dimension, and positive values
+            * latitude        (latitude) float32
+            * longitude       (longitude) float32
+        mode:                 "water_conc" (seed from concentration in water column, in ug/L),
+                              "sed_conc" (seed from sediment concentration, in ug/kg d.w.),
+                              "emission" (seed from direct discharge to water, in kg)
+        radius:               float32, unit: meters, elements will be created in a circular area around coordinates
+        lowerbound:           float32 elements with lower values are discarded
+        higherbound:          float32, elements with higher values are discarded
+        number_of_elements:   int, number of elements created for each vertical layer at each gridpoint
+        mass_element_ug:      float32, maximum mass of elements if number_of_elements is not specificed
+        lon_resol:            float32, longitude resolution of the NETCDF dataset
+        lat_resol:            float32, latitude resolution of the NETCDF dataset
+        gen_mode:             string, "mass" (elements generated from mass), "fixed" (fixed number of elements for each data point)
+        water_speciation:     Controls initial species assignment for elements seeded in water_conc and emission modes.
+                                Accepted values:
+                                  - None or "config": do not pass 'specie' to ChemicalDrift.seed_elements;
+                                    triggers ChemicalDrift's config-driven initial partitioning
+                                    (seed:LMM_fraction and seed:particle_fraction, plus any transfer_setup logic).
+                                  - "default": pass specie=self.num_lmm for water_conc and emission modes
+                                  - int: force all seeded elements to the given species index.
+                                  - array-like of int or species names (length = number of elements seeded at that datapoint):
+                                    explicit per-element species indices or names.
+                                  - dict: {species: fraction, ...} to randomly assign species according to fractions.
+                                    Keys may be species indices (int) or species names (str) in self.name_species.
+                                    Fractions are normalized if they do not sum exactly to 1.
+        sed_speciation:       Controls initial species assignment for elements seeded in sed_conc mode.
+                                  - Same accepted values and behavior as water_speciation, but applied to sediment
+                                    seeding (default species is self.num_srev).
+                                  - Cannot be None or "config", as partitioning to sediments from config is not implemented in ChemicalDrift.seed_elements
+        origin_marker:        int, or string "single", assign a marker to seeded elements. If "single" a different origin_marker will be assigned to each datapoint
+        last_depth_until_bathimetry: boolean, when depth is specified in NETCDF_data using "water_conc" mode
+                                    the water column below the highest depth value is considered the same as the last
+                                    available layer (True) or is consedered without chemical (False)
+        sed_seafloor_eps:     float32, sediments will be seeded sed_seafloor_eps (m) above seafloor,
+        """
         import opendrift
         from datetime import datetime
         import numpy as np
-        # mass_element_ug=1e3     # 1e3 - 1 element is 1mg chemical
-        # mass_element_ug=100e3   # 100e3 - 1 element is 100mg chemical
-        # mass_element_ug=1e6     # 1e6 - 1 element is 1g chemical
-        # mass_element_ug=1e9     # 1e9 - 1 element is 1kg chemical
+        # mass_element_ug=1e3   # 1e3 -> 1 element is 1mg chemical
+        # mass_element_ug=1e5   # 1e5 -> 1 element is 100mg chemical
+        # mass_element_ug=1e6   # 1e6 -> 1 element is 1g chemical
+        # mass_element_ug=1e9   # 1e9 -> 1 element is 1kg chemical
 
         # Validate speciation inputs
         if mode not in ['water_conc', 'sed_conc', 'emission']:
@@ -5030,7 +5301,6 @@ class ChemicalDrift(OceanDrift):
         if lat_sel_idx is not None:
             la = lat_vals[sel[lat_sel_idx]]
         else:
-            # not a dim: allow only scalar coord
             if lat_vals.size != 1:
                 raise ValueError("latitude is not a dimension: only scalar latitude coordinate is supported.")
             la = np.full(len(sel[0]), float(lat_vals.item()))
@@ -5049,21 +5319,17 @@ class ChemicalDrift(OceanDrift):
         else:
             time_name_index = None
 
-        depth_min = None
-        depth_max = None
         depth = None
         all_depth_values = None
 
         if "depth" in NETCDF_data.dims:
             depth_name_index = NETCDF_data_dim_names.index("depth")
-            all_depth_values = np.sort(np.absolute(np.unique(np.array(NETCDF_data.depth)))) # Change depth to positive values
+            all_depth_values = np.sort(np.absolute(np.unique(np.array(NETCDF_data.depth))))
         else:
             depth_name_index = None
 
         # Time vector
         if time_check == 1:
-            # fix for different encoding of single time step emissions
-            # time truncaded to [s] to avoid datetime.utcfromtimestamp only integers error
             try:
                 t = np.datetime64(str(np.array(NETCDF_data.time.data)))
                 t = np.array(t, dtype='datetime64[s]')
@@ -5082,13 +5348,13 @@ class ChemicalDrift(OceanDrift):
         lon_array = lo + lon_resol / 2
         lat_array = la + lat_resol / 2
 
-        # Check bathimetry for inconsistent data (only for water_conc)
-        if mode == 'water_conc':
-            if Bathimetry_data is None or Bathimetry_seed_data is None:
-                raise ValueError("Bathimetry_data and Bathimetry_seed_data are required for mode='water_conc'")
+        # Prune datapoints where Bathimetry_seed_data at the pixel-center is NaN/<=0.
+        if mode in ("water_conc", "sed_conc"):
+            if Bathimetry_seed_data is None:
+                raise ValueError("Bathimetry_seed_data is required for mode='water_conc' and mode='sed_conc'")
 
             check_bad = []
-            ncheck = int(np.size(lo))  # selected-point vectors at this stage
+            ncheck = int(np.size(lon_array))
             for i in range(ncheck):
                 Bseed = float(
                     Bathimetry_seed_data.sel(
@@ -5100,28 +5366,29 @@ class ChemicalDrift(OceanDrift):
                 if (not np.isfinite(Bseed)) or (Bseed <= 0.0):
                     check_bad.append(i)
 
-            if len(check_bad) > 0:
+            if check_bad:
                 bad = np.asarray(check_bad, dtype=int)
-                # prepare optional vectors
                 depth_vec = depth if depth is not None else None
                 t_vec = t if (hasattr(t, "size") and t.size > 1) else None
-                # prune everything in one call (sel included)
+
                 sel, la, lo, lat_array, lon_array, depth_vec, t_vec = self._remove_positions(
                     (sel, la, lo, lat_array, lon_array, depth_vec, t_vec),
                     bad
                 )
 
-                # restore optional vectors
                 if depth_vec is not None:
                     depth = depth_vec
                 if t_vec is not None:
                     t = t_vec
 
-                logger.info(f"{bad.size} datapoints removed due to inconsistent bathimetry")
+                logger.info(f"{bad.size} datapoints removed due to inconsistent bathymetry (seed grid)")
+
+        if mode == 'water_conc':
+            if Bathimetry_data is None:
+                raise ValueError("Bathimetry_data is required for mode='water_conc'")
 
         # Build 1D values aligned with sel/la/lo/lat_array/lon_array (and depth/t if present)
         values = np.asarray(NETCDF_data.data)[sel]
-        # values = np.asarray(NETCDF_data.values)[sel]
         npts = int(values.size)
 
         if npts == 0:
@@ -5132,17 +5399,16 @@ class ChemicalDrift(OceanDrift):
         list_index_print = self._print_progress_list(npts)
 
         if mode == 'sed_conc':
-            # Compute mass of dry sediment in each pixel grid cell
-            sed_mixing_depth = float(self.get_config('chemical:sediment:mixing_depth')) # m
-            sed_density      = float(self.get_config('chemical:sediment:density'))      # kg/m3 (dry)
-            sed_porosity     = float(self.get_config('chemical:sediment:porosity'))     # m3/m3
+            sed_mixing_depth = float(self.get_config('chemical:sediment:mixing_depth'))  # m
+            sed_density      = float(self.get_config('chemical:sediment:density'))       # kg/m3 (dry)
+            sed_porosity     = float(self.get_config('chemical:sediment:porosity'))      # m3/m3
 
         # origin markers aligned with filtered points
         if origin_marker == "single":
             origin_marker_np = np.arange(npts)
 
         fail_count = 0
-        fail_indices = [] # optional: store first N indices for debugging
+        fail_indices = []
         FAIL_KEEP = 20
 
         for i in range(npts):
@@ -5176,7 +5442,6 @@ class ChemicalDrift(OceanDrift):
             Bathimetry_seed = None  # avoid stale reuse
 
             if mode == 'water_conc':
-                # Seed-depth for resuspension etc. (scalar)
                 Bathimetry_seed = float(
                     Bathimetry_seed_data.sel(
                         latitude=float(lat_array[i]),
@@ -5186,10 +5451,8 @@ class ChemicalDrift(OceanDrift):
                 )
 
                 if depth is not None:
-                    # depth for this datapoint (scalar, positive)
                     depth_datapoint = float(np.absolute(depth[i]))
 
-                    # Bathymetry at the datapoint lon/lat (scalar)
                     Bathimetry_datapoint = float(
                         Bathimetry_data.sel(
                             latitude=float(lai),
@@ -5201,7 +5464,6 @@ class ChemicalDrift(OceanDrift):
                     if (not np.isfinite(Bathimetry_datapoint)) or (Bathimetry_datapoint <= 0.0):
                         invalid_depth_layer = True
 
-                    # available depth levels at this lon/lat (1D array, positive)
                     depth_datapoint_np = np.sort(np.abs(
                         NETCDF_data.sel(latitude=lai, longitude=loi, method="nearest").depth.values
                     ).astype(float))
@@ -5216,16 +5478,15 @@ class ChemicalDrift(OceanDrift):
                         else:
                             depth_max = min(float(depth_datapoint_np[depth_datapoint_np_index + 1]), Bathimetry_datapoint)
 
-                        # If bathymetry is shallower than layer top, invalidate
                         if Bathimetry_datapoint < depth_min:
                             invalid_depth_layer = True
                             depth_layer_high = 0.0
                             logger.info(
-                            f"Skipping point: bathymetry ({Bathimetry_datapoint:.3f} m) is shallower than layer top "
-                            f"depth_min ({depth_min:.3f} m) at lon {loi:.6f}, lat {lai:.6f}")
+                                f"Skipping point: bathymetry ({Bathimetry_datapoint:.3f} m) is shallower than layer top "
+                                f"depth_min ({depth_min:.3f} m) at lon {loi:.6f}, lat {lai:.6f}"
+                            )
                         else:
                             depth_layer_high = depth_max - depth_min
-
                     else:
                         # Standard convention: depth = BOTTOM of layer
                         if depth_datapoint_np_index > 0:
@@ -5242,12 +5503,12 @@ class ChemicalDrift(OceanDrift):
                             invalid_depth_layer = True
                             depth_layer_high = 0.0
                             logger.info(
-                            f"Skipping point: bathymetry ({Bathimetry_datapoint:.3f} m) is shallower than layer top "
-                            f"depth_min ({depth_min:.3f} m) at lon {loi:.6f}, lat {lai:.6f}")
+                                f"Skipping point: bathymetry ({Bathimetry_datapoint:.3f} m) is shallower than layer top "
+                                f"depth_min ({depth_min:.3f} m) at lon {loi:.6f}, lat {lai:.6f}"
+                            )
                         else:
                             depth_layer_high = depth_max - depth_min
                 else:
-                    # No depth dimension: whole water column
                     Bathimetry_datapoint = float(
                         Bathimetry_data.sel(
                             latitude=float(lai),
@@ -5258,8 +5519,8 @@ class ChemicalDrift(OceanDrift):
                     depth_layer_high = Bathimetry_datapoint
 
             if invalid_depth_layer:
-                # if Bathimetry_datapoint or invalid Bathimetry_datapoint: skip the point (nothing sensible to seed).
                 continue
+
             # Mass per datapoint
             v = values[i]
 
@@ -5267,14 +5528,14 @@ class ChemicalDrift(OceanDrift):
                 raise ValueError("depth_layer_high is None for water_conc; check bathymetry/depth handling.")
 
             if mode == 'water_conc':
-                pixel_volume = depth_layer_high * lon_grid_m * lat_grid_m_scalar  # m3 (scalar)
-                mass_ug = float(v) * (pixel_volume * 1e3)                         # ug/L * L (1 m3 = 1e3 L) = ug(scalar)
+                pixel_volume = depth_layer_high * lon_grid_m * lat_grid_m_scalar    # m3
+                mass_ug = float(v) * (pixel_volume * 1e3)                           # ug/L * L
             elif mode == 'sed_conc':
-                pixel_volume = sed_mixing_depth * (lon_grid_m * lat_grid_m_scalar) # m3 (scalar)
-                pixel_sed_mass = pixel_volume * (1 - sed_porosity) * sed_density   # kg dry
-                mass_ug = float(v) * pixel_sed_mass                                # ug/kg * kg
+                pixel_volume = sed_mixing_depth * (lon_grid_m * lat_grid_m_scalar)  # m3
+                pixel_sed_mass = pixel_volume * (1 - sed_porosity) * sed_density    # kg dry
+                mass_ug = float(v) * pixel_sed_mass                                 # ug/kg * kg
             elif mode == 'emission':
-                mass_ug = float(v) * 1e9                                          # kg = 1e9 ug
+                mass_ug = float(v) * 1e9                                            # kg -> ug
             else:
                 raise ValueError("Incorrect mode")
 
@@ -5283,9 +5544,13 @@ class ChemicalDrift(OceanDrift):
 
             # Time per point
             if getattr(t, "size", 1) == 1:
-                time = datetime.utcfromtimestamp(int((np.array(t - np.datetime64('1970-01-01T00:00:00'))) / np.timedelta64(1, 's')))
+                time = datetime.utcfromtimestamp(
+                    int((np.array(t - np.datetime64('1970-01-01T00:00:00'))) / np.timedelta64(1, 's'))
+                )
             else:
-                time = datetime.utcfromtimestamp(int((np.array(t[i] - np.datetime64('1970-01-01T00:00:00'))) / np.timedelta64(1, 's')))
+                time = datetime.utcfromtimestamp(
+                    int((np.array(t[i] - np.datetime64('1970-01-01T00:00:00'))) / np.timedelta64(1, 's'))
+                )
 
             # Default species + moving flag
             if mode == 'sed_conc':
@@ -5295,15 +5560,13 @@ class ChemicalDrift(OceanDrift):
                 default_specie = self.num_lmm
                 moving_element = True
 
-            # Elements count and mass distribution
             if gen_mode == "mass":
-                if mass_element_ug <= 0:
-                    raise ValueError("mass_element_ug must be > 0 in mass mode")
-                # number of full-size elements
-                number_full = int(mass_ug // mass_element_ug)
-                # remaining mass
-                mass_residual = float(mass_ug - number_full * mass_element_ug)
-                # If total mass is smaller than max element mass, it will seed one element with the full mass
+                number_full = self._get_number_of_elements(
+                    g_mode="mass",
+                    mass_element_ug=mass_element_ug,
+                    data_point=mass_ug
+                )
+                mass_residual = float(mass_ug - number_full * float(mass_element_ug))
                 seed_single_residual_only = (number_full == 0 and mass_residual > 0)
 
                 number = int(number_full)
@@ -5325,7 +5588,15 @@ class ChemicalDrift(OceanDrift):
             elem_lon = float(lon_array[i])
             origin_marker_seed = origin_marker_np[i] if origin_marker == "single" else origin_marker
 
-            # Seed "main batch" only if number > 0
+
+            # Unified, vectorized per-datapoint seeding for boh sed_conc and water/emission.
+            # On sed_conc failure, fallback to per-element seeding for that datapoint only.
+            speciation_ctrl = (
+                sed_speciation if mode == "sed_conc"
+                else (water_speciation if mode in ("water_conc", "emission") else None)
+            )
+
+            # --- main batch ---
             if number > 0:
                 z = self._get_z(
                     mode=mode,
@@ -5336,132 +5607,94 @@ class ChemicalDrift(OceanDrift):
                     depth_seed=Bathimetry_seed if mode == 'water_conc' else None,
                     sed_seafloor_eps=sed_seafloor_eps,
                 )
-            else:
-                z = None
 
-            if mode == 'sed_conc':
-                z_str = z if number > 0 else f"seafloor+{sed_seafloor_eps}"
-                # Full-size elements
-                # z is a string like "seafloor+0.001" -> OpenDrift resolves seafloor internally
-                # to tolerate failures we do per-element try/except.
-                spec_choices = self.build_specie_array(
-                n=number,
-                speciation=sed_speciation,
-                default_specie=default_specie
+                spec_arr = self.build_specie_array(
+                    n=number,
+                    speciation=speciation_ctrl,
+                    default_specie=default_specie
                 )
 
-                for k in range(number):
-                    try:
-                        kwargs_seed = dict(
-                            lon=elem_lon, lat=elem_lat, radius=radius,
-                            number=1, time=time,
-                            mass=mass_element_seed_ug,
-                            mass_degraded=0, mass_volatilized=0,
-                            moving=moving_element,
-                            z=z_str,
-                            origin_marker=origin_marker_seed
-                        )
+                kwargs_seed = dict(
+                    lon=elem_lon, lat=elem_lat, radius=radius,
+                    number=number, time=time,
+                    mass=mass_element_seed_ug,
+                    mass_degraded=0, mass_volatilized=0,
+                    moving=moving_element,
+                    z=z,
+                    origin_marker=origin_marker_seed
+                )
 
-                        # spec_choices should never be None for sediments (validated);
-                        # since omitting specie would trigger water partitioning
-                        if spec_choices is not None:
-                            kwargs_seed["specie"] = int(spec_choices[k])
-                        else:
-                            raise RuntimeError("sed_speciation resolved to None, which is not supported for sediment seeding.")
+                # If spec_arr is None => omit specie for config-driven partitioning (water/emission only)
+                if spec_arr is not None:
+                    kwargs_seed["specie"] = spec_arr
+                elif mode == "sed_conc":
+                    raise RuntimeError("sed_speciation resolved to None, which is not supported for sediment seeding.")
 
-                        self.seed_elements(**kwargs_seed)
+                try:
+                    self.seed_elements(**kwargs_seed)
 
-                    except Exception:
+                except Exception:
+                    # Robust fallback for sediments only (coastal failures due to radius sampling)
+                    if mode == "sed_conc":
+                        spec_choices = kwargs_seed.get("specie", None)
+
+                        for k in range(number):
+                            try:
+                                kwargs_one = dict(kwargs_seed)
+                                kwargs_one["number"] = 1
+                                kwargs_one["mass"] = mass_element_seed_ug
+                                kwargs_one["specie"] = int(spec_choices[k]) if spec_choices is not None else int(default_specie)
+                                self.seed_elements(**kwargs_one)
+                            except Exception:
+                                fail_count += 1
+                                if len(fail_indices) < FAIL_KEEP:
+                                    fail_indices.append(i)
+                    else:
                         fail_count += 1
                         if len(fail_indices) < FAIL_KEEP:
                             fail_indices.append(i)
 
-                # Residual (mass mode only)
-                if gen_mode == "mass":
-                    residual_to_seed = float(mass_ug) if seed_single_residual_only else float(mass_residual)
-                    if residual_to_seed > 0:
-                        spec_res = self.build_specie_array(1, sed_speciation, default_specie)
-                        try:
-                            kwargs_res = dict(
-                                lon=elem_lon, lat=elem_lat, radius=radius,
-                                number=1, time=time,
-                                mass=residual_to_seed,
-                                mass_degraded=0, mass_volatilized=0,
-                                moving=moving_element,
-                                z=z_str,
-                                origin_marker=origin_marker_seed
-                            )
+            # residual (mass mode only)
+            if gen_mode == "mass":
+                residual_to_seed = float(mass_ug) if seed_single_residual_only else float(mass_residual)
+                if residual_to_seed > 0:
+                    z_res = self._get_z(
+                        mode=mode,
+                        number=1,
+                        NETCDF_data_dim_names=NETCDF_data_dim_names,
+                        depth_min=depth_min,
+                        depth_max=depth_max,
+                        depth_seed=Bathimetry_seed if mode == 'water_conc' else None,
+                        sed_seafloor_eps=sed_seafloor_eps,
+                    )
 
-                            if spec_res is not None:
-                                kwargs_res["specie"] = int(spec_res[0])
-
-                            self.seed_elements(**kwargs_res)
-
-                        except Exception:
-                            fail_count += 1
-                            if len(fail_indices) < FAIL_KEEP:
-                                fail_indices.append(i)
-
-            else:
-                # water_conc / emission
-                if number > 0:
-
-                    spec_arr = self.build_specie_array(
-                        n=number,
-                        speciation=water_speciation if mode in ("water_conc", "emission") else None,
+                    spec_res = self.build_specie_array(
+                        n=1,
+                        speciation=speciation_ctrl,
                         default_specie=default_specie
                     )
 
-                    kwargs_seed = dict(
+                    kwargs_res = dict(
                         lon=elem_lon, lat=elem_lat, radius=radius,
-                        number=number, time=time,
-                        mass=mass_element_seed_ug,
+                        number=1, time=time,
+                        mass=residual_to_seed,
                         mass_degraded=0, mass_volatilized=0,
                         moving=moving_element,
-                        z=z,
+                        z=z_res,
                         origin_marker=origin_marker_seed
                     )
 
-                    # If spec_arr is None => DO NOT pass 'specie' -> config-driven partitioning
-                    if spec_arr is not None:
-                        kwargs_seed["specie"] = spec_arr
+                    if spec_res is not None:
+                        kwargs_res["specie"] = spec_res
+                    elif mode == "sed_conc":
+                        raise RuntimeError("sed_speciation resolved to None, which is not supported for sediment seeding.")
 
-                    self.seed_elements(**kwargs_seed)
-
-                # Residual (mass mode only)
-                if gen_mode == "mass":
-                    residual_to_seed = float(mass_ug) if seed_single_residual_only else float(mass_residual)
-                    if residual_to_seed > 0:
-                        z_res = self._get_z(
-                            mode=mode,
-                            number=1,
-                            NETCDF_data_dim_names=NETCDF_data_dim_names,
-                            depth_min=depth_min,
-                            depth_max=depth_max,
-                            depth_seed=Bathimetry_seed if mode == 'water_conc' else None,
-                            sed_seafloor_eps=sed_seafloor_eps,
-                        )
-
-                        spec_res = self.build_specie_array(
-                            n=1,
-                            speciation=water_speciation if mode in ("water_conc", "emission") else None,
-                            default_specie=default_specie
-                        )
-
-                        kwargs_res = dict(
-                            lon=elem_lon, lat=elem_lat, radius=radius,
-                            number=1, time=time,
-                            mass=residual_to_seed,
-                            mass_degraded=0, mass_volatilized=0,
-                            moving=moving_element,
-                            z=z_res,
-                            origin_marker=origin_marker_seed
-                        )
-
-                        if spec_res is not None:
-                            kwargs_res["specie"] = spec_res
-
+                    try:
                         self.seed_elements(**kwargs_res)
+                    except Exception:
+                        fail_count += 1
+                        if len(fail_indices) < FAIL_KEEP:
+                            fail_indices.append(i)
 
         if fail_count > 0:
             logger.warning(
