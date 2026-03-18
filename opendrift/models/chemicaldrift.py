@@ -7961,30 +7961,6 @@ class ChemicalDrift(OceanDrift):
         estimate_mode="mass",
     ):
         '''
-<<<<<<< Updated upstream
-        Calculate the maxium number of elements in a simulation created by seed_from_NETCDF from xarray DataArray.
-        Produce histographs with frequency of datapoints values within the specified limits
--
-        file_folder:    string, path to file, must end with /
-        file_name:      string, name of file, must end with .nc
-        variable_name:  string, name of xarray DataArray variable
-        emiss_factor:   float32, conversion factor between data and mass expressed as ug (e.g. ug/L, ug/kg), 1e9 if DataArray is in Kg
-        upper_limit:    float32, limit under which datapoints in DataArray wll be ignored by seed_from_NETCDF
-        lower_limit:    float32, limit over which datapoints in DataArray wll be ignored by seed_from_NETCDF
-        name_dataset:   string, name of data to be reported in the title of figures
-        time_start:     datetime64[ns], start time of dataset considered
-        time_end:       datetime64[ns],  end time of dataset considered
-        long_min:       float32, min longitude of dataset considered
-        long_max:       float32, max longitude of dataset considered
-        lat_min:        float32, min latitude of dataset considered
-        lat_max:        float32, max latitude of dataset considered
-        range_max:      float32, max value shown in the figure on data frequency for the whole dataset
-        range_min:      float32, min value shown in the figure on data frequency for the whole dataset
-        n_bins:         int, number of bins used for histograms
-        zoom_max:       int, % of dataset lenght where the zoomed area stops
-        zoom_min:       int, % of dataset lenght where the zoomed area starts
-        print_results:  boolean, select if results are printed or returned as dictionaty
-=======
         Calculate the maximum number of elements in a simulation created by seed_from_NETCDF from xarray DataArray.
         Produce histograms with frequency of datapoints values within the specified limits.
         Estimate the number of seeded elements ignoring bathymetry consistency checks.
@@ -8013,7 +7989,6 @@ class ChemicalDrift(OceanDrift):
         number_of_elements:  int or None, fixed number of elements per selected datapoint when estimate_mode includes "fixed"
         estimate_mode:       string, choose which estimate to calculate:
                              "mass", "fixed", or "both"
->>>>>>> Stashed changes
         '''
         import xarray as xr
         import matplotlib.pyplot as plt
