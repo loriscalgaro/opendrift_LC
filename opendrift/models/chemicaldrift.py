@@ -5596,7 +5596,7 @@ class ChemicalDrift(OceanDrift):
                 else (water_speciation if mode in ("water_conc", "emission") else None)
             )
 
-            # --- main batch ---
+            # main batch
             if number > 0:
                 z = self._get_z(
                     mode=mode,
@@ -7886,7 +7886,7 @@ class ChemicalDrift(OceanDrift):
         '''
         Calculate the maxium number of elements in a simulation created by seed_from_NETCDF from xarray DataArray.
         Produce histographs with frequency of datapoints values within the specified limits
-        ----------
+-
         file_folder:    string, path to file, must end with /
         file_name:      string, name of file, must end with .nc
         variable_name:  string, name of xarray DataArray variable
@@ -9422,7 +9422,7 @@ class ChemicalDrift(OceanDrift):
             time_cols = [c for c in dfc.columns if c.startswith("time [") and c.endswith("]")]
             time_col = time_cols[0] if time_cols else None
 
-        # --- time conversion ---
+        # time conversion
         if target_time_unit and time_col and UM_time:
             dst = "hr" if target_time_unit == "h" else target_time_unit
             f = self._time_factor(UM_time, dst)
@@ -9432,7 +9432,7 @@ class ChemicalDrift(OceanDrift):
             time_col = new_time_col
             UM_time = dst
 
-        # --- mass conversion ---
+        # mass conversion
         if target_mass_unit and UM_mass:
             dst = "ug" if target_mass_unit == "µg" else target_mass_unit
             f = self._mass_factor(UM_mass, dst)
@@ -9488,7 +9488,7 @@ class ChemicalDrift(OceanDrift):
         leg = ax.legend(
             handles, labels,
             loc="upper left",
-            bbox_to_anchor=(0.0, y_offset, 1.0, box_height),  # <-- reserves a box under axes
+            bbox_to_anchor=(0.0, y_offset, 1.0, box_height),
             mode="expand",
             ncol=ncol,
             frameon=False,
@@ -9607,7 +9607,7 @@ class ChemicalDrift(OceanDrift):
         cmap["biodegraded sediment"] = bio_s
         cmap["biodegraded"] = bio_base
 
-        # Photolysis / photodegradation
+        # Photodegradation
         for k in ("mass_photodegraded_ts", "mass_photodegraded_cumulative"):
             cmap[k] = photo_base
         cmap["photodegraded"] = photo_base
@@ -9637,9 +9637,9 @@ class ChemicalDrift(OceanDrift):
         sp_keys = set()
         for lab in labels:
             if lab.startswith("mass_sp_"):
-                sp_keys.add(lab[len("mass_"):])   # -> "sp_..."
+                sp_keys.add(lab[len("mass_"):])
             elif lab.startswith("perc_sp_"):
-                sp_keys.add(lab[len("perc_"):])   # -> "sp_..."
+                sp_keys.add(lab[len("perc_"):])
 
         blue_base  = "#1565c0"
         jade_base  = "#009688"
@@ -9685,7 +9685,6 @@ class ChemicalDrift(OceanDrift):
         for lab in sorted(set(labels)):
             if lab not in cmap:
                 if fallback_idx >= len(fallback_palette):
-                    # should not happen with <=57, but keep safe
                     fallback_idx = 0
                 cmap[lab] = fallback_palette[fallback_idx]
                 fallback_idx += 1
@@ -9699,24 +9698,24 @@ class ChemicalDrift(OceanDrift):
         """
         k = str(key)
 
-        # Bar-summary labels
+        # Bar-summary labels (used in bar_elim_summary legend)
         bar_map = {
-            "degraded water": "Degraded (water)",
-            "degraded sediment": "Degraded (sediment)",
+            "degraded water": "Degraded (wat)",
+            "degraded sediment": "Degraded (sed)",
             "volatilized": "Volatilized",
-            "biodegraded water": "Biodegraded (water)",
-            "biodegraded sediment": "Biodegraded (sediment)",
-            "hydrolyzed water": "Hydrolyzed (water)",
-            "hydrolyzed sediment": "Hydrolyzed (sediment)",
+            "biodegraded water": "Biodegraded (wat)",
+            "biodegraded sediment": "Biodegraded (sed)",
+            "hydrolyzed water": "Hydrolyzed (wat)",
+            "hydrolyzed sediment": "Hydrolyzed (sed)",
             "photodegraded": "Photodegraded",
         }
         if k in bar_map:
             return bar_map[k]
 
-        # --- Speciation keys: mass_sp_* and perc_sp_*
+        # Speciation keys: mass_sp_* and perc_sp_*
         if k.startswith("mass_sp_") or k.startswith("perc_sp_"):
             # strip mass_/perc_
-            sp = k.split("_", 1)[1]  # -> "sp_..."
+            sp = k.split("_", 1)[1]
             # strip trailing "_ts" if present (all your species are ts)
             if sp.endswith("_ts"):
                 sp = sp[:-3]
@@ -9733,14 +9732,14 @@ class ChemicalDrift(OceanDrift):
                 "sp_spm_srev": "SPM (slow rev)",
                 "sp_spm_irrev": "SPM (irrev)",
 
-                "sp_sed_rev": "Sediment (rev)",
-                "sp_sed_srev": "Sediment (slow rev)",
-                "sp_sed_irrev": "Sediment (irrev)",
-                "sp_sed_buried": "Sediment (buried)",
+                "sp_sed_rev": "Sed (rev)",
+                "sp_sed_srev": "Sed (slow rev)",
+                "sp_sed_irrev": "Sed (irrev)",
+                "sp_sed_buried": "Sed (buried)",
             }
             return sp_map.get(sp, sp.replace("_", " ").replace("sp ", "").title())
 
-        # --- Other mass keys: merge time + compartment into one suffix like "(ts-water)"
+        # Other mass keys: merge time + compartment into one suffix like "(ts-wat)"
         time_tag = None
         base = k
 
@@ -9748,13 +9747,13 @@ class ChemicalDrift(OceanDrift):
             time_tag = "ts"
             base = k[:-3]
         elif k.endswith("_cumulative"):
-            time_tag = "cumulative"
+            time_tag = "cumul"
             base = k[: -len("_cumulative")]
 
         # detect compartment tags in the base name
         comp_tag = None
         if base.endswith("_water"):
-            comp_tag = "water"
+            comp_tag = "wat"
             base = base[:-len("_water")]
         elif base.endswith("_sediment"):
             comp_tag = "sed"
@@ -9779,7 +9778,6 @@ class ChemicalDrift(OceanDrift):
 
         nice = base_map.get(base, base.replace("_", " ").title())
 
-        # build suffix
         parts = []
         if time_tag:
             parts.append(time_tag)
@@ -9789,46 +9787,75 @@ class ChemicalDrift(OceanDrift):
         suffix = f" ({'-'.join(parts)})" if parts else ""
         return nice + suffix
 
-    def plot_summary_timeseries(self, df=None,
-                        timeseries_file_path=None,
-                        target_mass_unit=None,
-                        target_time_unit=None,
-                        use_date=False,
-                        time_col=None,
-                        start_date = None,
-                        end_date = None,
-                        fig_title=None,
-                        font_sizes=None,
-                        font_scale=1.0,
-                        split_a4=False,
-                        a4_orientation="landscape", # "landscape" or "portrait"
-                        pdf_path=None):
+
+    def plot_summary_timeseries(
+        self, df=None,
+        timeseries_file_path=None,
+        target_mass_unit=None,
+        target_time_unit=None,
+        use_date=False,
+        time_col=None,
+        start_date=None,
+        end_date=None,
+        fig_title=None,
+        font_sizes=None,
+        font_scale=1.0,
+        split_a4=False,
+        pdf_path=None,
+        row_mode="double"
+    ):
         """
-        - Reads UM_mass and UM_time from df['UM'] (first non-null) if available.
-        - Optional conversions: target_mass_unit, target_time_unit.
-        - Two columns of panels.
+            Plot summary time-series panels for mass balance, elimination pathways, and speciation.
+
+            df:                     pd.DataFrame, Input dataframe containing the time-series results.
+                                    If None, `timeseries_file_path` must be provided.
+            timeseries_file_path:   str or path-like, Path to a CSV file to read when `df` is None.
+            target_mass_unit:       str, Target mass unit for conversion ("ug", "mg", "g", "kg").
+            target_time_unit:       str, Target time unit for conversion ("s", "m", "hr", "d").
+            use_date:               bool, If True and the column `date_of_timestep` exists,
+                                    use it as x-axis. Otherwise use the numeric time column.
+            time_col:               str, Name of the time column to use
+                                    (for example: `time [hr]`).
+                                    If None, it is inferred automatically.
+            start_date:             date-like str, Start of the period to include in the figure. If `use_date=True`, interpreted as a date,
+                                     otherwise interpreted as a numeric lower time bound.
+            end_date:               date-like str, End of the period to include in the figure. If `use_date=True`, interpreted as a date,
+                                     otherwise interpreted as a numeric upper time bound.
+            fig_title:              str, Global figure title.
+            font_sizes:             dict, Explicit font-size overrides.
+            font_scale:             float, Global multiplicative scale applied to default
+                                    font sizes before `font_sizes` overrides are applied.
+            split_a4:               bool, If False, If True, split the output into multiple A4 portrait pages
+                                    grouped by topic.
+            pdf_path:               str or path-like, Output PDF path used only when `split_a4=True`. If provided, all pages are written
+                                    to a multi-page PDF.
+            row_mode:               {"double", "single"}, Panel layout mode.
+                                    `"double"`: two panels per row, `"single"`: one wide panel per row
         """
         import matplotlib.pyplot as plt
         from matplotlib.backends.backend_pdf import PdfPages
-        from matplotlib.gridspec import GridSpec
+        from matplotlib.ticker import FuncFormatter
         import numpy as np
         import pandas as pd
 
+        if row_mode not in ("double", "single"):
+            raise ValueError(f"Unsupported row_mode: {row_mode!r}. Use 'double' or 'single'.")
+
         if df is None:
             if timeseries_file_path is not None:
-                df=pd.read_csv(timeseries_file_path)
+                df = pd.read_csv(timeseries_file_path)
             else:
                 raise ValueError("Both df and timeseries_file_path are None")
 
-        # ---- font sizes (defaults)
+        # font sizes (defaults)
         fs = {
-            "legend": 10,
-            "xlabel": 12,
-            "ylabel": 12,
-            "xticks": 10,
-            "yticks": 10,
-            "subplot_title": 12,
-            "figure_title": 16,
+            "legend": 9,
+            "xlabel": 9,
+            "ylabel": 9,
+            "xticks": 9,
+            "yticks": 9,
+            "subplot_title": 10,
+            "figure_title": 11,
         }
         # apply global scale first
         if font_scale is None:
@@ -9845,26 +9872,117 @@ class ChemicalDrift(OceanDrift):
             df, target_mass_unit=target_mass_unit, target_time_unit=target_time_unit, time_col=time_col
         )
 
-        # choose x axis
-        if use_date and "date_of_timestep" in dfc.columns:
-            x = dfc["date_of_timestep"]
+        # choose x axis + optional period filter
+        use_date_axis = bool(use_date and "date_of_timestep" in dfc.columns)
+
+        if use_date_axis:
+            x_raw = pd.to_datetime(dfc["date_of_timestep"], errors="coerce")
             xlab = "date_of_timestep"
         else:
             if time_col is None:
                 raise ValueError("No time column found (expected something like 'time [hr]').")
-            x = dfc[time_col]
+            x_raw = pd.to_numeric(dfc[time_col], errors="coerce")
             xlab = time_col
+
+        def _fmt_period_val(v, is_date_axis):
+            if pd.isna(v):
+                return "NaT" if is_date_axis else "NaN"
+            if is_date_axis:
+                try:
+                    return pd.Timestamp(v).strftime("%Y-%m-%d")
+                except Exception:
+                    return str(v)
+            try:
+                return f"{float(v):g}"
+            except Exception:
+                return str(v)
+
+        mask = pd.Series(True, index=dfc.index)
+
+        if use_date_axis:
+            if start_date is not None:
+                start_bound = pd.to_datetime(start_date, errors="coerce")
+                if pd.isna(start_bound):
+                    raise ValueError(f"Could not parse start_date={start_date!r} as a date.")
+                mask &= (x_raw >= start_bound)
+
+            if end_date is not None:
+                end_bound = pd.to_datetime(end_date, errors="coerce")
+                if pd.isna(end_bound):
+                    raise ValueError(f"Could not parse end_date={end_date!r} as a date.")
+                mask &= (x_raw <= end_bound)
+        else:
+            if start_date is not None:
+                try:
+                    start_bound = float(start_date)
+                except Exception:
+                    raise ValueError(f"Could not parse start_date={start_date!r} as a numeric time bound.")
+                mask &= (x_raw >= start_bound)
+
+            if end_date is not None:
+                try:
+                    end_bound = float(end_date)
+                except Exception:
+                    raise ValueError(f"Could not parse end_date={end_date!r} as a numeric time bound.")
+                mask &= (x_raw <= end_bound)
+
+        if start_date is not None or end_date is not None:
+            dfc = dfc.loc[mask].copy()
+            x_raw = x_raw.loc[mask]
+            if len(dfc) == 0:
+                raise ValueError("No rows remain after applying start_date/end_date filter.")
+
+        x = x_raw
+
+        period_suffix = ""
+        if start_date is not None or end_date is not None:
+            x_start = _fmt_period_val(x.iloc[0], use_date_axis)
+            x_end = _fmt_period_val(x.iloc[-1], use_date_axis)
+            if use_date_axis:
+                period_suffix = f" | period: {x_start} to {x_end}"
+            else:
+                period_suffix = f" | period: {x_start} to {x_end} ({xlab})"
 
         # name helpers (after conversion)
         def mcol(base):  # mass column with unit
             return f"{base} [{UM_mass}]"
+
         def pcol(base):  # percent col
             return f"{base} [%]"
 
+        # scientific formatter
+        SCI_THRESHOLD = 1000.0
+
+        def _fmt_big_sci(v, pos=None):
+            try:
+                v = float(v)
+            except Exception:
+                return ""
+            if v == 0.0:
+                return "0"
+            if abs(v) >= SCI_THRESHOLD:
+                exp = int(np.floor(np.log10(abs(v))))
+                mant = v / (10 ** exp)
+                return f"{mant:.2f}e{exp}"
+            return f"{v:g}"
+
+        # xlabel strip helper
+        def _place_xlabel_in_axis(ax_xlab, text):
+            ax_xlab.set_xticks([])
+            ax_xlab.set_yticks([])
+            for sp in ax_xlab.spines.values():
+                sp.set_visible(False)
+            ax_xlab.set_facecolor("none")
+            ax_xlab.text(
+                0.5, 0.25, str(text),
+                ha="center", va="center",
+                fontsize=fs["xlabel"],
+                transform=ax_xlab.transAxes
+            )
+
         # All species masses at each timestep (after conversion)
-        # Canonical order for species
         sp_key_order = [
-            # dissolved family
+            # dissolved
             "sp_dissolved_ts",
             "sp_dissolved_anion_ts",
             "sp_dissolved_cation_ts",
@@ -9903,22 +10021,22 @@ class ChemicalDrift(OceanDrift):
         panels += [
             dict(title="Mass in system (ts)", kind="line",
                  cols=self._existing(dfc, [mcol("mass_water_ts"), mcol("mass_sed_ts"), mcol("mass_actual_ts")]),
-                 legend={"max_cols": 1, "y_offset": -0.34, "box_height": 0.16}),
+                 legend={"max_cols": 1}),
             dict(title="Emissions", kind="line",
                  cols=self._existing(dfc, [mcol("mass_emitted_ts"), mcol("mass_emitted_cumulative")]),
-                 legend={"max_cols": 1, "y_offset": -0.34, "box_height": 0.16}),
+                 legend={"max_cols": 1}),
         ]
 
         # Row A2
         panels += [
             dict(title="Total mass removed (timestep)", kind="line",
                  cols=self._existing(dfc, [mcol("mass_degraded_ts"), mcol("mass_adv_out_ts"), mcol("mass_volatilized_ts"),
-                                     mcol("mass_stranded_ts"), mcol("mass_buried_ts")]),
-                 legend={"max_cols": 1, "y_offset": -0.34, "box_height": 0.16}),
+                                           mcol("mass_stranded_ts"), mcol("mass_buried_ts")]),
+                 legend={"max_cols": 1}),
             dict(title="Total mass removed (ts) – contribution (%)", kind="stack_share",
                  cols=self._existing(dfc, [mcol("mass_degraded_ts"), mcol("mass_adv_out_ts"), mcol("mass_volatilized_ts"),
-                                     mcol("mass_stranded_ts"), mcol("mass_buried_ts")]),
-                 legend={"max_cols": 1, "y_offset": -0.34, "box_height": 0.16},
+                                           mcol("mass_stranded_ts"), mcol("mass_buried_ts")]),
+                 legend={"max_cols": 1},
                  stack_style="bars", show_empty_outline=True),
         ]
 
@@ -9926,10 +10044,10 @@ class ChemicalDrift(OceanDrift):
         panels += [
             dict(title="Total degraded (ts + water/sed)", kind="line",
                  cols=self._existing(dfc, [mcol("mass_degraded_ts"), mcol("mass_degraded_water_ts"), mcol("mass_degraded_sediment_ts")]),
-                 legend={"max_cols": 1, "y_offset": -0.34, "box_height": 0.16}),
+                 legend={"max_cols": 1}),
             dict(title="Total degraded (ts) – water vs sediment (%)", kind="stack_share",
                  cols=self._existing(dfc, [mcol("mass_degraded_water_ts"), mcol("mass_degraded_sediment_ts")]),
-                 legend={"max_cols": 1, "y_offset": -0.34, "box_height": 0.16},
+                 legend={"max_cols": 1},
                  stack_style="bars", show_empty_outline=True),
         ]
 
@@ -9937,31 +10055,30 @@ class ChemicalDrift(OceanDrift):
         panels += [
             dict(title="Volatilized (ts + cumulative)", kind="line",
                  cols=self._existing(dfc, [mcol("mass_volatilized_ts"), mcol("mass_volatilized_cumulative")]),
-                 legend={"max_cols": 1, "y_offset": -0.3, "box_height": 0.164}),
+                 legend={"max_cols": 1}),
             dict(title="Advected out (ts + cumulative)", kind="line",
                  cols=self._existing(dfc, [mcol("mass_adv_out_ts"), mcol("mass_adv_out_cumulative")]),
-                 legend={"max_cols": 1, "y_offset": -0.34, "box_height": 0.16}),
+                 legend={"max_cols": 1}),
         ]
 
         # Row B3
         panels += [
             dict(title="Stranded (ts + cumulative)", kind="line",
                  cols=self._existing(dfc, [mcol("mass_stranded_ts"), mcol("mass_stranded_cumulative")]),
-                 legend={"max_cols": 1, "y_offset": -0.22, "box_height": 0.16}),
+                 legend={"max_cols": 1}),
             dict(title="Buried (ts + cumulative)", kind="line",
                  cols=self._existing(dfc, [mcol("mass_buried_ts"), mcol("mass_buried_cumulative")]),
-                 legend={"max_cols": 1, "y_offset": -0.22, "box_height": 0.16}),
+                 legend={"max_cols": 1}),
         ]
 
         # Row C1 biodegradation
         panels += [
             dict(title="Biodegradation (ts + water/sed)", kind="line",
                  cols=self._existing(dfc, [mcol("mass_biodegraded_ts"), mcol("mass_biodegraded_water_ts"), mcol("mass_biodegraded_sediment_ts")]),
-                 legend={"max_cols": 1, "y_offset": -0.34, "box_height": 0.16}),
+                 legend={"max_cols": 1}),
             dict(title="Biodegradation (ts) – water vs sediment (%)", kind="stack_share",
-                 cols=self._existing(dfc, [mcol("mass_biodegraded_water_ts"),
-                                     mcol("mass_biodegraded_sediment_ts")]),
-                 legend={"max_cols": 1, "y_offset": -0.34, "box_height": 0.16},
+                 cols=self._existing(dfc, [mcol("mass_biodegraded_water_ts"), mcol("mass_biodegraded_sediment_ts")]),
+                 legend={"max_cols": 1},
                  stack_style="bars", show_empty_outline=True),
         ]
 
@@ -9969,11 +10086,10 @@ class ChemicalDrift(OceanDrift):
         panels += [
             dict(title="Hydrolysis (ts + water/sed)", kind="line",
                  cols=self._existing(dfc, [mcol("mass_hydrolyzed_ts"), mcol("mass_hydrolyzed_water_ts"), mcol("mass_hydrolyzed_sediment_ts")]),
-                 legend={"max_cols": 1, "y_offset": -0.34, "box_height": 0.16}),
+                 legend={"max_cols": 1}),
             dict(title="Hydrolysis (ts) – water vs sediment (%)", kind="stack_share",
-                 cols=self._existing(dfc, [mcol("mass_hydrolyzed_water_ts"),
-                                     mcol("mass_hydrolyzed_sediment_ts")]),
-                 legend={"max_cols": 1, "y_offset": -0.34, "box_height": 0.16},
+                 cols=self._existing(dfc, [mcol("mass_hydrolyzed_water_ts"), mcol("mass_hydrolyzed_sediment_ts")]),
+                 legend={"max_cols": 1},
                  stack_style="bars", show_empty_outline=True),
         ]
 
@@ -9981,48 +10097,47 @@ class ChemicalDrift(OceanDrift):
         panels += [
             dict(title="Photodegradation (ts)", kind="line",
                  cols=self._existing(dfc, [mcol("mass_photodegraded_ts")]),
-                 legend={"max_cols": 1, "y_offset": -0.34, "box_height": 0.16}),
+                 legend={"max_cols": 1}),
             dict(title="Cumulative eliminated masses (final)", kind="bar_elim_summary",
-                 cols=[], legend={"max_cols": 2, "y_offset": -0.30, "box_height": 0.16}),
+                 cols=[], legend={"max_cols": 2}),
         ]
 
         # Speciation: mass and percent stacked bars
         panels += [
             dict(title="All species masses (stacked, ts)", kind="stack_mass", cols=sp_mass_cols,
-                legend={"max_cols": 2, "y_offset": -0.26, "box_height": 0.16}, stack_style="bars", show_empty_outline=True,
-            ),
+                 legend={"max_cols": 2}, stack_style="bars", show_empty_outline=True),
             dict(title="All species masses – contribution (%)", kind="stack_share", cols=sp_mass_cols,
-                legend={"max_cols": 2, "y_offset": -0.26, "box_height": 0.16}, stack_style="bars", show_empty_outline=True,
-            ),
+                 legend={"max_cols": 2}, stack_style="bars", show_empty_outline=True),
         ]
+
         # Speciation: mass lines vs percent stacked
         panels += [
             dict(title="SP masses (dissolved-phase)", kind="line",
                  cols=self._existing(dfc, [mcol("mass_sp_dissolved_ts"), mcol("mass_sp_dissolved_anion_ts"),
-                                     mcol("mass_sp_dissolved_cation_ts"), mcol("mass_sp_doc_ts"),
-                                     mcol("mass_sp_colloid_ts"), mcol("mass_sp_polymer_ts")]),
-                 legend={"max_cols": 2, "y_offset": -0.34, "box_height": 0.16}),
+                                           mcol("mass_sp_dissolved_cation_ts"), mcol("mass_sp_doc_ts"),
+                                           mcol("mass_sp_colloid_ts"), mcol("mass_sp_polymer_ts")]),
+                 legend={"max_cols": 2}),
             dict(title="SP composition (%) (dissolved-phase)", kind="stack_share",
                  cols=self._existing(dfc, [pcol("perc_sp_dissolved_ts"), pcol("perc_sp_dissolved_anion_ts"),
-                                     pcol("perc_sp_dissolved_cation_ts"), pcol("perc_sp_doc_ts"),
-                                     pcol("perc_sp_colloid_ts"), pcol("perc_sp_polymer_ts")]),
-                 legend={"max_cols": 2, "y_offset": -0.34, "box_height": 0.16},
+                                           pcol("perc_sp_dissolved_cation_ts"), pcol("perc_sp_doc_ts"),
+                                           pcol("perc_sp_colloid_ts"), pcol("perc_sp_polymer_ts")]),
+                 legend={"max_cols": 2},
                  stack_style="bars", show_empty_outline=True),
 
             dict(title="SP masses (SPM partition)", kind="line",
                  cols=self._existing(dfc, [mcol("mass_sp_spm_rev_ts"), mcol("mass_sp_spm_srev_ts"), mcol("mass_sp_spm_irrev_ts")]),
-                 legend={"max_cols": 2, "y_offset": -0.34, "box_height": 0.16}),
+                 legend={"max_cols": 2}),
             dict(title="SP composition (%) (SPM partition)", kind="stack_share",
                  cols=self._existing(dfc, [pcol("perc_sp_spm_rev_ts"), pcol("perc_sp_spm_srev_ts"), pcol("perc_sp_spm_irrev_ts")]),
-                 legend={"max_cols": 2, "y_offset": -0.34, "box_height": 0.16},
+                 legend={"max_cols": 2},
                  stack_style="bars", show_empty_outline=True),
 
             dict(title="SP masses (sediment partition)", kind="line",
                  cols=self._existing(dfc, [mcol("mass_sp_sed_rev_ts"), mcol("mass_sp_sed_srev_ts"), mcol("mass_sp_sed_irrev_ts")]),
-                 legend={"max_cols": 1, "y_offset": -0.34, "box_height": 0.16}),
+                 legend={"max_cols": 1}),
             dict(title="SP composition (%) (sediment partition)", kind="stack_share",
                  cols=self._existing(dfc, [pcol("perc_sp_sed_rev_ts"), pcol("perc_sp_sed_srev_ts"), pcol("perc_sp_sed_irrev_ts")]),
-                 legend={"max_cols": 1, "y_offset": -0.34, "box_height": 0.16},
+                 legend={"max_cols": 1},
                  stack_style="bars", show_empty_outline=True),
         ]
 
@@ -10032,21 +10147,25 @@ class ChemicalDrift(OceanDrift):
         has_cum = all(c in dfc.columns for c in [mcol("mass_degraded_cumulative"), mcol("mass_photodegraded_cumulative"),
                                                 mcol("mass_biodegraded_cumulative"), mcol("mass_hydrolyzed_cumulative")])
         if has_ts:
-            panels += [dict(title="Sanity (ts): total degraded vs sum of pathways", kind="sanity_ts", cols=[])]
+            panels += [dict(title="Sanity (ts): total degraded vs sum of pathways", kind="sanity_ts", cols=[], legend={"max_cols": 1})]
         if has_cum:
-            panels += [dict(title="Sanity (cumulative): total degraded vs sum of pathways", kind="sanity_cum", cols=[])]
+            panels += [dict(title="Sanity (cumulative): total degraded vs sum of pathways", kind="sanity_cum", cols=[], legend={"max_cols": 1})]
 
-        # keep grid even for 2 columns
-        if len(panels) % 2 == 1:
-            panels.append(dict(title="", kind="blank", cols=[]))
+        # Build layout rows
+        if row_mode == "double":
+            if len(panels) % 2 == 1:
+                panels.append(dict(title="", kind="blank", cols=[], legend={"max_cols": 1}))
+            rows = [panels[i:i + 2] for i in range(0, len(panels), 2)]
+        else:
+            rows = [[p] for p in panels]
 
         # Build a global label list so colors stay consistent even if some series are omitted in a panel
         all_labels = []
         for spec in panels:
-            for col in spec.get("cols", []):
+            for col in spec.get("cols", []) or []:
                 all_labels.append(self._strip_units(col))
 
-        # add bar-segment labels (since those aren’t in cols)
+        # add bar-segment labels
         all_labels += [
             "degraded water", "degraded sediment", "volatilized",
             "biodegraded water", "biodegraded sediment",
@@ -10056,19 +10175,17 @@ class ChemicalDrift(OceanDrift):
 
         color_map = self._build_explicit_color_map(all_labels)
 
-        # --- Pagination + rendering on A4 portrait with fixed panel sizes
-
-        # Force A4 portrait for every page
+        # Pagination + rendering on A4 portrait with fixed panel sizes
         A4_PORTRAIT = (8.27, 11.69)  # inches
-        ROWS_PER_PAGE = 2            # exactly 2 rows of panels per page
+        ROWS_PER_PAGE = 2 if row_mode == "double" else 4
 
         def _place_legend_in_axis(ax_plot, ax_leg, max_cols, fontsize, legend_lw=3.0):
-            """Put legend into a dedicated axis below the plot axis (never overlaps xlabels)."""
+            """Put legend into a dedicated axis below the xlabel strip (never overlaps)."""
             from matplotlib.lines import Line2D
 
             handles, labels = ax_plot.get_legend_handles_labels()
             if not labels:
-                ax_leg.axis('off')
+                ax_leg.axis("off")
                 return None
 
             # de-duplicate while preserving order
@@ -10081,15 +10198,15 @@ class ChemicalDrift(OceanDrift):
             labels = list(uniq.keys())
             ncol = min(len(labels), max_cols) if max_cols else len(labels)
 
-            ax_leg.axis('off')
+            ax_leg.axis("off")
             leg = ax_leg.legend(
                 handles, labels,
-                loc='center',
+                loc="upper center",
                 ncol=ncol,
                 frameon=False,
                 fontsize=fontsize,
                 handlelength=2.2,
-                handletextpad=0.6,
+                handletextpad=0.85,
                 columnspacing=1.2,
                 borderaxespad=0.0,
             )
@@ -10101,42 +10218,48 @@ class ChemicalDrift(OceanDrift):
 
             return leg
 
-
         def _set_ylabel(ax, kind, cols):
-            if kind in ("stack_share", "stack100", "stack_to_total"):
-                ax.set_ylabel("Percentage [%]", fontsize=fs["ylabel"])
+            cols = cols or []
+            is_percent_axis = (kind in ("stack_share", "stack100", "stack_to_total")) or any("[%]" in c for c in cols)
+
+            if is_percent_axis:
+                ax.set_ylabel("Percentage [%]", fontsize=fs["ylabel"], labelpad=2)
             else:
-                if any("[%]" in c for c in cols):
-                    ax.set_ylabel("Percentage [%]", fontsize=fs["ylabel"])
-                else:
-                    ax.set_ylabel(f"Mass [{UM_mass}]", fontsize=fs["ylabel"])
+                ax.set_ylabel(f"Mass [{UM_mass}]", fontsize=fs["ylabel"], labelpad=2)
+                ax.yaxis.set_major_formatter(FuncFormatter(_fmt_big_sci))
 
             ax.tick_params(axis="x", labelsize=fs["xticks"])
             ax.tick_params(axis="y", labelsize=fs["yticks"])
 
-
         def _plot_one_panel(ax, spec):
-            """Plot into ax only (legend handled elsewhere)."""
-            kind = spec.get('kind', 'blank')
-            cols = spec.get('cols', [])
-            title = spec.get('title', '')
+            """Plot into ax only. xlabel + legend are handled in separate strip axes."""
+            kind = spec.get("kind", "blank")
+            cols = spec.get("cols", []) or []
+            title = spec.get("title", "")
 
-            if kind == 'blank':
-                ax.axis('off')
+            if kind == "blank":
+                ax.axis("off")
                 return
 
             ax.set_title(title, fontsize=fs["subplot_title"])
 
-            if kind == 'line':
+            if kind == "line":
                 for col in cols:
+                    if col not in dfc.columns:
+                        continue
                     if self._is_all_zero(dfc[col], atol=1e-12):
                         continue
                     key = self._strip_units(col)
                     pretty = self._pretty_label(key)
-                    ax.plot(x, dfc[col], label=pretty, color=color_map.get(key, None), linewidth=1.8)
+                    ax.plot(
+                        x, dfc[col],
+                        label=pretty,
+                        color=color_map.get(key, None),
+                        linewidth=1.8
+                    )
 
-            elif kind == 'stack100':
-                keep = [col for col in cols if not self._is_all_zero(dfc[col], atol=1e-12)]
+            elif kind == "stack100":
+                keep = [col for col in cols if col in dfc.columns and not self._is_all_zero(dfc[col], atol=1e-12)]
                 if keep:
                     y = np.nan_to_num(dfc[keep].to_numpy(dtype=float), nan=0.0)
                     keys = [self._strip_units(c) for c in keep]
@@ -10145,8 +10268,8 @@ class ChemicalDrift(OceanDrift):
                     ax.stackplot(x, y.T, labels=labels, colors=colors)
                     ax.set_ylim(0, 100)
 
-            elif kind == 'stack_share':
-                keep = [col for col in cols if not self._is_all_zero(dfc[col], atol=1e-12)]
+            elif kind == "stack_share":
+                keep = [col for col in cols if col in dfc.columns and not self._is_all_zero(dfc[col], atol=1e-12)]
                 if keep:
                     y = np.nan_to_num(dfc[keep].to_numpy(dtype=float), nan=0.0)
                     denom = y.sum(axis=1, keepdims=True)
@@ -10156,26 +10279,26 @@ class ChemicalDrift(OceanDrift):
                     labels = [self._pretty_label(k) for k in keys]
                     colors = [color_map.get(k, None) for k in keys]
 
-                    stack_style = spec.get('stack_style', 'area')
-                    show_empty_outline = bool(spec.get('show_empty_outline', False))
+                    stack_style = spec.get("stack_style", "area")
+                    show_empty_outline = bool(spec.get("show_empty_outline", False))
 
-                    if stack_style == 'bars':
+                    if stack_style == "bars":
                         xpos = np.arange(len(x))
                         width = 1.0
 
                         if show_empty_outline:
                             ax.bar(
                                 xpos, np.full(len(xpos), 100.0),
-                                width=width, color='none',
-                                edgecolor='0.85', linewidth=0.6, zorder=0
+                                width=width, color="none",
+                                edgecolor="0.85", linewidth=0.6, zorder=0
                             )
 
                         bottom = np.zeros(len(xpos), dtype=float)
-                        for j, (lab, colr) in enumerate(zip(labels, colors)):
+                        for lab, colr, j in zip(labels, colors, range(len(labels))):
                             h = shares[:, j]
                             if np.all(np.isclose(h, 0.0)):
                                 continue
-                            ax.bar(xpos, h, width=width, bottom=bottom, label=lab, color=colr, align='center')
+                            ax.bar(xpos, h, width=width, bottom=bottom, label=lab, color=colr, align="center")
                             bottom += h
 
                         ax.set_ylim(0, 100)
@@ -10184,26 +10307,31 @@ class ChemicalDrift(OceanDrift):
                         n = len(xpos)
                         if n <= 30:
                             ax.set_xticks(xpos)
-                            ax.set_xticklabels([f"{v:g}" if isinstance(v, (float, np.floating)) else str(v) for v in x], rotation=0)
+                            ax.set_xticklabels(
+                                [f"{v:g}" if isinstance(v, (float, np.floating)) else str(v) for v in x],
+                                rotation=0
+                            )
                         else:
                             step = max(1, n // 12)
                             idx = np.arange(0, n, step)
                             ax.set_xticks(idx)
-                            xvals = x.iloc[idx] if hasattr(x, 'iloc') else [x[i] for i in idx]
-                            ax.set_xticklabels([f"{v:g}" if isinstance(v, (float, np.floating)) else str(v) for v in xvals], rotation=0)
-
+                            xvals = x.iloc[idx] if hasattr(x, "iloc") else [x[i] for i in idx]
+                            ax.set_xticklabels(
+                                [f"{v:g}" if isinstance(v, (float, np.floating)) else str(v) for v in xvals],
+                                rotation=0
+                            )
                     else:
                         ax.stackplot(x, shares.T, labels=labels, colors=colors)
                         ax.set_ylim(0, 100)
 
-            elif kind == 'stack_to_total':
-                if cols and len(cols) >= 2:
+            elif kind == "stack_to_total":
+                if cols and len(cols) >= 2 and cols[0] in dfc.columns:
                     total_col = cols[0]
-                    part_cols = [c for c in cols[1:] if not self._is_all_zero(dfc[c], atol=1e-12)]
+                    part_cols = [c for c in cols[1:] if c in dfc.columns and not self._is_all_zero(dfc[c], atol=1e-12)]
                     if part_cols:
-                        total = pd.to_numeric(dfc[total_col], errors='coerce').to_numpy(dtype=float)
+                        total = pd.to_numeric(dfc[total_col], errors="coerce").to_numpy(dtype=float)
                         total = np.nan_to_num(total, nan=0.0)
-                        parts = dfc[part_cols].apply(pd.to_numeric, errors='coerce').to_numpy(dtype=float)
+                        parts = dfc[part_cols].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
                         parts = np.nan_to_num(parts, nan=0.0)
                         denom = total.reshape(-1, 1)
                         shares = np.divide(parts, denom, out=np.zeros_like(parts), where=denom != 0) * 100.0
@@ -10214,8 +10342,8 @@ class ChemicalDrift(OceanDrift):
                         ax.stackplot(x, shares.T, labels=labels, colors=colors)
                         ax.set_ylim(0, 100)
 
-            elif kind == 'stack_mass':
-                keep = [col for col in cols if not self._is_all_zero(dfc[col], atol=1e-12)]
+            elif kind == "stack_mass":
+                keep = [col for col in cols if col in dfc.columns and not self._is_all_zero(dfc[col], atol=1e-12)]
                 if keep:
                     y = np.nan_to_num(dfc[keep].to_numpy(dtype=float), nan=0.0)
                     keys = [self._strip_units(c) for c in keep]
@@ -10224,18 +10352,23 @@ class ChemicalDrift(OceanDrift):
 
                     xpos = np.arange(len(x))
                     width = 1.0
-                    show_empty_outline = bool(spec.get('show_empty_outline', False))
+                    show_empty_outline = bool(spec.get("show_empty_outline", False))
 
                     if show_empty_outline:
                         totals = y.sum(axis=1)
-                        ax.bar(xpos, totals, width=width, color='none', edgecolor='0.85', linewidth=0.6, zorder=0, align='center')
+                        ax.bar(
+                            xpos, totals,
+                            width=width, color="none",
+                            edgecolor="0.85", linewidth=0.6,
+                            zorder=0, align="center"
+                        )
 
                     bottom = np.zeros(len(xpos), dtype=float)
-                    for j, (lab, colr) in enumerate(zip(labels, colors)):
+                    for lab, colr, j in zip(labels, colors, range(len(labels))):
                         h = y[:, j]
                         if np.all(np.isclose(h, 0.0)):
                             continue
-                        ax.bar(xpos, h, width=width, bottom=bottom, label=lab, color=colr, align='center')
+                        ax.bar(xpos, h, width=width, bottom=bottom, label=lab, color=colr, align="center")
                         bottom += h
 
                     ax.set_xlim(-0.5, len(xpos) - 0.5)
@@ -10243,99 +10376,158 @@ class ChemicalDrift(OceanDrift):
                     n = len(xpos)
                     if n <= 30:
                         ax.set_xticks(xpos)
-                        ax.set_xticklabels([f"{v:g}" if isinstance(v, (float, np.floating)) else str(v) for v in x], rotation=0)
+                        ax.set_xticklabels(
+                            [f"{v:g}" if isinstance(v, (float, np.floating)) else str(v) for v in x],
+                            rotation=0
+                        )
                     else:
                         step = max(1, n // 12)
                         idx = np.arange(0, n, step)
                         ax.set_xticks(idx)
-                        xvals = x.iloc[idx] if hasattr(x, 'iloc') else [x[i] for i in idx]
-                        ax.set_xticklabels([f"{v:g}" if isinstance(v, (float, np.floating)) else str(v) for v in xvals], rotation=0)
+                        xvals = x.iloc[idx] if hasattr(x, "iloc") else [x[i] for i in idx]
+                        ax.set_xticklabels(
+                            [f"{v:g}" if isinstance(v, (float, np.floating)) else str(v) for v in xvals],
+                            rotation=0
+                        )
 
-            elif kind == 'bar_elim_summary':
+            elif kind == "bar_elim_summary":
                 if len(dfc) == 0:
-                    ax.text(0.5, 0.5, 'Empty dataframe', ha='center', va='center', transform=ax.transAxes)
+                    ax.text(0.5, 0.5, "Empty dataframe", ha="center", va="center", transform=ax.transAxes)
                 else:
                     def _last(colname):
                         if colname not in dfc.columns:
                             return 0.0
-                        s = pd.to_numeric(dfc[colname], errors='coerce')
+                        s = pd.to_numeric(dfc[colname], errors="coerce")
                         return float(s.iloc[-1]) if len(s) else 0.0
 
-                    deg_w = _last(mcol('mass_degraded_water_cumulative'))
-                    deg_s = _last(mcol('mass_degraded_sediment_cumulative'))
-                    vol   = _last(mcol('mass_volatilized_cumulative'))
-                    bio_w = _last(mcol('mass_biodegraded_water_cumulative'))
-                    bio_s = _last(mcol('mass_biodegraded_sediment_cumulative'))
-                    hyd_w = _last(mcol('mass_hydrolyzed_water_cumulative'))
-                    hyd_s = _last(mcol('mass_hydrolyzed_sediment_cumulative'))
-                    photo = _last(mcol('mass_photodegraded_cumulative'))
+                    deg_w = _last(mcol("mass_degraded_water_cumulative"))
+                    deg_s = _last(mcol("mass_degraded_sediment_cumulative"))
+                    vol   = _last(mcol("mass_volatilized_cumulative"))
+                    bio_w = _last(mcol("mass_biodegraded_water_cumulative"))
+                    bio_s = _last(mcol("mass_biodegraded_sediment_cumulative"))
+                    hyd_w = _last(mcol("mass_hydrolyzed_water_cumulative"))
+                    hyd_s = _last(mcol("mass_hydrolyzed_sediment_cumulative"))
+                    photo = _last(mcol("mass_photodegraded_cumulative"))
 
                     xpos = np.arange(5)
-                    xtxt = ['Degraded', 'Volatilized', 'Biodegraded', 'Hydrolyzed', 'Photodegraded']
+                    xtxt = ["Degraded", "Volatilized", "Biodegraded", "Hydrolyzed", "Photodegraded"]
                     width = 0.75
 
                     bottom = 0.0
                     if deg_w:
-                        ax.bar(xpos[0], deg_w, width, bottom=bottom, label=self._pretty_label('degraded water'), color=color_map['degraded water']); bottom += deg_w
+                        ax.bar(xpos[0], deg_w, width, bottom=bottom,
+                               label=self._pretty_label("degraded water"),
+                               color=color_map["degraded water"])
+                        bottom += deg_w
                     if deg_s:
-                        ax.bar(xpos[0], deg_s, width, bottom=bottom, label=self._pretty_label('degraded sediment'), color=color_map['degraded sediment']); bottom += deg_s
+                        ax.bar(xpos[0], deg_s, width, bottom=bottom,
+                               label=self._pretty_label("degraded sediment"),
+                               color=color_map["degraded sediment"])
+                        bottom += deg_s
                     if vol:
-                        ax.bar(xpos[1], vol, width, label=self._pretty_label('volatilized'), color=color_map['volatilized'])
+                        ax.bar(xpos[1], vol, width,
+                               label=self._pretty_label("volatilized"),
+                               color=color_map["volatilized"])
 
                     bottom = 0.0
                     if bio_w:
-                        ax.bar(xpos[2], bio_w, width, bottom=bottom, label=self._pretty_label('biodegraded water'), color=color_map['biodegraded water']); bottom += bio_w
+                        ax.bar(xpos[2], bio_w, width, bottom=bottom,
+                               label=self._pretty_label("biodegraded water"),
+                               color=color_map["biodegraded water"])
+                        bottom += bio_w
                     if bio_s:
-                        ax.bar(xpos[2], bio_s, width, bottom=bottom, label=self._pretty_label('biodegraded sediment'), color=color_map['biodegraded sediment']); bottom += bio_s
+                        ax.bar(xpos[2], bio_s, width, bottom=bottom,
+                               label=self._pretty_label("biodegraded sediment"),
+                               color=color_map["biodegraded sediment"])
+                        bottom += bio_s
 
                     bottom = 0.0
                     if hyd_w:
-                        ax.bar(xpos[3], hyd_w, width, bottom=bottom, label=self._pretty_label('hydrolyzed water'), color=color_map['hydrolyzed water']); bottom += hyd_w
+                        ax.bar(xpos[3], hyd_w, width, bottom=bottom,
+                               label=self._pretty_label("hydrolyzed water"),
+                               color=color_map["hydrolyzed water"])
+                        bottom += hyd_w
                     if hyd_s:
-                        ax.bar(xpos[3], hyd_s, width, bottom=bottom, label=self._pretty_label('hydrolyzed sediment'), color=color_map['hydrolyzed sediment']); bottom += hyd_s
+                        ax.bar(xpos[3], hyd_s, width, bottom=bottom,
+                               label=self._pretty_label("hydrolyzed sediment"),
+                               color=color_map["hydrolyzed sediment"])
+                        bottom += hyd_s
 
                     if photo:
-                        ax.bar(xpos[4], photo, width, label=self._pretty_label('photodegraded'), color=color_map['photodegraded'])
+                        ax.bar(xpos[4], photo, width,
+                               label=self._pretty_label("photodegraded"),
+                               color=color_map["photodegraded"])
 
-                    ax.axvline(1.5, linestyle=':')
+                    ax.axvline(1.5, linestyle=":")
                     ax.set_xticks(xpos)
-                    ax.set_xticklabels(xtxt, rotation=20, ha='right')
+                    ax.set_xticklabels(xtxt, rotation=20, ha="right")
+                    ax.tick_params(axis="x", pad=3)
                     ax.set_xlim(-0.6, 4.6)
 
-            elif kind == 'sanity_ts':
-                needed = [mcol('mass_degraded_ts'), mcol('mass_photodegraded_ts'), mcol('mass_biodegraded_ts'), mcol('mass_hydrolyzed_ts')]
+            elif kind == "sanity_ts":
+                needed = [
+                    mcol("mass_degraded_ts"),
+                    mcol("mass_photodegraded_ts"),
+                    mcol("mass_biodegraded_ts"),
+                    mcol("mass_hydrolyzed_ts")
+                ]
                 if all(n in dfc.columns for n in needed):
-                    sum_path = dfc[mcol('mass_photodegraded_ts')] + dfc[mcol('mass_biodegraded_ts')] + dfc[mcol('mass_hydrolyzed_ts')]
-                    key1 = self._strip_units(mcol('mass_degraded_ts'))
-                    ax.plot(x, dfc[mcol('mass_degraded_ts')], label=self._pretty_label(key1), color=color_map.get(key1, None), linewidth=1.8)
-                    ax.plot(x, sum_path, label='Sum pathways (ts)', color='#000000', linewidth=1.8)
+                    sum_path = (
+                        dfc[mcol("mass_photodegraded_ts")] +
+                        dfc[mcol("mass_biodegraded_ts")] +
+                        dfc[mcol("mass_hydrolyzed_ts")]
+                    )
+                    key1 = self._strip_units(mcol("mass_degraded_ts"))
+                    ax.plot(x, dfc[mcol("mass_degraded_ts")],
+                            label=self._pretty_label(key1),
+                            color=color_map.get(key1, None),
+                            linewidth=1.8)
+                    ax.plot(x, sum_path, label="Sum pathways (ts)", color="#000000", linewidth=1.8)
 
-            elif kind == 'sanity_cum':
-                needed = [mcol('mass_degraded_cumulative'), mcol('mass_photodegraded_cumulative'), mcol('mass_biodegraded_cumulative'), mcol('mass_hydrolyzed_cumulative')]
+            elif kind == "sanity_cum":
+                needed = [
+                    mcol("mass_degraded_cumulative"),
+                    mcol("mass_photodegraded_cumulative"),
+                    mcol("mass_biodegraded_cumulative"),
+                    mcol("mass_hydrolyzed_cumulative")
+                ]
                 if all(n in dfc.columns for n in needed):
-                    sum_path = dfc[mcol('mass_photodegraded_cumulative')] + dfc[mcol('mass_biodegraded_cumulative')] + dfc[mcol('mass_hydrolyzed_cumulative')]
-                    key1 = self._strip_units(mcol('mass_degraded_cumulative'))
-                    ax.plot(x, dfc[mcol('mass_degraded_cumulative')], label=self._pretty_label(key1), color=color_map.get(key1, None), linewidth=1.8)
-                    ax.plot(x, sum_path, label='Sum pathways (cumulative)', color='#000000', linewidth=1.8)
+                    sum_path = (
+                        dfc[mcol("mass_photodegraded_cumulative")] +
+                        dfc[mcol("mass_biodegraded_cumulative")] +
+                        dfc[mcol("mass_hydrolyzed_cumulative")]
+                    )
+                    key1 = self._strip_units(mcol("mass_degraded_cumulative"))
+                    ax.plot(x, dfc[mcol("mass_degraded_cumulative")],
+                            label=self._pretty_label(key1),
+                            color=color_map.get(key1, None),
+                            linewidth=1.8)
+                    ax.plot(x, sum_path, label="Sum pathways (cumulative)", color="#000000", linewidth=1.8)
 
             # common styling
             _set_ylabel(ax, kind, cols)
-            ax.grid(True, alpha=0.25)
+            ax.set_axisbelow(True)
 
-            stack_style = spec.get('stack_style', None)
-            is_bar_style = (kind in ('stack_share', 'stack_mass') and stack_style == 'bars')
+            # Remove vertical gridlines: only y-grid
+            ax.grid(True, axis="y", alpha=0.25)
 
-            if kind == 'bar_elim_summary':
-                ax.set_xlabel('')
-            elif is_bar_style:
-                ax.set_xlabel(xlab, fontsize=fs['xlabel'], labelpad=2)
-            else:
-                ax.set_xlim(x.min(), x.max())
-                ax.set_xlabel(xlab, fontsize=fs['xlabel'], labelpad=2)
+            # keep x-limits for non-bar panels
+            stack_style = spec.get("stack_style", None)
+            is_bar_style = (kind in ("stack_share", "stack_mass") and stack_style == "bars")
+            if not is_bar_style and kind != "bar_elim_summary":
+                try:
+                    ax.set_xlim(x.min(), x.max())
+                except Exception:
+                    pass
 
+            ax.set_xlabel("")
 
-        def _render_fixed_page(two_rows, page_title=None):
-            """Render exactly 2 rows (4 panels). Pads with blanks as needed."""
+        def _render_fixed_page(page_rows, page_title=None):
+            """
+            Render one page.
+            - row_mode='double': each page row contains 2 panels
+            - row_mode='single': each page row contains 1 wide panel
+            """
             fig = plt.figure(figsize=A4_PORTRAIT)
 
             title_txt = None
@@ -10343,159 +10535,232 @@ class ChemicalDrift(OceanDrift):
                 title_txt = page_title if page_title and not fig_title else (
                     f"{fig_title} - {page_title}" if page_title else fig_title
                 )
-                fig.suptitle(title_txt, fontsize=fs['figure_title'])
+                title_txt = f"{title_txt}{period_suffix}"
+                fig.suptitle(title_txt, fontsize=fs["figure_title"])
 
             top = 0.92 if title_txt else 0.97
 
-            # Outer grid controls spacing between the two rows of panels.
-            # Keep this relatively small because each panel already reserves
-            # space for its own legend strip below the plot.
+            ncols_page = 2 if row_mode == "double" else 1
+
             outer = fig.add_gridspec(
-                nrows=ROWS_PER_PAGE, ncols=2,
-                left=0.08, right=0.98,
+                nrows=ROWS_PER_PAGE, ncols=ncols_page,
+                left=0.17,
+                right=0.95 if row_mode == "double" else 0.97,
                 top=top, bottom=0.06,
-                wspace=0.26, hspace=0.22
+                wspace=0.34 if row_mode == "double" else 0.0,
+                hspace=0.24
             )
 
-            # Flatten rows -> panels and pad to 4
-            blank = dict(kind='blank', cols=[], title='')
-            panels_page = [p for row in two_rows for p in row]
-            panels_page = panels_page + [blank] * (ROWS_PER_PAGE * 2 - len(panels_page))
+            blank = dict(kind="blank", cols=[], title="", legend={"max_cols": 1})
 
-            ax_plots = np.empty((ROWS_PER_PAGE, 2), dtype=object)
+            page_rows = list(page_rows)
+            while len(page_rows) < ROWS_PER_PAGE:
+                page_rows.append([blank, blank] if row_mode == "double" else [blank])
 
-            for i in range(ROWS_PER_PAGE * 2):
-                rr = i // 2
-                cc = i % 2
-                spec = panels_page[i]
+            ax_plots = np.empty((ROWS_PER_PAGE, ncols_page), dtype=object)
 
-                legend_cfg = spec.get('legend', {})
-                legend_max_cols = legend_cfg.get('max_cols', 3)
+            for rr in range(ROWS_PER_PAGE):
+                row_specs = page_rows[rr]
 
-                # Each panel cell is split into: plot area + dedicated legend strip.
-                # The legend strip height must be big enough for your fontsize,
-                # but not so big that it creates excess white space between rows.
-                sub = outer[rr, cc].subgridspec(
-                    nrows=2, ncols=1,
-                    height_ratios=[1.0, 0.28],
-                    hspace=0.05
-                )
-                ax = fig.add_subplot(sub[0])
-                ax_leg = fig.add_subplot(sub[1])
-                ax_plots[rr, cc] = ax
+                if row_mode == "double":
+                    row_specs = row_specs + [blank] * (2 - len(row_specs))
+                else:
+                    row_specs = row_specs[:1] if row_specs else [blank]
 
-                _plot_one_panel(ax, spec)
+                for cc in range(ncols_page):
+                    spec = row_specs[cc]
 
-                # Legend in dedicated axis
-                _place_legend_in_axis(ax, ax_leg, max_cols=legend_max_cols, fontsize=fs['legend'], legend_lw=3.0)
+                    legend_cfg = spec.get("legend", {}) or {}
+                    legend_max_cols = legend_cfg.get("max_cols", 3)
+
+                    if row_mode == "double":
+                        hr = [0.72, 0.11, 0.29]
+                    else:
+                        # single mode
+                        if spec.get("kind") == "bar_elim_summary":
+                            # more spacer between rotated x tick labels and legend
+                            hr = [0.42, 0.18, 0.24]
+                        else:
+                            hr = [0.50, 0.08, 0.16]
+
+                    sub = outer[rr, cc].subgridspec(
+                        nrows=3, ncols=1,
+                        height_ratios=hr,
+                        hspace=0.03
+                    )
+
+                    ax = fig.add_subplot(sub[0])
+                    ax_xlab = fig.add_subplot(sub[1])
+                    ax_leg = fig.add_subplot(sub[2])
+
+                    ax_plots[rr, cc] = ax
+
+                    _plot_one_panel(ax, spec)
+
+                    if spec.get("kind") in ("blank", "bar_elim_summary"):
+                        ax_xlab.axis("off")
+                    else:
+                        _place_xlabel_in_axis(ax_xlab, xlab)
+
+                    if spec.get("kind") == "blank":
+                        ax_leg.axis("off")
+                    else:
+                        _place_legend_in_axis(
+                            ax, ax_leg,
+                            max_cols=legend_max_cols if row_mode == "double" else max(legend_max_cols, 3),
+                            fontsize=fs["legend"],
+                            legend_lw=3.0
+                        )
 
             return fig, ax_plots
 
-        # --- Topic grouping + pagination
-        rows = [panels[i:i+2] for i in range(0, len(panels), 2)]
-
+        # Topic grouping + pagination
         def find_row(startswith):
             for i, row in enumerate(rows):
-                if row and row[0].get('title', '').startswith(startswith):
+                if row and row[0].get("title", "").startswith(startswith):
                     return i
             return None
 
-        i_mass   = find_row('Mass in system')
-        i_deg    = find_row('Total degraded')
-        i_bio    = find_row('Biodegradation')
-        i_allsp  = find_row('All species masses (stacked, ts)')
-        i_sp_sed = find_row('SP masses (sediment partition)')
-        i_sanity = find_row('Sanity (ts):')
+        i_mass = find_row("Mass in system")
+        i_deg = find_row("Total degraded")
+        i_bio = find_row("Biodegradation")
+        i_allsp = find_row("All species masses (stacked, ts)")
+        i_sp_sed = find_row("SP masses (sediment partition)")
+        i_sanity = find_row("Sanity (ts):")
 
         topic_pages = []
 
-        # 1) Mass balance overview: A1–A2
+        # 1) Mass balance overview
         if i_mass is not None and i_deg is not None:
-            topic_pages.append(('Mass balance overview', rows[i_mass:i_deg]))
+            topic_pages.append(("Mass balance overview", rows[i_mass:i_deg]))
 
-        # 2) Fate & transport sinks: B rows (Total degraded -> before biodeg)
+        # 2) Fate & transport sinks
         if i_deg is not None and i_bio is not None:
-            topic_pages.append(('Fate & transport sinks', rows[i_deg:i_bio]))
+            topic_pages.append(("Fate & transport sinks", rows[i_deg:i_bio]))
 
         # 3) Degradation pathways: biodeg/hydro/photo (+ bar summary)
         if i_bio is not None and i_allsp is not None:
-            topic_pages.append(('Degradation pathways', rows[i_bio:i_allsp]))
+            topic_pages.append(("Degradation pathways", rows[i_bio:i_allsp]))
 
         # 4) Speciation overview: all species + dissolved + spm
         if i_allsp is not None and i_sp_sed is not None:
-            topic_pages.append(('Speciation overview', rows[i_allsp:i_sp_sed]))
+            topic_pages.append(("Speciation overview", rows[i_allsp:i_sp_sed]))
 
         # 5) Speciation in sediment
+        i_sp_sed_comp = find_row("SP composition (%) (sediment partition)")
         if i_sp_sed is not None:
-            topic_pages.append(('Speciation in sediment', rows[i_sp_sed:i_sp_sed+1]))
+            if row_mode == "double":
+                topic_pages.append(("Speciation in sediment", rows[i_sp_sed:i_sp_sed + 1]))
+            else:
+                end_idx = (i_sp_sed_comp + 1) if i_sp_sed_comp is not None else (i_sp_sed + 1)
+                topic_pages.append(("Speciation in sediment", rows[i_sp_sed:end_idx]))
 
         # 6) Mass budget checks (sanity rows, if present)
         if i_sanity is not None:
-            topic_pages.append(('Mass-budget checks', rows[i_sanity:]))
+            topic_pages.append(("Mass-budget checks", rows[i_sanity:]))
 
-        # If not splitting to multiple pages, render everything into ONE A4 portrait figure
+        # If not splitting to multiple pages, render everything into one figure
         if not split_a4:
             nrows_local = len(rows)
+            ncols_local = 2 if row_mode == "double" else 1
+
             fig = plt.figure(figsize=A4_PORTRAIT)
 
             title_txt = fig_title if fig_title else "All panels"
             if title_txt:
-                fig.suptitle(title_txt, fontsize=fs['figure_title'])
+                title_txt = f"{title_txt}{period_suffix}"
+                fig.suptitle(title_txt, fontsize=fs["figure_title"])
 
             top = 0.92 if title_txt else 0.97
+
             outer = fig.add_gridspec(
-                nrows=nrows_local, ncols=2,
-                left=0.08, right=0.98,
+                nrows=nrows_local, ncols=ncols_local,
+                left=0.17,
+                right=0.95 if row_mode == "double" else 0.97,
                 top=top, bottom=0.06,
-                wspace=0.26, hspace=0.42
+                wspace=0.34 if row_mode == "double" else 0.0,
+                hspace=0.24
             )
 
-            ax_plots = np.empty((nrows_local, 2), dtype=object)
+            ax_plots = np.empty((nrows_local, ncols_local), dtype=object)
+            blank = dict(kind="blank", cols=[], title="", legend={"max_cols": 1})
 
             for rr in range(nrows_local):
-                for cc in range(2):
-                    spec = rows[rr][cc]
+                row_specs = rows[rr]
 
-                    legend_cfg = spec.get('legend', {})
-                    legend_max_cols = legend_cfg.get('max_cols', 3)
+                if row_mode == "double":
+                    row_specs = row_specs + [blank] * (2 - len(row_specs))
+                else:
+                    row_specs = row_specs[:1] if row_specs else [blank]
+
+                for cc in range(ncols_local):
+                    spec = row_specs[cc]
+
+                    legend_cfg = spec.get("legend", {}) or {}
+                    legend_max_cols = legend_cfg.get("max_cols", 3)
+
+                    if row_mode == "double":
+                        hr = [0.72, 0.11, 0.29]
+                    else:
+                        # single mode
+                        if spec.get("kind") == "bar_elim_summary":
+                            # more spacer between rotated x tick labels and legend
+                            hr = [0.42, 0.18, 0.24]
+                        else:
+                            hr = [0.50, 0.08, 0.16]
 
                     sub = outer[rr, cc].subgridspec(
-                        nrows=2, ncols=1,
-                        height_ratios=[1.0, 0.60],
-                        hspace=0.18
+                        nrows=3, ncols=1,
+                        height_ratios=hr,
+                        hspace=0.03
                     )
+
                     ax = fig.add_subplot(sub[0])
-                    ax_leg = fig.add_subplot(sub[1])
+                    ax_xlab = fig.add_subplot(sub[1])
+                    ax_leg = fig.add_subplot(sub[2])
+
                     ax_plots[rr, cc] = ax
 
                     _plot_one_panel(ax, spec)
-                    _place_legend_in_axis(ax, ax_leg, max_cols=legend_max_cols, fontsize=fs['legend'], legend_lw=3.0)
+
+                    if spec.get("kind") in ("blank", "bar_elim_summary"):
+                        ax_xlab.axis("off")
+                    else:
+                        _place_xlabel_in_axis(ax_xlab, xlab)
+
+                    if spec.get("kind") == "blank":
+                        ax_leg.axis("off")
+                    else:
+                        _place_legend_in_axis(
+                            ax, ax_leg,
+                            max_cols=legend_max_cols if row_mode == "double" else max(legend_max_cols, 3),
+                            fontsize=fs["legend"],
+                            legend_lw=3.0
+                        )
 
             return fig, ax_plots, dfc
 
-
+        # split_a4: paginate
         def chunk_rows(row_list, n=ROWS_PER_PAGE):
             for i in range(0, len(row_list), n):
-                yield row_list[i:i+n]
+                yield row_list[i:i + n]
 
         figs = []
         pdf = PdfPages(pdf_path) if pdf_path else None
+        blank = dict(kind="blank", cols=[], title="", legend={"max_cols": 1})
 
         for topic, topic_rows in topic_pages:
             chunks = list(chunk_rows(topic_rows, ROWS_PER_PAGE))
             for idx, chunk in enumerate(chunks, start=1):
-                # ensure exactly 2 rows per page (pad with blank row if needed)
                 chunk = list(chunk)
                 while len(chunk) < ROWS_PER_PAGE:
-                    chunk.append([dict(kind='blank', cols=[], title=''), dict(kind='blank', cols=[], title='')])
+                    chunk.append([blank, blank] if row_mode == "double" else [blank])
 
                 page_title = f"{topic} - {idx}" if len(chunks) > 1 else topic
                 fig, _ = _render_fixed_page(chunk, page_title=page_title)
                 figs.append(fig)
 
                 if pdf:
-                    # Avoid bbox_inches='tight' so every page keeps the exact A4 canvas
-                    # and consistent panel sizing.
                     pdf.savefig(fig)
                     plt.close(fig)
 
@@ -10744,7 +11009,7 @@ class ChemicalDrift(OceanDrift):
         den = pd.to_numeric(df[denom_col], errors="coerce").to_numpy()
         den_safe = np.where(den > 0, den, np.nan)
 
-        # --- MASS closure
+        # MASS closure
         mass_sp_cols = [c for c in df.columns if c.startswith("mass_sp_") and c.endswith(dst_tag)]
         kept_mass_cols = []
         for c in mass_sp_cols:
@@ -10781,7 +11046,7 @@ class ChemicalDrift(OceanDrift):
             "max_rel_residual_pct": float(np.nanmax(np.abs(residual_rel))) if np.isfinite(residual_rel).any() else np.nan,
         })
 
-        # ---PERCENT sum
+        # PERCENT sum
         perc_cols = [c for c in df.columns if c.startswith("perc_sp_") and c.endswith("[%]")]
         kept_perc_cols = []
         for c in perc_cols:
@@ -10810,7 +11075,7 @@ class ChemicalDrift(OceanDrift):
             "max_abs_err": float(np.nanmax(np.abs(perc_sum - target))) if np.isfinite(perc_sum).any() else np.nan,
         })
 
-        # --- optional QC columns
+        # optional QC columns
         if add_qc_columns:
             out[f"{qc_prefix}mass_sp_sum_ts {dst_tag}"] = mass_sp_sum
             out[f"{qc_prefix}mass_sp_residual_ts {dst_tag}"] = residual
@@ -10820,7 +11085,7 @@ class ChemicalDrift(OceanDrift):
             out[f"{qc_prefix}perc_sp_sum_ts [%]"] = perc_sum
             out[f"{qc_prefix}perc_sp_sum_ok"] = perc_ok
 
-        # ---failure handling
+        # failure handling
         any_fail = (report["mass"]["n_fail"] > 0) or (report["perc"]["n_fail"] > 0)
         if any_fail and on_fail != "ignore":
             # find a representative “worst” index to point at
@@ -10880,7 +11145,7 @@ class ChemicalDrift(OceanDrift):
         Returns:
             pandas.DataFrame, Copy of df with recomputed perc_sp_*_ts [%] columns.
         '''
-        import numpy as np   # <-- add
+        import numpy as np
         import pandas as pd
         import re
 
@@ -11004,32 +11269,32 @@ class ChemicalDrift(OceanDrift):
         Align and sum multiple summary time series DataFrames, then recompute perc_sp_*.
 
         df_list:             list[pandas.DataFrame], Input summary DataFrames to align and sum.
-                                           Each DF is converted to common units using convert_units().
-                                           Percent columns (perc_*) are dropped before summation and recomputed after.
+                             Each DF is converted to common units using convert_units().
+                             Percent columns (perc_*) are dropped before summation and recomputed after.
         target_mass_unit:    str, Mass unit for outputs. Allowed (per your converter): 'kg','g','mg','ug','µg'.
         target_time_unit:    str, Time unit for output bookkeeping / optional rebuilt numeric time column.
-                                           Allowed: 's','m','hr'/'h','d' (per your converter).
+                             Allowed: 's','m','hr'/'h','d' (per your converter).
         date_col:            str, Name of datetime column used as time axis when present in all inputs.
-                                           If present in all DFs, it is used as the alignment index.
+                             If present in all DFs, it is used as the alignment index.
         time_col:            str|None, Explicit numeric time column name to use.
-                                           If None, convert_units() auto-detects a column like "time [..]".
-                                           When date_col is used as index, any numeric "time [..]" columns are dropped
-                                           to prevent summing time values across runs.
+                             If None, convert_units() auto-detects a column like "time [..]".
+                             When date_col is used as index, any numeric "time [..]" columns are dropped
+                             to prevent summing time values across runs.
         align_mode:          str, Time alignment mode for reindexing. Allowed: "pad"|"nearest"|"exact".
         nearest_tol_time:    np.timedelta64|pandas.Timedelta|str|None, Tolerance for align_mode="nearest".
-                                           Strings like "3h" are supported.
+                             Strings like "3h" are supported.
         clip_to_original:    bool, If True, masks values outside each run's original time range after reindexing.
         start_date,end_date: np.datetime64|pandas.Timestamp|float|int|None, Start/end bounds for the target grid.
-                                           If None, inferred from the input series.
+                             If None, inferred from the input series.
         freq_time:           np.timedelta64|pandas.Timedelta|str|float|int|None, Target timestep.
-                                           If None, inferred; if not inferable, uses union of timestamps.
-                                           Must be timedelta-like when aligning on date_col; numeric when aligning on numeric time.
+                             If None, inferred; if not inferable, uses union of timestamps.
+                             Must be timedelta-like when aligning on date_col; numeric when aligning on numeric time.
         rebuild_time_from_date: bool, If True and using date_col axis, rebuild a numeric "time [target_time_unit]" column
-                                           measured from the first timestamp.
+                             measured from the first timestamp.
         verbose:             bool, Print progress/inference information.
         qc_check:            bool, If True, run _speciation_qc_check after recomputing perc_sp.
         add_qc_columns:      bool, If True, append QC diagnostic columns to the output.
-                                           Default False (QC runs but output schema is unchanged).
+                             Default False (QC runs but output schema is unchanged).
         qc_on_fail:          str, QC failure behavior. Allowed: "warn"|"raise"|"ignore".
         return_qc_report:    bool, If True, return a QC report dict in addition to the output DataFrame.
         normalize_perc_to_100: bool, If True, renormalize perc_sp columns to sum exactly to 100 when denom>0.
@@ -11054,6 +11319,10 @@ class ChemicalDrift(OceanDrift):
         UM_mass = UM_time = None
         used_date_axis = None
 
+        # reference column order from the first converted df
+        ref_cols = None
+        ref_time_col = None  # exact "time [..]" label from ref_cols (if any)
+
         for df in df_list:
             dfc, UM_mass_i, UM_time_i, detected_time_col = self.convert_units(
                 df,
@@ -11061,6 +11330,13 @@ class ChemicalDrift(OceanDrift):
                 target_time_unit=target_time_unit,
                 time_col=time_col,
             )
+
+            if ref_cols is None:
+                ref_cols = list(dfc.columns)
+                ref_time_col = next(
+                    (c for c in ref_cols if c.startswith("time [") and c.endswith("]")),
+                    None
+                )
 
             perc_sp_cols_union.update([c for c in dfc.columns if c.startswith("perc_sp_") and c.endswith("[%]")])
             perc_elim_cols_union.update([c for c in dfc.columns if c.startswith("perc_elim_") and c.endswith("[%]")])
@@ -11160,7 +11436,10 @@ class ChemicalDrift(OceanDrift):
         ms = f"mass_sed_ts {dst_tag}"
         ma = f"mass_actual_ts {dst_tag}"
         if mw in out.columns and ms in out.columns:
-            out[ma] = pd.to_numeric(out[mw], errors="coerce").fillna(0.0) + pd.to_numeric(out[ms], errors="coerce").fillna(0.0)
+            out[ma] = (
+                pd.to_numeric(out[mw], errors="coerce").fillna(0.0)
+                + pd.to_numeric(out[ms], errors="coerce").fillna(0.0)
+            )
 
         # ensure perc_sp columns exist, then recompute
         for pc in sorted(perc_sp_cols_union):
@@ -11184,8 +11463,13 @@ class ChemicalDrift(OceanDrift):
             out,
             mass_unit=UM_mass,
             perc_cols=sorted(perc_elim_cols_union),
-            denom_terms=("mass_degraded_ts", "mass_volatilized_ts",
-                         "mass_adv_out_ts", "mass_stranded_ts", "mass_buried_ts"),
+            denom_terms=(
+                "mass_degraded_ts",
+                "mass_volatilized_ts",
+                "mass_adv_out_ts",
+                "mass_stranded_ts",
+                "mass_buried_ts",
+            ),
         )
 
         # QC
@@ -11207,24 +11491,43 @@ class ChemicalDrift(OceanDrift):
                 else:
                     qc_report = qc_result
 
-        # rebuild time [unit] from date axis
+        # rebuild time [unit] from date axis, using the exact original label if available
         if used_date_axis and rebuild_time_from_date and target_time_unit and date_col in out.columns:
-            unit = "hr" if target_time_unit == "h" else target_time_unit
-            unit_to_ns = {"s": 1e9, "m": 60e9, "hr": 3600e9, "d": 86400e9}
-            if unit not in unit_to_ns:
-                raise ValueError(f"Unsupported target_time_unit for rebuild: {target_time_unit!r}")
-
             old_time_cols = [c for c in out.columns if c.startswith("time [") and c.endswith("]")]
             out = out.drop(columns=old_time_cols, errors="ignore")
 
+            time_col_name = ref_time_col or f"time [{target_time_unit}]"
+            unit = time_col_name[time_col_name.find("[") + 1 : time_col_name.rfind("]")].strip()
+
+            unit_to_ns = {
+                "s": 1e9,
+                "m": 60e9,
+                "min": 60e9,
+                "h": 3600e9,
+                "hr": 3600e9,
+                "d": 86400e9,
+            }
+            if unit not in unit_to_ns:
+                raise ValueError(f"Unsupported target_time_unit for rebuild: {unit!r}")
+
             t0 = pd.to_datetime(out[date_col]).min()
             dt_ns = (pd.to_datetime(out[date_col]) - t0).astype("timedelta64[ns]").astype("int64")
-            out.insert(0, f"time [{unit}]", dt_ns / unit_to_ns[unit])
+            out.insert(0, time_col_name, dt_ns / unit_to_ns[unit])
 
         # UM
         out["UM"] = pd.NA
         if len(out):
             out.loc[out.index[0], "UM"] = f"[{UM_mass}] [{UM_time}]"
+
+        # force final DF to contain *all* ref_cols, in the same order
+        if ref_cols is not None:
+            for c in ref_cols:
+                if c not in out.columns:
+                    out[c] = pd.NA
+
+            ordered = list(ref_cols)
+            extras = [c for c in out.columns if c not in set(ordered)]
+            out = out[ordered + extras]
 
         return (out, qc_report) if return_qc_report else out
 
@@ -11507,7 +11810,7 @@ class ChemicalDrift(OceanDrift):
         import numpy as np
         import xarray as xr
 
-        # ---- find depth reference among inputs (if any) ----
+        # find depth reference among inputs (if any)
         depth_ref = None
         depth_ref_idx = None
         has_depth_flags = []
@@ -11542,7 +11845,7 @@ class ChemicalDrift(OceanDrift):
                 aa = aa.drop_vars("specie")
             return aa
 
-        # ---- if no depth anywhere: just drop specie and return ----
+        # if no depth anywhere: just drop specie and return
         if depth_ref is None:
             return [_drop_specie(da) for da in DataArray_ls]
 
@@ -11874,7 +12177,7 @@ class ChemicalDrift(OceanDrift):
                 return H_back.assign_coords(latitude=("latitude", lat_out),
                                             longitude=("longitude", lon_out))
 
-            # -------- geometry helpers --------
+            # geometry helpers
             def normalize_depth_tops(zt1d, *, ensure_zero=True, tol=1e-12):
                 """
                 Normalize layer TOPS to positive-down, strictly increasing depths.
@@ -12053,7 +12356,7 @@ class ChemicalDrift(OceanDrift):
                         nbad = int(where_bad.sum().item())
                         raise ValueError(f"Edges not monotone along '{edge_dim}' in {nbad} column(s).")
 
-                # ---- Normalize 1-D tops (positive-down)
+                # Normalize 1-D tops (positive-down)
                 tops_raw = np.asarray(depth_top_src_1d, dtype=np.float64).ravel()
                 if tops_raw.size == 0:
                     raise ValueError("depth_top_src_1d must have at least one value.")
@@ -12080,7 +12383,7 @@ class ChemicalDrift(OceanDrift):
                 nz = int(tops_clean.size)
                 zt1d = xr.DataArray(tops_clean, dims=(depth_dim,), coords={depth_dim: np.arange(nz)})
 
-                # ---- Broadcast to H_can grid
+                # Broadcast to H_can grid
                 tops = zt1d.broadcast_like(H_can).transpose(depth_dim, *H_can.dims)
 
                 # Bathymetry as float64; clip tiny negatives
@@ -12113,7 +12416,7 @@ class ChemicalDrift(OceanDrift):
 
                 return z_edges_src
 
-            # -------- area helper (simple spherical rectangle) --------
+            # area helper (simple spherical rectangle)
             def _cell_areas_from_1d(lat, lon, R=6371000.0):
                 """
                 Compute spherical cell areas from 1D lat/lon centers using a simple rectangle formula.
@@ -12144,7 +12447,7 @@ class ChemicalDrift(OceanDrift):
                 return xr.DataArray(A, dims=("latitude", "longitude"),
                                     coords={"latitude": lat, "longitude": lon})
 
-            # -------- horizontal conservative mass regrid (keeps depth) --------
+            # horizontal conservative mass regrid (keeps depth)
             def _regrid_horizontal_conservative_mass(mass_src, lon_out, lat_out, *,
                                          periodic=True, weights_dir=None,
                                          depth_dim=None):
@@ -12157,7 +12460,7 @@ class ChemicalDrift(OceanDrift):
                 """
                 lon_name, lat_name = "longitude", "latitude"
 
-                # ---- detect depth if not specified
+                #  detect depth if not specified
                 if depth_dim is None:
                     depth_dim = _maybe_depth_dim(mass_src)
 
@@ -12287,7 +12590,7 @@ class ChemicalDrift(OceanDrift):
                 dd = depth_dim if depth_dim in da.dims else None
                 has_depth = dd is not None
 
-                # ---- source geometry
+                #  source geometry
                 lat_src = np.asarray(da["latitude"].values)
                 lon_src = np.asarray(da["longitude"].values)
 
@@ -12330,7 +12633,7 @@ class ChemicalDrift(OceanDrift):
                     return da
 
                 if need_horizontal_interp:
-                    # ---- horizontal conservative regrid of MASS to canonical (lat,lon)
+                    #  horizontal conservative regrid of MASS to canonical (lat,lon)
                     mass_h = _regrid_horizontal_conservative_mass(
                         mass_src=mass_src,
                         lon_out=np.asarray(lon_can),
@@ -12368,7 +12671,7 @@ class ChemicalDrift(OceanDrift):
 
                 if has_depth and need_vertical_interp:
                     raise ValueError("Vertical interpolation not yet supported")
-                    # ---- build source & target edges on canonical columns (use canonical bottom H_can)
+                    #  build source & target edges on canonical columns (use canonical bottom H_can)
                     depth_top_can = normalize_depth_tops(depth_top_can)
                     z_edges_tgt, dz_tgt = build_target_edges_from_tops(
                         depth_top_can, H_can, depth_dim=depth_dim, edge_dim="depth_edge"
@@ -12376,7 +12679,7 @@ class ChemicalDrift(OceanDrift):
 
                     dz_tgt = _safe_assign_depth(dz_tgt, depth_dim, depth_top_can)
 
-                # ---- back to concentration: C = M / Volume
+                #  back to concentration: C = M / Volume
 
                 if need_horizontal_interp and not need_vertical_interp:
                     mass_fin = mass_h                 # on TARGET grid
