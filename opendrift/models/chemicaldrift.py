@@ -3620,11 +3620,43 @@ class ChemicalDrift(OceanDrift):
         nc.variables['specie'].long_name = ' '.join([f"{isp}:{sp}" for isp, sp in enumerate(name_species_out)])
 
         # Helpers: broadcast-mask writes
+        import numpy as np
+
+        def _mask5d(arr_5d_tsd_yx, landmask_yx):
+            # arr_5d_tsd_yx is (T,S,D,Y,X)
+            lm = np.asarray(landmask_yx, dtype=bool)
+            if lm.shape != arr_5d_tsd_yx.shape[-2:]:
+                # allow transposed landmask if you accidentally passed (X,Y)
+                if lm.T.shape == arr_5d_tsd_yx.shape[-2:]:
+                    lm = lm.T
+                else:
+                    raise ValueError(
+                        f"landmask_yx shape {lm.shape} not compatible with data YX {arr_5d_tsd_yx.shape[-2:]}"
+                    )
+
+            # Expand to (1,1,1,Y,X) then broadcast to (T,S,D,Y,X) (view, no allocation)
+            m = lm[None, None, None, :, :]
+            return np.broadcast_to(m, arr_5d_tsd_yx.shape)
+
+        def _mask3d(arr_3d_d_yx, landmask_yx):
+            # arr_3d_d_yx is (D,Y,X)
+            lm = np.asarray(landmask_yx, dtype=bool)
+            if lm.shape != arr_3d_d_yx.shape[-2:]:
+                if lm.T.shape == arr_3d_d_yx.shape[-2:]:
+                    lm = lm.T
+                else:
+                    raise ValueError(
+                        f"landmask_yx shape {lm.shape} not compatible with data YX {arr_3d_d_yx.shape[-2:]}"
+                    )
+            m = lm[None, :, :]  # (1,Y,X)
+            return np.broadcast_to(m, arr_3d_d_yx.shape)
+
         def _write_masked_5d(var_nc, arr_5d_tsdxy, *, landmask_yx, fill_value):
             # Internal: (T,S,D,X,Y) -> NetCDF: (T,S,D,Y,X)
-            arr = np.swapaxes(arr_5d_tsdxy, 3, 4)
-            m = landmask_yx[None, None, None, :, :]  # (1,1,1,Y,X)
-            marr = np.ma.array(arr, mask=m, copy=False)
+            arr = np.swapaxes(arr_5d_tsdxy, 3, 4)  # -> (T,S,D,Y,X)
+
+            mask = _mask5d(arr, landmask_yx)
+            marr = np.ma.MaskedArray(arr, mask=mask, copy=False)
             if fill_value is not None:
                 try:
                     marr.set_fill_value(fill_value)
@@ -3634,9 +3666,10 @@ class ChemicalDrift(OceanDrift):
 
         def _write_masked_3d(var_nc, arr_3d_dxy, *, landmask_yx, fill_value):
             # Internal: (D,X,Y) -> NetCDF: (D,Y,X)
-            arr = np.swapaxes(arr_3d_dxy, 1, 2)
-            m = landmask_yx[None, :, :]  # (1,Y,X)
-            marr = np.ma.array(arr, mask=m, copy=False)
+            arr = np.swapaxes(arr_3d_dxy, 1, 2)  # -> (D,Y,X)
+
+            mask = _mask3d(arr, landmask_yx)
+            marr = np.ma.MaskedArray(arr, mask=mask, copy=False)
             if fill_value is not None:
                 try:
                     marr.set_fill_value(fill_value)
@@ -7122,7 +7155,6 @@ class ChemicalDrift(OceanDrift):
 
         return new_cmap
 
-
     @staticmethod
     def _remove_white_borders(image, padding_r, padding_c, tol=1e-6):
         '''
@@ -7146,7 +7178,6 @@ class ChemicalDrift(OceanDrift):
         cmin = max(cmin - padding_c, 0); cmax = min(cmax + padding_c, image.shape[1]-1)
         # Crop the image to the bounding box
         return image[rmin:rmax+1, cmin:cmax+1]
-
 
     @staticmethod
     def _create_animation(load_img_from_folder,
@@ -7200,14 +7231,12 @@ class ChemicalDrift(OceanDrift):
 
         print(f"Time to save animation (hr:min:sec): {dt.now()-start}")
 
-
     @staticmethod
     def _flatten_list(matrix):
         flat_list = []
         for row in matrix:
             flat_list += row
         return flat_list
-
 
     @staticmethod
     def _check_nested_list(input_list):
@@ -7218,7 +7247,6 @@ class ChemicalDrift(OceanDrift):
             if isinstance(element, list):
                 return True
         return False
-
 
     @staticmethod
     def _print_progress_list(length):
@@ -7834,56 +7862,106 @@ class ChemicalDrift(OceanDrift):
             final_clip.to_videofile(output_video, fps=12, remove_temp=False, codec = video_codec)
 
     @staticmethod
-    def _plot_emission_data_frequency(emissions, title, n_bins = 100, zoom_max = 100, zoom_min = 0):
+    def _plot_emission_data_frequency(emissions, title, n_bins=100, zoom_max=100, zoom_min=0):
         '''
-        Plot distribuion of emissions dataset values, mass, and cumulative mass
+        Plot distribution of emissions dataset values, mass, and cumulative mass
 
-        emissions:  masked array of float32 with selected data points to plot
-        title:      string, title of main plot
-        n_bins:     int, number of bins to group datapoints
-        zoom_max:   int, % of dataset lenght where the zoomed area stops
-        zoom_min:   int, % of dataset lenght where the zoomed area starts
+        emissions:   array-like, selected data points to plot
+        title:       string, title of main plot
+        n_bins:      int, number of bins to group datapoints
+        zoom_max:    int, % of histogram bins where the zoomed area stops
+        zoom_min:    int, % of histogram bins where the zoomed area starts
         '''
         import matplotlib.pyplot as plt
         import numpy as np
 
-        values,base=np.histogram(emissions,n_bins)
-        cumulative = np.cumsum(values*base[0:-1])
-        fig,(ax1,ax2)=plt.subplots(nrows=2, ncols=1)
-        fig.tight_layout(pad=1.5)
-        ax1.plot(base[:-1], 100*values*base[0:-1]/max(values*base[0:-1]), c='red')
-        ax1.plot(base[:-1], 100*cumulative/cumulative[-1], c='blue')
-        ax1.plot(base[:-1], 100*values/max(values), c='black')
+        emissions = np.asarray(emissions).ravel()
+        emissions = emissions[np.isfinite(emissions)]
+
+        if emissions.size == 0:
+            raise ValueError("No valid emission values available for plotting.")
+
+        counts, bin_edges = np.histogram(emissions, bins=n_bins)
+        bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+
+        bin_mass = counts * bin_centers
+        cumulative_mass = np.cumsum(bin_mass)
+
+        def _normalize(arr):
+            arr_max = np.max(arr) if arr.size > 0 else 0
+            if arr_max == 0:
+                return np.zeros_like(arr, dtype=float)
+            return 100.0 * arr / arr_max
+
+        def _normalize_cumulative(arr):
+            total = arr[-1] if arr.size > 0 else 0
+            if total == 0:
+                return np.zeros_like(arr, dtype=float)
+            return 100.0 * arr / total
+
+        counts_norm = _normalize(counts)
+        mass_norm = _normalize(bin_mass)
+        cumulative_norm = _normalize_cumulative(cumulative_mass)
+
+        zoom_min = float(np.clip(zoom_min, 0, 100))
+        zoom_max = float(np.clip(zoom_max, 0, 100))
+
+        if zoom_max <= zoom_min:
+            zoom_min, zoom_max = 0.0, 100.0
+
+        n_hist_bins = len(bin_centers)
+        i_min = int(np.floor((zoom_min / 100.0) * n_hist_bins))
+        i_max = int(np.ceil((zoom_max / 100.0) * n_hist_bins))
+        i_max = max(i_max, i_min + 1)
+
+        fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1, figsize=(10, 8), constrained_layout=True)
+
+        ax1.plot(bin_centers, mass_norm)
+        ax1.plot(bin_centers, cumulative_norm)
+        ax1.plot(bin_centers, counts_norm)
         ax1.set_title(title)
         ax1.set_ylabel("Frequency (%)")
-        ax1.legend(['Mass','Cumulative mass','Data points'])
-        ax2.plot(base[zoom_min:zoom_max], 100*values[zoom_min:zoom_max]*base[zoom_min:zoom_max]/max(values*base[0:-1]), c='red')
-        ax2.plot(base[zoom_min:zoom_max], 100*cumulative[zoom_min:zoom_max]/cumulative[-1], c='blue')
-        ax2.plot(base[zoom_min:zoom_max], 100*values[zoom_min:zoom_max]/max(values), c='black')
-        ax2.set_title("Zoom from " + str(zoom_min) +" to "+str(zoom_max)+"% of dataset")
+        ax1.legend(['Mass', 'Cumulative mass', 'Data points'])
+
+        ax2.plot(bin_centers[i_min:i_max], mass_norm[i_min:i_max])
+        ax2.plot(bin_centers[i_min:i_max], cumulative_norm[i_min:i_max])
+        ax2.plot(bin_centers[i_min:i_max], counts_norm[i_min:i_max])
+        ax2.set_title(f"Zoom from {zoom_min:.1f}% to {zoom_max:.1f}% of histogram bins")
         ax2.set_ylabel("Frequency (%)")
         ax2.set_xlabel("Value")
+        ax2.legend(['Mass', 'Cumulative mass', 'Data points'])
+
         plt.show()
 
-    def summary_created_elements(self,
-                                 file_folder,
-                                 file_name,
-                                 variable_name,
-                                 emiss_factor,
-                                 upper_limit,
-                                 lower_limit,
-                                 name_dataset,
-                                 long_min, long_max,
-                                 lat_min, lat_max,
-                                 time_start, time_end,
-                                 range_max = None,
-                                 range_min = None,
-                                 n_bins = 100,
-                                 zoom_max=100,
-                                 zoom_min=0,
-                                 print_results = False
-                                 ):
+
+    def summary_created_elements(
+        self,
+        file_folder,
+        file_name,
+        variable_name,
+        mass_factor,
+        upper_limit,
+        lower_limit,
+        name_dataset,
+        long_min=None,
+        long_max=None,
+        lat_min=None,
+        lat_max=None,
+        time_start=None,
+        time_end=None,
+        range_max=None,
+        range_min=None,
+        n_bins=100,
+        zoom_max=100,
+        zoom_min=0,
+        print_results=False,
+        mass_unit=None,
+        mass_element_ug=100e3,
+        number_of_elements=None,
+        estimate_mode="mass",
+    ):
         '''
+<<<<<<< Updated upstream
         Calculate the maxium number of elements in a simulation created by seed_from_NETCDF from xarray DataArray.
         Produce histographs with frequency of datapoints values within the specified limits
 -
@@ -7906,126 +7984,243 @@ class ChemicalDrift(OceanDrift):
         zoom_max:       int, % of dataset lenght where the zoomed area stops
         zoom_min:       int, % of dataset lenght where the zoomed area starts
         print_results:  boolean, select if results are printed or returned as dictionaty
+=======
+        Calculate the maximum number of elements in a simulation created by seed_from_NETCDF from xarray DataArray.
+        Produce histograms with frequency of datapoints values within the specified limits.
+        Estimate the number of seeded elements ignoring bathymetry consistency checks.
+
+        file_folder:         string, path to file, must end with /
+        file_name:           string, name of file, must end with .nc
+        variable_name:       string, name of xarray DataArray variable
+        mass_factor:         float32, multiplicative conversion factor between data values and mass units used for seeded elements
+        upper_limit:         float32, upper selection limit; datapoints >= upper_limit are ignored by seed_from_NETCDF
+        lower_limit:         float32, lower selection limit; datapoints <= lower_limit are ignored by seed_from_NETCDF
+        name_dataset:        string, name of data to be reported in the title of figures
+        time_start:          datetime64[ns] or None, start time of dataset considered; if None, start from first available time
+        time_end:            datetime64[ns] or None, end time of dataset considered; if None, end at last available time
+        long_min:            float32 or None, min longitude of dataset considered; if None, use whole longitude range
+        long_max:            float32 or None, max longitude of dataset considered; if None, use whole longitude range
+        lat_min:             float32 or None, min latitude of dataset considered; if None, use whole latitude range
+        lat_max:             float32 or None, max latitude of dataset considered; if None, use whole latitude range
+        range_max:           float32 or None, max value shown in the figure on data frequency for the selected dataset
+        range_min:           float32 or None, min value shown in the figure on data frequency for the selected dataset
+        n_bins:              int, number of bins used for histograms
+        zoom_max:            int, % of histogram bins where the zoomed area stops
+        zoom_min:            int, % of histogram bins where the zoomed area starts
+        print_results:       boolean, select if results are printed or returned as dictionary
+        mass_unit:           string or None, unit label used when printing masses; if None, results are reported as "mass units"
+        mass_element_ug:     float32 or None, mass of one seeded element when estimate_mode includes "mass"
+        number_of_elements:  int or None, fixed number of elements per selected datapoint when estimate_mode includes "fixed"
+        estimate_mode:       string, choose which estimate to calculate:
+                             "mass", "fixed", or "both"
+>>>>>>> Stashed changes
         '''
         import xarray as xr
         import matplotlib.pyplot as plt
         import numpy as np
 
-        DS = xr.open_dataset(file_folder + file_name)
-        if "lat" in DS.dims:
-            DS = DS.rename({'lat': 'latitude','lon': 'longitude'})
-        if "x" in DS.dims:
-            DS = DS.rename({'y': 'latitude','x': 'longitude'})
+        if estimate_mode not in ["mass", "fixed", "both"]:
+            raise ValueError("estimate_mode must be 'mass', 'fixed', or 'both'.")
 
-        DS = DS[variable_name]
-        if "time" in DS.dims:
-            DS = DS.where((DS.longitude > long_min) & (DS.longitude < long_max) &
-                                            (DS.latitude > lat_min) & (DS.latitude < lat_max) &
-                                            (DS.time >= time_start) &
-                                            (DS.time <= time_end), drop=True)
-        else:
-            DS = DS.where((DS.longitude > long_min) & (DS.longitude < long_max) &
-                                            (DS.latitude > lat_min) & (DS.latitude < lat_max), drop=True)
+        file_path = file_folder + file_name
+        mass_unit_label = mass_unit if mass_unit is not None else "mass units"
 
-        DS_ma = DS.to_masked_array() # Remove 0 and NA from dataArray, then change to np.array
-        emissions = DS_ma[DS_ma>0]
-        selected =np.all((emissions<upper_limit,emissions>lower_limit),axis=0)
-        print ("##START "+ name_dataset + " ##")
+        with xr.open_dataset(file_path) as ds:
+            rename_dict = {}
+            if "lat" in ds.dims:
+                rename_dict["lat"] = "latitude"
+            if "lon" in ds.dims:
+                rename_dict["lon"] = "longitude"
+            if "x" in ds.dims:
+                rename_dict["x"] = "longitude"
+            if "y" in ds.dims:
+                rename_dict["y"] = "latitude"
+            if rename_dict:
+                ds = ds.rename(rename_dict)
 
-        DS_max = np.array(emissions.max())
-        DS_min = np.array(emissions.min())
+            da = ds[variable_name]
 
-        emissions_sum = np.sum(emissions)
-        total_mass = (emissions_sum* emiss_factor)/1e9 # (L*ug/L)/10^9 -> Kg
-        selected_mass = (sum((emissions[selected])* emiss_factor))/1e9
+            mask = xr.ones_like(da, dtype=bool)
 
-        Num_tot = len(emissions)
-        Num_selected = len(emissions[selected])
+            if "longitude" in da.coords:
+                if long_min is not None:
+                    mask = mask & (da.longitude >= long_min)
+                if long_max is not None:
+                    mask = mask & (da.longitude <= long_max)
 
-        Perc_num_selected = (Num_selected/Num_tot)*100
-        Perc_mass_selected = (selected_mass/total_mass)*100
+            if "latitude" in da.coords:
+                if lat_min is not None:
+                    mask = mask & (da.latitude >= lat_min)
+                if lat_max is not None:
+                    mask = mask & (da.latitude <= lat_max)
+
+            if "time" in da.dims or "time" in da.coords:
+                if time_start is not None:
+                    mask = mask & (da.time >= time_start)
+                if time_end is not None:
+                    mask = mask & (da.time <= time_end)
+
+            da = da.where(mask, drop=True)
+
+            emissions = da.to_masked_array()
+            emissions = np.asarray(emissions).ravel()
+            emissions = emissions[np.isfinite(emissions) & (emissions > 0)]
+
+        if emissions.size == 0:
+            raise ValueError("No positive emission values found in the selected dataset.")
+
+        if mass_factor is None or mass_factor <= 0:
+            raise ValueError("mass_factor must be specified and > 0.")
+
+        selected = (emissions > lower_limit) & (emissions < upper_limit)
+        selected_emissions = emissions[selected]
+
+        ds_max = float(np.max(emissions))
+        ds_min = float(np.min(emissions))
+
+        emissions_sum = float(np.sum(emissions))
+        total_mass = emissions_sum * mass_factor
+
+        selected_mass_array = selected_emissions * mass_factor
+        selected_mass = float(np.sum(selected_mass_array))
+
+        num_tot = int(emissions.size)
+        num_selected = int(np.count_nonzero(selected))
+
+        perc_num_selected = 100.0 * num_selected / num_tot if num_tot else 0.0
+        perc_mass_selected = 100.0 * selected_mass / total_mass if total_mass else 0.0
+
+        est_elements_mass_mode = None
+        est_elements_fixed_mode = None
+
+        if estimate_mode in ["mass", "both"]:
+            if mass_element_ug is None or mass_element_ug <= 0:
+                raise ValueError("mass_element_ug must be > 0 when estimate_mode is 'mass' or 'both'.")
+            if num_selected > 0:
+                est_elements_mass_mode_per_point = np.ceil(selected_mass_array / mass_element_ug).astype(int)
+                est_elements_mass_mode = int(np.sum(est_elements_mass_mode_per_point))
+            else:
+                est_elements_mass_mode = 0
+
+        if estimate_mode in ["fixed", "both"]:
+            if number_of_elements is None or number_of_elements <= 0:
+                raise ValueError("number_of_elements must be > 0 when estimate_mode is 'fixed' or 'both'.")
+            est_elements_fixed_mode = int(num_selected * int(number_of_elements))
+
+        results_dict = {}
+        results_dict["name_dataset"] = name_dataset
+        results_dict["upper_limit"] = upper_limit
+        results_dict["lower_limit"] = lower_limit
+        results_dict["DS_max"] = ds_max
+        results_dict["DS_min"] = ds_min
+        results_dict["Num_tot"] = num_tot
+        results_dict["Num_selected"] = num_selected
+        results_dict["Mass_tot"] = total_mass
+        results_dict["Mass_selected"] = selected_mass
+        results_dict["Mass_unit"] = mass_unit_label
+        results_dict["Perc_num_selected"] = perc_num_selected
+        results_dict["Perc_mass_selected"] = perc_mass_selected
+        results_dict["mass_factor"] = mass_factor
+        results_dict["estimate_mode"] = estimate_mode
+        results_dict["mass_element_ug"] = mass_element_ug if estimate_mode in ["mass", "both"] else None
+        results_dict["number_of_elements"] = number_of_elements if estimate_mode in ["fixed", "both"] else None
+        results_dict["Estimated_elements_mass_mode"] = est_elements_mass_mode
+        results_dict["Estimated_elements_fixed_mode"] = est_elements_fixed_mode
 
         if print_results is False:
-            results_dict = {}
-            results_dict["name_dataset"] = name_dataset
-            results_dict["upper_limit"] = upper_limit
-            results_dict["lower_limit"] = lower_limit
-            results_dict["DS_max"] = DS_max
-            results_dict["DS_min"] = DS_min
-            results_dict["Num_tot"] = Num_tot
-            results_dict["Num_selected"] = Num_selected
-            results_dict["Mass_tot"] = total_mass
-            results_dict["Mass_selected"] = selected_mass
-            results_dict["Perc_num_selected"] = Perc_num_selected
-            results_dict["Perc_mass_selected"] = Perc_mass_selected
             return results_dict
-        else:
-            print(f"DS_max: {DS_max}")
-            print(f"DS_min: {DS_min}", "\n")
-            print(f"number of data-points without limits: {len(emissions)}")
-            print(f"upper limit: {upper_limit}")
-            print(f"lower limit: {lower_limit}", "\n")
 
-            print(f"number of data-points selected within the limits: {Num_selected}", "\n")
-            print(f'total mass of chemical: {total_mass} kg')
-            print(f'selected mass of chemical: {selected_mass} kg')
-            print(f'% of total mass selected: {Perc_mass_selected} %')
+        print("##START " + name_dataset + " ##")
 
-            # Print number and percentage of elements over upper limit
-            num_upper_lim = np.count_nonzero(emissions > upper_limit)
-            print(f"n° of data-points over upper limit: {num_upper_lim}")
-            print(f"% of data-points over upper limit: \
-                  {(num_upper_lim/np.prod(emissions.shape))*100} %")
-            mass_over_limit = (sum((emissions[emissions > upper_limit])* emiss_factor))/1e9
-            print(f'mass of chemical over upper limit: {mass_over_limit} kg')
-                  # e.g. (L*ug/L)/10^9 -> kg
-            print(f"% of total volume or mass of the elements over upper limit:\
-                  {(mass_over_limit/emissions_sum)*100} %", "\n")
+        print(f"DS_max: {ds_max}")
+        print(f"DS_min: {ds_min}\n")
 
-            # Print number and percentage of elements under lower limit
-            num_lower_lim = np.count_nonzero(emissions < lower_limit)
-            print(f"n° of data-points under lower limit: {num_lower_lim}")
-            print(f"% of data-points under lower limit: \
-                  {(num_lower_lim/np.prod(emissions.shape))*100} %")
-            mass_below_limit = (sum((emissions[emissions < lower_limit])* emiss_factor))/1e9
-            print(f'mass of chemical under limit: {mass_below_limit} kg')
-                  # e.g. (L*ug/L)/10^9 -> Kg
-            print(f"% of total volume or mass of the elements under lower limit: \
-                  {(mass_below_limit/(emissions_sum))*100} %", "\n")
+        print(f"number of data-points without limits: {num_tot}")
+        print(f"upper limit: {upper_limit}")
+        print(f"lower limit: {lower_limit}\n")
 
-            print(f"% of total volume or mass of elements under lower limit considering also upper limit \
-                  {((mass_below_limit)/(np.sum(emissions[emissions < upper_limit])))*100}", "\n")
+        print(f"number of data-points selected within the limits: {num_selected}\n")
+        print(f"total mass of chemical: {total_mass} {mass_unit_label}")
+        print(f"selected mass of chemical: {selected_mass} {mass_unit_label}")
+        print(f"% of total mass selected: {perc_mass_selected} %")
+        print(f"% of total data-points selected: {perc_num_selected} %\n")
 
-            # Plot histograms for frequency of values
+        if estimate_mode in ["mass", "both"]:
+            print(f"estimated number of elements with gen_mode='mass': {est_elements_mass_mode}")
+            print(f"mass_factor used for estimate: {mass_factor}")
+            print(f"mass_element_ug used for estimate: {mass_element_ug}")
 
-            self._plot_emission_data_frequency(emissions= emissions,
-                                title = "Complete dataset",
-                                n_bins = n_bins,
-                                zoom_max = zoom_max,
-                                zoom_min = zoom_min)
+        if estimate_mode in ["fixed", "both"]:
+            print(f"estimated number of elements with gen_mode='fixed': {est_elements_fixed_mode}")
+            print(f"number_of_elements used for estimate: {number_of_elements}")
 
-            self._plot_emission_data_frequency(emissions= emissions[selected],
-                                title = "Selected dataset between lower and upper limit",
-                                n_bins = n_bins,
-                                zoom_max = zoom_max,
-                                zoom_min = zoom_min)
+        print("bathymetry checks ignored in these estimates\n")
 
-            if range_max is not None and range_min is not None:
-                zoom_max = (range_max/DS_max)*100
-                zoom_min = (range_min/DS_max)*100
+        num_upper_lim = int(np.count_nonzero(emissions >= upper_limit))
+        mass_over_limit = float(np.sum(emissions[emissions >= upper_limit]) * mass_factor)
+        perc_upper_num = 100.0 * num_upper_lim / num_tot if num_tot else 0.0
+        perc_upper_mass = 100.0 * mass_over_limit / total_mass if total_mass else 0.0
 
-                self.plot_emission_data_frequency(emissions= emissions[selected],
-                                                  title = "Selected dataset between range_min and range_max",
-                                                  n_bins = n_bins,
-                                                  zoom_max = zoom_max,
-                                                  zoom_min = zoom_min)
+        print(f"n° of data-points over upper limit: {num_upper_lim}")
+        print(f"% of data-points over upper limit: {perc_upper_num} %")
+        print(f"mass of chemical over upper limit: {mass_over_limit} {mass_unit_label}")
+        print(f"% of total mass of the elements over upper limit: {perc_upper_mass} %\n")
 
-            plt.hist(x=emissions, bins=n_bins, range=(0,lower_limit))
-            plt.title("Datapoints between 0 and lower limit for "+ name_dataset)
-            plt.xlabel("Value")
-            plt.ylabel("Frequency")
-            plt.show()
-            print ("##END##")
+        num_lower_lim = int(np.count_nonzero(emissions <= lower_limit))
+        mass_below_limit = float(np.sum(emissions[emissions <= lower_limit]) * mass_factor)
+        perc_lower_num = 100.0 * num_lower_lim / num_tot if num_tot else 0.0
+        perc_lower_mass = 100.0 * mass_below_limit / total_mass if total_mass else 0.0
+
+        print(f"n° of data-points under lower limit: {num_lower_lim}")
+        print(f"% of data-points under lower limit: {perc_lower_num} %")
+        print(f"mass of chemical under lower limit: {mass_below_limit} {mass_unit_label}")
+        print(f"% of total mass of the elements under lower limit: {perc_lower_mass} %\n")
+
+        mass_below_upper = float(np.sum(emissions[emissions < upper_limit]) * mass_factor)
+        perc_below_lower_with_upper = (
+            100.0 * mass_below_limit / mass_below_upper if mass_below_upper else 0.0
+        )
+
+        print(f"% of total mass of elements under lower limit considering also upper limit {perc_below_lower_with_upper}\n")
+
+        self._plot_emission_data_frequency(
+            emissions=emissions,
+            title="Complete dataset",
+            n_bins=n_bins,
+            zoom_max=zoom_max,
+            zoom_min=zoom_min
+        )
+
+        if num_selected > 0:
+            self._plot_emission_data_frequency(
+                emissions=selected_emissions,
+                title="Selected dataset between lower and upper limit",
+                n_bins=n_bins,
+                zoom_max=zoom_max,
+                zoom_min=zoom_min
+            )
+
+        if range_max is not None and range_min is not None:
+            ranged = emissions[(emissions >= range_min) & (emissions <= range_max)]
+
+            if ranged.size > 0:
+                self._plot_emission_data_frequency(
+                    emissions=ranged,
+                    title="Selected dataset between range_min and range_max",
+                    n_bins=n_bins,
+                    zoom_max=100,
+                    zoom_min=0
+                )
+
+        plt.hist(x=emissions, bins=n_bins, range=(0, lower_limit))
+        plt.title("Datapoints between 0 and lower limit for " + name_dataset)
+        plt.xlabel("Value")
+        plt.ylabel("Frequency")
+        plt.show()
+
+        print("##END##")
+
+        return results_dict
 
     def init_chemical_compound(self, chemical_compound = None):
         ''' Chemical parameters for a selection of PAHs:
