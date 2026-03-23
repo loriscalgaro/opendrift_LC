@@ -3597,6 +3597,7 @@ class ChemicalDrift(OceanDrift):
         nc.variables['specie_original_id'][:] = keep_species.astype('i4')
         nc.variables['specie_original_id'].long_name = 'Original species id in model indexing'
 
+        # Fixed string length dimension for specie names
         maxlen = max(len(s) for s in name_species_out) if name_species_out else 1
         if 'name_strlen' not in nc.dimensions:
             nc.createDimension('name_strlen', maxlen)
