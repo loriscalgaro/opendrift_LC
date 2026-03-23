@@ -3012,7 +3012,6 @@ class ChemicalDrift(OceanDrift):
                 else:
                     print(f"{label}: {value * 1e-6:.3e} g   {value / m_tot * 100:.2f} % of m_tot")
 
-
     def write_netcdf_chemical_density_map(self, filename, pixelsize_m='auto', zlevels=None,
                                           lat_resol=None, lon_resol=None,
                                           deltat=None,
@@ -3027,6 +3026,7 @@ class ChemicalDrift(OceanDrift):
                                           horizontal_smoothing=False,
                                           smoothing_cells=0,
                                           reader_sea_depth=None,
+                                          reader_bottom_layer_thickness=None,
                                           landmask_shapefile=None,
                                           landmask_bathymetry_thr=None,
                                           origin_marker=None,
@@ -3060,7 +3060,11 @@ class ChemicalDrift(OceanDrift):
             time_chunk_size        int, number of timesteps computed per chunk
             horizontal_smoothing:  boolean, smooth concentration horizontally
             smoothing_cells:       int, number of cells for horizontal smoothing,
-            reader_sea_depth:      string, path of bathimethy .nc file,
+            reader_sea_depth:      string, path of bathimethy .nc file
+            reader_bottom_layer_thickness:
+                                   string, path of .nc file containing variable
+                                   'bottom_layer_thickness'; if not provided,
+                                   chemical:sediment:mixing_depth is used
             landmask_shapefile:    string, path of bathimethylandmask .shp file
             landmask_bathymetry_thr:   float32, if set the value is the threshold used to extract the landmask from reader_sea_depth
             elements_density:      boolean, add number of elements present in each grid cell to output
@@ -3091,6 +3095,86 @@ class ChemicalDrift(OceanDrift):
                 except Exception:
                     raise ValueError(f"Invalid density_proj: {density_proj}")
 
+        def _open_cf_reader_with_var(nc_path, var_name,
+                                     llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat,
+                                     allow_corner_adjust=False):
+            from opendrift.readers import reader_netCDF_CF_generic
+            import xarray as xr
+
+            with xr.open_dataset(nc_path) as ds:
+                if var_name not in ds.data_vars:
+                    raise ValueError(f"Variable '{var_name}' not found in {nc_path}")
+
+                da = ds[var_name]
+
+                lat_names = ["latitude", "lat", "y"]
+                lon_names = ["longitude", "lon", "x", "long"]
+
+                lat_name = next((name for name in lat_names if name in da.coords), None)
+                lon_name = next((name for name in lon_names if name in da.coords), None)
+
+                if any(x is None for x in [lat_name, lon_name]):
+                    raise ValueError(f"Latitude/Longitude coordinate names not found in {nc_path}")
+
+                lat_values = da.coords[lat_name].values
+                lon_values = da.coords[lon_name].values
+
+                lat_f = lat_values[np.isfinite(lat_values)]
+                lon_f = lon_values[np.isfinite(lon_values)]
+
+                lat_sorted = np.sort(lat_f)
+                lon_sorted = np.sort(lon_f)
+
+                if lat_sorted.size < 3 or lon_sorted.size < 3:
+                    raise ValueError(f"Grid in {nc_path} too small after loading to safely adjust corners.")
+
+                lat_min, lat_max = lat_sorted[0], lat_sorted[-1]
+                lon_min, lon_max = lon_sorted[0], lon_sorted[-1]
+
+                if allow_corner_adjust:
+                    if llcrnrlat < lat_min:
+                        new = lat_sorted[1]
+                        logger.warning(f"Changed llcrnrlat from {llcrnrlat} to {new} for {var_name}")
+                        llcrnrlat = new
+                    if urcrnrlat > lat_max:
+                        new = lat_sorted[-2]
+                        logger.warning(f"Changed urcrnrlat from {urcrnrlat} to {new} for {var_name}")
+                        urcrnrlat = new
+                    if llcrnrlon < lon_min:
+                        new = lon_sorted[1]
+                        logger.warning(f"Changed llcrnrlon from {llcrnrlon} to {new} for {var_name}")
+                        llcrnrlon = new
+                    if urcrnrlon > lon_max:
+                        new = lon_sorted[-2]
+                        logger.warning(f"Changed urcrnrlon from {urcrnrlon} to {new} for {var_name}")
+                        urcrnrlon = new
+                else:
+                    if not (lat_min <= llcrnrlat <= urcrnrlat <= lat_max):
+                        raise ValueError(
+                            f"Corners are outside latitude bounds of '{var_name}' in {nc_path}"
+                        )
+                    if not (lon_min <= llcrnrlon <= urcrnrlon <= lon_max):
+                        raise ValueError(
+                            f"Corners are outside longitude bounds of '{var_name}' in {nc_path}"
+                        )
+
+                da_sel = da.where(
+                    (da[lon_name] >= llcrnrlon) &
+                    (da[lon_name] <= urcrnrlon) &
+                    (da[lat_name] >= llcrnrlat) &
+                    (da[lat_name] <= urcrnrlat),
+                    drop=True
+                )
+
+                num_x = da_sel.coords[lon_name].size
+                if num_x == 0:
+                    raise ValueError(f"No longitude coordinate found in '{var_name}' selection")
+                num_y = da_sel.coords[lat_name].size
+                if num_y == 0:
+                    raise ValueError(f"No latitude coordinate found in '{var_name}' selection")
+
+            rdr = reader_netCDF_CF_generic.Reader(nc_path)
+            return rdr, num_x, num_y, llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat
 
         # Input checks
         if sum(x is None for x in [lat_resol, lon_resol]) == 1:
@@ -3141,83 +3225,34 @@ class ChemicalDrift(OceanDrift):
 
         # Bathymetry reader
         if reader_sea_depth is not None:
-            from opendrift.readers import reader_netCDF_CF_generic
-            import xarray as xr
             if any(v is None for v in (llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat)):
                 raise ValueError("llcrnrlon/llcrnrlat/urcrnrlon/urcrnrlat must be provided when reader_sea_depth is used.")
 
-            with xr.open_dataset(reader_sea_depth) as  reader_sea_depth_res:
-                reader_sea_depth_res = (reader_sea_depth_res[list(reader_sea_depth_res.data_vars)[0]])
-
-                lat_names = ["latitude", "lat", "y"]
-                lat_name = next((name for name in lat_names if name in reader_sea_depth_res.coords), None)
-                lon_names = ["longitude", "lon", "x", "long"]
-                lon_name = next((name for name in lon_names if name in reader_sea_depth_res.coords), None)
-
-                if any(x is None for x in [lat_name, lon_name]):
-                    raise ValueError("Latitude/Longitude coordinate names not found in bathimetry")
-
-                # Check if corners are covered by bathymetry
-                reader_sea_depth_lat_values = reader_sea_depth_res.coords[lat_name].values
-                reader_sea_depth_lon_values = reader_sea_depth_res.coords[lon_name].values
-
-                lat_f = reader_sea_depth_lat_values[np.isfinite(reader_sea_depth_lat_values)]
-                lon_f = reader_sea_depth_lon_values[np.isfinite(reader_sea_depth_lon_values)]
-
-                lat_sorted = np.sort(lat_f)
-                lon_sorted = np.sort(lon_f)
-                if lat_sorted.size < 3 or lon_sorted.size < 3:
-                    raise ValueError("Bathymetry grid too small after loading to safely adjust corners.")
-
-                lat_min, lat_max = lat_sorted[0], lat_sorted[-1]
-                lon_min, lon_max = lon_sorted[0], lon_sorted[-1]
-
-                if llcrnrlat < lat_min:
-                    new = lat_sorted[1]
-                    logger.warning(f"Changed llcrnrlat from {llcrnrlat} to {new}")
-                    llcrnrlat = new
-                if urcrnrlat > lat_max:
-                    new = lat_sorted[-2]
-                    logger.warning(f"Changed urcrnrlat from {urcrnrlat} to {new}")
-                    urcrnrlat = new
-
-                if llcrnrlon < lon_min:
-                    new = lon_sorted[1]
-                    logger.warning(f"Changed llcrnrlon from {llcrnrlon} to {new}")
-                    llcrnrlon = new
-                if urcrnrlon > lon_max:
-                    new = lon_sorted[-2]
-                    logger.warning(f"Changed urcrnrlon from {urcrnrlon} to {new}")
-                    urcrnrlon = new
-
-                # final sanity
-                if not (lat_min <= llcrnrlat <= urcrnrlat <= lat_max) or not (lon_min <= llcrnrlon <= urcrnrlon <= lon_max):
-                    raise ValueError(
-                        "Adjusted corners are still outside bathymetry bounds; check input corners or bathymetry coverage."
-                    )
-
-                # Find resolution of bathimetry's selected section
-                reader_sea_depth_res = reader_sea_depth_res.where(
-                    (reader_sea_depth_res[lon_name] >= llcrnrlon) &
-                    (reader_sea_depth_res[lon_name] <= urcrnrlon) &
-                    (reader_sea_depth_res[lat_name] >= llcrnrlat) &
-                    (reader_sea_depth_res[lat_name] <= urcrnrlat),
-                    drop=True
+            reader_sea_depth, num_x, num_y, llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat = \
+                _open_cf_reader_with_var(
+                    reader_sea_depth,
+                    'sea_floor_depth_below_sea_level',
+                    llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat,
+                    allow_corner_adjust=True
                 )
-
-                reader_sea_depth_lat_values = reader_sea_depth_res.coords[lat_name].values
-                reader_sea_depth_lon_values = reader_sea_depth_res.coords[lon_name].values
-
-                num_x = reader_sea_depth_lon_values.size
-                if num_x == 0:
-                    raise ValueError("No longitude coordinate found in bathimetry")
-                num_y = reader_sea_depth_lat_values.size
-                if num_y == 0:
-                    raise ValueError("No latitude coordinate found in bathimetry")
-
-                reader_sea_depth = reader_netCDF_CF_generic.Reader(reader_sea_depth)
         else:
             raise ValueError("A reader for 'sea_floor_depth_below_sea_level' must be specified")
+
+        # Active sediment layer thickness reader
+        bottom_layer_reader = None
+        if reader_bottom_layer_thickness is not None:
+            if any(v is None for v in (llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat)):
+                raise ValueError(
+                    "llcrnrlon/llcrnrlat/urcrnrlon/urcrnrlat must be provided when "
+                    "reader_bottom_layer_thickness is used."
+                )
+
+            bottom_layer_reader, _, _, _, _, _, _ = _open_cf_reader_with_var(
+                reader_bottom_layer_thickness,
+                'bottom_layer_thickness',
+                llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat,
+                allow_corner_adjust=False
+            )
 
         # Species init
         if not hasattr(self, "name_species"):
@@ -3252,6 +3287,16 @@ class ChemicalDrift(OceanDrift):
             time=reader_sea_depth.times[0] if reader_sea_depth.times is not None else None
         )[0]['sea_floor_depth_below_sea_level'].reshape(self.conc_lon.shape)
 
+        # Active sediment layer thickness on the same intermediate grid
+        self.conc_bottom_layer_thickness = None
+        if bottom_layer_reader is not None:
+            self.conc_bottom_layer_thickness = bottom_layer_reader.get_variables_interpolated_xy(
+                ['bottom_layer_thickness'],
+                x=self.conc_lon.flatten(),
+                y=self.conc_lat.flatten(),
+                time=bottom_layer_reader.times[0] if bottom_layer_reader.times is not None else None
+            )[0]['bottom_layer_thickness'].reshape(self.conc_lon.shape)
+
         # pixelsize auto
         if pixelsize_m == 'auto':
             lat = self.result.lat
@@ -3278,7 +3323,7 @@ class ChemicalDrift(OceanDrift):
 
         density_proj = Proj(density_proj_str)
 
-        is_moll    = ("+proj=moll" in density_proj_str)
+        is_moll = ("+proj=moll" in density_proj_str)
         is_latlon = ("+proj=longlat" in density_proj_str)
         if not is_moll and (lat_resol is None or lon_resol is None):
             raise ValueError("lat_resol and lon_resol must be set for non-moll projections.")
@@ -3305,8 +3350,6 @@ class ChemicalDrift(OceanDrift):
             weight = 'mass'
 
         # Compute density arrays
-        # H is array containing the mass of chemical within each box defined by lon_array, lat_array and z_array
-        # H_count is array containing the number of elements within each box defined by lon_array, lat_array and z_array
         out = self.get_chemical_density_array(
             pixelsize_m=pixelsize_m,
             is_moll=is_moll, is_latlon=is_latlon,
@@ -3335,7 +3378,7 @@ class ChemicalDrift(OceanDrift):
 
         # Build landmask on 2D grid (x,y) then transpose to (y,x) for NetCDF
         landmask = np.zeros_like(lon_array, dtype=bool)
-        # get raw mask first
+
         if (landmask_bathymetry_thr is not None) and (reader_sea_depth is not None):
             vals = reader_sea_depth.get_variables_interpolated_xy(
                 ['sea_floor_depth_below_sea_level'],
@@ -3343,7 +3386,7 @@ class ChemicalDrift(OceanDrift):
                 y=np.clip(lat_array.ravel(), reader_sea_depth.ymin, reader_sea_depth.ymax),
                 time=reader_sea_depth.times[0] if reader_sea_depth.times is not None else None
             )[0]['sea_floor_depth_below_sea_level']
-            landmask_raw = (vals <= landmask_bathymetry_thr).reshape(lon_array.shape)  # already boolean
+            landmask_raw = (vals <= landmask_bathymetry_thr).reshape(lon_array.shape)
         elif landmask_shapefile is not None:
             landmask_raw = self.env.readers['shape'].get_variables(
                 'land_binary_mask', x=lon_array, y=lat_array
@@ -3356,7 +3399,6 @@ class ChemicalDrift(OceanDrift):
         if landmask_raw.shape != lon_array.shape:
             landmask_raw = landmask_raw.reshape(lon_array.shape)
 
-        # warn on raw values (only if not bool)
         raw = np.asarray(landmask_raw)
         if raw.dtype != np.bool_:
             if np.issubdtype(raw.dtype, np.floating):
@@ -3367,12 +3409,11 @@ class ChemicalDrift(OceanDrift):
             if vals.size and not np.all(np.isin(vals, [0, 1])):
                 logger.warning(f"Landmask contained non-binary values (sample: {vals}). Normalizing with policy=auto")
 
-        # normalize landmask after warning
-        landmask = self._normalize_landmask(landmask_raw, policy="auto", thr=0.5)  # True=land
+        landmask = self._normalize_landmask(landmask_raw, policy="auto", thr=0.5)
         landmask_yx = landmask.T
 
-        # Mean depth + pixel area
-        pixel_mean_depth, pixel_area = self.get_pixel_mean_depth(
+        # Mean depth + pixel area + active sediment layer thickness
+        pixel_mean_depth, pixel_area, pixel_bottom_layer_thickness = self.get_pixel_mean_depth(
             lon_array, lat_array,
             is_moll, is_latlon,
             lat_resol, lon_resol
@@ -3386,14 +3427,14 @@ class ChemicalDrift(OceanDrift):
                 except Exception:
                     pass
 
-        _remove_reader_by_key(self,'shape')
-        _remove_reader_by_key(self,'global_landmask')
+        _remove_reader_by_key(self, 'shape')
+        _remove_reader_by_key(self, 'global_landmask')
 
         # Pixel volume (depth, x, y)
-        pixel_volume = np.zeros_like(H[0, 0, :, :, :], dtype=np.float32)  # (Z, X, Y)
+        pixel_volume = np.zeros_like(H[0, 0, :, :, :], dtype=np.float32)
 
         for zi, zz in enumerate(z_array[:-1]):
-            topotmp = -pixel_mean_depth.copy()  # pixel_mean_depth is (x,y)
+            topotmp = -pixel_mean_depth.copy()
             topotmp[topotmp < zz] = zz
             topotmp = z_array[zi + 1] - topotmp
             topotmp[topotmp < 0.1] = 0.0
@@ -3406,17 +3447,26 @@ class ChemicalDrift(OceanDrift):
         pixel_volume[pixel_volume == 0.0] = np.nan
 
         # Sediment mass # mass in kg dry weight
-        sed_L = self.get_config('chemical:sediment:mixing_depth')
+        sed_L_cfg = self.get_config('chemical:sediment:mixing_depth')
         sed_dens = self.get_config('chemical:sediment:density')
         sed_poro = self.get_config('chemical:sediment:porosity')
 
-        if is_moll:
-            pixel_sed_mass = (pixelsize_m ** 2 * sed_L) * (1 - sed_poro) * sed_dens  # scalar
+        # Keep old fixed fallback when no thickness map is provided
+        if pixel_bottom_layer_thickness is None:
+            sed_L = sed_L_cfg
         else:
-            pixel_sed_mass = (pixel_area * sed_L) * (1 - sed_poro) * sed_dens        # (x,y)
+            sed_L = np.asarray(pixel_bottom_layer_thickness, dtype=np.float32)
+            sed_L = np.where(np.isfinite(sed_L), sed_L, sed_L_cfg)
+            sed_L = np.maximum(sed_L, 0.0)
+
+        if is_moll:
+            pixel_sed_mass = ((pixelsize_m ** 2) * sed_L) * (1 - sed_poro) * sed_dens
+        else:
+            pixel_sed_mass = (pixel_area * sed_L) * (1 - sed_poro) * sed_dens
+
+        pixel_sed_mass = np.where(pixel_sed_mass > 0.0, pixel_sed_mass, np.nan)
 
         Hsm = None
-        # Optional horizontal smoothing
         if horizontal_smoothing:
             Hsm = np.empty_like(H, dtype=np.float32)
 
@@ -3432,7 +3482,6 @@ class ChemicalDrift(OceanDrift):
                     if np.isscalar(pixel_sed_mass):
                         H[ti, sp, :, :, :] = H[ti, sp, :, :, :] / pixel_sed_mass
                     else:
-                        # pixel_sed_mass is (x,y) already; matches H[..., X, Y]
                         H[ti, sp, :, :, :] = H[ti, sp, :, :, :] / pixel_sed_mass[None, :, :]
 
                 if horizontal_smoothing:
@@ -3491,7 +3540,7 @@ class ChemicalDrift(OceanDrift):
 
             try:
                 mean_conc = np.mean(conctmp.reshape(odt, ndt, *cshape[1:]), axis=1)
-            except Exception: # If (times) is not a perfect multiple of deltat
+            except Exception:
                 mean_conc = np.zeros([odt, cshape[1], cshape[2], cshape[3], cshape[4]], dtype=conctmp.dtype)
                 for ii in range(odt):
                     s0 = ii * ndt
@@ -3548,7 +3597,6 @@ class ChemicalDrift(OceanDrift):
         nc.variables['specie_original_id'][:] = keep_species.astype('i4')
         nc.variables['specie_original_id'].long_name = 'Original species id in model indexing'
 
-        # Fixed string length dimension for specie names
         maxlen = max(len(s) for s in name_species_out) if name_species_out else 1
         if 'name_strlen' not in nc.dimensions:
             nc.createDimension('name_strlen', maxlen)
@@ -3743,7 +3791,7 @@ class ChemicalDrift(OceanDrift):
 
         # VOLUME
         nc.createVariable('volume', 'f8', ('depth', 'y', 'x'), fill_value=0)
-        pv = np.ma.masked_invalid(pixel_volume)  # masks NaNs/Infs
+        pv = np.ma.masked_invalid(pixel_volume)
         _write_masked_3d(nc.variables['volume'], pv, landmask_yx=landmask_yx, fill_value=0)
         if pixelsize_m is not None:
             nc.variables['volume'].long_name = f'Volume of grid cell ({str(pixelsize_m)} x {str(pixelsize_m)} m)'
@@ -3761,6 +3809,17 @@ class ChemicalDrift(OceanDrift):
         nc.variables['topo'].units = 'm'
         if sim_description is not None:
             nc.variables['topo'].sim_description = str(sim_description)
+
+        # Active sediment layer thickness (optional output)
+        if pixel_bottom_layer_thickness is not None:
+            nc.createVariable('bottom_layer_thickness', 'f8', ('y', 'x'), fill_value=0)
+            blt_ma = np.ma.array(pixel_bottom_layer_thickness.T, mask=landmask_yx, copy=False)
+            nc.variables['bottom_layer_thickness'][:] = blt_ma
+            nc.variables['bottom_layer_thickness'].long_name = 'Thickness of active sediment layer'
+            nc.variables['bottom_layer_thickness'].grid_mapping = density_proj_str
+            nc.variables['bottom_layer_thickness'].units = 'm'
+            if sim_description is not None:
+                nc.variables['bottom_layer_thickness'].sim_description = str(sim_description)
 
         # AREA
         if pixelsize_m is None:
@@ -3783,6 +3842,8 @@ class ChemicalDrift(OceanDrift):
 
         # Cleanup
         del H, pixel_volume, pixel_mean_depth, lon_array, lat_array, landmask, landmask_yx
+        if pixel_bottom_layer_thickness is not None:
+            del pixel_bottom_layer_thickness
         if time_avg_conc is True:
             del mean_conc
         if elements_density is True:
@@ -4431,31 +4492,52 @@ class ChemicalDrift(OceanDrift):
 
         return H, lon_array, lat_array, H_count, keep_species, name_species_out
 
-    def get_pixel_mean_depth(self,lons,lats,
+    def get_pixel_mean_depth(self, lons, lats,
                              is_moll, is_latlon,
-                             lat_resol,lon_resol):
+                             lat_resol, lon_resol):
         from scipy import interpolate
+        import numpy as np
         import gc
+
         # Ocean model depth and lat/lon
         h_grd = self.conc_topo
         h_grd[np.isnan(h_grd)] = 0.
         nx = h_grd.shape[0]
         ny = h_grd.shape[1]
 
-        lat_grd = self.conc_lat[:nx,:ny]
-        lon_grd = self.conc_lon[:nx,:ny]
+        lat_grd = self.conc_lat[:nx, :ny]
+        lon_grd = self.conc_lon[:nx, :ny]
 
-        for attr in ('conc_lon', 'conc_lat', 'conc_topo'):
+        # Interpolate topography to new grid
+        h = interpolate.griddata(
+            (lon_grd.flatten(), lat_grd.flatten()),
+            h_grd.flatten(),
+            (lons, lats),
+            method='linear'
+        )
+
+        # Interpolate active sediment layer thickness to the same grid
+        bottom_layer_thickness = None
+        if hasattr(self, 'conc_bottom_layer_thickness') and self.conc_bottom_layer_thickness is not None:
+            blt_grd = self.conc_bottom_layer_thickness[:nx, :ny]
+            bottom_layer_thickness = interpolate.griddata(
+                (lon_grd.flatten(), lat_grd.flatten()),
+                blt_grd.flatten(),
+                (lons, lats),
+                method='linear'
+            )
+            bottom_layer_thickness = np.where(
+                np.isfinite(bottom_layer_thickness), bottom_layer_thickness, np.nan
+            )
+
+        for attr in ('conc_lon', 'conc_lat', 'conc_topo', 'conc_bottom_layer_thickness'):
             if hasattr(self, attr):
                 setattr(self, attr, None)
         gc.collect()
 
-        # Interpolate topography to new grid
-        h = interpolate.griddata((lon_grd.flatten(),lat_grd.flatten()), h_grd.flatten(), (lons, lats), method='linear')
-
         # Mollweide case
         if is_moll:
-            return h, None
+            return h, None, bottom_layer_thickness
 
         # EPSG:4326 / longlat case: spherical area
         if is_latlon:
@@ -4464,18 +4546,17 @@ class ChemicalDrift(OceanDrift):
             # Convert degrees to radians
             lat_resol_rad = np.radians(lat_resol)
             lon_resol_rad = np.radians(lon_resol)
-            # Convert latitude centers to radians
             lat_array_rad = np.radians(lats)
             # Compute lat edges
             lat1 = lat_array_rad - (lat_resol_rad / 2) # Lower latitude boundary
             lat2 = lat_array_rad + (lat_resol_rad / 2) # Upper latitude boundary
             # Calculate area using the spherical formula
             area = (Radius**2) * lon_resol_rad * (np.sin(lat2) - np.sin(lat1))
-            return h, area
+            return h, area, bottom_layer_thickness
 
         # Projected CRS: lat_resol/lon_resol are in projected units (typically meters)
         area = np.full_like(lats, abs(lat_resol * lon_resol), dtype=np.float64)
-        return h, area
+        return h, area, bottom_layer_thickness
 
     def horizontal_smooth(self, a, n=0, landmask=None, pad_mode="edge", land_value=0.0):
         """
@@ -8875,6 +8956,95 @@ class ChemicalDrift(OceanDrift):
         event_ts *= mass_conversion_factor
         return event_ts, np.cumsum(event_ts, dtype=np.float64)
 
+    @staticmethod
+    def _transition_mass_ts(mass, specie, inside_mask, src_idx, dst_idx,
+                            steps, N_elem,
+                            mass_conversion_factor=1.0,
+                            require_inside_now=True,
+                            require_inside_prev=True,
+                            chunk_cols=50000):
+        """
+        Per-timestep mass for exact specie transitions src_idx -> dst_idx.
+
+        Only transitions inside the domain are counted:
+          - require_inside_now=True  -> element must be inside at timestep t
+          - require_inside_prev=True -> element must be inside at timestep t-1
+        """
+        if (src_idx is None) or (dst_idx is None):
+            return np.zeros(steps, dtype=np.float32)
+
+
+        mass = np.asarray(mass)
+        specie = np.asarray(specie)
+        inside_mask = np.asarray(inside_mask, dtype=bool)
+
+        if mass.ndim != 2 or specie.ndim != 2 or inside_mask.ndim != 2:
+            raise ValueError("mass, specie, and inside_mask must all be 2D (T,N)")
+        if mass.shape != specie.shape or mass.shape != inside_mask.shape:
+            raise ValueError("mass, specie, and inside_mask must have the same shape")
+
+        ts = np.zeros(steps, dtype=np.float64)
+
+        if steps < 2:
+            return ts.astype(np.float32, copy=False)
+
+        for start in range(0, N_elem, chunk_cols):
+            end = min(start + chunk_cols, N_elem)
+            width = end - start
+
+            prev_ff = np.zeros(width, dtype=mass.dtype)
+            cur_ff = np.empty(width, dtype=mass.dtype)
+
+            cur0 = mass[0, start:end]
+            finite0 = np.isfinite(cur0)
+            if finite0.any():
+                prev_ff[finite0] = cur0[finite0]
+
+            for t in range(1, steps):
+                trans = ((specie[t-1, start:end] == src_idx) &
+                    (specie[t,   start:end] == dst_idx))
+
+                if trans.any():
+                    if require_inside_now:
+                        trans &= inside_mask[t, start:end]
+                    if require_inside_prev:
+                        trans &= inside_mask[t-1, start:end]
+
+                cur = mass[t, start:end]
+                finite = np.isfinite(cur)
+
+                np.copyto(cur_ff, prev_ff)
+                if finite.any():
+                    cur_ff[finite] = cur[finite]
+
+                if trans.any():
+                    ts[t] += np.nansum(cur_ff[trans], dtype=np.float64)
+
+                np.copyto(prev_ff, cur_ff)
+
+        ts *= mass_conversion_factor
+        return ts.astype(np.float32, copy=False)
+
+
+    def sum_transition_pairs(self, pairs, mass, specie, inside_mask, steps, N_elem,
+                              mass_conversion_factor=1.0, chunk_cols=50000):
+        out = np.zeros(steps, dtype=np.float32)
+        for src_idx, dst_idx in pairs:
+            out += self._transition_mass_ts(
+                mass=mass,
+                specie=specie,
+                inside_mask=inside_mask,
+                src_idx=src_idx,
+                dst_idx=dst_idx,
+                steps=steps,
+                N_elem=N_elem,
+                mass_conversion_factor=mass_conversion_factor,
+                require_inside_now=True,
+                require_inside_prev=True,
+                chunk_cols=chunk_cols,
+            )
+        return out
+
     def extract_summary_timeseries(self,
             timeseries_file_path,
             mass_unit='g',
@@ -8892,14 +9062,15 @@ class ChemicalDrift(OceanDrift):
             verbose = False
             ):
         """
-        Extract, aggregate, and optionally export (.csv) a mass-budget summary time series from an ChemicalDrift
-        simulation stored in self.result.
+        Extract, aggregate, and optionally export (.csv) a mass-budget summary time series from a
+        ChemicalDrift simulation stored in self.result.
 
-        This routine builds 1D time series (one value per output timestep) from element-wise (trajectory,time)
-        variables, taking care of:
+        This routine builds 1D time series (one value per output timestep) from element-wise
+        (trajectory,time) variables, taking care of:
         - unit conversion (mass and time),
         - removal of invalid trajectories (those with no valid lat/lon),
-        - definition of the “inside simulation domain” to avoid double-counting mass that has left the domain,
+        - definition of the “inside simulation domain” to avoid double-counting mass that has left
+          the domain,
         - robust handling of NaNs after element deactivation (forward-fill per element when needed).
 
         The resulting DataFrame contains:
@@ -8908,6 +9079,7 @@ class ChemicalDrift(OceanDrift):
         3) Emitted mass (when each element first appears)
         4) Eliminated/removed mass mechanisms (per-timestep increments and cumulative)
         5) Exiting events (advection out, stranding, burial) as per-timestep increments and cumulative
+        6) Aggregated per-timestep phase-transfer mass fluxes reconstructed from species transitions
 
         Parameters
         ----------
@@ -8921,25 +9093,27 @@ class ChemicalDrift(OceanDrift):
                                        If provided, adv_out is computed as NOT-within shapefile.
         lon_min, lon_max,
         lat_min, lat_max:     float, Geographic bounding box used to define the inside domain when no shapefile is provided.
-                                      Take precedence over deactivate_coords. Default is None.
+                                      Takes precedence over deactivate_coords. Default is None.
         start_date, end_date: pandas.Timestamp/np.datetime64, Start/end dates for slicing the exported period.
-        time_start, time_end: int,.Start/end of slicing window for the exported period.In requested time_unit (e.g. hours if time_unit='h')
-                                      Take precedence over start_date, end_date
+        time_start, time_end: int/float, Start/end of slicing window for the exported period, in requested time_unit
+                                         (e.g. hours if time_unit='h').
+                                         Takes precedence over start_date, end_date.
         save_files:           bool, If True, export the resulting DataFrame to timeseries_file_path and return None.
                                     If False, return the DataFrame and do not write files.
         verbose:              bool, Print progress information.
 
         Processes / logic
         -----------------
-        1) Ensures species and transfer-rate metadata exist (init_species/init_transfer_rates) if not already
-           stored in self.result attributes.
-        2) Detects whether drift:deactivate_north_of/south_of/east_of/west_of were used (deactivate_coords).
+        1) Ensures species and transfer-rate metadata exist (init_species/init_transfer_rates) if not
+           already available.
+        2) Detects whether drift:deactivate_north_of/south_of/east_of/west_of were used
+           (deactivate_coords).
         3) Computes conversion factors:
            - mass_conversion_factor: from self.elements.variables['mass']['units'] -> mass_unit
            - time_conversion_factor: from seconds (self.time_step_output) -> time_unit
-        4) Cleans trajectories: drops any trajectory with no finite lat or lon for all timesteps.
-        5) Extracts required 2D arrays (T,N), e.g. mass and cumulative eliminated-mass arrays. NaNs are expected
-           after deactivation.
+        4) Cleans trajectories: drops any trajectory with no finite lat and no finite lon over the run.
+        5) Extracts required 2D arrays (T,N), e.g. mass and cumulative eliminated-mass arrays.
+           NaNs are expected after deactivation.
         6) Builds masks:
            - adv_out (True == element considered outside domain) using one of:
                (i) shp_file_path polygon test
@@ -8952,51 +9126,77 @@ class ChemicalDrift(OceanDrift):
            - in_buried_sed: element is in the buried sediment compartment at each timestep (if enabled)
         7) Defines the inside-system mask:
              inside_mask = ~adv_out
-             and additionally excludes elements with status 'seeded_on_land' and/or 'stranded' (if those status
-             categories exist).
+             and additionally excludes elements with status 'seeded_on_land' and/or 'stranded'
+             (if those status categories exist).
         8) Aggregates “current” inside-system mass time series:
            - mass_water_ts, mass_sed_ts, mass_actual_ts (water + sediment), all in mass_unit
         9) Aggregates mass by species (inside-system only) and percent of inside-system mass:
            - mass_sp_<species>_ts and perc_sp_<species>_ts (0–100)
         10) Emitted mass:
-            - Detects the first timestep each element has finite mass, sums that mass into mass_emitted_ts,
-              and produces mass_emitted_cumulative.
+            - Detects the first timestep each element has finite mass, sums that mass into
+              mass_emitted_ts, and produces mass_emitted_cumulative.
         11) Eliminated mass mechanisms:
             - Many eliminated-mass variables in self.result are cumulative per element.
-              The function converts cumulative -> per-timestep increments by forward-filling each element’s
-              cumulative series across NaNs and then summing positive deltas.
-            - Produces both *_ts (increment at each timestep) and *_cumulative (cumulative sum of increments).
+              The function converts cumulative -> per-timestep increments by forward-filling each
+              element’s cumulative series across NaNs and then summing positive deltas.
+            - Produces both *_ts (increment at each timestep) and *_cumulative
+              (cumulative sum of increments).
         12) Exiting events (priority to adv_out where applicable):
-            - Advection out: counts only False->True transitions in adv_out for t>0 (initial outside at t=0 is
-              ignored). Uses forward-filled mass at the transition time.
-            - Stranding: counts False->True transitions of 'stranded' elements, only if the element is inside
-              now AND was inside at the previous timestep (requires ~adv_out[t] and ~adv_out[t-1]).
+            - Advection out: counts only False->True transitions in adv_out for t>0
+              (initial outside at t=0 is ignored). Uses forward-filled mass at the transition time.
+            - Stranding: counts False->True transitions of 'stranded' elements, only if the element
+              is inside now AND was inside at the previous timestep
+              (requires ~adv_out[t] and ~adv_out[t-1]).
               Initial stranded at t=0 is ignored.
-            - Burial: counts transitions into buried state (can count at t=0 if starts buried), only when inside
-              now (~adv_out[t]). Multiple burial events per element are allowed if it leaves and re-enters burial.
+            - Burial: counts transitions into buried state (can count at t=0 if starts buried),
+              only when inside now (~adv_out[t]). Multiple burial events per element are allowed if
+              it leaves and re-enters burial.
+        13) Aggregated phase-transfer time series:
+            - Reconstructs per-timestep transferred mass from exact species transitions
+              src -> dst using forward-filled mass at the transition time.
+            - Counts only transitions occurring inside the domain both before and after the
+              transition.
+            - Produces the following aggregated transition series:
+              * mass_ads_to_sed_ts
+              * mass_des_from_sed_ts
+              * mass_ads_to_spm_ts
+              * mass_des_from_spm_ts
+              * mass_aggr_doc_poly_to_spm_ts
+              * mass_disaggr_poly_ts
+              * mass_ads_to_doc_ts
+              * mass_des_from_doc_ts
 
         Returns
         -------
         If save_files is True:
-            None (writes CSV to timeseries_file_path)
+            None
+            Writes CSV to timeseries_file_path.
+
         If save_files is False:
             pandas.DataFrame with the following columns:
 
             Time axis
             ---------
-            time-[<time_unit>]      time since simulation start, converted to time_unit
-            date_of_timestep        calendar date for each output step (pd.DatetimeIndex)
+            time [<time_unit>]
+                Time since simulation start, converted to time_unit.
+            date_of_timestep
+                Calendar date for each output step.
 
             Inside-system mass (in mass_unit)
-            -------------------------------
-            mass_water_ts           total mass in water column (inside_mask)
-            mass_sed_ts             total mass in active sediment layer (inside_mask)
-            mass_actual_ts          total inside-system mass (mass_water_ts + mass_sed_ts)
+            --------------------------------
+            mass_water_ts
+                Total mass in water column (inside_mask).
+            mass_sed_ts
+                Total mass in active sediment layer (inside_mask).
+            mass_actual_ts
+                Total inside-system mass (= water + active sediment).
 
             Emissions (in mass_unit)
             ------------------------
-            mass_emitted_ts         mass “introduced/seen” at each timestep (first finite mass per element)
-            mass_emitted_cumulative cumulative emitted mass
+            mass_emitted_ts
+                Mass first appearing at each timestep.
+            mass_emitted_cumulative
+                Cumulative emitted mass.
 
             Eliminated mass mechanisms (in mass_unit)
             -----------------------------------------
@@ -9006,28 +9206,65 @@ class ChemicalDrift(OceanDrift):
               mass_photodegraded, mass_biodegraded,
               mass_biodegraded_water, mass_biodegraded_sediment,
               mass_hydrolyzed, mass_hydrolyzed_water, mass_hydrolyzed_sediment
+
             the function provides:
-              <var>_ts               per-timestep increment
-              <var>_cumulative       cumulative sum of increments
+              <var>_ts
+                  Per-timestep increment.
+              <var>_cumulative
+                  Cumulative sum of increments.
 
             Domain-exit / event-based removals (in mass_unit)
             -------------------------------------------------
-            mass_adv_out_ts         mass exiting by advection out (False->True transitions in adv_out)
-            mass_adv_out_cumulative cumulative advected-out mass
-            mass_stranded_ts        mass stranded (False->True transitions), only if inside now and previously
-            mass_stranded_cumulative cumulative stranded mass
-            mass_buried_ts          mass entering buried sediment (transition into buried), burial at t=0 allowed
-            mass_buried_cumulative  cumulative buried mass
+            mass_adv_out_ts
+                Mass exiting by advection out (False->True transitions in adv_out).
+            mass_adv_out_cumulative
+                Cumulative advected-out mass.
+            mass_stranded_ts
+                Mass stranded (False->True transitions), only if inside now and previously.
+            mass_stranded_cumulative
+                Cumulative stranded mass.
+            mass_buried_ts
+                Mass entering buried sediment (transition into buried), burial at t=0 allowed.
+            mass_buried_cumulative
+                Cumulative buried mass.
+
+            Aggregated phase-transfer time series (in mass_unit)
+            ----------------------------------------------------
+            mass_ads_to_sed_ts
+                Adsorption to sediments, aggregated from dissolved/cationic dissolved -> sediment
+                reversible transitions.
+            mass_des_from_sed_ts
+                Desorption from sediments, aggregated from sediment reversible ->
+                dissolved/cationic dissolved transitions.
+            mass_ads_to_spm_ts
+                Adsorption to suspended particles, aggregated from dissolved/cationic dissolved ->
+                particle reversible transitions.
+            mass_des_from_spm_ts
+                Desorption from suspended particles, aggregated from particle reversible ->
+                dissolved/cationic dissolved transitions.
+            mass_aggr_doc_poly_to_spm_ts
+                Aggregation from DOC/polymer pools to suspended particles.
+            mass_disaggr_poly_ts
+                Disaggregation of polymer to dissolved anionic form.
+            mass_ads_to_doc_ts
+                Adsorption/binding to DOC-like pools (humic colloid and polymer), aggregated across
+                the corresponding active transitions.
+            mass_des_from_doc_ts
+                Desorption/unbinding from DOC-like pools (humic colloid -> dissolved forms).
 
             Species mass and percent (inside-system only; in mass_unit and %)
             -----------------------------------------------------------------
-            For each species key present in the model (excluding 'sed_buried' as it is outside-system storage):
-              mass_sp_<key>_ts       inside-system mass of that species
-              perc_sp_<key>_ts       percent of inside-system mass (mass_sp_<key>_ts / mass_actual_ts * 100)
+            For each species key present in the model (excluding 'sed_buried' as it is
+            outside-system storage):
+              mass_sp_<key>_ts
+                  Inside-system mass of that species.
+              perc_sp_<key>_ts
+                  Percent of inside-system mass
+                  (= mass_sp_<key>_ts / mass_actual_ts * 100).
 
             Species keys may include (depending on model configuration):
               dissolved, dissolved_anion, dissolved_cation, doc, colloid, polymer,
-              spm_rev, spm_srev, spm_irrev, sed_rev, sed_srev, sed_irrev
+              spm_rev, spm_srev, spm_irrev, sed_rev, sed_srev, sed_irrev, sed_buried
         """
         import opendrift
         import pandas as pd
@@ -9043,9 +9280,12 @@ class ChemicalDrift(OceanDrift):
                 raise ValueError("timeseries_file_path must end with .csv")
 
         # Initialize init_species() and init_transfer_rates() if they were not stored in self.result
-        if not np.all([(hasattr(self.result, attr)) for attr in ['nspecies', 'name_species', 'transfer_rates', 'ntransformations',
-                                                                 'num_srev', 'num_ssrev', 'num_prev','num_psrev', 'num_lmm', 'num_col']]):
-            # Init species and transfer rates
+        required_meta = ['nspecies', 'name_species', 'transfer_rates']
+        need_init = (
+        (not all(hasattr(self.result, attr) for attr in required_meta)) or
+        (not hasattr(self, 'num_lmm') and not hasattr(self, 'num_lmmcation'))    )
+
+        if need_init:
             if self.mode != opendrift.models.basemodel.Mode.Config:
                 self.mode = opendrift.models.basemodel.Mode.Config
             self.init_species()
@@ -9105,7 +9345,7 @@ class ChemicalDrift(OceanDrift):
 
         # Check only lat/lon
         valid_traj = (
-            ds["lon"].notnull().any("time") | ds["lat"].notnull().any("time")
+            ds["lon"].notnull().any("time") & ds["lat"].notnull().any("time")
             )
         removed = ds.trajectory.where(~valid_traj, drop=True).values
         if verbose:
@@ -9177,7 +9417,6 @@ class ChemicalDrift(OceanDrift):
                     'mass_biodegraded_water', 'mass_biodegraded_sediment',
                     'mass_hydrolyzed', 'mass_hydrolyzed_water', 'mass_hydrolyzed_sediment'
                     ]
-
 
         result_ds=self.result
         extracted_attrs_dict_2d = {}
@@ -9290,6 +9529,7 @@ class ChemicalDrift(OceanDrift):
         mass_sp_dict_1d = {}
         perc_sp_dict_1d = {}
         perc_elim_dict_1d = {}
+        mass_transition_dict_1d = {}
 
         # 1) Inside-system mass (not outside/seeded_on_land/stranded elements)
         inside_mask = ~adv_out
@@ -9312,7 +9552,6 @@ class ChemicalDrift(OceanDrift):
 
         for key, sp_idx in specie_ids_num.items():
             # skip percent for buried sediments (outside system)
-
             if sp_idx is None:
                 m_ts = zeros_ts
             else:
@@ -9420,6 +9659,114 @@ class ChemicalDrift(OceanDrift):
             mass_eliminated_dict_1d["mass_buried_ts"] = exit_buried_at_t.astype(np.float32, copy=False)
             mass_eliminated_dict_1d["mass_buried_cumulative"] = cum_buried.astype(np.float32, copy=False)
 
+        # 7b) Aggregated specie-transition mass time series
+        # Count only when the element is inside the domain both before and after the transition.
+        mass_transition_dict_1d["mass_ads_to_sed_ts"] = self.sum_transition_pairs(
+            pairs=[
+                (getattr(self, "num_lmm", None), getattr(self, "num_srev", None)),
+                (getattr(self, "num_lmmcation", None), getattr(self, "num_srev", None)),
+            ],
+            mass=mass,
+            specie=specie,
+            inside_mask=inside_mask,
+            steps=steps,
+            N_elem=N_elem,
+            mass_conversion_factor=mass_conversion_factor,
+            chunk_cols=50000)
+
+        mass_transition_dict_1d["mass_des_from_sed_ts"] = self.sum_transition_pairs(
+            pairs=[
+                (getattr(self, "num_srev", None), getattr(self, "num_lmm", None)),
+                (getattr(self, "num_srev", None), getattr(self, "num_lmmcation", None)),
+            ],
+            mass=mass, specie=specie, inside_mask=inside_mask,
+            steps=steps, N_elem=N_elem,
+            mass_conversion_factor=mass_conversion_factor,
+            chunk_cols=50000)
+
+        mass_transition_dict_1d["mass_ads_to_spm_ts"] = self.sum_transition_pairs(
+            pairs=[
+                (getattr(self, "num_lmm", None), getattr(self, "num_prev", None)),
+                (getattr(self, "num_lmmcation", None), getattr(self, "num_prev", None)),
+            ],
+            mass=mass, specie=specie, inside_mask=inside_mask,
+            steps=steps, N_elem=N_elem,
+            mass_conversion_factor=mass_conversion_factor,
+            chunk_cols=50000)
+
+        mass_transition_dict_1d["mass_des_from_spm_ts"] = self.sum_transition_pairs(
+            pairs=[
+                (getattr(self, "num_prev", None), getattr(self, "num_lmm", None)),
+                (getattr(self, "num_prev", None), getattr(self, "num_lmmcation", None)),
+            ],
+            mass=mass, specie=specie, inside_mask=inside_mask,
+            steps=steps, N_elem=N_elem,
+            mass_conversion_factor=mass_conversion_factor,
+            chunk_cols=50000)
+
+        mass_transition_dict_1d["mass_aggr_doc_poly_to_spm_ts"] = self.sum_transition_pairs(
+            pairs=[
+                (getattr(self, "num_humcol", None), getattr(self, "num_prev", None)),
+                (getattr(self, "num_polymer", None), getattr(self, "num_prev", None)),
+            ],
+            mass=mass, specie=specie, inside_mask=inside_mask,
+            steps=steps, N_elem=N_elem,
+            mass_conversion_factor=mass_conversion_factor,
+            chunk_cols=50000)
+
+        mass_transition_dict_1d["mass_disaggr_poly_ts"] = self.sum_transition_pairs(
+            pairs=[
+                (getattr(self, "num_polymer", None), getattr(self, "num_lmmanion", None)),
+            ],
+            mass=mass, specie=specie, inside_mask=inside_mask,
+            steps=steps, N_elem=N_elem,
+            mass_conversion_factor=mass_conversion_factor,
+            chunk_cols=50000)
+
+        mass_transition_dict_1d["mass_ads_to_doc_ts"] = self.sum_transition_pairs(
+            pairs=[
+                (getattr(self, "num_lmm", None), getattr(self, "num_humcol", None)),
+                (getattr(self, "num_lmmcation", None), getattr(self, "num_humcol", None)),
+                (getattr(self, "num_lmmcation", None), getattr(self, "num_polymer", None)),
+                (getattr(self, "num_lmmanion", None), getattr(self, "num_polymer", None)),
+            ],
+            mass=mass, specie=specie, inside_mask=inside_mask,
+            steps=steps, N_elem=N_elem,
+            mass_conversion_factor=mass_conversion_factor,
+            chunk_cols=50000)
+
+        mass_transition_dict_1d["mass_des_from_doc_ts"] = self.sum_transition_pairs(
+            pairs=[
+                (getattr(self, "num_humcol", None), getattr(self, "num_lmm", None)),
+                (getattr(self, "num_humcol", None), getattr(self, "num_lmmcation", None)),
+            ],
+            mass=mass, specie=specie, inside_mask=inside_mask,
+            steps=steps, N_elem=N_elem,
+            mass_conversion_factor=mass_conversion_factor,
+            chunk_cols=50000)
+
+        mass_transition_dict_1d["mass_dep_to_sed_ts"] = self.sum_transition_pairs(
+        pairs=[
+            (getattr(self, "num_prev", None), getattr(self, "num_srev", None)),
+            (getattr(self, "num_psrev", None), getattr(self, "num_ssrev", None)),
+            (getattr(self, "num_pirrev", None), getattr(self, "num_sirrev", None)),
+        ],
+        mass=mass, specie=specie, inside_mask=inside_mask,
+        steps=steps, N_elem=N_elem,
+        mass_conversion_factor=mass_conversion_factor,
+        chunk_cols=50000)
+
+        mass_transition_dict_1d["mass_res_from_sed_ts"] = self.sum_transition_pairs(
+            pairs=[
+                (getattr(self, "num_srev", None), getattr(self, "num_prev", None)),
+                (getattr(self, "num_ssrev", None), getattr(self, "num_psrev", None)),
+                (getattr(self, "num_sirrev", None), getattr(self, "num_pirrev", None)),
+            ],
+            mass=mass, specie=specie, inside_mask=inside_mask,
+            steps=steps, N_elem=N_elem,
+            mass_conversion_factor=mass_conversion_factor,
+            chunk_cols=50000)
+
         # 8) Percentage contribution of each elimination term (per time step)
         ts_keys = [k for k in mass_eliminated_dict_1d.keys() if k.endswith("_ts")]
 
@@ -9433,12 +9780,9 @@ class ChemicalDrift(OceanDrift):
             base = k[:-3]  # drop "_ts"
             perc_key = f"perc_elim_{base}_ts"
 
-            perc = np.divide(
-                term_ts,
-                total_elim_ts,
+            perc = np.divide(term_ts, total_elim_ts,
                 out=np.zeros_like(term_ts, dtype=np.float64),
-                where=total_elim_ts > 0.0,
-            ) * 100.0
+                where=total_elim_ts > 0.0,) * 100.0
             perc_elim_dict_1d[perc_key] = perc.astype(np.float32, copy=False)
 
         # ===== Drop padding row (if used) and recompute window cumulatives
@@ -9447,7 +9791,7 @@ class ChemicalDrift(OceanDrift):
             time_steps = time_steps[pad_rows:]
             time_date_serie = time_date_serie[pad_rows:]
             # slice 1D dicts
-            for d in (mass_dict_1d, mass_sp_dict_1d, perc_sp_dict_1d):
+            for d in (mass_dict_1d, mass_sp_dict_1d, perc_sp_dict_1d, mass_transition_dict_1d):
                 for k in list(d.keys()):
                     d[k] = np.asarray(d[k])[pad_rows:]
 
@@ -9476,6 +9820,7 @@ class ChemicalDrift(OceanDrift):
         mass_dict              = {f"{k} {mass_UM}": v for k, v in mass_dict_1d.items()}
         mass_eliminated_dict   = {f"{k} {mass_UM}": v for k, v in mass_eliminated_dict_1d.items()}
         mass_sp_dict           = {f"{k} {mass_UM}": v for k, v in mass_sp_dict_1d.items()}
+        mass_transition_dict   = {f"{k} {mass_UM}": v for k, v in mass_transition_dict_1d.items()}
         perc_sp_dict           = {f"{k} [%]":       v for k, v in perc_sp_dict_1d.items()}
         perc_elim_dict         = {f"{k} [%]":       v for k, v in perc_elim_dict_1d.items()}
 
@@ -9488,6 +9833,7 @@ class ChemicalDrift(OceanDrift):
             "date_of_timestep": time_date_serie,
             **mass_dict,
             **mass_eliminated_dict,
+            **mass_transition_dict,
             **mass_sp_dict,
             **perc_sp_dict,
             **perc_elim_dict,
@@ -9844,7 +10190,26 @@ class ChemicalDrift(OceanDrift):
         other_mix = [0.75, 0.60, 0.48, 0.36, 0.26, 0.18, 0.10]
         assign_sp_group_fixed(other_sp_order, gray_base, other_mix)
 
-        # 4) Fallback for anything not covered
+        # 4) Speciation palettes by topic
+        transition_fixed = {
+            "mass_ads_to_sed_ts": "#8d6e63",
+            "mass_des_from_sed_ts": "#bcaaa4",
+
+            "mass_ads_to_spm_ts": "#00897b",
+            "mass_des_from_spm_ts": "#80cbc4",
+
+            "mass_dep_to_sed_ts": "#6d4c41",
+            "mass_res_from_sed_ts": "#a1887f",
+
+            "mass_ads_to_doc_ts": "#5e35b1",
+            "mass_des_from_doc_ts": "#b39ddb",
+
+            "mass_aggr_doc_poly_to_spm_ts": "#ef6c00",
+            "mass_disaggr_poly_ts": "#ffb74d",
+        }
+        cmap.update(transition_fixed)
+
+        # 5) Fallback for anything not covered
         # Use 60-color palette; deterministic assignment for remaining labels
         fallback_palette = (
             list(plt.get_cmap("tab20").colors) +
@@ -9908,6 +10273,26 @@ class ChemicalDrift(OceanDrift):
                 "sp_sed_buried": "Sed (buried)",
             }
             return sp_map.get(sp, sp.replace("_", " ").replace("sp ", "").title())
+
+        #
+        transition_map = {
+            "mass_ads_to_sed_ts": "Ads. to sed (ts)",
+            "mass_des_from_sed_ts": "Des. from sed (ts)",
+
+            "mass_ads_to_spm_ts": "Ads. to SPM (ts)",
+            "mass_des_from_spm_ts": "Des. from SPM (ts)",
+
+            "mass_dep_to_sed_ts": "Dep. to sed (ts)",
+            "mass_res_from_sed_ts": "Resusp. from sed (ts)",
+
+            "mass_ads_to_doc_ts": "Ads. to DOC/polymer (ts)",
+            "mass_des_from_doc_ts": "Des. from DOC/polymer (ts)",
+
+            "mass_aggr_doc_poly_to_spm_ts": "Aggr. to SPM (ts)",
+            "mass_disaggr_poly_ts": "Disaggr. from polymer (ts)",
+        }
+        if k in transition_map:
+            return transition_map[k]
 
         # Other mass keys: merge time + compartment into one suffix like "(ts-wat)"
         time_tag = None
@@ -10271,6 +10656,57 @@ class ChemicalDrift(OceanDrift):
             dict(title="Cumulative eliminated masses (final)", kind="bar_elim_summary",
                  cols=[], legend={"max_cols": 2}),
         ]
+
+        # Transition processes: adsorption / desorption / deposition / resuspension / aggregation
+        if self._existing(dfc, [mcol("mass_ads_to_spm_ts"), mcol("mass_des_from_spm_ts")]):
+            panels += [
+                dict(title="Adsorption to suspended particles", kind="line",
+                     cols=self._existing(dfc, [mcol("mass_ads_to_spm_ts")]),
+                     legend={"max_cols": 1}),
+                dict(title="Desorption from suspended particles", kind="line",
+                     cols=self._existing(dfc, [mcol("mass_des_from_spm_ts")]),
+                     legend={"max_cols": 1}),
+            ]
+
+        if self._existing(dfc, [mcol("mass_ads_to_sed_ts"), mcol("mass_des_from_sed_ts")]):
+            panels += [
+                dict(title="Adsorption to sediments", kind="line",
+                     cols=self._existing(dfc, [mcol("mass_ads_to_sed_ts")]),
+                     legend={"max_cols": 1}),
+                dict(title="Desorption from sediments", kind="line",
+                     cols=self._existing(dfc, [mcol("mass_des_from_sed_ts")]),
+                     legend={"max_cols": 1}),
+            ]
+
+        if self._existing(dfc, [mcol("mass_ads_to_doc_ts"), mcol("mass_des_from_doc_ts")]):
+            panels += [
+                dict(title="Adsorption to DOC / polymer", kind="line",
+                     cols=self._existing(dfc, [mcol("mass_ads_to_doc_ts")]),
+                     legend={"max_cols": 1}),
+                dict(title="Desorption from DOC / polymer", kind="line",
+                     cols=self._existing(dfc, [mcol("mass_des_from_doc_ts")]),
+                     legend={"max_cols": 1}),
+            ]
+
+        if self._existing(dfc, [mcol("mass_dep_to_sed_ts"), mcol("mass_res_from_sed_ts")]):
+            panels += [
+                dict(title="Deposition to sediments", kind="line",
+                     cols=self._existing(dfc, [mcol("mass_dep_to_sed_ts")]),
+                     legend={"max_cols": 1}),
+                dict(title="Resuspension from sediments", kind="line",
+                     cols=self._existing(dfc, [mcol("mass_res_from_sed_ts")]),
+                     legend={"max_cols": 1}),
+            ]
+
+        if self._existing(dfc, [mcol("mass_aggr_doc_poly_to_spm_ts"), mcol("mass_disaggr_poly_ts")]):
+            panels += [
+                dict(title="Aggregation to suspended particles", kind="line",
+                     cols=self._existing(dfc, [mcol("mass_aggr_doc_poly_to_spm_ts")]),
+                     legend={"max_cols": 1}),
+                dict(title="Disaggregation from polymer", kind="line",
+                     cols=self._existing(dfc, [mcol("mass_disaggr_poly_ts")]),
+                     legend={"max_cols": 1}),
+            ]
 
         # Speciation: mass and percent stacked bars
         panels += [
@@ -10808,11 +11244,20 @@ class ChemicalDrift(OceanDrift):
         if i_deg is not None and i_bio is not None:
             topic_pages.append(("Fate & transport sinks", rows[i_deg:i_bio]))
 
-        # 3) Degradation pathways: biodeg/hydro/photo (+ bar summary)
-        if i_bio is not None and i_allsp is not None:
-            topic_pages.append(("Degradation pathways", rows[i_bio:i_allsp]))
+        i_trans = find_row("Adsorption to suspended particles")
 
-        # 4) Speciation overview: all species + dissolved + spm
+        # 3) Degradation pathways: biodeg/hydro/photo (+ bar summary)
+        if i_bio is not None:
+            if i_trans is not None:
+                topic_pages.append(("Degradation pathways", rows[i_bio:i_trans]))
+            elif i_allsp is not None:
+                topic_pages.append(("Degradation pathways", rows[i_bio:i_allsp]))
+
+        # 4) Adsorption / desorption / deposition / resuspension
+        if i_trans is not None and i_allsp is not None:
+            topic_pages.append(("Adsorption / desorption and deposition / resuspension", rows[i_trans:i_allsp]))
+
+        # 5) Speciation overview: all species + dissolved + spm
         if i_allsp is not None and i_sp_sed is not None:
             topic_pages.append(("Speciation overview", rows[i_allsp:i_sp_sed]))
 
