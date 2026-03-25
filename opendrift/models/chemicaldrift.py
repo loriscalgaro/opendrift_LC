@@ -9326,7 +9326,7 @@ class ChemicalDrift(OceanDrift):
         # removed_idx       = status_categories.index('removed')         if 'removed'  in status_categories else None
         # specie_ids_name = {v: k for k, v in specie_ids_num.items() if v is not None}
 
-        # ===== Define time and mass convertions
+        # Define time and mass convertions
         if mass_unit not in ['g','mg','ug','µg','kg']:
             raise ValueError(f"Incorrect mass_unit: '{mass_unit}', can be only 'g','mg','ug','µg','kg'")
         mass_conversion_factor = self.calc_mass_conversion_factor(mass_unit)
@@ -9358,7 +9358,7 @@ class ChemicalDrift(OceanDrift):
         self.result = ds_clean
         del ds_clean, ds
 
-        # ===== Optional time filtering
+        # Optional time filtering
         result_ds = self.result
 
         # Build full time axes on the *current* (cleaned) dataset
@@ -9411,7 +9411,7 @@ class ChemicalDrift(OceanDrift):
         # Number of timesteps (after optional filtering)
         steps = len(self.result.time)
 
-        # ===== Dynamically extract attributes and create dictionary
+        # Dynamically extract attributes and create dictionary
         attrs_ls = ['lat', 'lon', 'mass',
                     'mass_degraded','mass_degraded_water', 'mass_degraded_sediment',
                     'mass_volatilized', 'mass_photodegraded', 'mass_biodegraded',
@@ -9425,7 +9425,7 @@ class ChemicalDrift(OceanDrift):
             extracted_attrs_dict_2d[attr] = ((getattr(result_ds, attr).T.values)
                                if hasattr(result_ds, attr) else None)
 
-        # ===== Get mask for elements in water column and sedments for each timestep
+        # Get mask for elements in water column and sedments for each timestep
         N_elem = extracted_attrs_dict_2d['mass'].shape[1]
         status = result_ds.status.T.values                     # (T,N)
         specie = result_ds.specie.T.values                     # (T,N)
@@ -9459,7 +9459,7 @@ class ChemicalDrift(OceanDrift):
         # seeded_on_land = status_mask(seeded_on_land_idx) if seeded_on_land_idx is not None else None
         stranded       = status_mask(stranded_idx) if stranded_idx is not None else None
 
-        # ===== Find which elements are advected out of the domain
+        # Find which elements are advected out of the domain
         if verbose:
             print("Calculating mass advected out of the simulation")
         # (i) Use shapefile if provided
@@ -9524,7 +9524,7 @@ class ChemicalDrift(OceanDrift):
             """Sum arr over axis, only where mask==True; ignore NaNs inside mask."""
             return np.nansum(np.where(mask, arr, np.nan), axis=axis)
 
-        # ===== Dynamically extract 1D timeseries
+        # Dynamically extract 1D timeseries
         mass_dict_1d = {}
         mass_eliminated_dict_1d = {}
         mass_sp_dict_1d = {}
@@ -9786,7 +9786,7 @@ class ChemicalDrift(OceanDrift):
                 where=total_elim_ts > 0.0,) * 100.0
             perc_elim_dict_1d[perc_key] = perc.astype(np.float32, copy=False)
 
-        # ===== Drop padding row (if used) and recompute window cumulatives
+        # Drop padding row (if used) and recompute window cumulatives
         if pad_rows:
             # slice time axes
             time_steps = time_steps[pad_rows:]
@@ -9811,7 +9811,7 @@ class ChemicalDrift(OceanDrift):
                     if cum_key in mass_eliminated_dict_1d:
                         mass_eliminated_dict_1d[cum_key] = np.cumsum(ts, dtype=np.float64).astype(np.float32)
 
-        # ===== Assemble DataFrame
+        # Assemble DataFrame
         # The function builds time-series arrays in *_dict_1d;
         # assemble them into a dataframe for convenience.
         mass_UM = f"[{mass_unit}]"
@@ -12150,13 +12150,14 @@ class ChemicalDrift(OceanDrift):
 
     ### Helpers for sum_DataArray_list
     @staticmethod
-    def _reindex_da(DataArray,
-                  time_name, target_time,
-                  nearest_tol_time= None,
-                  align_mode = "pad",
-                  clip_to_original=True):
+    def _reindex_da(
+        DataArray,
+        time_name, target_time,
+        nearest_tol_time=None,
+        align_mode="pad",
+        clip_to_original=True):
         """
-        Reindex xr.DataArray along "time_name" dimension using "target_time" array
+        Reindex xr.DataArray along "time_name" dimension using target_time array.
 
         DataArray:        xarray DataArray
         time_name:        string, name of time dimension of all DataArray present in DataArray_ls
@@ -12164,10 +12165,20 @@ class ChemicalDrift(OceanDrift):
         nearest_tol_time: np.timedelta64, max distance for "nearest" (e.g., np.timedelta64(3,'h'))
         align_mode:       string, mode of selecting timestamp in reconstructed sum ("pad"|"nearest"|"exact")
         clip_to_original: bool, select if contribution of DataArray before the start and after the end of that array is set to 0
-
         """
+        valid_modes = {"pad", "nearest", "exact"}
+        if align_mode not in valid_modes:
+            raise ValueError(f"align_mode must be one of {valid_modes}, got {align_mode!r}")
+
+        if time_name not in DataArray.dims:
+            raise ValueError(f'DataArray is missing time dimension "{time_name}"')
+
+        time_index = DataArray[time_name].to_index()
+        if not time_index.is_unique:
+            raise ValueError(f'Time coordinate "{time_name}" must be unique for reindexing')
+
         # sort for methods that need monotonic time
-        if align_mode in {"pad", "nearest"} and not DataArray[time_name].to_index().is_monotonic_increasing:
+        if align_mode in {"pad", "nearest"} and not time_index.is_monotonic_increasing:
             DataArray = DataArray.sortby(time_name)
 
         if align_mode == "exact":
@@ -12182,17 +12193,15 @@ class ChemicalDrift(OceanDrift):
 
         if clip_to_original:
             t_orig = DataArray[time_name].values
-            t_min  = t_orig.min()
-            t_max  = t_orig.max()
-            valid  = (out[time_name] >= t_min) & (out[time_name] <= t_max)
-            out    = out.where(valid)
+            t_min = t_orig.min()
+            t_max = t_orig.max()
+            valid = (out[time_name] >= t_min) & (out[time_name] <= t_max)
+            out = out.where(valid)
 
         return out
 
-
     @staticmethod
-    def _infer_decimals_from_res(res,
-                              extra = 1):
+    def _infer_decimals_from_res(res, extra = 1):
         """
         Infer decimals from the resolution: number of visible decimal places in |res| + `extra`.
         Examples: 0.005 -> 4, 0.001 -> 4, 0.2 -> 2, 0.25 -> 3
@@ -12202,18 +12211,16 @@ class ChemicalDrift(OceanDrift):
         d = len(s.split(".")[1]) if "." in s else 0
         return max(0, d + extra)
 
-
     def build_regular_series(self, *,
-                          first_value,
-                          res,
-                          length,
-                          direction,  # "asc" | "desc" | None -> use sign of res
-                          decimals) -> np.ndarray:
+        first_value, res, length,
+        direction, decimals) :
         """
         Round the first_value to the desired decimals (derived from |res| if None),
         then create: first_rounded + step * i  for i = 0..length-1,
         where step = +|res| for ascending, -|res| for descending.
         """
+        import numpy as np
+
         if length < 0:
             raise ValueError("length must be >= 0")
         if res == 0:
@@ -12239,19 +12246,21 @@ class ChemicalDrift(OceanDrift):
         series = first_rounded + idx * step
         return np.round(series, decimals=decimals)
 
-
     @staticmethod
-    def _canonical_nontime_dims(DataArray_ls, nontime_dims,
-                            dim_res_dict=None, coord_tolerance_dict=None,
-                            snap_mode=None, Verbose = True):  # "ref" recommended
+    def _canonical_nontime_dims(DataArray_ls,
+        nontime_dims, dim_res_dict=None,
+        coord_tolerance_dict=None,
+        snap_mode=None, Verbose=True):
         """
         If coord_tolerance is None -> strict equality (np.array_equal).
         If coord_tolerance is float -> allow per-index |diff| <= tolerance across arrays
 
         Return canonical 1-D coord arrays for each dim in nontime_dims.
-        Does *not* relabel inputs; it only computes the canonical vectors.
         """
         import numpy as np
+
+        if snap_mode not in (None, "median", "ref"):
+            raise ValueError("snap_mode must be None, 'median', or 'ref'")
 
         def _is_regular(vec, tol):
             """
@@ -12262,16 +12271,17 @@ class ChemicalDrift(OceanDrift):
                 return True, 0.0
             diffs = np.diff(v)
             step = np.median(np.abs(diffs))
-            err  = np.max(np.abs(diffs - np.sign(diffs.mean() if diffs.size else 1.0)*step))
+            sign = np.sign(diffs.mean()) if diffs.size else 1.0
+            err = np.max(np.abs(diffs - sign * step))
             return (err <= (tol if tol is not None else 1e-12)), step
 
         def _min_decimals(x, max_dec=12):
             """
             Return minimum number of decimals to represent x as a clean decimal within tolerance.
             """
-            x = float(abs(x));
-            for d in range(max_dec+1):
-                if np.isclose(x*(10**d), round(x*(10**d)), atol=1e-12):
+            x = float(abs(x))
+            for d in range(max_dec + 1):
+                if np.isclose(x * (10**d), round(x * (10**d)), atol=1e-12):
                     return d
             return max_dec
 
@@ -12280,86 +12290,80 @@ class ChemicalDrift(OceanDrift):
 
         for dim in sorted(nontime_dims):
             ref = np.asarray(DataArray_ls[0][dim].values)
+
             # length check
             for idx, da in enumerate(DataArray_ls[1:], start=1):
                 if dim not in da.dims:
                     raise ValueError(f'Missing dimension "{dim}" in array {idx}')
                 if da.sizes[dim] != ref.size:
-                    raise ValueError(f'Dimension "{dim}" length differs: {da.sizes[dim]} vs {ref.size} for array {idx}')
+                    raise ValueError(
+                        f'Dimension "{dim}" length differs: {da.sizes[dim]} vs {ref.size} for array {idx}'
+                    )
 
-            tol = (coord_tolerance_dict or {}).get(dim) if coord_tolerance_dict is not None else None
+            tol = None if coord_tolerance_dict is None else coord_tolerance_dict.get(dim)
+            all_exact = True
 
             # tolerance check
-            identical_coord = []
             if tol is not None:
-                ok = True
-                for da in DataArray_ls[1:]:
+                for idx, da in enumerate(DataArray_ls[1:], start=1):
                     vals = np.asarray(da[dim].values)
                     diff = np.abs(vals - ref)
-                    identical_coord.append(diff==0)
                     if np.nanmax(diff) > tol:
-                        ok = False; break
-                if not ok:
-                    raise ValueError(f'Dimension "{dim}" values differ by > tolerance ({tol}).')
+                        raise ValueError(
+                            f'Dimension "{dim}" values differ by > tolerance ({tol}) in array {idx}'
+                        )
+                    if not np.array_equal(vals, ref):
+                        all_exact = False
             else:
-                # strict
                 for idx, da in enumerate(DataArray_ls[1:], start=1):
-                    equal = np.array_equal(np.asarray(da[dim].values), ref)
-                    if not equal:
-                        raise ValueError(f'Dimension "{dim}" values differ between arrays')
-                    else:
-                        identical_coord.append(equal)
+                    vals = np.asarray(da[dim].values)
+                    if not np.array_equal(vals, ref):
+                        raise ValueError(f'Dimension "{dim}" values differ between arrays (array {idx})')
 
-            if np.all(np.array(identical_coord)):
+            if all_exact:
                 # dim is identical across all DataArray_ls
                 if Verbose:
                     print(f"Identical dim '{dim}' among DataArray_ls: no interpolation needed")
                 canonical[dim] = ref
                 need_interpolation[dim] = False
                 continue
-            else:
-                need_interpolation[dim] = True
+
+            need_interpolation[dim] = True
 
             # resolution
-            dim_res = (dim_res_dict or {}).get(dim) if dim_res_dict is not None else None
+            dim_res = None if dim_res_dict is None else dim_res_dict.get(dim)
             if dim_res is None:
                 regular, dim_res = _is_regular(ref, tol)
                 dim_res = float(np.round(dim_res, _min_decimals(dim_res)))
                 if Verbose:
                     print(f"dim_res: {dim_res} inferred for dim: {dim}")
                 if not regular:
-                    raise ValueError(f'dim_res for "{dim}" not specified or inferred.')
+                    raise ValueError(f'dim_res for "{dim}" not specified and could not be inferred.')
 
             # build canonical
             if snap_mode == "ref":
                 can = ref.astype(np.float64)
-            else:  # "median"
-                stack = np.stack([np.asarray(da[dim].values, dtype=np.float64) for da in DataArray_ls], axis=0)
+            else:
+                stack = np.stack(
+                    [np.asarray(da[dim].values, dtype=np.float64) for da in DataArray_ls],
+                    axis=0,
+                )
                 can0 = np.nanmedian(stack, axis=0)
-                inc  = (can0[-1] >= can0[0])
+                inc = (can0[-1] >= can0[0])
                 first = can0[0]
-                step  = abs(dim_res)
-                series = first + (np.arange(can0.size) * (step if inc else -step))
+                step = abs(dim_res)
+                series = first + np.arange(can0.size) * (step if inc else -step)
                 can = np.round(series, decimals=_min_decimals(step))
                 if Verbose:
                     print(f"dim '{dim}' will be interpolated within tolerance ({tol}): {can0[0]} -> {can[0]}")
 
-            # normalize longitude system to match first array’s convention if present
-            if dim.lower() in ("lon","longitude"):
+            if dim.lower() in ("lon", "longitude"):
                 lon = can
-                if lon.min() < -10 and lon.max() <= 180:
-                    # already [-180,180]; leave
-                    pass
-                elif lon.min() >= 0 and lon.max() > 180:
-                    # [0,360]; leave
-                    pass
+                first_lon = np.asarray(DataArray_ls[0][dim].values)
+                if first_lon.min() >= 0:
+                    lon = lon % 360.0
                 else:
-                    # snap to either system based on first array
-                    first_lon = np.asarray(DataArray_ls[0][dim].values)
-                    if first_lon.min() >= 0:
-                        lon = lon % 360.0
-                    else:
-                        lon = ((lon + 180.0) % 360.0) - 180.0
+                    lon = ((lon + 180.0) % 360.0) - 180.0
                 can = lon
 
             canonical[dim] = can
@@ -12370,14 +12374,6 @@ class ChemicalDrift(OceanDrift):
     def _normalize_inputs(DataArray_dict, DataArray_ls, variable):
         """
         Ensure the correct format of DataArray_ls.
-
-        Returns
-        -------
-        DataArray_ls : list[xr.DataArray]
-            The list of DataArrays extracted or passed in.
-        index_keys : list or None
-            If DataArray_dict was provided, list index → dict key mapping.
-            Otherwise None.
         """
 
         if DataArray_dict is None and DataArray_ls is None:
@@ -12408,7 +12404,6 @@ class ChemicalDrift(OceanDrift):
             raise ValueError("Empty DataArray_ls")
 
         return DataArray_ls, index_keys
-
 
     @staticmethod
     def _normalize_depth_and_specie(DataArray_ls):
@@ -12453,15 +12448,16 @@ class ChemicalDrift(OceanDrift):
                         "All depth coordinate values must be identical."
                     )
 
-        # helper: drop specie everywhere
         def _drop_specie(aa: xr.DataArray) -> xr.DataArray:
             if "specie" in aa.dims:
+                if aa.sizes["specie"] != 1:
+                    raise ValueError(
+                        f"'specie' dimension must be singleton to be dropped, got size {aa.sizes['specie']}")
                 aa = aa.squeeze("specie", drop=True)
             if "specie" in aa.coords:
                 aa = aa.drop_vars("specie")
             return aa
 
-        # if no depth anywhere: just drop specie and return
         if depth_ref is None:
             return [_drop_specie(da) for da in DataArray_ls]
 
@@ -12469,12 +12465,10 @@ class ChemicalDrift(OceanDrift):
         n_depth = depth_ref.size
         any_missing_depth = not all(has_depth_flags)
 
-        # If multi-depth and some arrays missing depth => unsafe
         if n_depth > 1 and any_missing_depth:
             raise ValueError(
                 "Some DataArrays have multi-layer 'depth' while others have no 'depth'. "
-                "Cannot safely normalize in this case."
-            )
+                "Cannot safely normalize in this case.")
 
         normalized = []
 
@@ -12484,88 +12478,339 @@ class ChemicalDrift(OceanDrift):
             if n_depth == 1:
                 depth_value = float(depth_ref[0])
 
-                # If depth is a dimension, collapse it (keep info)
                 if "depth" in aa.dims:
                     if aa.sizes["depth"] != 1:
                         raise ValueError(
                             f"DataArray index {i} has 'depth' dim size {aa.sizes['depth']} "
-                            "but reference depth is single-valued."
-                        )
+                            "but reference depth is single-valued.")
                     aa = aa.isel(depth=0, drop=True)
 
-                # Ensure depth is a scalar coord (0-D)
-                # (drop any existing 1D coord first)
                 if "depth" in aa.coords:
                     aa = aa.drop_vars("depth")
-                aa = aa.assign_coords(depth=depth_value)  # scalar coord
-
+                aa = aa.assign_coords(depth=depth_value)
             else:
-                # multi-depth: keep as-is, but enforce identical coord values
                 if "depth" in aa.dims:
                     aa = aa.assign_coords(depth=depth_ref)
                 elif "depth" in aa.coords:
-                    # coord without dim: still enforce
                     aa = aa.assign_coords(depth=depth_ref)
 
             normalized.append(aa)
 
         return normalized
 
+    def _infer_horizontal_names(self, da):
+        """
+        Return (lat_name, lon_name) from a DataArray using common conventions.
+        """
+        lat_name = next((n for n in ("latitude", "lat") if n in da.dims or n in da.coords), None)
+        lon_name = next((n for n in ("longitude", "lon", "long") if n in da.dims or n in da.coords), None)
 
-    def sum_DataArray_list(self,
-                         DataArray_dict,
-                         DataArray_ls = None,
-                         variable = None,
-                         start_date = None,
-                         end_date = None,
-                         freq_time = None,
-                         time_name = "time",
-                         align_mode ="pad",
-                         nearest_tol_time = None,
-                         dim_res_dict = None,
-                         coord_tolerance_dict = {},
-                         snap_mode ="median",
-                         mask_mode = "input0",
-                         sim_description = None,
-                         Verbose = True):
-        '''
-        Sum a list of xarray DataArrays, with the same or different time step
-        If start_date, end_date, or freq_time are specified time dimension is reconstructed
+        if lat_name is None or lon_name is None:
+            raise ValueError(
+                "Could not infer horizontal coordinates. Expected one of "
+                "latitude/lat and longitude/lon/long.")
+        return lat_name, lon_name
+
+    def _cell_areas_from_1d(self, lat, lon, lat_name="latitude", lon_name="longitude", R=6371000.0):
+        """
+        Compute spherical cell areas from 1D lat/lon centers.
+        """
+        import numpy as np
+        import xarray as xr
+
+        lat = np.asarray(lat, dtype=np.float64)
+        lon = np.asarray(lon, dtype=np.float64)
+
+        def _centers_to_edges(v):
+            v = np.asarray(v, dtype=np.float64)
+            if v.size == 1:
+                half = 0.5
+                return np.array([v[0] - half, v[0] + half], dtype=np.float64)
+
+            e = np.empty(v.size + 1, dtype=np.float64)
+            e[1:-1] = 0.5 * (v[:-1] + v[1:])
+            e[0] = v[0] - (e[1] - v[0])
+            e[-1] = v[-1] + (v[-1] - e[-2])
+            return e
+
+        lat_e = np.deg2rad(_centers_to_edges(lat))
+        lon_e = np.deg2rad(_centers_to_edges(lon))
+
+        dlambda = np.diff(lon_e)[None, :]
+        area = R**2 * np.abs(np.sin(lat_e[1:, None]) - np.sin(lat_e[:-1, None])) * np.abs(dlambda)
+
+        return xr.DataArray(
+            area,
+            dims=(lat_name, lon_name),
+            coords={lat_name: lat, lon_name: lon},
+            name="cell_area",
+        )
+
+    def _standardize_horizontal_names(self, da, lat_name="latitude", lon_name="longitude"):
+        """
+        Rename common horizontal coordinate names to canonical names.
+        """
+        lat0, lon0 = self._infer_horizontal_names(da)
+        rename_map = {}
+        if lat0 != lat_name:
+            rename_map[lat0] = lat_name
+        if lon0 != lon_name:
+            rename_map[lon0] = lon_name
+        return da.rename(rename_map) if rename_map else da
+
+    def _extract_common_topo_from_dict(self, DataArray_dict, topo_key="topo"):
+        """
+        Return a common topography from DataArray_dict if all topographies are identical.
+        Otherwise raise, because one common cell-volume field is required for a clean
+        mass-based assert on the aligned grid.
+        """
+        import numpy as np
+        import xarray as xr
+
+        topo_items = []
+        for k, inner in sorted(DataArray_dict.items()):
+            topo = inner.get(topo_key)
+            if topo is not None:
+                topo_items.append((k, topo))
+
+        if not topo_items:
+            return None
+
+        n_total = len(DataArray_dict)
+        n_topo = len(topo_items)
+        if 0 < n_topo < n_total:
+            raise ValueError("Some inputs have topography and some do not; cannot run common mass check.")
+
+        ref_key, ref_topo = topo_items[0]
+        for k, topo in topo_items[1:]:
+            a, b = xr.align(ref_topo, topo, join="exact", copy=False)
+            if not np.array_equal(np.asarray(a.values), np.asarray(b.values), equal_nan=True):
+                raise ValueError(
+                    f"Mass check requires one common topography, but topo for key {k} "
+                    f"differs from topo for key {ref_key}.")
+
+        return ref_topo.copy(deep=False)
+
+    @staticmethod
+    def _snap_2d_field_to_ref_coords(field, ref, dims, atol=1e-8):
+        """
+        Make a 2-D field use the exact coordinates of `ref` on the given dims,
+        but only if coordinates are already numerically equal within tolerance.
+
+        This is meant for cases where data_var coordinates were normalized/snap-fixed
+        but a companion field (e.g. topography) still carries slightly different
+        coordinate objects/rounding.
+        """
+        import numpy as np
+
+        d0, d1 = dims
+        out = field.transpose(d0, d1)
+
+        for dim in (d0, d1):
+            if dim not in out.coords:
+                raise ValueError(f"Field is missing coordinate '{dim}'")
+            if dim not in ref.coords:
+                raise ValueError(f"Reference is missing coordinate '{dim}'")
+
+            vals_field = np.asarray(out[dim].values)
+            vals_ref = np.asarray(ref[dim].values)
+
+            if vals_field.shape != vals_ref.shape:
+                raise ValueError(
+                    f"Coordinate '{dim}' shape mismatch: "
+                    f"field={vals_field.shape} vs ref={vals_ref.shape}"
+                )
+
+            if np.array_equal(vals_field, vals_ref):
+                continue
+
+            if not np.allclose(vals_field, vals_ref, rtol=0.0, atol=atol, equal_nan=True):
+                diff = np.abs(vals_field - vals_ref)
+                max_abs = float(np.nanmax(diff)) if diff.size else 0.0
+                raise ValueError(
+                    f"Coordinate '{dim}' differs between topography and da_ref "
+                    f"(max_abs_diff={max_abs:.6e}, atol={atol})"
+                )
+
+            out = out.assign_coords({dim: ref[dim].values})
+
+        return out
+
+    def _build_common_cell_volume(self, da_ref, topo_ref):
+        """
+        Build cell volume/thickness on the common aligned grid.
+
+        3D: da_ref has 'depth' as a dimension, interpreted as layer tops.
+                cell_volume = dz * area
+            Scalar depth coord:
+                da_ref has 'depth' as a scalar coord but not a dimension.
+                cell_volume = (topo - depth) * area
+        2D: no depth present.
+            cell_volume = topo * area
+        """
+        import numpy as np
+        import xarray as xr
+
+        lat_name_ref, lon_name_ref = self._infer_horizontal_names(da_ref)
+        lat_name_topo, lon_name_topo = self._infer_horizontal_names(topo_ref)
+
+        topo = topo_ref
+        if lat_name_topo != lat_name_ref or lon_name_topo != lon_name_ref:
+            topo = topo.rename({lat_name_topo: lat_name_ref, lon_name_topo: lon_name_ref})
+
+        expected_dims = {lat_name_ref, lon_name_ref}
+        if set(topo.dims) != expected_dims:
+            raise ValueError(
+                f"topo_ref must be 2-D on ({lat_name_ref}, {lon_name_ref}); got dims {topo.dims}"
+            )
+
+        topo = self._snap_2d_field_to_ref_coords(
+            topo,
+            da_ref,
+            dims=(lat_name_ref, lon_name_ref),
+            atol=1e-8,
+        )
+
+        topo = topo.astype(np.float64).clip(min=0.0)
+
+        area = self._cell_areas_from_1d(
+            da_ref[lat_name_ref].values,
+            da_ref[lon_name_ref].values,
+            lat_name=lat_name_ref,
+            lon_name=lon_name_ref,
+        )
+
+        topo, area = xr.align(topo, area, join="exact", copy=False)
+
+        # 3D case: depth is a layer-top dimension
+        if "depth" in da_ref.dims:
+            depth_top = np.asarray(da_ref["depth"].values, dtype=np.float64)
+
+            z_top = xr.DataArray(
+                depth_top,
+                dims=("depth",),
+                coords={"depth": da_ref["depth"].values},
+            ).broadcast_like(topo).transpose("depth", lat_name_ref, lon_name_ref)
+
+            z_bottom = topo.expand_dims({"depth": [depth_top.size]})
+            z_edges = xr.concat([z_top, z_bottom], dim="depth").rename({"depth": "depth_edge"})
+            z_edges = z_edges.transpose("depth_edge", lat_name_ref, lon_name_ref)
+
+            dz = z_edges.diff("depth_edge").rename({"depth_edge": "depth"}).clip(min=0.0)
+            dz = dz.assign_coords(depth=da_ref["depth"].values)
+
+            cell_volume = dz * area
+
+        # scalar depth coord but not a dimension
+        elif "depth" in da_ref.coords:
+            depth0 = float(np.ravel(da_ref["depth"].values)[0])
+            thickness = (topo - depth0).clip(min=0.0)
+            cell_volume = thickness * area
+
+        # 2D full-column case
+        else:
+            cell_volume = topo * area
+
+        return cell_volume.astype(np.float64)
+
+    def _mass_on_common_grid(self, da, cell_volume):
+        """
+        Convert concentration to mass on the common grid and reduce only over spatial dims.
+        Preserves time and any other non-spatial dims.
+        """
+        import numpy as np
+        import xarray as xr
+
+        vol, data = xr.align(cell_volume, da, join="exact", copy=False)
+        mass = data.fillna(0).astype(np.float64) * vol.astype(np.float64)
+
+        spatial_dims = [d for d in vol.dims if d in mass.dims]
+        if spatial_dims:
+            mass = mass.sum(dim=spatial_dims, skipna=True)
+
+        return mass
+
+    def sum_DataArray_list(
+        self,
+        DataArray_dict,
+        DataArray_ls=None,
+        variable=None,
+        start_date=None,
+        end_date=None,
+        freq_time=None,
+        time_name="time",
+        align_mode="pad",
+        nearest_tol_time=None,
+        dim_res_dict=None,
+        coord_tolerance_dict=None,
+        snap_mode="median",
+        mask_mode="input0",
+        sim_description=None,
+        Verbose=True,
+    ):
+        """
+        Sum a list of xarray DataArrays, with the same or different time step.
+        If start_date, end_date, or freq_time are specified time dimension is reconstructed.
 
         DataArray_dict:      dictionary of {idx: {"topo": ..., "variable": ...}, ...}
         variable:            string, name of variable to be used as key for DataArray_dict
         DataArray_ls:        list of xarray DataArray
         start_date:          np.datetime64, start of reconstructed time dimension
-        end_date:            np.datetime64, start of reconstructed time dimension
+        end_date:            np.datetime64, end of reconstructed time dimension
         freq_time:           np.timedelta64, frequency of reconstructed time dimension
         time_name:           string, name of time dimension of all DataArray present in DataArray_ls
         align_mode:          string, mode of selecting timestamp in reconstructed sum ("pad"|"nearest"|"exact")
         nearest_tol_time:    np.timedelta64, max distance for "nearest" (e.g., np.timedelta64(3,'h'))
-        dim_res_dict:        dict {"dim" : float32} resolution of each dimension. Will be inferred if None or {}
-        mask_mode:           string, mode of masking finla sum ("input0"|"union"|"intersection")
-        sim_description:     string, descrition of simulation to be included in netcdf attributes
-        '''
-        import xarray as xr
+        dim_res_dict:        dict {"dim": float32} resolution of each dimension. Will be inferred if None or {}
+        mask_mode:           string, mode of masking final sum ("input0"|"union"|"intersection")
+        sim_description:     string, description of simulation to be included in netcdf attributes
+        """
+        import hashlib
+        import os
+        import tempfile
         from datetime import datetime
-        import numpy as np
 
-        ### Convert time_name to string to allow indexing
+        import numpy as np
+        import xarray as xr
+
+        # Convert time_name to string to allow indexing
         if not isinstance(time_name, str):
             time_name = str(time_name)
+
+        valid_mask_modes = {"input0", "union", "intersection"}
+        if mask_mode not in valid_mask_modes:
+            raise ValueError(f"mask_mode must be one of {valid_mask_modes}, got {mask_mode!r}")
+
         if DataArray_dict is None and DataArray_ls is None:
             raise ValueError("Either DataArray_dict or DataArray_ls must be provided.")
 
-        ### Build DataArray_ls from DataArray_dict if needed
-        DataArray_ls, index_keys = self._normalize_inputs(DataArray_dict, DataArray_ls, variable)
-        ### Ensure all DataArrays have consistent 'depth' semantics and Drop 'specie' dim/coord whenever it appears (size 1 or scalar).
-        DataArray_ls = self._normalize_depth_and_specie(DataArray_ls)
+        coord_tolerance_dict = {} if coord_tolerance_dict is None else coord_tolerance_dict
 
-        ### NaN counts  on cleaned arrays
+        # Normalize inputs
+        DataArray_ls, index_keys = self._normalize_inputs(DataArray_dict, DataArray_ls, variable)
+        DataArray_ls = self._normalize_depth_and_specie(DataArray_ls)
+        DataArray_ls = [self._standardize_horizontal_names(da) for da in DataArray_ls]
+
+        ordered_keys = index_keys if index_keys is not None else list(range(len(DataArray_ls)))
+
+        DataArray_dict_work = None
         if DataArray_dict is not None:
+            DataArray_dict_work = {}
+            for key, da_norm in zip(ordered_keys, DataArray_ls):
+                inner = dict(DataArray_dict[key])
+                inner[variable] = da_norm
+                if inner.get("topo") is not None:
+                    inner["topo"] = self._standardize_horizontal_names(inner["topo"])
+                DataArray_dict_work[key] = inner
+
+        if not all(time_name in da.dims for da in DataArray_ls):
+            missing = [i for i, da in enumerate(DataArray_ls) if time_name not in da.dims]
+            raise ValueError(f'All DataArrays must contain time dimension "{time_name}". Missing in indexes: {missing}')
+
+        if DataArray_dict_work is not None:
             nan_counts_inputs = {
-                idx: int(inner[variable].isnull().sum().item())
-                for idx, inner in DataArray_dict.items()
-                if variable in inner
+                key: int(DataArray_dict_work[key][variable].isnull().sum().item())
+                for key in ordered_keys
             }
         else:
             nan_counts_inputs = {
@@ -12578,101 +12823,99 @@ class ChemicalDrift(OceanDrift):
         if len(DataArray_ls) == 1:
             if Verbose:
                 print("len(DataArray_ls) is 1, returning DataArray_ls[0]")
-            return DataArray_ls[0]
+            return DataArray_ls[0], None
 
-        ### Check that input DataArrays have the same dimensions
+        ### Dimension / metadata checks
         if Verbose:
             print("Checking input DataArray dimensions")
+
         all_dims_per_da = [set(da.dims) for da in DataArray_ls]
         common_dims = set.intersection(*all_dims_per_da)
         extra_dims = set.union(*all_dims_per_da) - common_dims
         if extra_dims:
             for dim in sorted(extra_dims):
                 for idx, da in enumerate(DataArray_ls):
-                    if dim in da.dims:
-                        if Verbose:
-                            print(f'Extra dimension "{dim}" in array {idx}')
+                    if dim in da.dims and Verbose:
+                        print(f'Extra dimension "{dim}" in array {idx}')
             raise ValueError("Uncommon dimensions are present in DataArray_ls")
 
-        ### Check that all DataArrays have the same variable name
-        names = [da.name for da in DataArray_ls]  # may contain None
+        names = [da.name for da in DataArray_ls]
         if any(n is None for n in names):
             raise ValueError(f"All DataArrays must have a name. Got: {names}")
         ref_name = next((n for n in names if n is not None), "data")
 
-        ### Fail if any non-None name differs from ref_name
-        mismatch = [n for n in names if (n is not None and n != ref_name)]
+        mismatch = [n for n in names if n is not None and n != ref_name]
         if mismatch:
             raise ValueError(f"Mismatched DataArray names: {names}. Expected all '{ref_name}'.")
         if Verbose:
             print(f"var_name: {ref_name}")
 
-        ### non-time dims must have identical coordinates
         nontime_dims = set.union(*all_dims_per_da)
-        if time_name in nontime_dims:
-            nontime_dims.remove(time_name)
+        nontime_dims.discard(time_name)
 
-        sum_conc_DataArray_ls_input = float(sum(da.fillna(0).sum().item() for da in DataArray_ls))
-
-        ### check equality of dimension within tolerance
+        # check equality of dimensions within tolerance
         canonical_dims_dict, need_interpolation = self._canonical_nontime_dims(
-            DataArray_ls = DataArray_ls,
-            nontime_dims = nontime_dims,
+            DataArray_ls=DataArray_ls,
+            nontime_dims=nontime_dims,
             coord_tolerance_dict=coord_tolerance_dict,
             snap_mode=snap_mode,
             dim_res_dict=dim_res_dict,
-            Verbose = Verbose)
+            Verbose=Verbose,
+        )
 
-        ### Find common attributes to be added in Final_sum
+        # Find common attributes to be added in Final_sum
         common_attrs = DataArray_ls[0].attrs.copy()
         for da in DataArray_ls[1:]:
-            common_attrs = {key: value for key, value in common_attrs.items() if da.attrs.get(key) == value}
+            common_attrs = {
+                key: value
+                for key, value in common_attrs.items()
+                if da.attrs.get(key) == value
+            }
 
         H_can_out = None
         nan_counts_interp = None
+        common_topo_for_mass = None
 
+        # No interpolation path: try to get one common topo for mass check
         if not any(need_interpolation.values()):
-            # Remove heavy DataArrays to free memory safely when interpolation is not needed
-            if DataArray_dict is not None:
-                DataArray_dict.clear()
-            DataArray_dict = None
+            if DataArray_dict_work is not None:
+                try:
+                    common_topo_for_mass = self._extract_common_topo_from_dict(DataArray_dict_work)
+                except ValueError as e:
+                    common_topo_for_mass = None
+                    if Verbose:
+                        print(f"Skipping mass-based conservation check: {e}")
 
+        ### Interpolation path
         if any(need_interpolation.values()):
-            if DataArray_dict is None:
-                raise ValueError("DataArray_dict {idx{'var','topo'}, ...} must be specified")
-
             import xesmf as xe
-            import hashlib
-            import tempfile
-            import os
+            if DataArray_dict_work is None:
+                raise ValueError("DataArray_dict {idx: {'var','topo'}, ...} must be specified for interpolation")
 
-            if "latitude" in canonical_dims_dict.keys():
-                lat_can = canonical_dims_dict["latitude"]
-            elif "lat" in canonical_dims_dict.keys():
-                lat_can = canonical_dims_dict["lat"]
-            else:
-                raise ValueError("No latitude/lat dimension present")
+            if "latitude" not in canonical_dims_dict or "longitude" not in canonical_dims_dict:
+                raise ValueError("Interpolation requires canonical 'latitude' and 'longitude' dimensions")
 
-            if "longitude" in canonical_dims_dict.keys():
-                lon_can = canonical_dims_dict["longitude"]
-            elif "lon" in canonical_dims_dict.keys():
-                lon_can = canonical_dims_dict["lon"]
-            elif "long" in canonical_dims_dict.keys():
-                lon_can = canonical_dims_dict["long"]
-            else:
-                raise ValueError("No longitude/lon/long dimension present")
+            lat_can = canonical_dims_dict["latitude"]
+            lon_can = canonical_dims_dict["longitude"]
 
-            interp_keys = ("latitude", "lat", "longitude", "lon", "long")
-            need_horizontal_interp = any(bool(need_interpolation.get(k)) for k in interp_keys)
+            need_horizontal_interp = any(
+                bool(need_interpolation.get(k, False)) for k in ("latitude", "longitude")
+            )
+            depth_top_can = canonical_dims_dict.get("depth", None)
+            need_vertical_interp = bool(need_interpolation.get("depth", False)) if depth_top_can is not None else False
 
-            depth_top_can = canonical_dims_dict["depth"] if "depth" in canonical_dims_dict.keys() else None
-            if depth_top_can is not None:
-                need_vertical_interp = any(bool(need_interpolation.get(k)) for k in ["depth"])
-            else:
-                need_vertical_interp = False
+            unsupported_interp_dims = {
+                dim for dim, needed in need_interpolation.items()
+                if needed and dim not in {"latitude", "longitude", "depth"}
+            }
+            if unsupported_interp_dims:
+                raise ValueError(
+                    f"Interpolation is only supported for latitude/longitude "
+                    f"(and depth is reserved for future vertical remap). "
+                    f"Unsupported dims requiring interpolation: {sorted(unsupported_interp_dims)}")
 
-            ### Helpers for "regrid_topography_conservative" ###
-            def _maybe_depth_dim(da, candidates=("depth","z","lev","level")):
+            ### Helpers for "regrid_topography_conservative"
+            def _maybe_depth_dim(da, candidates=("depth", "z", "lev", "level")):
                 """
                 Return the first matching depth-like dimension name present in the DataArray.
                 """
@@ -12687,12 +12930,11 @@ class ChemicalDrift(OceanDrift):
                 """
                 c = np.asarray(c, dtype=np.float64)
                 if c.size < 2:
-                    # fallback tiny cell
                     half = 0.5 * (c[0] if c[0] != 0 else 1.0)
-                    return np.array([c[0]-half, c[0]+half], dtype=np.float64)
-                mid = 0.5*(c[:-1] + c[1:])
-                first = c[0]  - (mid[0] - c[0])
-                last  = c[-1] + (c[-1] - mid[-1])
+                    return np.array([c[0] - half, c[0] + half], dtype=np.float64)
+                mid = 0.5 * (c[:-1] + c[1:])
+                first = c[0] - (mid[0] - c[0])
+                last = c[-1] + (c[-1] - mid[-1])
                 return np.concatenate([[first], mid, [last]])
 
             def _hash_grid(lon_in, lat_in, lon_out, lat_out, method="conservative"):
@@ -12717,47 +12959,40 @@ class ChemicalDrift(OceanDrift):
                 # NB: dim names 'lon','lat','lon_b','lat_b' are what xESMF expects
                 return xr.Dataset(
                     coords=dict(
-                        lon   = (["lon"],   lon),
-                        lat   = (["lat"],   lat),
-                        lon_b = (["lon_b"], lon_b),
-                        lat_b = (["lat_b"], lat_b),
+                        lon=(["lon"], lon),
+                        lat=(["lat"], lat),
+                        lon_b=(["lon_b"], lon_b),
+                        lat_b=(["lat_b"], lat_b),
                     )
                 )
 
-            def get_regridder(src_lon, src_lat, dst_lon, dst_lat, *, method="conservative",
-                              periodic=True, weights_dir=None, prefix="weights"):
+            def get_regridder(src_lon, src_lat, dst_lon, dst_lat, *, method="conservative", periodic=True, weights_dir=None, prefix="weights"):
                 """
                 Create (or reuse cached) xESMF Regridder for given src/dst grids and method.
                 Optionally cache weights on disk under weights_dir.
                 """
                 src_grid = _make_rect_grid(src_lon, src_lat)
                 dst_grid = _make_rect_grid(dst_lon, dst_lat)
-                cache_id = _hash_grid(src_lon, src_lat, dst_lon, dst_lat)
+                cache_id = _hash_grid(src_lon, src_lat, dst_lon, dst_lat, method=method)
                 weights_path = None
                 reuse = False
                 if weights_dir:
                     os.makedirs(weights_dir, exist_ok=True)
                     weights_path = os.path.join(weights_dir, f"{prefix}_{method}_{cache_id}.nc")
                     reuse = os.path.exists(weights_path)
-                R = xe.Regridder(src_grid, dst_grid, method=method,
-                                 periodic=periodic,
-                                 filename=weights_path,
-                                 reuse_weights=reuse)
-                # If we just created weights in-memory and have a path, persist them
-                if (weights_path is not None) and (not reuse):
+                R = xe.Regridder(
+                    src_grid,
+                    dst_grid,
+                    method=method,
+                    periodic=periodic,
+                    filename=weights_path,
+                    reuse_weights=reuse,
+                )
+                if weights_path is not None and not reuse:
                     R.to_netcdf(weights_path)
                 return R, weights_path
 
-            def regrid_topography_conservative(
-                H_src: xr.DataArray,
-                lat_out,
-                lon_out,
-                *,
-                periodic=False,
-                unmapped_to_nan=True,
-                weights_dir=None,
-                weights_path=None,
-            ):
+            def regrid_topography_conservative(H_src, lat_out, lon_out, *, periodic=False, weights_dir=None):
                 """
                 Conservative remap of topography to (lat_out, lon_out).
                 H_src must have dims named ('latitude','longitude') (any order). Extra dims broadcast.
@@ -12765,87 +13000,35 @@ class ChemicalDrift(OceanDrift):
                 - Returns DataArray on the same non-horizontal dims as H_src, but with
                   coords named ('latitude','longitude') on output.
                 """
-                import os
-                # ensure output coords are 1D numpy arrays
                 lat_out = np.asarray(lat_out, dtype=np.float64)
                 lon_out = np.asarray(lon_out, dtype=np.float64)
 
-                # move horizontal dims to the end and standardize names to ('lat','lon')
-                assert ("latitude" in H_src.dims) and ("longitude" in H_src.dims), \
-                    "H_src must have dims 'latitude' and 'longitude'"
-                other = [d for d in H_src.dims if d not in ("latitude","longitude")]
+                if "latitude" not in H_src.dims or "longitude" not in H_src.dims:
+                    raise ValueError("H_src must have dims 'latitude' and 'longitude'")
+
+                other = [d for d in H_src.dims if d not in ("latitude", "longitude")]
                 H_ord = H_src.transpose(*other, "latitude", "longitude", missing_dims="ignore")
 
-                # choose/cache weights path
-
-                topo_R, topo_wpath = get_regridder(
-                src_lon=H_src["longitude"].values,
-                src_lat=H_src["latitude"].values,
-                dst_lon=lon_out,
-                dst_lat=lat_out,
-                method="conservative", periodic=True,
-                weights_dir=weights_dir, prefix="topo_conservative"
+                topo_R, _ = get_regridder(
+                    src_lon=H_src["longitude"].values,
+                    src_lat=H_src["latitude"].values,
+                    dst_lon=lon_out,
+                    dst_lat=lat_out,
+                    method="conservative",
+                    periodic=periodic,
+                    weights_dir=weights_dir,
+                    prefix="topo_conservative",
                 )
 
-                H_regridded = topo_R(H_ord.rename({"latitude":"lat","longitude":"lon"})).rename({"lat":"latitude","lon":"longitude"})
+                H_regridded = topo_R(
+                    H_ord.rename({"latitude": "lat", "longitude": "lon"})
+                ).rename({"lat": "latitude", "lon": "longitude"})
 
                 H_back = H_regridded.transpose(*other, "latitude", "longitude", missing_dims="ignore")
-                return H_back.assign_coords(latitude=("latitude", lat_out),
-                                            longitude=("longitude", lon_out))
-
-            # geometry helpers
-            def normalize_depth_tops(zt1d, *, ensure_zero=True, tol=1e-12):
-                """
-                Normalize layer TOPS to positive-down, strictly increasing depths.
-
-                Accepts inputs like:
-                  - positive-down: [0, 1, 50, 100]
-                  - negative-up:   [-2, -1, 0]  -> [0, 1, 2]
-                  - mixed/unsorted/duplicates/noisy floats
-
-                Steps:
-                  1) Flip sign for negatives (positive-down convention).
-                  2) Insert 0 if missing (optional).
-                  3) Sort ascending.
-                  4) Remove near-duplicates using tolerance.
-                  5) Return strictly increasing array (diff > 0).
-                """
-                z = np.asarray(zt1d, dtype=np.float64).ravel()
-                if z.size == 0:
-                    raise ValueError("depth_top array is empty")
-
-                # finite only
-                z = z[np.isfinite(z)]
-
-                if z.size == 0:
-                    raise ValueError("depth_top array has no finite values")
-
-                # 1) flip sign for negatives (don't shift)
-                z = np.where(z < 0, -z, z)
-
-                # 2) ensure surface 0 present if requested
-                if ensure_zero and not np.any(np.isclose(z, 0.0, atol=tol)):
-                    z = np.concatenate(([0.0], z))
-
-                # 3) sort ascending
-                z = np.sort(z)
-
-                # 4) dedupe with tolerance -> strictly increasing afterwards
-                if z.size > 1:
-                    keep = np.empty_like(z, dtype=bool)
-                    keep[0] = True
-                    for i in range(1, z.size):
-                        keep[i] = (z[i] - z[np.where(keep)[0][-1]]) > tol
-                    z = z[keep]
-
-                # Final sanity
-                if z.size == 0 or z[0] < -tol:
-                    raise ValueError("Normalization failed to produce non-negative tops.")
-                if z.size > 1 and not np.all(np.diff(z) > 0):
-                    raise ValueError("Normalized tops are not strictly increasing.")
-
-                return z
-
+                return H_back.assign_coords(
+                    latitude=("latitude", lat_out),
+                    longitude=("longitude", lon_out),
+                )
 
             def _safe_assign_depth(da, depth_dim, coord_vals):
                 """
@@ -12859,224 +13042,10 @@ class ChemicalDrift(OceanDrift):
                     )
                 return da.assign_coords({depth_dim: (depth_dim, coord_vals)})
 
+            def _regrid_horizontal_conservative_mass(mass_src, lon_out, lat_out, *, periodic=True, weights_dir=None, depth_dim=None):
 
-            def build_target_edges_from_tops(
-                depth_tops_1d,
-                H_can,
-                *,
-                depth_dim: str = "depth",
-                edge_dim: str = "depth_edge",
-                tol: float = 1e-12
-            ):
-                """
-
-                Build target vertical interfaces and layer thicknesses from 1D tops and canonical bottom.
-
-                depth_tops_1d : 1-D array of layer TOPS (positive down; will be cleaned/sorted by normalize_depth_tops)
-                H_can         : 2-D bottom depth (lat,lon), positive down
-
-                Returns
-                -------
-                z_edges : (edge, lat, lon) float64
-                    Target vertical interfaces; tops clamped to local bathymetry, last edge == H_can.
-                dz      : (depth, lat, lon) float64
-                    Target layer thicknesses (non-negative). Depth coords set to the (clean) target tops.
-                """
-                # Normalize user-provided tops (assumed available in your codebase)
-                zt = normalize_depth_tops(depth_tops_1d)   # 1-D, positive-down, sorted, unique, includes 0
-                if zt.size > 1 and not np.all(np.diff(zt) > -tol):
-                    raise ValueError("Target tops are not strictly increasing after normalization.")
-                nz = int(zt.size)
-
-                # 1) Make 1-D DA for tops and broadcast over H_can
-                zt1d = xr.DataArray(zt, dims=(depth_dim,), coords={depth_dim: np.arange(nz)})
-                zt_b = zt1d.broadcast_like(H_can).transpose(depth_dim, *H_can.dims)  # (depth, lat, lon)
-
-                # 2) Prepare bathymetry as float64 (clip tiny negatives just in case)
-                H = xr.where(H_can < 0, 0.0, H_can.astype(np.float64))
-
-                # 3) Clamp any top that is deeper than local bathymetry
-                zt_b = xr.where(zt_b > H, H, zt_b)
-
-                # 4) Enforce non-decreasing tops with depth (fix sequences like [0, 5, 3] -> [0, 5, 5])
-                zt_b = xr.apply_ufunc(
-                    np.maximum.accumulate,
-                    zt_b,
-                    input_core_dims=[[depth_dim]],
-                    output_core_dims=[[depth_dim]],
-                    vectorize=True,
-                    dask="parallelized",
-                )
-
-                # 5) Append exact bottom as last edge and rename depth->edge
-                bottom = H.expand_dims({depth_dim: [nz]})  # (1, lat, lon)
-                z_edges = xr.concat([zt_b, bottom], dim=depth_dim).rename({depth_dim: edge_dim}).astype(np.float64)
-
-                # Monotonicity check on edges: diffs must be >= -tol
-                diffs = z_edges.diff(edge_dim)
-                if (diffs < -tol).any():
-                    # report how many columns are problematic
-                    bad_cols = (diffs < -tol).any(dim=edge_dim)
-                    nbad = int(bad_cols.sum().item())
-                    raise ValueError(f"Target edges are not monotone non-decreasing in {nbad} column(s).")
-
-                # 6) Thickness (non-negative), stamp nice depth coords (the target tops)
-                dz = z_edges.diff(edge_dim).rename({edge_dim: depth_dim})
-                dz = dz.clip(min=0.0)
-                dz = _safe_assign_depth(dz, depth_dim, zt)  # keeps depth coords equal to the cleaned tops
-
-                return z_edges, dz
-
-            def build_source_edges_on_canonical(
-                depth_top_src_1d,
-                H_can,
-                *,
-                depth_dim: str = "depth",
-                edge_dim: str = "depth_edge",
-            ):
-                """
-                Build source column edges (edge, lat, lon) from 1-D layer tops and bathymetry.
-
-                Normalization:
-                  - Negative inputs are sign-flipped with positive-down convention
-                  (0 = surface) (e.g., [-2, -1, 0] -> [0, 1, 2])
-                  - Ensure 0 is present (insert if missing)
-                  - Remove NaN/inf, sort ascending, de-duplicate
-
-                Post-processing:
-                  - Clamp all tops to local bottom H_can
-                  - Enforce non-decreasing interfaces downward (cumulative max)
-                  - Append exact bottom as final edge
-                  - Keep zero-thickness layers (size along edge = nz+1)
-                """
-                def _is_monotone_nondec_1d(a, tol=0.0):
-                    """Return True if 1-D array `a` is monotone non-decreasing within tolerance `tol`.
-
-                    Checks that each difference a[i+1] - a[i] ≥ −tol. Used to validate layer-top
-                    or interface sequences before constructing vertical edges.
-                    """
-                    a = np.asarray(a, float)
-                    return np.all(np.diff(a) >= -tol)
-
-                def _check_monotone_edges3d(z_edges, edge_dim, tol=0.0):
-                    """Verify that vertical interfaces in a 3-D array are monotone non-decreasing.
-
-                    Ensures that diff(z_edges, dim=edge_dim) ≥ −tol for every (lat, lon) column.
-                    Raises ValueError if any column violates monotonicity. Used after constructing
-                    vertical edges to guarantee physically meaningful layering.
-                    """
-                    dec = (z_edges.diff(edge_dim) < -tol)
-                    if dec.any():
-                        # Optional: show where (lat, lon) fail
-                        where_bad = dec.any(edge_dim)
-                        nbad = int(where_bad.sum().item())
-                        raise ValueError(f"Edges not monotone along '{edge_dim}' in {nbad} column(s).")
-
-                # Normalize 1-D tops (positive-down)
-                tops_raw = np.asarray(depth_top_src_1d, dtype=np.float64).ravel()
-                if tops_raw.size == 0:
-                    raise ValueError("depth_top_src_1d must have at least one value.")
-
-                tops_clean = tops_raw[np.isfinite(tops_raw)]
-                # Flip sign for negatives (do NOT clamp to 0)
-                tops_clean = np.where(tops_clean < 0, -tops_clean, tops_clean)
-                if not np.any(np.isclose(tops_clean, 0.0)):
-                    tops_clean = np.concatenate(([0.0], tops_clean))
-
-                # sort + dedupe AFTER sign flip / zero insert
-                tops_clean = np.unique(np.sort(tops_clean))
-
-                # Pre-check (1-D)
-                if not _is_monotone_nondec_1d(tops_clean, tol=0.0):
-                    raise ValueError("Input tops are not non-decreasing after normalization.")
-
-                # Ensure surface (0) present, sort ascending, unique
-                if not np.any(np.isclose(tops_clean, 0.0)):
-                    tops_clean = np.concatenate(([0.0], tops_clean))
-                tops_clean = np.unique(np.sort(tops_clean))
-
-                # 1-D DataArray with canonical indices 0..nz-1
-                nz = int(tops_clean.size)
-                zt1d = xr.DataArray(tops_clean, dims=(depth_dim,), coords={depth_dim: np.arange(nz)})
-
-                # Broadcast to H_can grid
-                tops = zt1d.broadcast_like(H_can).transpose(depth_dim, *H_can.dims)
-
-                # Bathymetry as float64; clip tiny negatives
-                H = xr.where(H_can < 0, 0.0, H_can.astype(np.float64))
-
-                # Clamp any top deeper than local bottom
-                tops = xr.where(tops > H, H, tops)
-
-                # Enforce monotone non-decreasing with depth (fixes [0,1,0] -> [0,1,1])
-                tops = xr.apply_ufunc(
-                    np.maximum.accumulate,
-                    tops,
-                    input_core_dims=[[depth_dim]],
-                    output_core_dims=[[depth_dim]],
-                    vectorize=True,
-                    dask="parallelized",
-                )
-
-                # Append exact bottom as last edge (edge count = nz+1)
-                bottom = H.expand_dims({depth_dim: [nz]})
-                z_edges_src = xr.concat([tops, bottom], dim=depth_dim)
-
-                # Safety & finalize
-                z_edges_src = xr.where(z_edges_src < 0, 0.0, z_edges_src)
-                z_edges_src[{depth_dim: nz}] = H  # force exact bottom
-                z_edges_src = z_edges_src.rename({depth_dim: edge_dim}).astype(np.float64)
-
-                # Post-check (3-D)
-                _check_monotone_edges3d(z_edges_src, edge_dim=edge_dim, tol=0.0)
-
-                return z_edges_src
-
-            # area helper (simple spherical rectangle)
-            def _cell_areas_from_1d(lat, lon, R=6371000.0):
-                """
-                Compute spherical cell areas from 1D lat/lon centers using a simple rectangle formula.
-                Returns DataArray with dims (latitude, longitude).
-                """
-                lat = np.asarray(lat, dtype=np.float64)
-                lon = np.asarray(lon, dtype=np.float64)
-                # edges (assume midpoints are provided)
-                def centers_to_edges(v):
-                    """Convert 1-D cell-center coordinates to cell-edge coordinates.
-
-                    Produces edges by midpoints between consecutive centers and extrapolating the
-                    first/last edges symmetrically. Used to build spherical cell boundaries for
-                    conservative area computations.
-                    """
-                    v = np.asarray(v, dtype=np.float64)
-                    e = np.empty(v.size + 1, dtype=np.float64)
-                    e[1:-1] = 0.5 * (v[:-1] + v[1:])
-                    e[0]  = v[0]  - (e[1] - v[0])
-                    e[-1] = v[-1] + (v[-1] - e[-2])
-                    return e
-                lat_e = np.deg2rad(centers_to_edges(lat))
-                lon_e = np.deg2rad(centers_to_edges(lon))
-                # areas on sphere
-                dlambda = np.diff(lon_e)[None, :]
-                # area = R^2 * |sin(phi2)-sin(phi1)| * |dlambda|
-                A = R**2 * np.abs(np.sin(lat_e[1:, None]) - np.sin(lat_e[:-1, None])) * np.abs(dlambda)
-                return xr.DataArray(A, dims=("latitude", "longitude"),
-                                    coords={"latitude": lat, "longitude": lon})
-
-            # horizontal conservative mass regrid (keeps depth)
-            def _regrid_horizontal_conservative_mass(mass_src, lon_out, lat_out, *,
-                                         periodic=True, weights_dir=None,
-                                         depth_dim=None):
-                """
-                Conservatively regrid mass (and volume) horizontally from src grid to (lat_out, lon_out),
-                preserving total mass; works for 2D or 3D (with depth) fields.
-                (..., depth, latitude, longitude)  OR  (..., latitude, longitude)
-
-                Returns same rank/shape (with lat/lon replaced by target coords).
-                """
                 lon_name, lat_name = "longitude", "latitude"
 
-                #  detect depth if not specified
                 if depth_dim is None:
                     depth_dim = _maybe_depth_dim(mass_src)
 
@@ -13088,22 +13057,31 @@ class ChemicalDrift(OceanDrift):
                 else:
                     lead = front
 
-                # Standardize order so last two are (lat,lon)
-                M = mass_src.transpose(*front, *( [depth_dim] if depth_dim else [] ), lat_name, lon_name, missing_dims="ignore")
+                M = mass_src.transpose(
+                    *front,
+                    *([depth_dim] if depth_dim else []),
+                    lat_name,
+                    lon_name,
+                    missing_dims="ignore")
 
-                # xESMF rect grid
                 def _edges_1d(x, periodic=False):
                     """
                     Convert 1D centers to edges, optionally periodic in longitude.
                     """
                     x = np.asarray(x, dtype=np.float64)
-                    dx = np.diff(x); mids = x[:-1] + 0.5*dx
-                    first = x[0]-0.5*dx[0]; last = x[-1]+0.5*dx[-1]
+                    if x.size == 1:
+                        half = 0.5 * (x[0] if x[0] != 0 else 1.0)
+                        return np.array([x[0] - half, x[0] + half], dtype=np.float64)
+
+                    dx = np.diff(x)
+                    mids = x[:-1] + 0.5 * dx
+                    first = x[0] - 0.5 * dx[0]
+                    last = x[-1] + 0.5 * dx[-1]
                     e = np.concatenate(([first], mids, [last]))
                     if periodic:
                         span = x[-1] - x[0] + dx[-1]
-                        e[0] = x[0] - 0.5*dx[0]
-                        e[-1]= e[0] + span
+                        e[0] = x[0] - 0.5 * dx[0]
+                        e[-1] = e[0] + span
                     return e
 
                 def make_rect_grid(lon_1d, lat_1d, *, periodic=False):
@@ -13112,15 +13090,23 @@ class ChemicalDrift(OceanDrift):
                     """
                     lon = np.asarray(lon_1d, dtype=np.float64)
                     lat = np.asarray(lat_1d, dtype=np.float64)
-                    return xr.Dataset(coords=dict(
-                        lon   = (("lon",), lon),
-                        lat   = (("lat",), lat),
-                        lon_b = (("lon_b",), _edges_1d(lon, periodic=periodic)),
-                        lat_b = (("lat_b",), _edges_1d(lat, periodic=False)),
-                    ))
+                    return xr.Dataset(
+                        coords=dict(
+                            lon=(("lon",), lon),
+                            lat=(("lat",), lat),
+                            lon_b=(("lon_b",), _edges_1d(lon, periodic=periodic)),
+                            lat_b=(("lat_b",), _edges_1d(lat, periodic=False)),
+                        ))
 
-                src_grid = make_rect_grid(np.asarray(M[lon_name]), np.asarray(M[lat_name]), periodic=True)
-                dst_grid = make_rect_grid(np.asarray(lon_out),      np.asarray(lat_out),   periodic=True)
+                src_grid = make_rect_grid(
+                    np.asarray(M[lon_name].values),
+                    np.asarray(M[lat_name].values),
+                    periodic=periodic)
+
+                dst_grid = make_rect_grid(
+                    np.asarray(lon_out),
+                    np.asarray(lat_out),
+                    periodic=periodic)
 
                 method = "conservative"
                 weights_path, reuse = None, False
@@ -13130,195 +13116,214 @@ class ChemicalDrift(OceanDrift):
                         np.asarray(M[lat_name].values),
                         np.asarray(lon_out),
                         np.asarray(lat_out),
-                        method
+                        method=method,
                     )
                     os.makedirs(weights_dir, exist_ok=True)
                     weights_path = os.path.join(weights_dir, f"mass_{method}_{gid}.nc")
                     reuse = os.path.exists(weights_path)
 
-                R = xe.Regridder(src_grid, dst_grid, method=method,
-                                 periodic=periodic, filename=weights_path,
-                                 reuse_weights=reuse)
-                if (weights_path is not None) and (not reuse):
+                R = xe.Regridder(
+                    src_grid,
+                    dst_grid,
+                    method=method,
+                    periodic=periodic,
+                    filename=weights_path,
+                    reuse_weights=reuse,
+                )
+                if weights_path is not None and not reuse:
                     R.to_netcdf(weights_path)
 
-                # stack all leading dims (including depth if present)
                 if lead:
-                    M_stacked = (M
-                        .transpose(*lead, lat_name, lon_name)
-                        .stack(_lead=lead)
-                        .transpose("_lead", lat_name, lon_name))
-                    out_stacked = R(M_stacked)
-                    if "lat" in out_stacked.dims or "lon" in out_stacked.dims:
-                        out_stacked = out_stacked.rename({"lat": lat_name, "lon": lon_name})
-                    out = (out_stacked
-                           .transpose("_lead", lat_name, lon_name)
-                           .unstack("_lead")
-                           .transpose(*front, *( [depth_dim] if depth_dim else [] ), lat_name, lon_name))
-                else:
-                    # scalar over (lat,lon) only
-                    out = R(M)
-                    if "lat" in out.dims or "lon" in out.dims:
-                        out = out.rename({"lat": lat_name, "lon": lon_name})
+                    # Save lead-dim metadata BEFORE stacking
+                    M0 = M.transpose(*lead, lat_name, lon_name)
+                    lead_sizes = [M0.sizes[d] for d in lead]
+                    lead_coords = {
+                        d: (np.asarray(M0.coords[d].values) if d in M0.coords else np.arange(M0.sizes[d]))
+                        for d in lead
+                    }
 
-                # stamp canonical coords and attrs
-                out = out.assign_coords({lat_name: (lat_name, lat_out),
-                                         lon_name: (lon_name, lon_out)})
+                    # Stack for xESMF, but rebuild explicitly after regrid
+                    M_stacked = M0.stack(_lead=lead).transpose("_lead", lat_name, lon_name)
+
+                    out_stacked = R(M_stacked)
+
+                    rename_map = {}
+                    if "lat" in out_stacked.dims:
+                        rename_map["lat"] = lat_name
+                    if "lon" in out_stacked.dims:
+                        rename_map["lon"] = lon_name
+                    if rename_map:
+                        out_stacked = out_stacked.rename(rename_map)
+
+                    out_stacked = out_stacked.transpose("_lead", lat_name, lon_name)
+
+                    out_vals = np.asarray(out_stacked.data).reshape(
+                        *lead_sizes,
+                        len(lat_out),
+                        len(lon_out),
+                    )
+
+                    out = xr.DataArray(
+                        out_vals,
+                        dims=tuple(lead) + (lat_name, lon_name),
+                        coords={
+                            **lead_coords,
+                            lat_name: np.asarray(lat_out),
+                            lon_name: np.asarray(lon_out),
+                        },
+                        name=mass_src.name,
+                    )
+
+                    # Preserve scalar/non-dimension coords if any
+                    scalar_coords = {
+                        c: mass_src.coords[c]
+                        for c in mass_src.coords
+                        if c not in mass_src.dims and c not in out.coords
+                    }
+                    if scalar_coords:
+                        out = out.assign_coords(scalar_coords)
+
+                else:
+                    out = R(M)
+
+                    rename_map = {}
+                    if "lat" in out.dims:
+                        rename_map["lat"] = lat_name
+                    if "lon" in out.dims:
+                        rename_map["lon"] = lon_name
+                    if rename_map:
+                        out = out.rename(rename_map)
+
+                    out = out.transpose(lat_name, lon_name)
+                    out = out.assign_coords({
+                        lat_name: (lat_name, lat_out),
+                        lon_name: (lon_name, lon_out),
+                    })
+
                 out.attrs.update(mass_src.attrs)
                 out.attrs["regrid_method"] = "conservative"
                 return out
 
-
             ### Horizontal and vertical interpolation ###
-
             def regrid3d_conservative_with_topo(
-                da,                    # concentration [mass/volume], dims (..., depth, latitude, longitude)
-                topo_src,              # 2-D topography [m] (bottom on source), positve downword, dims include ('latitude','longitude')
-                lat_can, lon_can,      # 1-D canonical lat/lon
-                depth_top_can,         # 1-D canonical TOPS (m, positive down; include 0 if surface)
+                da,
+                topo_src,
+                lat_can,
+                lon_can,
+                depth_top_can, # depth_top_can reserved for future vertical conservative remap
                 need_horizontal_interp,
                 need_vertical_interp,
                 *,
                 periodic_lon=True,
                 depth_dim="depth",
                 weights_dir=None,
-                weights_path=None,
                 idx=None,
                 idx_tot=None,
-                Verbose = True
+                Verbose=True,
             ):
                 """
                 Apply mass-conservative regrid to 3D/2D concentration field using topography:
                 conservative xESMF horizontally, thickness-based vertically (not yet supported).
                 """
                 if Verbose:
-                    print(f"Interpolating array {idx} out of {idx_tot-1}")
-                H_can = regrid_topography_conservative( # 2-D canonical bottom (lat,lon) in meters (positive down)
-                    H_src=topo_src,
-                    lat_out=lat_can, lon_out=lon_can,
-                    periodic=True,                      # True for global; False for regional
-                    # weights_dir="/media/admin-lc/Disk4/tmp_work", #   # or omit to use the system temp
-                    weights_dir=weights_dir,
-                    weights_path=weights_path
-                )
-
-                H_can = H_can.where(H_can>0, 0.0)
-                dd = depth_dim if depth_dim in da.dims else None
-                has_depth = dd is not None
-
-                #  source geometry
-                lat_src = np.asarray(da["latitude"].values)
-                lon_src = np.asarray(da["longitude"].values)
+                    print(f"Interpolating array {idx} out of {idx_tot - 1}")
 
                 if topo_src is None:
                     raise ValueError("topo_src not specified")
 
-                # Areas on source grid
-                A_src = xr.DataArray(
-                    _cell_areas_from_1d(lat_src, lon_src),
-                    dims=("latitude", "longitude"),
-                    coords={"latitude": da["latitude"], "longitude": da["longitude"]},
+                topo_src = topo_src.astype(np.float64).clip(min=0.0)
+
+                dd = depth_dim if depth_dim in da.dims else None
+                has_depth = dd is not None
+
+                A_src = self._cell_areas_from_1d(
+                    da["latitude"].values,
+                    da["longitude"].values,
+                    lat_name="latitude",
+                    lon_name="longitude",
                 )
 
                 if has_depth:
-                    # build dz_src from tops+bottom (your original code)
                     depth_top_src = np.asarray(da[dd].values, dtype=np.float64)
                     z_edges_src_col = xr.concat(
                         [
-                            xr.DataArray(depth_top_src, dims=(dd,), coords={dd: np.arange(depth_top_src.size)}).broadcast_like(topo_src),
+                            xr.DataArray(
+                                depth_top_src,
+                                dims=(dd,),
+                                coords={dd: np.arange(depth_top_src.size)},
+                            ).broadcast_like(topo_src),
                             topo_src.astype(np.float64).expand_dims({dd: [depth_top_src.size]}),
                         ],
-                        dim=dd
+                        dim=dd,
                     ).rename({dd: "depth_edge"}).transpose("depth_edge", "latitude", "longitude")
 
                     dz_src = z_edges_src_col.diff("depth_edge").rename({"depth_edge": dd}).clip(min=0.0).astype(np.float64)
                     dz_src = _safe_assign_depth(dz_src, dd, da[dd].values)
 
-                    vol_src  = dz_src * A_src
+                    vol_src = dz_src * A_src
                     mass_src = da.fillna(0).astype(np.float64) * vol_src
-
                 else:
-                    # 2-D case: “volume” is area*topo
-                    vol_src  = A_src * topo_src
+                    vol_src = A_src * topo_src
                     mass_src = da.fillna(0).astype(np.float64) * vol_src
 
-
-                if not ((need_horizontal_interp is True) or (need_vertical_interp is True)):
+                if not need_horizontal_interp and not need_vertical_interp:
                     if Verbose:
                         print("No interpolation necessary")
                     return da
 
-                if need_horizontal_interp:
-                    #  horizontal conservative regrid of MASS to canonical (lat,lon)
-                    mass_h = _regrid_horizontal_conservative_mass(
-                        mass_src=mass_src,
-                        lon_out=np.asarray(lon_can),
-                        lat_out=np.asarray(lat_can),
-                        periodic=periodic_lon,
-                        weights_dir=weights_dir,
-                        depth_dim=dd,
-                    )
-                    vol_h  = _regrid_horizontal_conservative_mass(
-                        mass_src=vol_src,
-                        lon_out=np.asarray(lon_can),
-                        lat_out=np.asarray(lat_can),
-                        periodic=periodic_lon,
-                        weights_dir=weights_dir,
-                        depth_dim=dd,
-                    )
+                if need_vertical_interp:
+                    raise ValueError("Vertical interpolation not yet supported")
 
-                    # Keep mass_h and vol_h with the original depth labels
-                    if has_depth:
-                        vol_h = _safe_assign_depth(vol_h, depth_dim, da[depth_dim].values)
-                        mass_h = _safe_assign_depth(mass_h, depth_dim, da[depth_dim].values)
+                mass_h = _regrid_horizontal_conservative_mass(
+                    mass_src=mass_src,
+                    lon_out=np.asarray(lon_can),
+                    lat_out=np.asarray(lat_can),
+                    periodic=periodic_lon,
+                    weights_dir=weights_dir,
+                    depth_dim=dd,
+                )
+                vol_h = _regrid_horizontal_conservative_mass(
+                    mass_src=vol_src,
+                    lon_out=np.asarray(lon_can),
+                    lat_out=np.asarray(lat_can),
+                    periodic=periodic_lon,
+                    weights_dir=weights_dir,
+                    depth_dim=dd,
+                )
 
-                    if Verbose:
-                        check_mass_original = np.array(mass_src.sum())
-                        print(f"check_mass_original: {check_mass_original}")
-                        check_mass_mass_h = np.array(mass_h.sum())
-                        print(f"check_mass_mass_h: {check_mass_mass_h}")
-                else:
-                    mass_h = None
+                if has_depth:
+                    vol_h = _safe_assign_depth(vol_h, depth_dim, da[depth_dim].values)
+                    mass_h = _safe_assign_depth(mass_h, depth_dim, da[depth_dim].values)
+
+                spatial_dims = [d for d in mass_src.dims if d in ("depth", "latitude", "longitude")]
+                m_in = mass_src.sum(dim=spatial_dims, skipna=True)
+                m_out = mass_h.sum(dim=spatial_dims, skipna=True)
+                xr.testing.assert_allclose(m_out, m_in, rtol=1e-6, atol=1e-12)
+
+                if Verbose:
+                    print(f"mass before regrid: {float(m_in.fillna(0).sum().item())}")
+                    print(f"mass after regrid:  {float(m_out.fillna(0).sum().item())}")
+
+                mass_fin = mass_h
+                vol_fin = vol_h
+
+                conc_out = (mass_fin / vol_fin.where(vol_fin > 0)).where(vol_fin > 0)
 
                 if Verbose:
                     check_conc_original = np.array(da.sum())
-                    print(f"check_conc_original: {check_conc_original}")
-
-
-                if has_depth and need_vertical_interp:
-                    raise ValueError("Vertical interpolation not yet supported")
-                    #  build source & target edges on canonical columns (use canonical bottom H_can)
-                    depth_top_can = normalize_depth_tops(depth_top_can)
-                    z_edges_tgt, dz_tgt = build_target_edges_from_tops(
-                        depth_top_can, H_can, depth_dim=depth_dim, edge_dim="depth_edge"
-                    )
-
-                    dz_tgt = _safe_assign_depth(dz_tgt, depth_dim, depth_top_can)
-
-                #  back to concentration: C = M / Volume
-
-                if need_horizontal_interp and not need_vertical_interp:
-                    mass_fin = mass_h                 # on TARGET grid
-                    vol_fin  = vol_h                  # on TARGET grid
-                # elif (not need_horizontal_interp) and need_vertical_interp:
-                #     mass_fin = mass_v                 # still on SOURCE grid horizontally
-                #     vol_fin  = dz_tgt * A_src         # dz_tgt is on SOURCE grid (since no horiz. interp)
-                # elif need_horizontal_interp and need_vertical_interp:
-                #     mass_fin = mass_v                 # on TARGET grid
-                #     vol_fin  = dz_tgt * A_tgt         # matches mass_fin
-
-                if Verbose:
-                    conc_out = (mass_fin / vol_fin.where(vol_fin > 0)).where(vol_fin > 0)
                     check_conc_out = np.array(conc_out.sum())
+                    print(f"check_conc_original: {check_conc_original}")
                     print(f"check_conc_out: {check_conc_out}")
 
-                    Cvw_in  = float((da * dz_src * A_src).sum() / (dz_src * A_src).sum())
+                    if has_depth:
+                        Cvw_in = float((da * dz_src * A_src).sum() / (dz_src * A_src).sum())
+                    else:
+                        Cvw_in = float(mass_src.sum() / vol_src.sum())
                     Cvw_out = float(mass_fin.sum() / vol_fin.sum())
                     print(f"Cvw_in: {Cvw_in}")
                     print(f"Cvw_out: {Cvw_out}")
 
-                # tidy dims & attrs
-                lead = [d for d in da.dims if d not in ( "latitude", "longitude") and (dd is None or d != dd)]
+                lead = [d for d in da.dims if d not in ("latitude", "longitude") and (dd is None or d != dd)]
                 if has_depth:
                     conc_out = conc_out.transpose(*lead, dd, "latitude", "longitude", missing_dims="ignore")
                 else:
@@ -13327,8 +13332,8 @@ class ChemicalDrift(OceanDrift):
                 conc_out.name = getattr(da, "name", "concentration")
                 conc_out.attrs.update(da.attrs)
                 conc_out.attrs["regrid_note"] = (
-                    "mass-conserving: xESMF conservative (horizontal) + 3D thickness-overlap (vertical, columnwise); "
-                    "bottom from H_can"
+                    "mass-conserving: xESMF conservative (horizontal); "
+                    "vertical conservative remap not yet implemented"
                 )
                 return conc_out
 
@@ -13337,59 +13342,57 @@ class ChemicalDrift(OceanDrift):
 
                 DataArray_ls = [
                     regrid3d_conservative_with_topo(
-                        da=DataArray_dict[idx][variable],       # concentration [mass/volume], dims (..., depth, latitude, longitude)
-                        topo_src=DataArray_dict[idx]["topo"],   # 2-D topography [m] (bottom on source), positve downword, dims include ('latitude','longitude')
-                        lat_can=lat_can,                        # 1-D canonical lat
-                        lon_can=lon_can,                        # 1-D canonical lon
-                        depth_top_can=depth_top_can,            # 1-D canonical TOPS (m, positive down; include 0 if surface) e.g., [-1, 0] will be normalized to [0, 1]
+                        da=DataArray_dict_work[key][variable],    # concentration [mass/volume], dims (..., depth, latitude, longitude)
+                        topo_src=DataArray_dict_work[key]["topo"],# 2-D topography [m] (bottom on source), positve downword, dims include ('latitude','longitude')
+                        lat_can=lat_can,                          # 1-D canonical lat
+                        lon_can=lon_can,                          # 1-D canonical TOPS (m, positive down; include 0 if surface)
+                        depth_top_can=depth_top_can,
                         need_horizontal_interp=need_horizontal_interp,
                         need_vertical_interp=need_vertical_interp,
                         periodic_lon=True,
                         depth_dim="depth",
-                        weights_dir=tmpdir,                     # files are written here and auto-removed
-                        weights_path=None,                      # let functions compute hashed paths
-                        idx=idx, idx_tot=len(DataArray_dict),
-                        Verbose = Verbose
+                        weights_dir=tmpdir,
+                        idx=key,
+                        idx_tot=len(ordered_keys),
+                        Verbose=Verbose,
                     )
-                    for idx in DataArray_dict.keys()
+                    for key in ordered_keys
                 ]
 
                 nan_counts_interp = {
-                    i: int(np.count_nonzero(np.isnan(da.values)))
-                    for i, da in enumerate(DataArray_ls)
+                    key: int(np.count_nonzero(np.isnan(da.values)))
+                    for key, da in zip(ordered_keys, DataArray_ls)
                 }
 
-                first_idx = next(iter(DataArray_dict))
+                first_idx = ordered_keys[0]
                 H_can_out = regrid_topography_conservative(
-                    H_src=DataArray_dict[first_idx]["topo"],
-                    lat_out=lat_can, lon_out=lon_can,
+                    H_src=DataArray_dict_work[first_idx]["topo"],
+                    lat_out=lat_can,
+                    lon_out=lon_can,
                     periodic=True,
                     weights_dir=tmpdir,
-                    weights_path=None
                 ).where(lambda x: x > 0, 0.0)
 
-                if DataArray_dict is not None:
-                    DataArray_dict.clear()
-                DataArray_dict = None
+                common_topo_for_mass = H_can_out
 
         else:
             if Verbose:
-                print("No Interpolation needed")
+                print("No interpolation needed")
 
-
+        ### NaN-count consistency after interpolation
         if nan_counts_interp is not None:
             import math
 
-            def report_nan_changes(nan_counts_inputs, nan_counts_interp, threshold_pct=10.0):
-                print("Index | NaN before → after | Δ (after-before) | % change")
-                print("-" * 70)
+            def report_interp_nan_changes(nan_counts_before, nan_counts_after, threshold_pct=10.0):
+                print("Index | NaN before interp -> after interp | d(after-before) | % change")
+                print("-" * 84)
                 offenders = []
 
-                all_keys = sorted(set(nan_counts_inputs) | set(nan_counts_interp))
+                all_keys = sorted(set(nan_counts_before) | set(nan_counts_after))
                 for k in all_keys:
-                    before = nan_counts_inputs.get(k, 0)
-                    after  = nan_counts_interp.get(k, 0)
-                    delta  = after - before
+                    before = nan_counts_before.get(k, 0)
+                    after = nan_counts_after.get(k, 0)
+                    delta = after - before
 
                     # % change with explicit sign; handle before==0
                     if before == 0:
@@ -13403,29 +13406,35 @@ class ChemicalDrift(OceanDrift):
                         pct = (delta / before) * 100.0
                         pct_str = f"{pct:+.2f}%"
 
-                    print(f"{k:5} | {before:10} → {after:<10} | {delta:16} | {pct_str:>8}")
+                    print(f"{k:5} | {before:18} -> {after:<18} | {delta:16} | {pct_str:>8}")
 
-                    if (math.isinf(pct) or abs(pct) > threshold_pct):
+                    if math.isinf(pct) or abs(pct) > threshold_pct:
                         offenders.append((k, before, after, pct))
 
                 if offenders:
                     details = ", ".join(
-                        f"idx={k} (before={b}, after={a}, change={'+' if (math.isinf(p) or p>=0) else ''}{'inf' if math.isinf(p) else f'{p:.2f}%'})"
+                        f"idx={k} (before={b}, after={a}, change="
+                        f"{'+' if (math.isinf(p) or p >= 0) else ''}"
+                        f"{'inf' if math.isinf(p) else f'{p:.2f}%'}"
+                        f")"
                         for k, b, a, p in offenders
                     )
-                    raise ValueError(f"NaN count changed by more than {threshold_pct:.1f}% for: {details}")
+                    raise ValueError(
+                        f"Interpolation NaN count changed by more than {threshold_pct:.1f}% for: {details}"
+                    )
 
             if Verbose:
-                report_nan_changes(nan_counts_inputs, nan_counts_interp)
+                report_interp_nan_changes(nan_counts_inputs, nan_counts_interp)
 
-        ### check equality of dimensions after interpolation
+        ### Re-check canonical non-time dims after interpolation
         canonical_dims_dict, need_interpolation = self._canonical_nontime_dims(
-            DataArray_ls = DataArray_ls,
-            nontime_dims = nontime_dims,
+            DataArray_ls=DataArray_ls,
+            nontime_dims=nontime_dims,
             coord_tolerance_dict=None,
             snap_mode=snap_mode,
             dim_res_dict=None,
-            Verbose = Verbose)
+            Verbose=Verbose,
+        )
 
         time_equal = False
         if all(time_name in da.dims for da in DataArray_ls):
@@ -13433,11 +13442,12 @@ class ChemicalDrift(OceanDrift):
             time_equal = all(np.array_equal(tv, tvals[0]) for tv in tvals)
 
         time_start = datetime.now()
-
         Final_sum = None
+
+        ### Sum directly or on reconstructed time grid
         if time_equal and (start_date is None and end_date is None and freq_time is None):
             if Verbose:
-                print("Time dimensions are all equal in DataArray_ls, skipping set-up of target_time to sum directly")
+                print("Time dimensions are all equal in DataArray_ls, skipping target_time setup")
                 print("Run sum of DataArray_ls")
             aligned = DataArray_ls
             Final_sum = DataArray_ls[0].fillna(0)
@@ -13462,14 +13472,14 @@ class ChemicalDrift(OceanDrift):
             if freq_time is None:
                 steps = []
                 for da in DataArray_ls:
-                    t = da[time_name].values
+                    t = np.sort(da[time_name].values)
                     if t.size > 1:
-                        # np.diff keeps dtype (datetime64[...]); take minimal positive
                         d = np.diff(t)
                         # filter out non-positive diffs just in case of duplicates
-                        d = d[d > np.timedelta64(0, 'ns')]
+                        d = d[d > np.timedelta64(0, "ns")]
                         if d.size:
                             steps.append(d.min())
+
                 if steps:
                     freq_time = np.min(steps)
                     if Verbose:
@@ -13494,26 +13504,32 @@ class ChemicalDrift(OceanDrift):
                 except Exception:
                     pass
                 if freq_time is not None:
-                    ns = (freq_time / np.timedelta64(1, 'ns')).astype('int64')
+                    ns = (freq_time / np.timedelta64(1, "ns")).astype("int64")
                     if ns >= 3_600_000_000_000:
-                        print(f"freq_time:  {ns/3.6e12:.0f} hours")
+                        print(f"freq_time:  {ns / 3.6e12:.0f} hours")
                     else:
-                        print(f"freq_time:  {ns/6e10:.0f} min")
+                        print(f"freq_time:  {ns / 6e10:.0f} min")
 
             ### Reindex DataArrays using target_time
             if Verbose:
                 print("Reindex and align DataArrays using target_time")
-            reindexed = [self._reindex_da(DataArray = da,
-                          time_name = time_name,
-                          target_time = target_time,
-                          nearest_tol_time = nearest_tol_time,
-                          align_mode = align_mode) for da in DataArray_ls]
 
-            # Align reindexed DataArrays for sum
+            reindexed = [
+                self._reindex_da(
+                    DataArray=da,
+                    time_name=time_name,
+                    target_time=target_time,
+                    nearest_tol_time=nearest_tol_time,
+                    align_mode=align_mode,
+                )
+                for da in DataArray_ls
+            ]
+
             aligned = xr.align(*reindexed, join="exact", copy=False)
 
             if Verbose:
                 print("Run sum of DataArray_ls")
+
             Final_sum = aligned[0].fillna(0)
             for da in aligned[1:]:
                 Final_sum = Final_sum + da.fillna(0)
@@ -13526,96 +13542,130 @@ class ChemicalDrift(OceanDrift):
 
             ### Reorder dimensions with time first
             dims = list(Final_sum.dims)
-            dims.remove("time")
-            Final_sum = Final_sum.transpose("time", *dims)
+            dims.remove(time_name)
+            Final_sum = Final_sum.transpose(time_name, *dims)
 
-        if Final_sum is not None:
-            ### Select mask to conserve landmask at different depths
-            if Verbose:
-                print("Create landmask")
-            all_valid = xr.concat([~a.isnull() for a in aligned], dim="part").any("part").any(dim=time_name)
-            Final_sum = Final_sum.where(all_valid)
-            Final_sum.attrs["mask_source"] = "any-over-time, union across inputs"
-
-            sum_conc_DataArray_ls_output = float(sum(da.fillna(0).sum().item() for da in aligned))
-            sum_conc_Final_sum = float(Final_sum.fillna(0).sum().item())
-
-            if Verbose:
-                print(f"Sum of input DataArray_ls: {sum_conc_DataArray_ls_input}")
-                print(f"Sum of aligned DataArray_ls: {sum_conc_DataArray_ls_output}")
-                print(f"Sum of Final_sum: {sum_conc_Final_sum}")
-
-            tol_pct = 5.0  # percent
-
-            if sum_conc_DataArray_ls_input == 0:
-                # if there was no “mass” in the input, any nonzero output is an issue
-                if not np.isclose(sum_conc_Final_sum, 0.0):
-                    raise AssertionError(
-                        f"Sum check failed: input sum is 0, but Final_sum is {sum_conc_Final_sum} "
-                        f"(> {tol_pct:.1f}% change)."
-                    )
-            else:
-                rel_change = (sum_conc_Final_sum - sum_conc_DataArray_ls_input) / sum_conc_DataArray_ls_input
-                pct_change = rel_change * 100.0
-                if Verbose:
-                    print(f"Sum relative change: {pct_change:+.2f}%")
-
-                if abs(rel_change) > tol_pct / 100.0:
-                    raise AssertionError(
-                        f"Sum check failed: Final_sum={sum_conc_Final_sum}, "
-                        f"input={sum_conc_DataArray_ls_input}, "
-                        f"change={pct_change:+.2f}% (exceeds ±{tol_pct:.1f}%)."
-                    )
-
-            ### Add common_attrs to Final_sum and add "sim_description" if not present
-            Final_sum.attrs.update(common_attrs)
-            if ("sim_description" not in Final_sum.attrs) and (sim_description is not None):
-                Final_sum.attrs["sim_description"] = str(sim_description)
-            time_end = datetime.now()
-            sum_time = (time_end - time_start)
-            if Verbose:
-                print(f"Sum_time (h:min:s): {sum_time}")
-
-            if nan_counts_interp is not None:
-                vals = [v for v in nan_counts_interp.values() if isinstance(v, (int, float))]
-                avg_nans = float(np.mean(vals)) if vals else 0.0
-
-                ### NaNs in the final result
-                Final_sum_nan = int(np.count_nonzero(np.isnan(Final_sum.values)))
-
-                ### Compare with ±10% tolerance and raise if violated
-                if avg_nans == 0.0:
-                    # If average is zero, any NaNs in Final_sum is an immediate violation
-                    if Final_sum_nan != 0:
-                        raise ValueError(
-                            f"NaN count check failed: avg_nans=0, Final_sum has {Final_sum_nan} NaNs (>10% change)."
-                        )
-                else:
-                    rel_change = (Final_sum_nan - avg_nans) / avg_nans  # signed
-                    pct_change = 100.0 * rel_change
-                    if abs(rel_change) > 0.05:
-                        raise ValueError(
-                            f"NaN count check failed: Final_sum_nans={Final_sum_nan}, "
-                            f"avg_nans={avg_nans:.2f}, change={pct_change:+.2f}% (exceeds ±5%)."
-                        )
-                    else:
-                        if Verbose:
-                            print(
-                                f"NaN count check OK: Final_sum_nans={Final_sum_nan}, "
-                                f"avg_nans={avg_nans:.2f}, change={pct_change:+.2f}% (within ±5%)."
-                            )
-
-            if H_can_out is not None:
-
-                H_can_out.assign_coords(
-                    latitude = Final_sum["latitude"].values,
-                    longitude= Final_sum["longitude"].values,
-                )
-                xr.align(Final_sum, H_can_out, join="exact")
-
-            return Final_sum, H_can_out
-        else:
+        if Final_sum is None:
             raise ValueError("Final_sum is None")
+
+        # Mass-based conservation check before masking
+        if common_topo_for_mass is None:
+            if Verbose:
+                print("Skipping mass-based conservation check: no common topography available.")
+        else:
+            cell_volume_common = self._build_common_cell_volume(
+                da_ref=aligned[0],
+                topo_ref=common_topo_for_mass,
+            )
+
+            mass_aligned_parts = None
+            for da in aligned:
+                m = self._mass_on_common_grid(da, cell_volume_common)
+                mass_aligned_parts = m if mass_aligned_parts is None else (mass_aligned_parts + m)
+
+            mass_final = self._mass_on_common_grid(Final_sum, cell_volume_common)
+
+            try:
+                xr.testing.assert_allclose(
+                    mass_final,
+                    mass_aligned_parts,
+                    rtol=1e-6,
+                    atol=1e-12,
+                )
+            except AssertionError as e:
+                diff = (mass_final - mass_aligned_parts).astype(np.float64)
+                max_abs = float(np.nanmax(np.abs(diff.values)))
+
+                denom = xr.where(np.abs(mass_aligned_parts) > 0, np.abs(mass_aligned_parts), np.nan)
+                rel = diff / denom
+                max_rel = float(np.nanmax(np.abs(rel.values))) if np.any(np.isfinite(rel.values)) else 0.0
+
+                raise AssertionError(
+                    "Mass conservation check failed on aligned grid: "
+                    f"max_abs_diff={max_abs:.6e}, max_rel_diff={max_rel:.6e}"
+                ) from e
+
+            if Verbose:
+                total_mass_inputs = float(mass_aligned_parts.fillna(0).sum().item())
+                total_mass_final = float(mass_final.fillna(0).sum().item())
+                print(f"Aligned input mass: {total_mass_inputs}")
+                print(f"Final_sum mass:     {total_mass_final}")
+
+                if total_mass_inputs == 0.0:
+                    pct_change = 0.0 if total_mass_final == 0.0 else np.inf
+                else:
+                    pct_change = 100.0 * (total_mass_final - total_mass_inputs) / total_mass_inputs
+
+                print(f"Mass relative change: {pct_change:+.6f}%")
+
+        ### Masking
+        if Verbose:
+            print("Create landmask")
+
+        per_input_valid = [~a.isnull() for a in aligned]
+        per_input_valid_any_time = [v.any(dim=time_name) for v in per_input_valid]
+        valid_stack = xr.concat(per_input_valid_any_time, dim="part")
+
+        if mask_mode == "input0":
+            final_mask = per_input_valid_any_time[0]
+            mask_source_value = "input0-any-over-time"
+        elif mask_mode == "union":
+            final_mask = valid_stack.any("part")
+            mask_source_value = "union-any-over-time"
+        else:
+            final_mask = valid_stack.all("part")
+            mask_source_value = "intersection-any-over-time"
+
+        # NaN audit on the SAME object before vs after masking
+        Final_sum_before_mask = Final_sum
+        nans_before_mask = int(np.count_nonzero(np.isnan(Final_sum_before_mask.values)))
+
+        # Broadcast mask explicitly to Final_sum shape/order
+        final_mask_full = final_mask.broadcast_like(Final_sum_before_mask)
+        final_mask_full = final_mask_full.transpose(*Final_sum_before_mask.dims)
+
+        Final_sum = Final_sum_before_mask.where(final_mask_full)
+        nans_after_mask = int(np.count_nonzero(np.isnan(Final_sum.values)))
+
+        # Masking should never reduce NaNs
+        if nans_after_mask < nans_before_mask:
+            raise ValueError(
+                f"Masking reduced NaNs unexpectedly: before={nans_before_mask}, after={nans_after_mask}"
+            )
+
+        # Check that newly created NaNs come only from mask=False where data was previously finite
+        added_nan_mask = Final_sum.isnull() & Final_sum_before_mask.notnull()
+        expected_added_nan_mask = (~final_mask_full) & Final_sum_before_mask.notnull()
+
+        xr.testing.assert_equal(added_nan_mask, expected_added_nan_mask)
+
+        Final_sum.attrs.update(common_attrs)
+        if "sim_description" not in Final_sum.attrs and sim_description is not None:
+            Final_sum.attrs["sim_description"] = str(sim_description)
+        Final_sum.attrs["mask_source"] = mask_source_value
+
+        if Verbose:
+            added_nans = nans_after_mask - nans_before_mask
+            print(
+                f"Masking NaN check OK: before={nans_before_mask}, "
+                f"after={nans_after_mask}, added={added_nans}"
+            )
+
+        time_end = datetime.now()
+        sum_time = time_end - time_start
+
+        if Verbose:
+            print(f"Sum_time (h:min:s): {sum_time}")
+
+        # Pure consistency check only: do not modify Final_sum or H_can_out
+        if H_can_out is not None:
+            for dim in ("latitude", "longitude"):
+                if dim not in Final_sum.coords or dim not in H_can_out.coords:
+                    raise ValueError(f"Missing coordinate '{dim}' in Final_sum or H_can_out")
+                if not Final_sum[dim].equals(H_can_out[dim]):
+                    raise ValueError(f"Coordinate '{dim}' differs between Final_sum and H_can_out")
+
+        return Final_sum, H_can_out
 
     @staticmethod
     def _check_dims_values(dims_values):
