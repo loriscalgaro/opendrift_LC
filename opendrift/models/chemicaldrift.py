@@ -3026,7 +3026,7 @@ class ChemicalDrift(OceanDrift):
                                           horizontal_smoothing=False,
                                           smoothing_cells=0,
                                           reader_sea_depth=None,
-                                          reader_bottom_layer_thickness=None,
+                                          reader_active_sediment_layer_thickness=None,
                                           landmask_shapefile=None,
                                           landmask_bathymetry_thr=None,
                                           origin_marker=None,
@@ -3061,9 +3061,9 @@ class ChemicalDrift(OceanDrift):
             horizontal_smoothing:  boolean, smooth concentration horizontally
             smoothing_cells:       int, number of cells for horizontal smoothing,
             reader_sea_depth:      string, path of bathimethy .nc file
-            reader_bottom_layer_thickness:
+            reader_active_sediment_layer_thicknes:
                                    string, path of .nc file containing variable
-                                   'bottom_layer_thickness'; if not provided,
+                                   'active_sediment_layer_thickness'; if not provided,
                                    chemical:sediment:mixing_depth is used
             landmask_shapefile:    string, path of bathimethylandmask .shp file
             landmask_bathymetry_thr:   float32, if set the value is the threshold used to extract the landmask from reader_sea_depth
@@ -3095,17 +3095,36 @@ class ChemicalDrift(OceanDrift):
                 except Exception:
                     raise ValueError(f"Invalid density_proj: {density_proj}")
 
+        def _resolve_var_name(ds, requested_name_or_standard_name):
+            # 1) exact variable name
+            if requested_name_or_standard_name in ds.data_vars:
+                return requested_name_or_standard_name
+
+            # 2) CF standard_name match
+            matches = [v for v in ds.data_vars
+                if str(ds[v].attrs.get("standard_name", "")).strip() == requested_name_or_standard_name]
+
+            if len(matches) == 1:
+                return matches[0]
+            elif len(matches) > 1:
+                raise ValueError(
+                    f"More than one variable in dataset matches standard_name "
+                    f"'{requested_name_or_standard_name}': {matches}")
+            else:
+                raise ValueError(
+                    f"No variable found with name or standard_name "
+                    f"'{requested_name_or_standard_name}'")
+
         def _open_cf_reader_with_var(nc_path, var_name,
-                                     llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat,
-                                     allow_corner_adjust=False):
+                             llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat,
+                             allow_corner_adjust=False):
             from opendrift.readers import reader_netCDF_CF_generic
             import xarray as xr
+            import numpy as np
 
             with xr.open_dataset(nc_path) as ds:
-                if var_name not in ds.data_vars:
-                    raise ValueError(f"Variable '{var_name}' not found in {nc_path}")
-
-                da = ds[var_name]
+                resolved_var = _resolve_var_name(ds, var_name)
+                da = ds[resolved_var]
 
                 lat_names = ["latitude", "lat", "y"]
                 lon_names = ["longitude", "lon", "x", "long"]
@@ -3151,12 +3170,10 @@ class ChemicalDrift(OceanDrift):
                 else:
                     if not (lat_min <= llcrnrlat <= urcrnrlat <= lat_max):
                         raise ValueError(
-                            f"Corners are outside latitude bounds of '{var_name}' in {nc_path}"
-                        )
+                            f"Corners are outside latitude bounds of '{var_name}' in {nc_path}")
                     if not (lon_min <= llcrnrlon <= urcrnrlon <= lon_max):
                         raise ValueError(
-                            f"Corners are outside longitude bounds of '{var_name}' in {nc_path}"
-                        )
+                            f"Corners are outside longitude bounds of '{var_name}' in {nc_path}")
 
                 da_sel = da.where(
                     (da[lon_name] >= llcrnrlon) &
@@ -3239,17 +3256,17 @@ class ChemicalDrift(OceanDrift):
             raise ValueError("A reader for 'sea_floor_depth_below_sea_level' must be specified")
 
         # Active sediment layer thickness reader
-        bottom_layer_reader = None
-        if reader_bottom_layer_thickness is not None:
+        active_sediment_layer_thickness_reader = None
+        if reader_active_sediment_layer_thickness is not None:
             if any(v is None for v in (llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat)):
                 raise ValueError(
                     "llcrnrlon/llcrnrlat/urcrnrlon/urcrnrlat must be provided when "
-                    "reader_bottom_layer_thickness is used."
+                    "reader_active_sediment_layer_thickness is used."
                 )
 
-            bottom_layer_reader, _, _, _, _, _, _ = _open_cf_reader_with_var(
-                reader_bottom_layer_thickness,
-                'bottom_layer_thickness',
+            active_sediment_layer_thickness_reader, _, _, _, _, _, _ = _open_cf_reader_with_var(
+                reader_active_sediment_layer_thickness,
+                'active_sediment_layer_thickness',
                 llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat,
                 allow_corner_adjust=False
             )
@@ -3288,14 +3305,14 @@ class ChemicalDrift(OceanDrift):
         )[0]['sea_floor_depth_below_sea_level'].reshape(self.conc_lon.shape)
 
         # Active sediment layer thickness on the same intermediate grid
-        self.conc_bottom_layer_thickness = None
-        if bottom_layer_reader is not None:
-            self.conc_bottom_layer_thickness = bottom_layer_reader.get_variables_interpolated_xy(
-                ['bottom_layer_thickness'],
+        self.conc_active_sediment_layer_thickness = None
+        if active_sediment_layer_thickness_reader is not None:
+            self.conc_active_sediment_layer_thickness = active_sediment_layer_thickness_reader.get_variables_interpolated_xy(
+                ['active_sediment_layer_thickness'],
                 x=self.conc_lon.flatten(),
                 y=self.conc_lat.flatten(),
-                time=bottom_layer_reader.times[0] if bottom_layer_reader.times is not None else None
-            )[0]['bottom_layer_thickness'].reshape(self.conc_lon.shape)
+                time=active_sediment_layer_thickness_reader.times[0] if active_sediment_layer_thickness_reader.times is not None else None
+            )[0]['active_sediment_layer_thickness'].reshape(self.conc_lon.shape)
 
         # pixelsize auto
         if pixelsize_m == 'auto':
@@ -3413,7 +3430,7 @@ class ChemicalDrift(OceanDrift):
         landmask_yx = landmask.T
 
         # Mean depth + pixel area + active sediment layer thickness
-        pixel_mean_depth, pixel_area, pixel_bottom_layer_thickness = self.get_pixel_mean_depth(
+        pixel_mean_depth, pixel_area, pixel_active_sediment_layer_thickness = self.get_pixel_mean_depth(
             lon_array, lat_array,
             is_moll, is_latlon,
             lat_resol, lon_resol
@@ -3452,10 +3469,10 @@ class ChemicalDrift(OceanDrift):
         sed_poro = self.get_config('chemical:sediment:porosity')
 
         # Keep old fixed fallback when no thickness map is provided
-        if pixel_bottom_layer_thickness is None:
+        if pixel_active_sediment_layer_thickness is None:
             sed_L = sed_L_cfg
         else:
-            sed_L = np.asarray(pixel_bottom_layer_thickness, dtype=np.float32)
+            sed_L = np.asarray(pixel_active_sediment_layer_thickness, dtype=np.float32)
             sed_L = np.where(np.isfinite(sed_L), sed_L, sed_L_cfg)
             sed_L = np.maximum(sed_L, 0.0)
 
@@ -3812,15 +3829,15 @@ class ChemicalDrift(OceanDrift):
             nc.variables['topo'].sim_description = str(sim_description)
 
         # Active sediment layer thickness (optional output)
-        if pixel_bottom_layer_thickness is not None:
-            nc.createVariable('bottom_layer_thickness', 'f8', ('y', 'x'), fill_value=0)
-            blt_ma = np.ma.array(pixel_bottom_layer_thickness.T, mask=landmask_yx, copy=False)
-            nc.variables['bottom_layer_thickness'][:] = blt_ma
-            nc.variables['bottom_layer_thickness'].long_name = 'Thickness of active sediment layer'
-            nc.variables['bottom_layer_thickness'].grid_mapping = density_proj_str
-            nc.variables['bottom_layer_thickness'].units = 'm'
+        if pixel_active_sediment_layer_thickness is not None:
+            nc.createVariable('active_sediment_layer_thickness', 'f8', ('y', 'x'), fill_value=0)
+            aslt_ma = np.ma.array(pixel_active_sediment_layer_thickness.T, mask=landmask_yx, copy=False)
+            nc.variables['active_sediment_layer_thickness'][:] = aslt_ma
+            nc.variables['active_sediment_layer_thickness'].long_name = 'Thickness of active sediment layer'
+            nc.variables['active_sediment_layer_thickness'].grid_mapping = density_proj_str
+            nc.variables['active_sediment_layer_thickness'].units = 'm'
             if sim_description is not None:
-                nc.variables['bottom_layer_thickness'].sim_description = str(sim_description)
+                nc.variables['active_sediment_layer_thickness'].sim_description = str(sim_description)
 
         # AREA
         if pixelsize_m is None:
@@ -3843,8 +3860,8 @@ class ChemicalDrift(OceanDrift):
 
         # Cleanup
         del H, pixel_volume, pixel_mean_depth, lon_array, lat_array, landmask, landmask_yx
-        if pixel_bottom_layer_thickness is not None:
-            del pixel_bottom_layer_thickness
+        if pixel_active_sediment_layer_thickness is not None:
+            del pixel_active_sediment_layer_thickness
         if time_avg_conc is True:
             del mean_conc
         if elements_density is True:
@@ -4518,27 +4535,27 @@ class ChemicalDrift(OceanDrift):
         )
 
         # Interpolate active sediment layer thickness to the same grid
-        bottom_layer_thickness = None
-        if hasattr(self, 'conc_bottom_layer_thickness') and self.conc_bottom_layer_thickness is not None:
-            blt_grd = self.conc_bottom_layer_thickness[:nx, :ny]
-            bottom_layer_thickness = interpolate.griddata(
+        active_sediment_layer_thickness = None
+        if hasattr(self, 'conc_active_sediment_layer_thickness') and self.conc_active_sediment_layer_thickness is not None:
+            blt_grd = self.conc_active_sediment_layer_thickness[:nx, :ny]
+            active_sediment_layer_thickness = interpolate.griddata(
                 (lon_grd.flatten(), lat_grd.flatten()),
                 blt_grd.flatten(),
                 (lons, lats),
                 method='linear'
             )
-            bottom_layer_thickness = np.where(
-                np.isfinite(bottom_layer_thickness), bottom_layer_thickness, np.nan
+            active_sediment_layer_thickness = np.where(
+                np.isfinite(active_sediment_layer_thickness), active_sediment_layer_thickness, np.nan
             )
 
-        for attr in ('conc_lon', 'conc_lat', 'conc_topo', 'conc_bottom_layer_thickness'):
+        for attr in ('conc_lon', 'conc_lat', 'conc_topo', 'conc_active_sediment_layer_thickness'):
             if hasattr(self, attr):
                 setattr(self, attr, None)
         gc.collect()
 
         # Mollweide case
         if is_moll:
-            return h, None, bottom_layer_thickness
+            return h, None, active_sediment_layer_thickness
 
         # EPSG:4326 / longlat case: spherical area
         if is_latlon:
@@ -4553,11 +4570,11 @@ class ChemicalDrift(OceanDrift):
             lat2 = lat_array_rad + (lat_resol_rad / 2) # Upper latitude boundary
             # Calculate area using the spherical formula
             area = (Radius**2) * lon_resol_rad * (np.sin(lat2) - np.sin(lat1))
-            return h, area, bottom_layer_thickness
+            return h, area, active_sediment_layer_thickness
 
         # Projected CRS: lat_resol/lon_resol are in projected units (typically meters)
         area = np.full_like(lats, abs(lat_resol * lon_resol), dtype=np.float64)
-        return h, area, bottom_layer_thickness
+        return h, area, active_sediment_layer_thickness
 
     def horizontal_smooth(self, a, n=0, landmask=None, pad_mode="edge", land_value=0.0):
         """
