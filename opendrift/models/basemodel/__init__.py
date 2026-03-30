@@ -337,6 +337,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         datefmt = '%H:%M:%S'
 
         if loglevel < 10:  # 0 is NOTSET, giving no output
+            print('WARNING: from next version (1.14.10), loglevel of 0 will give no logging, please change to 10 for DEBUG')
             loglevel = 10
         logger.setLevel(loglevel)
         logger.handlers.clear()
@@ -935,7 +936,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             reader_landmask = reader_global_landmask.Reader()
             seed_state = np.random.get_state(
             )  # Do not alter current random number generator
-            o = OceanDrift()
+            o = OceanDrift(loglevel=logger.level)
             np.random.set_state(seed_state)
             if hasattr(self, 'simulation_extent'):
                 o.simulation_extent = self.simulation_extent
@@ -2659,7 +2660,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                   vmax=None,
                   drifter=None,
                   shapefiles=None,
-                  skip=None,
+                  skip='auto',
                   scale=None,
                   color=False,
                   clabel=None,
@@ -2894,6 +2895,10 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                                vmax=vmax,
                                cmap=cmap,
                                transform=self.crs_lonlat)
+            if skip == 'auto':  # We use a suitable number of vectors
+                ny, nx = scalar.shape
+                skip = max(1, max(nx, ny) // 30)
+
             if type(background) is list:
                 bg_quiv = ax.quiver(map_x[::skip, ::skip],
                                     map_y[::skip, ::skip],
@@ -3039,6 +3044,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                 drifter = [drifter]
             drifter_pos = [None] * len(drifter)
             drifter_line = [None] * len(drifter)
+            drifter = [d.copy() for d in drifter]  # Avoid modifying original
             for drnum, dr in enumerate(drifter):
                 # Interpolate drifter time series onto simulation times
                 sts = (self.result.time - self.result.time[0]) / np.timedelta64(1, 's')
