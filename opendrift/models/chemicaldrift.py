@@ -8712,7 +8712,6 @@ class ChemicalDrift(OceanDrift):
         if filename is not None:
             plt.savefig(filename, format=filename[-3:], transparent=True, bbox_inches="tight", dpi=300)
 
-
     ### Helpers for extract_summary_timeseries
     def calc_mass_conversion_factor(self, mass_unit):
         """
@@ -9077,6 +9076,7 @@ class ChemicalDrift(OceanDrift):
             end_date = None,
             time_start=None,
             time_end=None,
+            extra_fields=None,
             save_files = True,
             verbose = False
             ):
@@ -9117,6 +9117,18 @@ class ChemicalDrift(OceanDrift):
         time_start, time_end: int/float, Start/end of slicing window for the exported period, in requested time_unit
                                          (e.g. hours if time_unit='h').
                                          Takes precedence over start_date, end_date.
+        extra_fields:        dict, optional Extra 2D fields from self.result to aggregate over ALL elements
+                             in the selected period, with no active/in/out/species masks.
+                             Format: { "field1": {"Name": "AAA","Unit": "UM", "mode": "mean"},}
+                             where:
+                               - dict key = variable name in self.result
+                               - "Name" = output column label
+                               - "Unit" = output unit label
+                               - "mode" can be:
+                                   * "mean" -> per-timestep nanmean across elements
+                                              <Name> [Unit] = per-timestep mean over valid elements
+                                              <Name> [Unit]__n_valid = number of valid elements used in that mean
+                                   * "sum"  -> per-timestep nansum across elements
         save_files:           bool, If True, export the resulting DataFrame to timeseries_file_path and return None.
                                     If False, return the DataFrame and do not write files.
         verbose:              bool, Print progress information.
@@ -9364,8 +9376,7 @@ class ChemicalDrift(OceanDrift):
 
         # Check only lat/lon
         valid_traj = (
-            ds["lon"].notnull().any("time") & ds["lat"].notnull().any("time")
-            )
+            ds["lon"].notnull().any("time") & ds["lat"].notnull().any("time"))
         removed = ds.trajectory.where(~valid_traj, drop=True).values
         if verbose:
             if len(removed) > 0:
@@ -9466,7 +9477,6 @@ class ChemicalDrift(OceanDrift):
         ]
         in_sediment_layer = np.any([specie == value for value in in_sediment_column_ls], axis=0)
 
-
         # Buried sediment compartment (deep storage)
         in_buried_sed = (specie == self.num_sburied) if hasattr(self, 'num_sburied') else np.zeros_like(specie, dtype=bool)
         def status_mask(idx):
@@ -9549,6 +9559,8 @@ class ChemicalDrift(OceanDrift):
         perc_sp_dict_1d = {}
         perc_elim_dict_1d = {}
         mass_transition_dict_1d = {}
+        extra_fields_dict_1d = {}
+        extra_fields_count_dict_1d = {}
 
         # 1) Inside-system mass (not outside/seeded_on_land/stranded elements)
         inside_mask = ~adv_out
@@ -9632,8 +9644,7 @@ class ChemicalDrift(OceanDrift):
                 mass=mass,
                 adv_out=adv_out,
                 mass_conversion_factor=mass_conversion_factor,
-                chunk_cols=50000,
-            )
+                chunk_cols=50000,)
             mass_eliminated_dict_1d["mass_adv_out_ts"] = exit_outside_at_t.astype(np.float32, copy=False)
             mass_eliminated_dict_1d["mass_adv_out_cumulative"] = cum_exit_outside.astype(np.float32, copy=False)
 
@@ -9804,21 +9815,65 @@ class ChemicalDrift(OceanDrift):
                 where=total_elim_ts > 0.0,) * 100.0
             perc_elim_dict_1d[perc_key] = perc.astype(np.float32, copy=False)
 
+        # 9) Extra user-requested fields aggregated over all elements (no masks)
+        # For mode="mean", also export a companion count series:
+        #   <value_col>__n_valid
+        for field, spec in (extra_fields or {}).items():
+            if not hasattr(result_ds, field):
+                raise ValueError(f"Requested extra field {field!r} not found in self.result")
+
+            da = getattr(result_ds, field)
+            if set(da.dims) != {"trajectory", "time"}:
+                raise ValueError(
+                    f"Requested extra field {field!r} must have dims "
+                    f"('trajectory','time') in any order, got {da.dims}")
+
+            spec = {} if spec is None else dict(spec)
+
+            out_name = spec.get("Name", field)
+            out_um = spec.get("Unit of measure", spec.get("Unit", getattr(da, "units", "")))
+            mode = str(spec.get("mode", "mean")).strip().lower()
+
+            arr2d = da.transpose("time", "trajectory").values  # (T, N)
+
+            col_name = f"{out_name} [{out_um}]" if str(out_um).strip() else out_name
+
+            if mode == "sum":
+                ts = np.nansum(arr2d, axis=1).astype(np.float64, copy=False)
+                extra_fields_dict_1d[col_name] = ts
+
+            elif mode == "mean":
+                valid_count = np.isfinite(arr2d).sum(axis=1).astype(np.float64, copy=False)
+                ts_sum = np.nansum(arr2d, axis=1).astype(np.float64, copy=False)
+
+                ts = np.divide(
+                    ts_sum,
+                    valid_count,
+                    out=np.full(arr2d.shape[0], np.nan, dtype=np.float64),
+                    where=valid_count > 0,)
+
+                extra_fields_dict_1d[col_name] = ts
+                extra_fields_count_dict_1d[f"{col_name}__n_valid"] = valid_count
+            else:
+                raise ValueError(
+                    f"Incorrect mode for extra field {field!r}: {mode!r}. "
+                    "Allowed: 'mean', 'sum'")
+
         # Drop padding row (if used) and recompute window cumulatives
         if pad_rows:
             # slice time axes
             time_steps = time_steps[pad_rows:]
             time_date_serie = time_date_serie[pad_rows:]
             # slice 1D dicts
-            for d in (mass_dict_1d, mass_sp_dict_1d, perc_sp_dict_1d, mass_transition_dict_1d):
+            for d in (mass_dict_1d, mass_sp_dict_1d, perc_sp_dict_1d, mass_transition_dict_1d,
+                      extra_fields_dict_1d, extra_fields_count_dict_1d):
                 for k in list(d.keys()):
                     d[k] = np.asarray(d[k])[pad_rows:]
 
             # emitted cumulative should restart at 0 in the window
             if "mass_emitted_ts" in mass_dict_1d:
                 mass_dict_1d["mass_emitted_cumulative"] = np.cumsum(
-                    mass_dict_1d["mass_emitted_ts"], dtype=np.float64
-                )
+                    mass_dict_1d["mass_emitted_ts"], dtype=np.float64)
             # slice eliminated ts and recompute eliminated cumulative within the window
             for k in list(mass_eliminated_dict_1d.keys()):
                 if k.endswith("_ts"):
@@ -9843,9 +9898,41 @@ class ChemicalDrift(OceanDrift):
         perc_sp_dict           = {f"{k} [%]":       v for k, v in perc_sp_dict_1d.items()}
         perc_elim_dict         = {f"{k} [%]":       v for k, v in perc_elim_dict_1d.items()}
 
-        # UM column: only first row filled
+        # UM column:
+        # row 0 -> global mass/time units
+        # row 1 -> extra field metadata (if any)
         n = len(time_steps)
-        um_col = [f"{mass_UM} {time_UM}"] + [pd.NA] * (n - 1) if n else []
+        extra_fields_info = pd.NA
+        if extra_fields:
+            parts = []
+            for field, spec in extra_fields.items():
+                spec = {} if spec is None else dict(spec)
+                out_name = spec.get("Name", field)
+                out_um = spec.get("Unit of measure", spec.get("Unit", ""))
+                mode = str(spec.get("mode", "mean")).strip().lower()
+
+                if str(out_um).strip():
+                    msg = f"{field} -> {out_name}: mode={mode}, UM={out_um}"
+                else:
+                    msg = f"{field} -> {out_name}: mode={mode}"
+
+                if mode == "mean":
+                    col_name = f"{out_name} [{out_um}]" if str(out_um).strip() else out_name
+                    msg += f", count_col={col_name}__n_valid"
+
+                parts.append(msg)
+            extra_fields_info = " ; ".join(parts)
+
+        if n == 0:
+            um_col = []
+        elif n == 1:
+            # only one row available: merge both pieces of info into the first row
+            if pd.isna(extra_fields_info):
+                um_col = [f"{mass_UM} {time_UM}"]
+            else:
+                um_col = [f"{mass_UM} {time_UM} | {extra_fields_info}"]
+        else:
+            um_col = [f"{mass_UM} {time_UM}", extra_fields_info] + [pd.NA] * (n - 2)
 
         df = pd.DataFrame({
             f"time [{time_unit}]": time_steps,
@@ -9853,6 +9940,8 @@ class ChemicalDrift(OceanDrift):
             **mass_dict,
             **mass_eliminated_dict,
             **mass_transition_dict,
+            **extra_fields_dict_1d,
+            **extra_fields_count_dict_1d,
             **mass_sp_dict,
             **perc_sp_dict,
             **perc_elim_dict,
@@ -9870,6 +9959,12 @@ class ChemicalDrift(OceanDrift):
         return [c for c in cols if c in df.columns]
 
     @staticmethod
+    def _unit_from_col(label):
+        import re
+        m = re.search(r"\[([^\]]+)\]\s*$", str(label))
+        return m.group(1).strip() if m else None
+
+    @staticmethod
     def _parse_um_from_df(df):
         """
         Returns (mass_unit, time_unit) without brackets.
@@ -9877,7 +9972,7 @@ class ChemicalDrift(OceanDrift):
         Fallback: infer from 'time [..]' and first mass col '[..]'.
         """
         import re
-        # 1) Primary: UM column
+        # Primary: UM column
         if "UM" in df.columns:
             s = df["UM"].dropna()
             if len(s):
@@ -9891,15 +9986,13 @@ class ChemicalDrift(OceanDrift):
                     # normalize micro sign
                     mu = "ug" if mu == "µg" else mu
                     return mu, tu
-
-        # 2) Fallback: time column header
+        # Fallback: time column header
         tu = None
         time_cols = [c for c in df.columns if c.startswith("time [") and c.endswith("]")]
         if time_cols:
             tu = time_cols[0].split("[", 1)[1].rstrip("]").strip()
             tu = "hr" if tu == "h" else tu
-
-        # 3) Fallback: mass column header
+        # Fallback: mass column header
         mu = None
         for c in df.columns:
             m = re.search(r"\[([^\]]+)\]\s*$", c)
@@ -9956,7 +10049,6 @@ class ChemicalDrift(OceanDrift):
         if time_col is None:
             time_cols = [c for c in dfc.columns if c.startswith("time [") and c.endswith("]")]
             time_col = time_cols[0] if time_cols else None
-
         # time conversion
         if target_time_unit and time_col and UM_time:
             dst = "hr" if target_time_unit == "h" else target_time_unit
@@ -9966,12 +10058,10 @@ class ChemicalDrift(OceanDrift):
             dfc = dfc.rename(columns={time_col: new_time_col})
             time_col = new_time_col
             UM_time = dst
-
         # mass conversion
         if target_mass_unit and UM_mass:
             dst = "ug" if target_mass_unit == "µg" else target_mass_unit
             f = self._mass_factor(UM_mass, dst)
-
             # convert only columns that explicitly carry the source mass unit in their name
             src_tag = f"[{UM_mass}]"
             dst_tag = f"[{dst}]"
@@ -9983,7 +10073,6 @@ class ChemicalDrift(OceanDrift):
                 dfc = dfc.rename(columns=rename_map)
 
             UM_mass = dst
-
         # update UM column (first row only)
         if "UM" in dfc.columns:
             dfc["UM"] = pd.NA
@@ -10360,7 +10449,6 @@ class ChemicalDrift(OceanDrift):
 
         suffix = f" ({'-'.join(parts)})" if parts else ""
         return nice + suffix
-
 
     def plot_summary_timeseries(
         self, df=None,
@@ -10766,6 +10854,60 @@ class ChemicalDrift(OceanDrift):
                  stack_style="bars", show_empty_outline=True),
         ]
 
+        # Extra user-defined fields: dedicated section before mass-budget checks
+        extra_panel_start_idx = None
+
+        extra_line_cols = []
+        skip_exact = {"UM", "date_of_timestep"}
+        if time_col is not None:
+            skip_exact.add(time_col)
+
+        for c in dfc.columns:
+            if c in skip_exact:
+                continue
+            if c.startswith("time [") and c.endswith("]"):
+                continue
+            if c.startswith("mass_"):
+                continue
+            if c.startswith("perc_"):
+                continue
+            if c.startswith("qc_"):
+                continue
+            if c.endswith("__n_valid"):
+                continue
+            if not pd.api.types.is_numeric_dtype(dfc[c]):
+                continue
+
+            s = pd.to_numeric(dfc[c], errors="coerce")
+            if s.notna().sum() == 0:
+                continue
+
+            extra_line_cols.append(c)
+
+        if extra_line_cols:
+            # force "Additional fields" to start on a fresh row in double mode
+            if row_mode == "double" and (len(panels) % 2 == 1):
+                panels.append(dict(title="", kind="blank", cols=[], legend={"max_cols": 1}))
+
+            extra_panel_start_idx = len(panels)
+
+            for col in extra_line_cols:
+                unit = self._unit_from_col(col)
+                ylabel = f"Value [{unit}]" if unit else "Value"
+                panels.append(
+                    dict(
+                        title=self._strip_units(col),
+                        kind="line",
+                        cols=[col],
+                        ylabel=ylabel,
+                        legend={"max_cols": 1},
+                    )
+                )
+
+            # force following sanity section to start on a fresh row too
+            if row_mode == "double" and (len(panels) % 2 == 1):
+                panels.append(dict(title="", kind="blank", cols=[], legend={"max_cols": 1}))
+
         # Mass budget checks
         has_ts = all(c in dfc.columns for c in [mcol("mass_degraded_ts"), mcol("mass_photodegraded_ts"),
                                                mcol("mass_biodegraded_ts"), mcol("mass_hydrolyzed_ts")])
@@ -10783,6 +10925,10 @@ class ChemicalDrift(OceanDrift):
             rows = [panels[i:i + 2] for i in range(0, len(panels), 2)]
         else:
             rows = [[p] for p in panels]
+
+        i_extra = None
+        if extra_panel_start_idx is not None:
+            i_extra = (extra_panel_start_idx // 2) if row_mode == "double" else extra_panel_start_idx
 
         # Build a global label list so colors stay consistent even if some series are omitted in a panel
         all_labels = []
@@ -10843,9 +10989,19 @@ class ChemicalDrift(OceanDrift):
 
             return leg
 
-        def _set_ylabel(ax, kind, cols):
+        def _set_ylabel(ax, kind, cols, ylabel=None):
             cols = cols or []
-            is_percent_axis = (kind in ("stack_share", "stack100", "stack_to_total")) or any("[%]" in c for c in cols)
+
+            if ylabel:
+                ax.set_ylabel(str(ylabel), fontsize=fs["ylabel"], labelpad=2)
+                ax.tick_params(axis="x", labelsize=fs["xticks"])
+                ax.tick_params(axis="y", labelsize=fs["yticks"])
+                return
+
+            is_percent_axis = (
+                kind in ("stack_share", "stack100", "stack_to_total")
+                or any("[%]" in c for c in cols)
+            )
 
             if is_percent_axis:
                 ax.set_ylabel("Percentage [%]", fontsize=fs["ylabel"], labelpad=2)
@@ -10875,7 +11031,10 @@ class ChemicalDrift(OceanDrift):
                     if self._is_all_zero(dfc[col], atol=1e-12):
                         continue
                     key = self._strip_units(col)
-                    pretty = self._pretty_label(key)
+                    if key.startswith(("mass_", "perc_")):
+                        pretty = self._pretty_label(key)
+                    else:
+                        pretty = key
                     ax.plot(
                         x, dfc[col],
                         label=pretty,
@@ -11130,7 +11289,7 @@ class ChemicalDrift(OceanDrift):
                     ax.plot(x, sum_path, label="Sum pathways (cumulative)", color="#000000", linewidth=1.8)
 
             # common styling
-            _set_ylabel(ax, kind, cols)
+            _set_ylabel(ax, kind, cols, ylabel=spec.get("ylabel"))
             ax.set_axisbelow(True)
 
             # Remove vertical gridlines: only y-grid
@@ -11201,9 +11360,7 @@ class ChemicalDrift(OceanDrift):
                     if row_mode == "double":
                         hr = [0.72, 0.11, 0.29]
                     else:
-                        # single mode
                         if spec.get("kind") == "bar_elim_summary":
-                            # more spacer between rotated x tick labels and legend
                             hr = [0.42, 0.18, 0.24]
                         else:
                             hr = [0.50, 0.08, 0.16]
@@ -11265,7 +11422,7 @@ class ChemicalDrift(OceanDrift):
 
         i_trans = find_row("Adsorption to suspended particles")
 
-        # 3) Degradation pathways: biodeg/hydro/photo (+ bar summary)
+        # 3) Degradation pathways
         if i_bio is not None:
             if i_trans is not None:
                 topic_pages.append(("Degradation pathways", rows[i_bio:i_trans]))
@@ -11276,11 +11433,11 @@ class ChemicalDrift(OceanDrift):
         if i_trans is not None and i_allsp is not None:
             topic_pages.append(("Adsorption / desorption and deposition / resuspension", rows[i_trans:i_allsp]))
 
-        # 5) Speciation overview: all species + dissolved + spm
+        # 5) Speciation overview
         if i_allsp is not None and i_sp_sed is not None:
             topic_pages.append(("Speciation overview", rows[i_allsp:i_sp_sed]))
 
-        # 5) Speciation in sediment
+        # 6) Speciation in sediment
         i_sp_sed_comp = find_row("SP composition (%) (sediment partition)")
         if i_sp_sed is not None:
             if row_mode == "double":
@@ -11289,7 +11446,13 @@ class ChemicalDrift(OceanDrift):
                 end_idx = (i_sp_sed_comp + 1) if i_sp_sed_comp is not None else (i_sp_sed + 1)
                 topic_pages.append(("Speciation in sediment", rows[i_sp_sed:end_idx]))
 
-        # 6) Mass budget checks (sanity rows, if present)
+        # 7) Additional fields
+        if i_extra is not None:
+            end_extra = i_sanity if i_sanity is not None else len(rows)
+            if end_extra > i_extra:
+                topic_pages.append(("Additional fields", rows[i_extra:end_extra]))
+
+        # 8) Mass budget checks
         if i_sanity is not None:
             topic_pages.append(("Mass-budget checks", rows[i_sanity:]))
 
@@ -11336,9 +11499,7 @@ class ChemicalDrift(OceanDrift):
                     if row_mode == "double":
                         hr = [0.72, 0.11, 0.29]
                     else:
-                        # single mode
                         if spec.get("kind") == "bar_elim_summary":
-                            # more spacer between rotated x tick labels and legend
                             hr = [0.42, 0.18, 0.24]
                         else:
                             hr = [0.50, 0.08, 0.16]
@@ -12057,12 +12218,49 @@ class ChemicalDrift(OceanDrift):
         aligned = xr.align(*standardized, join="exact", copy=False)
 
         if verbose:
-            print("Summing datasets...")
-        summed = aligned[0].fillna(0.0)
-        for ds in aligned[1:]:
-            summed = summed + ds.fillna(0.0)
+            print("Combining datasets...")
+        count_suffix = "__n_valid"
 
-        out = summed.to_dataframe().reset_index()
+        def _sum_da_list(arrays):
+            acc = arrays[0].fillna(0.0)
+            for da in arrays[1:]:
+                acc = acc + da.fillna(0.0)
+            return acc
+        # A value column is treated as a weighted-mean field if a companion
+        # "<value_col>__n_valid" column exists.
+        weighted_mean_value_cols = {
+            v for v in all_vars
+            if (not v.endswith(count_suffix)) and (f"{v}{count_suffix}" in all_vars)}
+
+        combined_vars = {}
+        for v in all_vars:
+            arrays = [ds[v] for ds in aligned]
+            # Companion counts are always additive
+            if v.endswith(count_suffix):
+                combined_vars[v] = _sum_da_list(arrays)
+                continue
+            # Weighted mean reconstruction:
+            # global_mean = sum(mean_i * count_i) / sum(count_i)
+            if v in weighted_mean_value_cols:
+                count_name = f"{v}{count_suffix}"
+                count_arrays = [ds[count_name] for ds in aligned]
+
+                numerator = arrays[0].fillna(0.0) * count_arrays[0].fillna(0.0)
+                denominator = count_arrays[0].fillna(0.0)
+
+                for val_da, cnt_da in zip(arrays[1:], count_arrays[1:]):
+                    cnt = cnt_da.fillna(0.0)
+                    numerator = numerator + val_da.fillna(0.0) * cnt
+                    denominator = denominator + cnt
+
+                combined_vars[v] = xr.where(denominator > 0.0, numerator / denominator, np.nan)
+                continue
+
+            # Default behavior: additive series
+            combined_vars[v] = _sum_da_list(arrays)
+
+        combined = xr.Dataset(combined_vars)
+        out = combined.to_dataframe().reset_index()
 
         # enforce mass closure for denom
         dst_tag = f"[{UM_mass}]"
@@ -12102,8 +12300,7 @@ class ChemicalDrift(OceanDrift):
                 "mass_volatilized_ts",
                 "mass_adv_out_ts",
                 "mass_stranded_ts",
-                "mass_buried_ts",
-            ),
+                "mass_buried_ts",),
         )
 
         # QC
