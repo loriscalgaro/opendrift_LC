@@ -5348,8 +5348,9 @@ class ChemicalDrift(OceanDrift):
 
 
 
-# ################
+##################
 # POSTPROCESSING
+    #
     def simulation_summary(self, chemical_compound):
         '''Print a summary of the simulation: number of elements, number of transformations
         and final speciation
@@ -5464,7 +5465,7 @@ class ChemicalDrift(OceanDrift):
             llcrnrlat:             float32, min latitude of grid (in degrees using EPSG 4326)
             urcrnrlon:             float32, max longitude of grid (in degrees using EPSG 4326)
             urcrnrlat:             float32, max latitude of grid (in degrees using EPSG 4326)
-            mass_unit:             string, mass unit of output concentration (ug/mg/g/kg)
+            mass_unit:             string, mass unit of input, used for output concentration label(ug/mg/g/kg)
             time_avg_conc:         boolean, calculate concentration averaged each deltat
             time_start:            string, datetime64[ns] string for start time of concentration map
             time_end:              string, datetime64[ns] string for end time of concentration map
@@ -5484,7 +5485,7 @@ class ChemicalDrift(OceanDrift):
             weight:                string, elements property to be extracted to produce maps
             sim_description:       string, descrition of simulation to be included in netcdf attributes
             timestep_values:       boolean, only active elements will be considered
-            compress_species:      boolean, onl species present in self.result will be used to construct netCDF file
+            compress_species:      boolean, only species present in self.result will be used to construct netCDF file
             weight_mode:           string, one of:
                                    - "extensive": histogram is interpreted as an extensive sum and converted to concentration
                                    - "mean": histogram is interpreted as sum(property) and divided by particle count per cell
@@ -5503,6 +5504,14 @@ class ChemicalDrift(OceanDrift):
             When block-averaging snapshots, the already-computed per-snapshot mean field
             is averaged with nanmean; snapshots where a cell is empty remain NaN and are
             ignored in the block mean for that cell.
+
+        Auxiliary-reader limitation
+        ---------------------------
+        Auxiliary bathymetry and active sediment layer thickness readers used by
+        this function are currently expected to be rectilinear lon/lat datasets
+        in the ChemicalDrift [-180, 180] longitude convention.
+        Projected auxiliary x/y readers and curvilinear 2D auxiliary coordinates
+        are not supported by the auxiliary-reader opening/subsetting helper here.
 
         Time averaging
         --------------
@@ -5549,7 +5558,8 @@ class ChemicalDrift(OceanDrift):
         This is not conservative. If the output grid is finer than the auxiliary field,
         the apparent spatial resolution may increase without adding information.
 
-
+        Compatibility note (weight_mode="extensive" only)
+        -----------------------------------------------
         One variable stores both water-like and sediment-like species.
         Use units_water, units_sediment and specie_phase for machine-readable interpretation.
         mass_unit and weight_unit are labels only here. No unit conversion is performed.
@@ -5565,12 +5575,14 @@ class ChemicalDrift(OceanDrift):
             try:
                 CRS.from_string(density_proj)
                 return density_proj
-            except Exception:
+            except Exception as e1:
+                logger.debug("CRS.from_string failed for density_proj=%r: %s", density_proj, e1, exc_info=True)
                 try:
                     density_proj = CRS.from_epsg(density_proj).to_proj4()
                     return density_proj
-                except Exception:
-                    raise ValueError(f"Invalid density_proj: {density_proj}")
+                except Exception as e2:
+                    logger.debug("CRS.from_epsg failed for density_proj=%r: %s", density_proj, e2, exc_info=True)
+                    raise ValueError(f"Invalid density_proj: {density_proj}") from e2
 
         def _normalize_unit_string(u):
             if u is None:
@@ -5582,7 +5594,8 @@ class ChemicalDrift(OceanDrift):
             if weight is not None and weight in self.result.variables:
                 try:
                     src_unit = _normalize_unit_string(self.result[weight].attrs.get("units", None))
-                except Exception:
+                except Exception as e:
+                    logger.debug("Could not read source units for weight=%r: %s", weight, e, exc_info=True)
                     src_unit = None
 
             if weight_mode == "extensive":
@@ -5631,6 +5644,18 @@ class ChemicalDrift(OceanDrift):
         def _open_cf_reader_with_var(nc_path, var_name,
                                      llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat,
                                      allow_corner_adjust=False):
+            """
+            Open an auxiliary CF-like reader and subset it with lon/lat corners.
+
+            This helper currently supports only auxiliary datasets whose selection
+            coordinates are rectilinear longitude/latitude in the ChemicalDrift
+            [-180, 180] convention.
+            It does not support:
+              - projected auxiliary x/y coordinates in meters
+              - 0..360 longitude convention
+              - dateline-crossing auxiliary domains
+              - curvilinear 2D lon/lat coordinate selection
+            """
             from opendrift.readers import reader_netCDF_CF_generic
             import xarray as xr
 
@@ -5656,8 +5681,8 @@ class ChemicalDrift(OceanDrift):
                 resolved_var = _resolve_var_name(ds, var_name)
                 da = ds[resolved_var]
 
-                lat_names = ["latitude", "lat", "y"]
-                lon_names = ["longitude", "lon", "x", "long"]
+                lat_names = ["latitude", "lat"]
+                lon_names = ["longitude", "lon", "long"]
                 lat_name = next((name for name in lat_names if name in da.coords), None)
                 lon_name = next((name for name in lon_names if name in da.coords), None)
                 if any(x is None for x in [lat_name, lon_name]):
@@ -5678,8 +5703,10 @@ class ChemicalDrift(OceanDrift):
 
                 lat_sorted = np.sort(lat_f)
                 lon_sorted = np.sort(lon_f)
-                if lat_sorted.size < 3 or lon_sorted.size < 3:
-                    raise ValueError(f"Grid in {nc_path} is too small to safely adjust corners.")
+                if allow_corner_adjust:
+                    if lat_sorted.size < 3 or lon_sorted.size < 3:
+                        raise ValueError(
+                            f"Grid in {nc_path} is too small to safely adjust corners.")
                 lat_min, lat_max = lat_sorted[0], lat_sorted[-1]
                 lon_min, lon_max = lon_sorted[0], lon_sorted[-1]
 
@@ -5803,10 +5830,11 @@ class ChemicalDrift(OceanDrift):
                 for k, v in cf_dict.items():
                     try:
                         setattr(crs_var, k, v)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                    except Exception as e:
+                        logger.debug("Could not set CRS attribute %r=%r: %s", k, v, e, exc_info=True)
+            except Exception as e:
+                logger.debug("Could not build CF CRS dict for %r: %s", density_proj_str, e, exc_info=True)
+
             return crs_obj, crs_var
 
         # Input checks
@@ -6017,6 +6045,7 @@ class ChemicalDrift(OceanDrift):
         logger.info("Internal model z grid boundaries: %s", [str(item) for item in z_array])
 
         need_counts = elements_density or (weight_mode == "mean")
+        write_density = elements_density or (weight_mode == "mean")
 
         H, x_centers, y_centers, lon_center_2d, lat_center_2d, H_count, keep_species, name_species_out = self.get_chemical_density_array(
             pixelsize_m=pixelsize_m,
@@ -6103,8 +6132,8 @@ class ChemicalDrift(OceanDrift):
             if rdr is not None and hasattr(rdr, "close"):
                 try:
                     rdr.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Could not close reader %r: %s", key, e, exc_info=True)
 
         _remove_reader_by_key(self, 'shape')
         _remove_reader_by_key(self, 'global_landmask')
@@ -6161,6 +6190,7 @@ class ChemicalDrift(OceanDrift):
             H = _safe_divide_num_count(H, H_count)
 
         Hsm = None
+        Hcount_sm = None
         if horizontal_smoothing and not time_avg_conc:
             Hsm = np.empty_like(H, dtype=np.float32)
             for ti in range(H.shape[0]):
@@ -6172,9 +6202,21 @@ class ChemicalDrift(OceanDrift):
                             landmask=combined_mask,
                         ).astype(np.float32, copy=False)
 
+            if write_density and H_count is not None:
+                Hcount_sm = np.empty(H_count.shape, dtype=np.float32)
+                for ti in range(H_count.shape[0]):
+                    for sp in range(H_count.shape[1]):
+                        for zi in range(H_count.shape[2]):
+                            Hcount_sm[ti, sp, zi, :, :] = self.horizontal_smooth(
+                                H_count[ti, sp, zi, :, :].astype(np.float32, copy=False),
+                                n=smoothing_cells,
+                                landmask=combined_mask,
+                            ).astype(np.float32, copy=False)
+
         mean_field = None
         mean_dens = None
         mean_field_sm = None
+        mean_dens_sm = None
         avg_times = None
 
         if time_avg_conc:
@@ -6201,7 +6243,7 @@ class ChemicalDrift(OceanDrift):
                     mean_field[ii, :, :, :, :] = np.mean(
                         H[s0:s1, :, :, :, :], axis=0, dtype=np.float32)
 
-            if elements_density and H_count is not None:
+            if write_density and H_count is not None:
                 mean_dens = np.zeros(
                     (odt, H_count.shape[1], H_count.shape[2], H_count.shape[3], H_count.shape[4]),
                     dtype=np.float32)
@@ -6224,6 +6266,17 @@ class ChemicalDrift(OceanDrift):
                                 landmask=combined_mask,
                             ).astype(np.float32, copy=False)
 
+                if write_density and mean_dens is not None:
+                    mean_dens_sm = np.empty_like(mean_dens, dtype=np.float32)
+                    for ti in range(mean_dens.shape[0]):
+                        for sp in range(mean_dens.shape[1]):
+                            for zi in range(mean_dens.shape[2]):
+                                mean_dens_sm[ti, sp, zi, :, :] = self.horizontal_smooth(
+                                    mean_dens[ti, sp, zi, :, :],
+                                    n=smoothing_cells,
+                                    landmask=combined_mask,
+                                ).astype(np.float32, copy=False)
+
         depth_order, depth_cf, depth_bounds_cf, depth_model_top, depth_model_bounds = _make_cf_depth_axis(z_array)
 
         H_out = _reorder_depth_for_output(H, depth_order)
@@ -6232,6 +6285,8 @@ class ChemicalDrift(OceanDrift):
         mean_field_sm_out = _reorder_depth_for_output(mean_field_sm, depth_order)
         H_count_out = _reorder_depth_for_output(H_count, depth_order)
         mean_dens_out = _reorder_depth_for_output(mean_dens, depth_order)
+        Hcount_sm_out = _reorder_depth_for_output(Hcount_sm, depth_order)
+        mean_dens_sm_out = _reorder_depth_for_output(mean_dens_sm, depth_order)
         pixel_volume_out = _reorder_depth_for_output(pixel_volume, depth_order)
 
         compound = self.get_config('chemical:compound')
@@ -6247,12 +6302,22 @@ class ChemicalDrift(OceanDrift):
         nc.actual_density_proj_str = density_proj_str
         nc.weight_name = str(weight)
         nc.weight_mode = weight_mode
-        nc.concentration_metadata_mode = "compatibility"
-        nc.comment = (
-            "Depth is written as a CF-style positive-down coordinate derived from model z coordinates. "
-            "Auxiliary-reader interpolation is linear first, then nearest-neighbour fill for remaining NaNs; "
-            "this is not conservative. For concentration outputs in compatibility mode, use units_water, "
-            "units_sediment and specie_phase to interpret phase-specific units.")
+        if weight_mode == "extensive":
+            nc.phase_units_metadata_mode = "compatibility"
+        if weight_mode == "extensive":
+            nc.comment = (
+                "Depth is written as a CF-style positive-down coordinate derived from model z coordinates. "
+                "Auxiliary-reader interpolation is linear first, then nearest-neighbour fill for remaining NaNs; "
+                "this is not conservative. "
+                "For concentration outputs in compatibility mode, use units_water, "
+                "units_sediment and specie_phase to interpret phase-specific units.")
+        else:
+            nc.comment = (
+                "Depth is written as a CF-style positive-down coordinate derived from model z coordinates. "
+                "Auxiliary-reader interpolation is linear first, then nearest-neighbour fill for remaining NaNs; "
+                "this is not conservative. "
+                "This file stores per-cell mean property fields; no mixed-phase "
+                "compatibility-unit interpretation is required.")
 
         nc.createDimension('x', x_centers.size)
         nc.createDimension('y', y_centers.size)
@@ -6439,8 +6504,8 @@ class ChemicalDrift(OceanDrift):
             if fill_value is not None:
                 try:
                     marr.set_fill_value(fill_value)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Could not set masked-array fill_value=%r: %s", fill_value, e, exc_info=True)
             var_nc[:] = marr
 
         def _write_masked_3d(var_nc, arr_3d_dxy, *, mask_yx, fill_value):
@@ -6450,11 +6515,12 @@ class ChemicalDrift(OceanDrift):
             if fill_value is not None:
                 try:
                     marr.set_fill_value(fill_value)
-                except Exception:
+                except Exception as e:
+                    logger.debug("Could not set masked-array fill_value=%r: %s", fill_value, e, exc_info=True)
                     pass
             var_nc[:] = marr
 
-        if elements_density:
+        if write_density:
             if not time_avg_conc:
                 nc.createVariable('density', 'i4', ('time', 'specie', 'depth', 'y', 'x'), fill_value=99999)
                 H_count_i4 = np.nan_to_num(H_count_out, nan=0, posinf=0, neginf=0).astype('i4', copy=False)
@@ -6465,16 +6531,51 @@ class ChemicalDrift(OceanDrift):
                 nc.variables['density'].units = '1'
                 if sim_description is not None:
                     nc.variables['density'].sim_description = str(sim_description)
+
+                if horizontal_smoothing and Hcount_sm_out is not None:
+                    nc.createVariable('density_smooth', 'f4', ('time', 'specie', 'depth', 'y', 'x'),
+                                      fill_value=np.float32(1.0e36))
+                    _write_masked_5d(
+                        nc.variables['density_smooth'],
+                        Hcount_sm_out.astype(np.float32, copy=False),
+                        mask_yx=combined_mask_yx,
+                        fill_value=np.float32(1.0e36),)
+                    nc.variables['density_smooth'].long_name = 'Horizontally smoothed number of elements in grid cell'
+                    nc.variables['density_smooth'].grid_mapping = 'crs'
+                    nc.variables['density_smooth'].coordinates = 'lat lon'
+                    nc.variables['density_smooth'].units = '1'
+                    if sim_description is not None:
+                        nc.variables['density_smooth'].sim_description = str(sim_description)
             else:
-                nc.createVariable('density_avg', 'f4', ('avg_time', 'specie', 'depth', 'y', 'x'), fill_value=np.float32(1.0e36))
-                _write_masked_5d(nc.variables['density_avg'], mean_dens_out.astype(np.float32, copy=False),
-                                 mask_yx=combined_mask_yx, fill_value=np.float32(1.0e36))
+                nc.createVariable('density_avg', 'f4', ('avg_time', 'specie', 'depth', 'y', 'x'),
+                                  fill_value=np.float32(1.0e36))
+                _write_masked_5d(
+                    nc.variables['density_avg'],
+                    mean_dens_out.astype(np.float32, copy=False),
+                    mask_yx=combined_mask_yx,
+                    fill_value=np.float32(1.0e36),)
                 nc.variables['density_avg'].long_name = 'Mean number of elements per snapshot in averaging block'
                 nc.variables['density_avg'].grid_mapping = 'crs'
                 nc.variables['density_avg'].coordinates = 'lat lon'
                 nc.variables['density_avg'].units = '1'
                 if sim_description is not None:
                     nc.variables['density_avg'].sim_description = str(sim_description)
+
+                if horizontal_smoothing and mean_dens_sm_out is not None:
+                    nc.createVariable('density_smooth_avg', 'f4', ('avg_time', 'specie', 'depth', 'y', 'x'),
+                                      fill_value=np.float32(1.0e36))
+                    _write_masked_5d(
+                        nc.variables['density_smooth_avg'],
+                        mean_dens_sm_out.astype(np.float32, copy=False),
+                        mask_yx=combined_mask_yx,
+                        fill_value=np.float32(1.0e36),)
+                    nc.variables['density_smooth_avg'].long_name = (
+                        'Horizontally smoothed mean number of elements per snapshot in averaging block')
+                    nc.variables['density_smooth_avg'].grid_mapping = 'crs'
+                    nc.variables['density_smooth_avg'].coordinates = 'lat lon'
+                    nc.variables['density_smooth_avg'].units = '1'
+                    if sim_description is not None:
+                        nc.variables['density_smooth_avg'].sim_description = str(sim_description)
 
         if weight_mode == "extensive":
             units_water = f"{resolved_weight_unit} m-3"
@@ -6653,8 +6754,17 @@ class ChemicalDrift(OceanDrift):
             del mean_field_sm
         if mean_field_sm_out is not None:
             del mean_field_sm_out
+        if Hcount_sm is not None:
+            del Hcount_sm
+        if Hcount_sm_out is not None:
+            del Hcount_sm_out
+        if mean_dens_sm is not None:
+            del mean_dens_sm
+        if mean_dens_sm_out is not None:
+            del mean_dens_sm_out
         gc.collect()
 
+    ##### Helpers for write_netcdf_chemical_density_map
     @staticmethod
     def _normalize_landmask(mask, policy="auto", thr=0.5):
         """
@@ -7019,8 +7129,8 @@ class ChemicalDrift(OceanDrift):
             if readonly:
                 try:
                     out.setflags(write=False)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Could not mark sliced array readonly: %s", e, exc_info=True)
             return out
 
         lon_T = self.result.lon.transpose("time", "trajectory").data
@@ -7559,7 +7669,1579 @@ class ChemicalDrift(OceanDrift):
 
         return out
 
+    ##### Helpers for calculate_water_sediment_conc
+    @staticmethod
+    def _property_weight_var(variable):
+        """
+        Return the density/count variable to use as weights for property_mean-like variables.
+        """
+        variable = str(variable)
+        mapping = {
+            "property_mean": "density",
+            "property_mean_smooth": "density_smooth",
+            "property_mean_avg": "density_avg",
+            "property_mean_smooth_avg": "density_smooth_avg",
+        }
+        return mapping.get(variable, None)
 
+    @staticmethod
+    def _water_units(src_da, variable, default="unknown"):
+        """
+        Tolerant reader for water-like units.
+        Priority:
+          1) src_da.attrs["units_water"]
+          2) new compatibility format: "<water> | <sediment>"
+          3) legacy format where water-like units are the text before "(sed ...)"
+          4) plain src_da.attrs["units"] for property-like variables
+        """
+        import re
+
+        variable = str(variable)
+
+        if "density" in variable:
+            return "1"
+
+        if "property_mean" in variable:
+            units_raw = src_da.attrs.get("units", None)
+            return str(units_raw).strip() if units_raw else default
+
+        units_water = src_da.attrs.get("units_water", None)
+        if units_water:
+            return str(units_water).strip()
+
+        units_raw = src_da.attrs.get("units", None)
+        if not units_raw:
+            return default
+
+        s = str(units_raw).strip()
+
+        if "|" in s:
+            return s.split("|", 1)[0].strip() or default
+
+        # legacy style: water-like units before "(sed ...)"
+        s = re.sub(r"\s*/\s*", "/", s)
+        s = s.split("(", 1)[0].strip()
+        return s or default
+
+    @staticmethod
+    def _sed_units(src_da, variable, default="unknown"):
+        """
+        Tolerant reader for sediment-like units.
+        Priority:
+          1) src_da.attrs["units_sediment"]
+          2) new compatibility format: "<water> | <sediment>"
+          3) legacy format "(sed <units>)"
+          4) plain src_da.attrs["units"] for property-like variables
+        """
+        import re
+
+        variable = str(variable)
+
+        if "density" in variable:
+            return "1"
+
+        if "property_mean" in variable:
+            units_raw = src_da.attrs.get("units", None)
+            return str(units_raw).strip() if units_raw else default
+
+        units_sed = src_da.attrs.get("units_sediment", None)
+        if units_sed:
+            return str(units_sed).strip()
+
+        units_raw = src_da.attrs.get("units", None)
+        if not units_raw:
+            return default
+
+        s = str(units_raw).strip()
+
+        if "|" in s:
+            return s.split("|", 1)[1].strip() or default
+
+        m = re.search(r"\(\s*sed\s*([^)]+)\)", s, flags=re.IGNORECASE)
+        if m:
+            return m.group(1).strip() or default
+
+        return default
+
+    @staticmethod
+    def _apply_common_attrs(out_da, Sim_description,
+                            projection_proj4=None, grid_mapping=None,
+                            longitude=None, latitude=None,
+                            x=None, y=None,
+                            x_units=None, y_units=None):
+        """
+        Apply common metadata to a derived DataArray.
+        - sim_description
+        - projection
+        - grid_mapping
+        - lon_resol / lat_resol only for 1D geographic coords
+        - dx / dy only for 1D projected x/y coords
+        """
+        import numpy as np
+
+        if Sim_description is not None:
+            out_da.attrs["sim_description"] = str(Sim_description)
+
+        if projection_proj4 is not None:
+            out_da.attrs["projection"] = str(projection_proj4)
+
+        if grid_mapping is not None:
+            out_da.attrs["grid_mapping"] = str(grid_mapping)
+
+        if longitude is not None:
+            lon_arr = np.asarray(longitude)
+            if lon_arr.ndim == 1 and lon_arr.size > 1:
+                out_da.attrs["lon_resol"] = f"{np.around(abs(lon_arr[1] - lon_arr[0]), decimals=8)} degrees_east"
+
+        if latitude is not None:
+            lat_arr = np.asarray(latitude)
+            if lat_arr.ndim == 1 and lat_arr.size > 1:
+                out_da.attrs["lat_resol"] = f"{np.around(abs(lat_arr[1] - lat_arr[0]), decimals=8)} degrees_north"
+
+        if x is not None:
+            x_arr = np.asarray(x)
+            if x_arr.ndim == 1 and x_arr.size > 1:
+                xu = str(x_units) if x_units is not None else "m"
+                out_da.attrs["dx"] = f"{np.around(abs(x_arr[1] - x_arr[0]), decimals=8)} {xu}"
+
+        if y is not None:
+            y_arr = np.asarray(y)
+            if y_arr.ndim == 1 and y_arr.size > 1:
+                yu = str(y_units) if y_units is not None else "m"
+                out_da.attrs["dy"] = f"{np.around(abs(y_arr[1] - y_arr[0]), decimals=8)} {yu}"
+
+        return out_da
+
+    @staticmethod
+    def _rename_common_dims(da, time_name=None):
+        """
+        Normalize only non-spatial/common dimensions.
+
+        Current behavior:
+          - avg_time -> time
+          - preserve provenance via attrs["source_time_coordinate"] = "avg_time"
+        """
+        out = da.copy()
+
+        renamed_avg_time = False
+        if time_name == "avg_time" and "avg_time" in out.dims:
+            out = out.rename({"avg_time": "time"})
+            renamed_avg_time = True
+        if renamed_avg_time:
+            out.attrs["source_time_coordinate"] = "avg_time"
+
+        return out
+
+    @staticmethod
+    def _build_unique_rename_map(dims, pairs, context="dimension rename"):
+        rename_pairs = [(old, new) for old, new in pairs if old in dims]
+
+        target_to_sources = {}
+        for old, new in rename_pairs:
+            target_to_sources.setdefault(new, []).append(old)
+
+        duplicate_targets = {
+            new: olds for new, olds in target_to_sources.items()
+            if len(olds) > 1
+        }
+        if duplicate_targets:
+            raise ValueError(
+                f"Ambiguous {context}: multiple source dims map to the same "
+                f"target {duplicate_targets}. Input dims are {tuple(dims)}")
+
+        rename_map = dict(rename_pairs)
+
+        for old, new in rename_pairs:
+            if new in dims and old != new:
+                raise ValueError(
+                    f"Cannot rename {old!r} -> {new!r}: "
+                    f"{new!r} already exists in dims {tuple(dims)}"
+                )
+        return rename_map
+
+    def _prepare_rectilinear_output_da(self, da,
+                                       lat_var=None, lon_var=None,
+                                       lat1d_from_2d=None, lon1d_from_2d=None):
+        """
+        Prepare a rectilinear geographic output:
+          - dimensions: latitude, longitude
+          - coordinates: 1D latitude, 1D longitude
+
+        Accepts either:
+          1) native 1D lat/lon source coordinates
+          2) separable 2D lon/lat converted to 1D vectors
+          3) existing 1D geographic coordinates already present on `da`
+
+        Any pre-existing geographic coords named
+        ('lat', 'lon', 'latitude', 'longitude') are removed before the final
+        canonical 1D coordinates are attached.
+        """
+        import numpy as np
+
+        out = da.copy()
+
+        def _coord_attrs_or_default(coord, defaults):
+            attrs = {}
+            if coord is not None and hasattr(coord, "attrs"):
+                attrs.update(dict(coord.attrs))
+            for k, v in defaults.items():
+                attrs.setdefault(k, v)
+            return attrs
+
+        def _maybe_get_existing_1d_coord(out_da, names):
+            for nm in names:
+                if nm in out_da.coords and getattr(out_da.coords[nm], "ndim", 0) == 1:
+                    return out_da.coords[nm]
+            return None
+
+        # Preserve existing 1D geographic coords as fallback before dropping them
+        existing_lat_1d = _maybe_get_existing_1d_coord(out, ("latitude", "lat"))
+        existing_lon_1d = _maybe_get_existing_1d_coord(out, ("longitude", "lon"))
+
+        # Remove all existing geographic coords so the output naming is rebuilt cleanly
+        stale_geo_coords = [nm for nm in ("lat", "lon", "latitude", "longitude") if nm in out.coords]
+        if stale_geo_coords:
+            out = out.drop_vars(stale_geo_coords)
+
+        # Rename spatial dims explicitly to rectilinear geographic names
+        rename_map = self._build_unique_rename_map(
+            out.dims,
+            (
+                ("lat", "latitude"),
+                ("lon", "longitude"),
+                ("y", "latitude"),
+                ("x", "longitude"),
+            ),
+            context="rectilinear spatial dimension rename",
+        )
+        if rename_map:
+            out = out.rename(rename_map)
+
+        if "latitude" not in out.dims or "longitude" not in out.dims:
+            raise ValueError(
+                "Rectilinear geographic output requires dimensions that can be mapped "
+                "to ('latitude', 'longitude')."
+            )
+
+        lat_vals = None
+        lon_vals = None
+        lat_attrs = None
+        lon_attrs = None
+
+        # Case A: native 1D source coords
+        if (lat_var is not None and getattr(lat_var, "ndim", 0) == 1 and
+                lon_var is not None and getattr(lon_var, "ndim", 0) == 1):
+            lat_vals = np.asarray(lat_var.values)
+            lon_vals = np.asarray(lon_var.values)
+            lat_attrs = _coord_attrs_or_default(
+                lat_var,
+                {"standard_name": "latitude", "long_name": "latitude",
+                 "units": "degrees_north", "axis": "Y"}
+            )
+            lon_attrs = _coord_attrs_or_default(
+                lon_var,
+                {"standard_name": "longitude", "long_name": "longitude",
+                 "units": "degrees_east", "axis": "X"}
+            )
+
+        # Case B: separable 2D promoted to 1D
+        elif lat1d_from_2d is not None and lon1d_from_2d is not None:
+            lat_vals = np.asarray(lat1d_from_2d, dtype=float)
+            lon_vals = np.asarray(lon1d_from_2d, dtype=float)
+            lat_attrs = {
+                "standard_name": "latitude",
+                "long_name": "latitude",
+                "units": "degrees_north",
+                "axis": "Y",
+            }
+            lon_attrs = {
+                "standard_name": "longitude",
+                "long_name": "longitude",
+                "units": "degrees_east",
+                "axis": "X",
+            }
+
+        # Case C: fallback to existing 1D coords that were already on the input DA
+        elif existing_lat_1d is not None and existing_lon_1d is not None:
+            lat_vals = np.asarray(existing_lat_1d.values)
+            lon_vals = np.asarray(existing_lon_1d.values)
+            lat_attrs = _coord_attrs_or_default(
+                existing_lat_1d,
+                {"standard_name": "latitude", "long_name": "latitude",
+                 "units": "degrees_north", "axis": "Y"}
+            )
+            lon_attrs = _coord_attrs_or_default(
+                existing_lon_1d,
+                {"standard_name": "longitude", "long_name": "longitude",
+                 "units": "degrees_east", "axis": "X"}
+            )
+
+        else:
+            raise ValueError(
+                "Could not build rectilinear geographic output: need either "
+                "1D latitude/longitude source coordinates, separable 2D lon/lat, "
+                "or existing 1D geographic coordinates on the input DataArray."
+            )
+
+        if out.sizes["latitude"] != lat_vals.size:
+            raise ValueError(
+                f"Latitude size mismatch: data has {out.sizes['latitude']} rows, "
+                f"but derived latitude has {lat_vals.size} values."
+            )
+        if out.sizes["longitude"] != lon_vals.size:
+            raise ValueError(
+                f"Longitude size mismatch: data has {out.sizes['longitude']} cols, "
+                f"but derived longitude has {lon_vals.size} values."
+            )
+
+        out = out.assign_coords(
+            latitude=("latitude", lat_vals),
+            longitude=("longitude", lon_vals),
+        )
+        out.coords["latitude"].attrs = lat_attrs
+        out.coords["longitude"].attrs = lon_attrs
+
+        return out
+
+
+    @staticmethod
+    def _prepare_curvilinear_output_da(da,
+                                       y_var=None, x_var=None,
+                                       lon2d=None, lat2d=None,
+                                       separable=False,
+                                       Verbose=True):
+        """
+        Prepare a projected/curvilinear output:
+          - dimensions: y, x
+          - coordinates: 1D y, 1D x when available
+          - optional auxiliary coordinates: 2D lon, 2D lat
+
+        Any pre-existing geographic coords named
+        ('lat', 'lon', 'latitude', 'longitude') are removed before the intended
+        auxiliary 2D lon/lat coordinates are attached.
+        """
+        import numpy as np
+        import xarray as xr
+
+        out = da.copy()
+
+        def _coord_attrs_or_default(coord, defaults):
+            attrs = {}
+            if coord is not None and hasattr(coord, "attrs"):
+                attrs.update(dict(coord.attrs))
+            for k, v in defaults.items():
+                attrs.setdefault(k, v)
+            return attrs
+
+        if "lat" in out.dims or "lon" in out.dims or "latitude" in out.dims or "longitude" in out.dims:
+            raise ValueError(
+                "Curvilinear/projected output helper expects y/x dimensions. "
+                "Rectilinear geographic inputs should be handled by _prepare_rectilinear_output_da(...)."
+            )
+
+        if "y" not in out.dims or "x" not in out.dims:
+            raise ValueError(
+                "Curvilinear/projected mode requires data dimensions containing both 'y' and 'x'."
+            )
+
+        stale_geo_coords = [nm for nm in ("lat", "lon", "latitude", "longitude") if nm in out.coords]
+        if stale_geo_coords:
+            out = out.drop_vars(stale_geo_coords)
+
+        if y_var is not None and getattr(y_var, "ndim", 0) == 1:
+            y_vals = np.asarray(y_var.values)
+            if out.sizes["y"] != y_vals.size:
+                raise ValueError(
+                    f"y size mismatch: data has {out.sizes['y']} rows, "
+                    f"but source y has {y_vals.size} values."
+                )
+            out = out.assign_coords(y=("y", y_vals))
+            out.coords["y"].attrs = _coord_attrs_or_default(
+                y_var,
+                {"standard_name": "projection_y_coordinate",
+                 "long_name": "y", "units": "m", "axis": "Y"}
+            )
+
+        if x_var is not None and getattr(x_var, "ndim", 0) == 1:
+            x_vals = np.asarray(x_var.values)
+            if out.sizes["x"] != x_vals.size:
+                raise ValueError(
+                    f"x size mismatch: data has {out.sizes['x']} cols, "
+                    f"but source x has {x_vals.size} values."
+                )
+            out = out.assign_coords(x=("x", x_vals))
+            out.coords["x"].attrs = _coord_attrs_or_default(
+                x_var,
+                {"standard_name": "projection_x_coordinate",
+                 "long_name": "x", "units": "m", "axis": "X"}
+            )
+
+        if lon2d is not None and lat2d is not None:
+            if lon2d.shape != lat2d.shape:
+                raise ValueError(f"lon2d/lat2d shape mismatch: {lon2d.shape} vs {lat2d.shape}")
+
+            if tuple(lon2d.dims) != tuple(lat2d.dims):
+                raise ValueError(f"lon2d/lat2d dims mismatch: {lon2d.dims} vs {lat2d.dims}")
+
+            if tuple(lon2d.dims) != ("y", "x"):
+                raise ValueError(
+                    f"Expected 2D lon/lat auxiliary coords on dims ('y', 'x'), got {lon2d.dims}"
+                )
+
+            if lon2d.shape != (out.sizes["y"], out.sizes["x"]):
+                raise ValueError(
+                    f"2D longitude shape mismatch: expected {(out.sizes['y'], out.sizes['x'])}, "
+                    f"got {lon2d.shape}"
+                )
+
+            lon_aux = xr.DataArray(
+                np.asarray(lon2d.values),
+                dims=("y", "x"),
+                attrs={
+                    "standard_name": "longitude",
+                    "long_name": "longitude of cell center",
+                    "units": "degrees_east",
+                    **dict(getattr(lon2d, "attrs", {})),
+                },
+            )
+            lat_aux = xr.DataArray(
+                np.asarray(lat2d.values),
+                dims=("y", "x"),
+                attrs={
+                    "standard_name": "latitude",
+                    "long_name": "latitude of cell center",
+                    "units": "degrees_north",
+                    **dict(getattr(lat2d, "attrs", {})),
+                },
+            )
+            out = out.assign_coords(lon=lon_aux, lat=lat_aux)
+
+        if Verbose and lon2d is not None and lat2d is not None and not separable:
+            print("Preserving projected/curvilinear y/x grid with 2D lon/lat auxiliary coordinates")
+
+        return out
+
+    def prepare_derived_output_da(self, da, src_ds, time_name=None,
+                                  spatial_mode="auto",
+                                  rectilinear_tol=1e-10,
+                                  Verbose=True):
+        """
+        Prepare a derived output DataArray with explicit handling of 3 spatial cases.
+
+        spatial_mode:
+          - "auto": choose rectilinear when possible, otherwise curvilinear/projected
+          - "rectilinear": require a true/separable geographic lon/lat grid
+          - "curvilinear": preserve y/x and attach 2D lon/lat auxiliaries when available
+
+        Cases handled:
+          1) Rectilinear geographic: 1D latitude/longitude
+          2) Projected/curvilinear: y/x with optional 2D lon/lat
+          3) Legacy 2D lon/lat that are separable into 1D vectors
+        """
+        import numpy as np
+
+        spatial_mode = str(spatial_mode).lower()
+        if spatial_mode not in {"auto", "rectilinear", "curvilinear"}:
+            raise ValueError("spatial_mode must be one of: 'auto', 'rectilinear', 'curvilinear'")
+
+        out = self._rename_common_dims(da, time_name=time_name)
+
+        def _get_src_var(names):
+            for name in names:
+                if name in src_ds.coords:
+                    return src_ds.coords[name]
+                if name in src_ds.data_vars:
+                    return src_ds[name]
+                if name in src_ds.variables:
+                    return src_ds[name]
+            return None
+
+        def _is_separable_2d(lon_da, lat_da, tol):
+            lon2d = np.asarray(lon_da.values, dtype=float)
+            lat2d = np.asarray(lat_da.values, dtype=float)
+
+            if lon2d.ndim != 2 or lat2d.ndim != 2 or lon2d.shape != lat2d.shape:
+                return False, None, None
+
+            lon1d = lon2d[0, :]
+            lat1d = lat2d[:, 0]
+
+            lon_ok = np.allclose(
+                lon2d,
+                np.broadcast_to(lon1d[None, :], lon2d.shape),
+                rtol=0.0, atol=tol, equal_nan=True
+            )
+            lat_ok = np.allclose(
+                lat2d,
+                np.broadcast_to(lat1d[:, None], lat2d.shape),
+                rtol=0.0, atol=tol, equal_nan=True
+            )
+            return bool(lon_ok and lat_ok), lon1d, lat1d
+
+        lat_var = _get_src_var(["latitude", "lat"])
+        lon_var = _get_src_var(["longitude", "lon"])
+        y_var = _get_src_var(["y"])
+        x_var = _get_src_var(["x"])
+
+        lon2d = lon_var if (lon_var is not None and getattr(lon_var, "ndim", 0) == 2) else None
+        lat2d = lat_var if (lat_var is not None and getattr(lat_var, "ndim", 0) == 2) else None
+
+        separable = False
+        lon1d_from_2d = None
+        lat1d_from_2d = None
+        if lon2d is not None and lat2d is not None:
+            separable, lon1d_from_2d, lat1d_from_2d = _is_separable_2d(
+                lon2d, lat2d, rectilinear_tol
+            )
+
+        has_native_1d_geo = (
+            lat_var is not None and getattr(lat_var, "ndim", 0) == 1 and
+            lon_var is not None and getattr(lon_var, "ndim", 0) == 1
+        )
+
+        already_rectilinear_geo_dims = (
+            ("latitude" in out.dims or "lat" in out.dims) and
+            ("longitude" in out.dims or "lon" in out.dims)
+        )
+
+        if spatial_mode == "auto":
+            if has_native_1d_geo or separable:
+                target_mode = "rectilinear"
+            else:
+                target_mode = "curvilinear"
+        else:
+            target_mode = spatial_mode
+
+        if target_mode == "rectilinear":
+            return self._prepare_rectilinear_output_da(
+                out,
+                lat_var=lat_var,
+                lon_var=lon_var,
+                lat1d_from_2d=lat1d_from_2d if separable else None,
+                lon1d_from_2d=lon1d_from_2d if separable else None,
+            )
+
+        # target_mode == "curvilinear"
+        # Preserve already-rectilinear geographic inputs as rectilinear rather than
+        # forcing them into y/x.
+        if already_rectilinear_geo_dims:
+            return self._prepare_rectilinear_output_da(
+                out,
+                lat_var=lat_var,
+                lon_var=lon_var,
+            )
+
+        return self._prepare_curvilinear_output_da(
+            out,
+            y_var=y_var,
+            x_var=x_var,
+            lon2d=lon2d,
+            lat2d=lat2d,
+            separable=separable,
+            Verbose=Verbose,
+        )
+
+    @staticmethod
+    def _species_dict(string, allowed=None):
+        """
+        Parse "...\\nspecie 0:LMM 1:Humic colloid 2:Particle reversible ..."
+        into {"LMM": 0, "Humic colloid": 1, ...}
+
+        If allowed is provided (list/set), names are validated against it.
+        """
+        import re
+        if allowed is None:
+             allowed = ["LMM", "LMMcation", "LMManion",
+                        "Colloid", "Humic colloid",
+                        "Polymer", "Particle reversible",
+                        "Particle slowly reversible",
+                        "Particle irreversible",
+                        "dissolved", "DOC", "SPM",
+                        "Sediment reversible",
+                        "Sediment slowly reversible",
+                     	"Sediment buried",
+                        "Sediment irreversible",
+                        "sediment", "buried"]
+
+        tail = string.split("\n", 1)[1] if "\n" in string else string
+        pairs = re.findall(r'(\d+)\s*:\s*(.*?)(?=\s+\d+\s*:|$)', tail)
+
+        out = {}
+        allowed_set = set(a.strip() for a in allowed) if allowed is not None else None
+
+        for idx_str, raw_name in pairs:
+            name = raw_name.strip()
+            if allowed_set is not None and name not in allowed_set:
+                raise ValueError("Unknown species name: {!r}".format(name))
+            out[name] = int(idx_str)
+
+        return out
+
+    @staticmethod
+    def _format_species_pairs(pairs):
+        # pairs is list of (name, idx)
+        return ", ".join(f'"{name}": {idx}' for name, idx in pairs)
+
+    @staticmethod
+    def _excluded_pairs(specie_ids_num, excluded_names, TOT_Conc=None):
+        """
+        Return [(name, idx), ...] for excluded species that are present in specie_ids_num
+        and (if TOT_Conc provided) whose idx exists in TOT_Conc.specie coords.
+        """
+        coord_vals = None
+        if TOT_Conc is not None and "specie" in TOT_Conc.coords:
+            coord_vals = set(TOT_Conc["specie"].values)
+
+        pairs = []
+        for name in excluded_names:
+            idx = specie_ids_num.get(name)
+            if idx is None:
+                continue
+            if coord_vals is not None and idx not in coord_vals:
+                continue
+            pairs.append((name, idx))
+        return pairs
+
+    @staticmethod
+    def _water_column_conc(TOT_Conc, specie_ids_num, water_species, Verbose=False):
+        """
+        Compute the concentration in the water column as sum of all species listed in `water_species` if:
+          - the name exists in `specie_ids_num` (name -> index), and
+          - that index is present in TOT_Conc.specie coordinate.
+        Returns an xarray DataArray (or None if nothing matched), and the list of included species.
+        """
+
+        out = None
+        included = []
+        specie_coord_vals = set(TOT_Conc["specie"].values) if "specie" in TOT_Conc.coords else None
+
+        for name in water_species:
+            idx = specie_ids_num.get(name)
+            if idx is None:
+                if Verbose:
+                    print(f"Skipping {name!r}: not found in specie_ids_num")
+                continue
+
+            if specie_coord_vals is not None and idx not in specie_coord_vals:
+                if Verbose:
+                    print(f"Skipping {name!r}: specie index {idx} not in TOT_Conc.specie")
+                continue
+
+            da = TOT_Conc.sel(specie=idx)
+            out = da if out is None else (out + da)
+            included.append((name, idx))
+
+        if out is None:
+            if Verbose:
+                print("No water species matched; returning None.")
+            return None, []
+        if Verbose:
+            print("Included water species:", ", ".join(name for name, _ in included))
+        # Drop singleton depth if present
+        if "depth" in out.dims and out.sizes.get("depth", 0) == 1:
+            out = out.isel(depth=0, drop=True)
+
+        return out, included
+
+    @staticmethod
+    def _sediment_conc_sum(TOT_Conc, specie_ids_num, sed_species,
+                           Verbose=False,
+                           debug_check_single_depth=False,
+                           nonzero_tol=0.0):
+        """
+        Compute a depth-collapsed sediment concentration as the sum of sediment species.
+
+        Assumption:
+          sediment concentration occupies only one depth bin for each horizontal cell.
+        If debug_check_single_depth=True, an assertion is performed before the depth collapse.
+
+        Returns:
+          (DataArray or None, included_species_list)
+        """
+        import xarray as xr
+        import numpy as np
+
+        specie_coord_vals = set(TOT_Conc["specie"].values) if "specie" in TOT_Conc.coords else None
+
+        da_sed = None
+        included = []
+
+        for name in sed_species:
+            idx = specie_ids_num.get(name)
+            if idx is None:
+                if Verbose:
+                    print(f"Skipping {name!r}: not found in specie_ids_num")
+                continue
+
+            if specie_coord_vals is not None and idx not in specie_coord_vals:
+                if Verbose:
+                    print(f"Skipping {name!r}: specie index {idx} not in TOT_Conc.specie")
+                continue
+
+            part = TOT_Conc.sel(specie=idx)
+            da_sed = part if da_sed is None else (da_sed + part)
+            included.append((name, idx))
+
+        if da_sed is None:
+            if Verbose:
+                print("No sediment species matched; returning None.")
+            return None, []
+
+        if Verbose:
+            print("Included sediment species:", ", ".join(name for name, _ in included))
+
+        mask = np.isnan(TOT_Conc)
+
+        if "depth" in da_sed.dims and debug_check_single_depth:
+            occupied = xr.where(
+                np.isfinite(da_sed) & (np.abs(da_sed) > float(nonzero_tol)),
+                1, 0
+            ).sum(dim="depth")
+            if bool((occupied > 1).any()):
+                raise AssertionError(
+                    "Sediment concentration occupies more than one depth bin in at least one horizontal cell.")
+
+        if "depth" in da_sed.dims:
+            if Verbose:
+                print("depth included in sediment DA -> summing over depth")
+            da_sed = da_sed.sum(dim="depth")
+            da_sed = xr.where(mask.isel(specie=0, depth=0), np.nan, da_sed)
+        else:
+            da_sed = xr.where(mask.isel(specie=0), np.nan, da_sed)
+
+        return da_sed, included
+
+    @staticmethod
+    def _sim_description_attr(src_da, Sim_description):
+        """
+        Resolve the simulation description string to attach to derived outputs.
+          1) If `src_da` (typically an xarray DataArray from the concentration file)
+             has attribute `sim_description`, return it.
+          2) Else, if `Sim_description` argument is provided, return it as `str(...)`.
+          3) Else return None.
+
+        src_da : xarray.DataArray, Source data array from which metadata may be inherited.
+        Sim_description : Any, User-provided simulation description.
+        """
+        sim_desc = src_da.attrs.get("sim_description", None)
+        if sim_desc is not None:
+            return sim_desc
+        if Sim_description is not None:
+            return str(Sim_description)
+        return None
+
+    @staticmethod
+    def _base_long_name(src_da, Chemical_name, variable):
+        """
+        Build a base `long_name` prefix for derived water/sediment products using the `long_name` attribute,
+        otherwise, it constructs a fallback base name using the provided chemical name and  and variable label: "<Chemical_name> <variable>".
+
+        src_da:         xarray.DataArray, Source data array from which metadata may be inherited.
+        Chemical_name:  str or None, Chemical name used in fallback naming.
+        variable:       str, variable name (e.g., "concentration", "density", ...).
+        """
+        long_name = src_da.attrs.get("long_name", None)
+        if long_name is not None:
+            return str(long_name).split("specie")[0].strip()
+        return (Chemical_name or "") + f" {variable}"
+
+    def specie_ids_num_from_ds(self, DS, TOT_Conc=None, legacy_alias=None):
+        """
+        Build {species_name: specie_coord_value} from a dataset.
+
+        Normalization is applied consistently to dataset-derived names using legacy_alias.
+        Both the original and canonical names are accepted as lookup keys when possible.
+        """
+        import numpy as np
+
+        if legacy_alias is None:
+            legacy_alias = {}
+
+        def _clean_name(x) -> str:
+            if isinstance(x, (bytes, bytearray, np.bytes_)):
+                s = bytes(x).decode("utf-8", errors="ignore")
+            else:
+                s = str(x)
+            s = s.replace("\x00", "").strip()
+            if (s.startswith("b'") and s.endswith("'")) or (s.startswith('b"') and s.endswith('"')):
+                s = s[2:-1].replace("\x00", "").strip()
+            return s
+
+        def _decode_specie_name_array(a):
+            if np.ma.isMaskedArray(a):
+                a = a.filled(0)
+
+            names = []
+
+            if a.ndim == 1:
+                if a.dtype.kind == "S":
+                    names = [_clean_name(s) for s in a.tolist()]
+                elif a.dtype.kind == "U":
+                    names = [_clean_name(s) for s in a.tolist()]
+                else:
+                    names = [_clean_name(x) for x in a.tolist()]
+
+            elif a.ndim == 2:
+                if a.dtype.kind == "S":
+                    for row in a:
+                        names.append(_clean_name(row.tobytes()))
+                elif a.dtype.kind == "U":
+                    for row in a:
+                        names.append(_clean_name("".join(row)))
+                elif a.dtype.kind in ("i", "u"):
+                    a8 = a.astype(np.uint8, copy=False)
+                    for row in a8:
+                        names.append(_clean_name(bytes(row.tolist())))
+                else:
+                    for row in a:
+                        if len(row) == 0:
+                            names.append("")
+                        else:
+                            first = row[0]
+                            if isinstance(first, (bytes, np.bytes_)):
+                                b = b"".join([x if isinstance(x, (bytes, np.bytes_)) else bytes([int(x)]) for x in row])
+                                names.append(_clean_name(b))
+                            elif isinstance(first, (int, np.integer)):
+                                names.append(_clean_name(bytes([int(x) & 0xFF for x in row])))
+                            else:
+                                names.append(_clean_name("".join([str(x) for x in row])))
+            else:
+                names = [_clean_name(x) for x in a.reshape(-1).tolist()]
+
+            return names
+
+        if "specie_name" in DS.variables:
+            a = np.asarray(DS["specie_name"].values)
+            names = _decode_specie_name_array(a)
+
+            if "specie" in DS.coords:
+                specie_vals = np.asarray(DS["specie"].values)
+            else:
+                specie_vals = np.arange(len(names), dtype=int)
+
+            if len(names) != len(specie_vals):
+                raise ValueError(
+                    f"Length mismatch between specie_name ({len(names)}) and specie coord ({len(specie_vals)})")
+
+            out = {}
+            for coord_val, raw_name in zip(specie_vals, names):
+                if not raw_name:
+                    continue
+
+                canonical = legacy_alias.get(raw_name, raw_name)
+                for key in {raw_name, canonical}:
+                    if key in out and out[key] != int(coord_val):
+                        raise ValueError(
+                            f"Species alias collision for {key!r}: {out[key]} vs {int(coord_val)}")
+                    out[key] = int(coord_val)
+
+            return out
+
+        long_name = TOT_Conc.attrs.get("long_name", None) if TOT_Conc is not None else None
+        if long_name is not None:
+            raw = self._species_dict(long_name)
+            out = {}
+            for name, idx in raw.items():
+                name_clean = _clean_name(name)
+                canonical = legacy_alias.get(name_clean, name_clean)
+                for key in {name_clean, canonical}:
+                    if key in out and out[key] != int(idx):
+                        raise ValueError(
+                            f"Species alias collision in long_name parsing for {key!r}: {out[key]} vs {int(idx)}")
+                    out[key] = int(idx)
+            return out
+
+        raise ValueError("Cannot build species mapping: missing specie_name and long_name.")
+
+    def fallback_specie_ids_num_from_flags(self):
+        """
+        Build fallback specie_ids_num using ONLY:
+          - transfer_setup = self.get_config('chemical:transfer_setup')
+          - slowly_fraction flag (chemical:slowly_fraction)
+          - irreversible_fraction flag (chemical:irreversible_fraction)
+        Returns:
+            dict: {species_name: idx} matching the canonical build order
+        """
+        transfer_setup = self.get_config("chemical:transfer_setup")
+        slowly = bool(self.get_config("chemical:slowly_fraction"))
+        irrev  = bool(self.get_config("chemical:irreversible_fraction"))
+
+        # Canonical order (must match self.name_species builder)
+        order = [
+            "LMM", "LMMcation", "LMManion",
+            "Colloid", "Humic colloid",
+            "Polymer",
+            "Particle reversible", "Particle slowly reversible", "Particle irreversible",
+            "Sediment reversible", "Sediment slowly reversible", "Sediment buried",
+            "Sediment irreversible",]
+        # Base sets per transfer_setup (minimum guaranteed pools)
+        base = {
+            "metals": {
+                "LMM",
+                "Particle reversible",
+                "Sediment reversible",
+                "Sediment buried",},
+            "organics": {
+                "LMM",
+                "Humic colloid",
+                "Particle reversible",
+                "Sediment reversible",
+                "Sediment buried",},
+            "137Cs_rev": {
+                "LMM",
+                "Particle reversible",
+                "Sediment reversible",},
+            "Sandnesfj_Al": {
+                "LMMcation",
+                "LMManion",
+                "Humic colloid",
+                "Polymer",
+                "Particle reversible",
+                "Sediment reversible",
+            },}
+
+        if transfer_setup == "custom":
+            raise ValueError("Cannot build fallback for transfer_setup='custom' from flags alone.")
+        if transfer_setup not in base:
+            raise ValueError(f"Unknown transfer_setup: {transfer_setup!r}")
+
+        species = set(base[transfer_setup])
+        # Slowly pools exist only for metals/organics setups and require BOTH particle+sediment slow
+        if slowly and transfer_setup in ("metals", "organics"):
+            species.add("Particle slowly reversible")
+            species.add("Sediment slowly reversible")
+        # Irreversible pools require both particle+sediment irreversible
+        if irrev and transfer_setup in ("metals", "organics"):
+            species.add("Particle irreversible")
+            species.add("Sediment irreversible")
+
+        # Build list+mapping in canonical order
+        name_species_out = [s for s in order if s in species]
+        specie_ids_num = {name: i for i, name in enumerate(name_species_out)}
+        return specie_ids_num
+
+    @staticmethod
+    def _normalize_species_names(names, legacy_alias=None):
+        """
+        Normalize a list of species names:
+          - drop None
+          - strip whitespace
+          - map legacy aliases to canonical names
+          - preserve order
+          - deduplicate
+        """
+        if legacy_alias is None:
+            legacy_alias = {}
+
+        if names is None:
+            return []
+        out = []
+        seen = set()
+        for name in names:
+            if name is None:
+                continue
+            name_norm = str(name).strip()
+            if not name_norm:
+                continue
+            name_norm = legacy_alias.get(name_norm, name_norm)
+            if name_norm not in seen:
+                out.append(name_norm)
+                seen.add(name_norm)
+        return out
+
+    @staticmethod
+    def _species_weighted_mean(TOT_Value, TOT_Count, specie_ids_num, species_names,
+                               Verbose=False,
+                               collapse_depth=False,
+                               debug_check_single_depth=False):
+        """
+        Count-weighted aggregation across species:
+            out = sum(value_i * count_i) / sum(count_i)
+
+        Only species present both in specie_ids_num and in the specie coordinate are used.
+        Cells with zero total count are returned as NaN.
+
+        Parameters
+        ----------
+        TOT_Value : xarray.DataArray
+            Value field with a specie dimension, e.g. property_mean*
+        TOT_Count : xarray.DataArray
+            Count field with the same specie axis, e.g. density or density_avg
+        specie_ids_num : dict
+            Mapping {species_name: specie_index}
+        species_names : list
+            Species names to aggregate
+        collapse_depth : bool
+            If True, collapse depth after weighted aggregation. Intended for sediment.
+        debug_check_single_depth : bool
+            If True and collapse_depth=True, assert that the aggregated count support
+            occupies at most one depth bin per horizontal cell.
+        """
+        import numpy as np
+        import xarray as xr
+
+        value_specie_vals = set(TOT_Value["specie"].values) if "specie" in TOT_Value.coords else None
+        count_specie_vals = set(TOT_Count["specie"].values) if "specie" in TOT_Count.coords else None
+
+        num = None
+        den = None
+        included = []
+
+        for name in species_names:
+            idx = specie_ids_num.get(name)
+            if idx is None:
+                if Verbose:
+                    print(f"Skipping {name!r}: not found in specie_ids_num")
+                continue
+
+            if value_specie_vals is not None and idx not in value_specie_vals:
+                if Verbose:
+                    print(f"Skipping {name!r}: specie index {idx} not in TOT_Value.specie")
+                continue
+
+            if count_specie_vals is not None and idx not in count_specie_vals:
+                if Verbose:
+                    print(f"Skipping {name!r}: specie index {idx} not in TOT_Count.specie")
+                continue
+
+            val = TOT_Value.sel(specie=idx)
+            cnt = TOT_Count.sel(specie=idx)
+
+            valid = np.isfinite(val) & np.isfinite(cnt) & (cnt > 0)
+            num_i = xr.where(valid, val * cnt, 0.0)
+            den_i = xr.where(valid, cnt, 0.0)
+
+            num = num_i if num is None else (num + num_i)
+            den = den_i if den is None else (den + den_i)
+            included.append((name, idx))
+
+        if num is None or den is None:
+            if Verbose:
+                print("No weighted species matched; returning None.")
+            return None, []
+
+        if Verbose:
+            print("Included weighted species:", ", ".join(name for name, _ in included))
+
+        if collapse_depth and "depth" in den.dims:
+            if debug_check_single_depth:
+                occupied = xr.where(den > 0, 1, 0).sum(dim="depth")
+                if bool((occupied > 1).any()):
+                    raise AssertionError(
+                        "Weighted sediment support occupies more than one depth bin "
+                        "in at least one horizontal cell."
+                    )
+
+            num = num.sum(dim="depth")
+            den = den.sum(dim="depth")
+
+        out = xr.where(den > 0, num / den, np.nan)
+
+        if (not collapse_depth) and "depth" in out.dims and out.sizes.get("depth", 0) == 1:
+            out = out.isel(depth=0, drop=True)
+
+        return out, included
+
+    def calculate_water_sediment_conc(self,
+                                   File_Path,
+                                   File_Name,
+                                   File_Path_out,
+                                   Chemical_name,
+                                   Origin_marker_name,
+                                   File_Name_out = None,
+                                   variables = None,
+                                   Concentration_file = None,
+                                   Excluded_species = None,
+                                   Sim_description=None,
+                                   Save_files = True,
+                                   Return_datasets = True,
+                                   spatial_mode="auto",
+                                   which_conc = "both",
+                                   debug_check_single_depth=False,
+                                   Verbose = True,):
+        """
+        Sum concentration/property/density by species into water and sediment arrays.
+
+        DataSets can be returned or saved as netCDF files.
+        Results can be used as inputs by "seed_from_NETCDF" when the chosen
+        spatial_mode is compatible with the expected target workflow.
+
+        Concentration_file:    "write_netcdf_chemical_density_map" output if already loaded (original or after regrid_conc)
+        File_Path:             string, path of "write_netcdf_chemical_density_map" output
+        File_Name:             string, name of "write_netcdf_chemical_density_map" output
+        File_Name_out:         string, suffix of wat/sed output files
+        File_Path_out:         string, path where created concentration files will be saved, must end with "/"
+        Chemical_name:         string, name of modelled chemical
+        Origin_marker_name:    string, name of source indicated by "origin_marker" parameter
+        variables:             list, variables to process. If None, all supported variables are considered.
+        Excluded_species:      dict, {"water": [...], "sediment":[...]} lists of names of species to be excluded from water column or sediment concentration
+        Sim_description:       string, description of simulation to be included in output metadata
+        Save_files:            boolean, if True saves outputs to disk, otherwise return xr.Datasets
+        Return_datasets:       boolean, if True return xr.Datasets
+        which_conc:            string, one of "water" (compute only water concentration) "sediment" compute only sediment concentration, or "both".
+        spatial_mode:          string, one of "auto", "rectilinear", "curvilinear". Passed to prepare_derived_output_da(...).
+        debug_check_single_depth: bool, If True, assert that sediment concentration occupies at most one depth
+                               bin per horizontal cell before depth collapsing.
+        Verbose:               boolean, if True prints progress messages
+
+        For property_mean-like variables, species aggregation is count-weighted using:
+          density for property_mean
+          density_smooth for property_mean_smooth
+          density_avg for property_mean_avg
+          density_smooth_avg for property_mean_smooth_avg
+        """
+        from datetime import datetime
+        import numpy as np
+        import xarray as xr
+        import time
+
+        processed_variables = []
+        which_conc = str(which_conc).lower()
+        if which_conc not in {"water", "sediment", "both"}:
+            raise ValueError("which_conc must be one of: 'water', 'sediment', 'both'")
+
+        do_water = which_conc in {"water", "both"}
+        do_sediment = which_conc in {"sediment", "both"}
+
+        water_species = [
+            "LMM", "LMMcation", "LMManion",
+            "Colloid", "Humic colloid",
+            "Polymer", "Particle reversible",
+            "Particle slowly reversible",
+            "Particle irreversible",
+        ]
+        sed_species = [
+            "Sediment reversible",
+            "Sediment slowly reversible",
+            "Sediment buried",
+            "Sediment irreversible",
+        ]
+        legacy_alias = {
+            "dissolved": "LMM",
+            "DOC": "Humic colloid",
+            "SPM": "Particle reversible",
+            "sediment": "Sediment reversible",
+            "buried": "Sediment buried",
+        }
+
+        if Excluded_species is None:
+            Excluded_species = {"water": [None], "sediment": [None]}
+
+        excluded_water_names = self._normalize_species_names(
+            Excluded_species.get("water", []),
+            legacy_alias=legacy_alias,
+        )
+        excluded_sed_names = self._normalize_species_names(
+            Excluded_species.get("sediment", Excluded_species.get("sed", [])),
+            legacy_alias=legacy_alias,
+        )
+
+        excluded_set_w = set(excluded_water_names)
+        removed_water = [sp for sp in water_species if sp in excluded_set_w]
+        water_species = [sp for sp in water_species if sp not in excluded_set_w]
+
+        excluded_set_s = set(excluded_sed_names)
+        removed_sed = [sp for sp in sed_species if sp in excluded_set_s]
+        sed_species = [sp for sp in sed_species if sp not in excluded_set_s]
+
+        if Verbose and removed_water:
+            print("Excluded water species:", ", ".join(removed_water))
+        if Verbose and removed_sed:
+            print("Excluded sediment species:", ", ".join(removed_sed))
+
+        _t0 = time.perf_counter()
+        _start_wall = datetime.now()
+
+        def log(msg: str) -> None:
+            elapsed_s = time.perf_counter() - _t0
+            h, rem = divmod(int(elapsed_s), 3600)
+            m, s = divmod(rem, 60)
+            print(
+                f"{msg} | elapsed {h:02d}:{m:02d}:{s:02d} "
+                f"(started {_start_wall.strftime('%Y-%m-%d %H:%M:%S')})"
+            )
+
+        if Concentration_file is None and File_Path is not None and File_Name is not None:
+            if Verbose:
+                log("Loading Concentration_file from File_Path")
+            DS = xr.open_dataset(File_Path + File_Name)
+        elif Concentration_file is not None:
+            DS = Concentration_file
+        else:
+            raise ValueError("Incorrect file or file/path not specified")
+
+        if not Save_files and not Return_datasets:
+            raise ValueError("Nothing to do: set Save_files=True and/or Return_datasets=True.")
+
+        supported_vars = [
+            "concentration", "concentration_avg",
+            "concentration_smooth", "concentration_smooth_avg",
+            "density", "density_avg",
+            "density_smooth", "density_smooth_avg",
+            "property_mean", "property_mean_avg",
+            "property_mean_smooth", "property_mean_smooth_avg",]
+
+        if not any(var in DS.data_vars for var in supported_vars):
+            raise ValueError("No valid variables found in dataset")
+
+        if "time" in DS.dims:
+            time_name = "time"
+        elif "avg_time" in DS.dims:
+            time_name = "avg_time"
+        else:
+            raise ValueError("No time or avg_time dimension found in dataset")
+
+        variable_ls = supported_vars if variables is None else list(variables)
+
+        sum_vars_wat_dict = {}
+        sum_vars_sed_dict = {}
+        first_var = True
+
+        def _alias_and_filter(species_list, specie_ids_num, legacy_alias_map):
+            out = []
+            seen = set()
+            for s in species_list:
+                s2 = legacy_alias_map.get(s, s)
+                if s2 in specie_ids_num and s2 not in seen:
+                    out.append(s2)
+                    seen.add(s2)
+            return out
+
+        def _copy_source_metadata(dst_ds, src_ds):
+            for attr_name in (
+                "Conventions", "title", "source", "history",
+                "actual_density_proj_str", "weight_name", "weight_mode",
+                "comment", "phase_units_metadata_mode",):
+                if attr_name in src_ds.attrs:
+                    dst_ds.attrs[attr_name] = src_ds.attrs[attr_name]
+
+        def _copy_support_vars(dst_ds, src_ds, extra_grid_mapping_names=None):
+            support_vars = {
+                "crs", "topo", "land", "domain_invalid",
+                "active_sediment_layer_thickness", "area", "volume",
+                "depth", "depth_bounds", "depth_model_top", "depth_model_bounds",
+                "specie_name", "specie_original_id", "specie_phase",
+                "x", "y", "lon", "lat",}
+            if extra_grid_mapping_names:
+                support_vars |= {gm for gm in extra_grid_mapping_names if gm}
+
+            for name in support_vars:
+                if name in src_ds.variables and name not in dst_ds.variables and name not in dst_ds.coords:
+                    dst_ds[name] = src_ds[name]
+
+        def _coord_getter(da_obj, name):
+            if name in da_obj.coords:
+                return da_obj.coords[name]
+            return None
+
+        for variable in variable_ls:
+            if variable not in DS.data_vars or variable == "topo":
+                continue
+
+            if Verbose:
+                print(variable)
+
+            var_wat_name = variable + "_wat"
+            var_sed_name = variable + "_sed"
+
+            TOT_Conc = DS[variable]
+            weight_var = self._property_weight_var(variable)
+            TOT_Weights = None
+
+            if weight_var is not None:
+                if weight_var not in DS.data_vars:
+                    raise ValueError(
+                        f"Variable {variable!r} requires weight/count variable {weight_var!r}, "
+                        "but it is not present in the dataset."
+                    )
+                TOT_Weights = DS[weight_var]
+
+            try:
+                specie_ids_num = self.specie_ids_num_from_ds(
+                    DS, TOT_Conc, legacy_alias=legacy_alias
+                )
+            except (ValueError, KeyError, AttributeError) as e:
+                if Verbose:
+                    print(f"Could not derive species mapping from dataset metadata: {e}")
+                    print("Trying config-derived fallback species mapping.")
+                try:
+                    specie_ids_num = self.fallback_specie_ids_num_from_flags()
+                except ValueError as e2:
+                    raise ValueError(
+                        f"Species mapping failed from dataset metadata ({e}) "
+                        f"and fallback mapping also failed ({e2})."
+                    ) from e2
+
+            water_species_eff = _alias_and_filter(water_species, specie_ids_num, legacy_alias)
+            sed_species_eff = _alias_and_filter(sed_species, specie_ids_num, legacy_alias)
+
+            DA_Conc_array_wat = None
+            DA_Conc_array_sed = None
+            included_wat = []
+            included_sed = []
+
+            if weight_var is None:
+                if do_water:
+                    if Verbose:
+                        log("Running sum of water concentration/density")
+                    DA_Conc_array_wat, included_wat = self._water_column_conc(
+                        TOT_Conc=TOT_Conc,
+                        specie_ids_num=specie_ids_num,
+                        water_species=water_species_eff,
+                        Verbose=Verbose,
+                    )
+
+                if do_sediment:
+                    if Verbose:
+                        log("Running sum of sediment concentration/density")
+                    DA_Conc_array_sed, included_sed = self._sediment_conc_sum(
+                        TOT_Conc=TOT_Conc,
+                        specie_ids_num=specie_ids_num,
+                        sed_species=sed_species_eff,
+                        Verbose=Verbose,
+                        debug_check_single_depth=debug_check_single_depth,
+                    )
+
+                aggregation_kind = "sum"
+            else:
+                if do_water:
+                    if Verbose:
+                        log(f"Running count-weighted water aggregation using {weight_var}")
+                    DA_Conc_array_wat, included_wat = self._species_weighted_mean(
+                        TOT_Value=TOT_Conc,
+                        TOT_Count=TOT_Weights,
+                        specie_ids_num=specie_ids_num,
+                        species_names=water_species_eff,
+                        Verbose=Verbose,
+                        collapse_depth=False,
+                        debug_check_single_depth=False,
+                    )
+
+                if do_sediment:
+                    if Verbose:
+                        log(f"Running count-weighted sediment aggregation using {weight_var}")
+                    DA_Conc_array_sed, included_sed = self._species_weighted_mean(
+                        TOT_Value=TOT_Conc,
+                        TOT_Count=TOT_Weights,
+                        specie_ids_num=specie_ids_num,
+                        species_names=sed_species_eff,
+                        Verbose=Verbose,
+                        collapse_depth=True,
+                        debug_check_single_depth=debug_check_single_depth,
+                    )
+
+                aggregation_kind = "count_weighted_mean"
+
+            missing = []
+            if do_water and DA_Conc_array_wat is None:
+                missing.append(f"DA_Conc_array_wat (water_species={water_species_eff})")
+            if do_sediment and DA_Conc_array_sed is None:
+                missing.append(f"DA_Conc_array_sed (sed_species={sed_species_eff})")
+
+            if missing:
+                raise ValueError(
+                    "Missing: " + " | ".join(missing) +
+                    ". Reason: no correspondence between TOT_Conc.specie and specie_ids_num "
+                    "or all matching species were excluded.")
+
+            if do_water:
+                DA_Conc_array_wat.attrs["species_included"] = self._format_species_pairs(included_wat)
+                excluded_wat_pairs = self._excluded_pairs(
+                    specie_ids_num, excluded_water_names, TOT_Conc=TOT_Conc
+                )
+                DA_Conc_array_wat.attrs["species_excluded"] = self._format_species_pairs(excluded_wat_pairs)
+                DA_Conc_array_wat.attrs["species_aggregation"] = aggregation_kind
+                if weight_var is not None:
+                    DA_Conc_array_wat.attrs["species_aggregation_weights"] = weight_var
+                    DA_Conc_array_wat.attrs["species_aggregation_note"] = (
+                            f"Species aggregated with count-weighted mean using {weight_var}.")
+                DA_Conc_array_wat.attrs.pop("coordinates", None)
+
+            if do_sediment:
+                DA_Conc_array_sed.attrs["species_included"] = self._format_species_pairs(included_sed)
+                excluded_sed_pairs = self._excluded_pairs(
+                    specie_ids_num, excluded_sed_names, TOT_Conc=TOT_Conc
+                )
+                DA_Conc_array_sed.attrs["species_excluded"] = self._format_species_pairs(excluded_sed_pairs)
+                DA_Conc_array_sed.attrs["species_aggregation"] = aggregation_kind
+                if weight_var is not None:
+                    DA_Conc_array_sed.attrs["species_aggregation_weights"] = weight_var
+                    DA_Conc_array_sed.attrs["species_aggregation_note"] = (
+                            f"Species aggregated with count-weighted mean using {weight_var}.")
+                DA_Conc_array_sed.attrs.pop("coordinates", None)
+
+            if Verbose:
+                log("Preparing coordinates/metadata")
+
+            if do_water:
+                DA_Conc_array_wat = self.prepare_derived_output_da(
+                    DA_Conc_array_wat,
+                    src_ds=DS,
+                    time_name=time_name,
+                    spatial_mode=spatial_mode,
+                    Verbose=Verbose,
+                )
+
+            if do_sediment:
+                DA_Conc_array_sed = self.prepare_derived_output_da(
+                    DA_Conc_array_sed,
+                    src_ds=DS,
+                    time_name=time_name,
+                    spatial_mode=spatial_mode,
+                    Verbose=Verbose,
+                )
+
+            if ("topo" in DS.data_vars) and first_var:
+                DC_topo = self.prepare_derived_output_da(
+                    DS["topo"],
+                    src_ds=DS,
+                    time_name=time_name,
+                    spatial_mode=spatial_mode,
+                    Verbose=Verbose,
+                )
+                first_var = False
+                if do_water:
+                    sum_vars_wat_dict["topo"] = DC_topo
+                if do_sediment:
+                    sum_vars_sed_dict["topo"] = DC_topo
+
+            src_da = TOT_Conc
+            sim_desc = self._sim_description_attr(src_da, Sim_description)
+            base_ln = self._base_long_name(src_da, Chemical_name, variable)
+
+            projection_proj4 = DS.attrs.get("actual_density_proj_str", None)
+            grid_mapping = src_da.attrs.get("grid_mapping", None)
+
+            if do_water:
+                DA_Conc_array_wat.name = var_wat_name
+                DA_Conc_array_wat.attrs["long_name"] = base_ln + " in water"
+                DA_Conc_array_wat.attrs["units"] = self._water_units(src_da, variable)
+
+                lon_coord = _coord_getter(DA_Conc_array_wat, "longitude")
+                lat_coord = _coord_getter(DA_Conc_array_wat, "latitude")
+                x_coord = _coord_getter(DA_Conc_array_wat, "x")
+                y_coord = _coord_getter(DA_Conc_array_wat, "y")
+
+                x_units = x_coord.attrs.get("units", None) if x_coord is not None else None
+                y_units = y_coord.attrs.get("units", None) if y_coord is not None else None
+
+                DA_Conc_array_wat = self._apply_common_attrs(
+                    out_da=DA_Conc_array_wat,
+                    Sim_description=sim_desc,
+                    projection_proj4=projection_proj4,
+                    grid_mapping=grid_mapping,
+                    longitude=np.asarray(lon_coord.values) if (lon_coord is not None and lon_coord.ndim == 1) else None,
+                    latitude=np.asarray(lat_coord.values) if (lat_coord is not None and lat_coord.ndim == 1) else None,
+                    x=np.asarray(x_coord.values) if (x_coord is not None and x_coord.ndim == 1) else None,
+                    y=np.asarray(y_coord.values) if (y_coord is not None and y_coord.ndim == 1) else None,
+                    x_units=x_units,
+                    y_units=y_units,
+                )
+
+                sum_vars_wat_dict[var_wat_name] = DA_Conc_array_wat
+
+            if do_sediment:
+                DA_Conc_array_sed.name = var_sed_name
+                DA_Conc_array_sed.attrs["long_name"] = base_ln + " in sediments"
+                DA_Conc_array_sed.attrs["units"] = self._sed_units(src_da, variable)
+
+                lon_coord = _coord_getter(DA_Conc_array_sed, "longitude")
+                lat_coord = _coord_getter(DA_Conc_array_sed, "latitude")
+                x_coord = _coord_getter(DA_Conc_array_sed, "x")
+                y_coord = _coord_getter(DA_Conc_array_sed, "y")
+
+                x_units = x_coord.attrs.get("units", None) if x_coord is not None else None
+                y_units = y_coord.attrs.get("units", None) if y_coord is not None else None
+
+                DA_Conc_array_sed = self._apply_common_attrs(
+                    out_da=DA_Conc_array_sed,
+                    Sim_description=sim_desc,
+                    projection_proj4=projection_proj4,
+                    grid_mapping=grid_mapping,
+                    longitude=np.asarray(lon_coord.values) if (lon_coord is not None and lon_coord.ndim == 1) else None,
+                    latitude=np.asarray(lat_coord.values) if (lat_coord is not None and lat_coord.ndim == 1) else None,
+                    x=np.asarray(x_coord.values) if (x_coord is not None and x_coord.ndim == 1) else None,
+                    y=np.asarray(y_coord.values) if (y_coord is not None and y_coord.ndim == 1) else None,
+                    x_units=x_units,
+                    y_units=y_units,
+                )
+
+                sum_vars_sed_dict[var_sed_name] = DA_Conc_array_sed
+
+            processed_variables.append(variable)
+
+        if not processed_variables:
+            raise ValueError(
+                "No requested variables were processed. "
+                f"Requested={variable_ls}, available={list(DS.data_vars)}"
+            )
+        if do_water and not any(name != "topo" for name in sum_vars_wat_dict):
+            raise ValueError("No water output variables were produced.")
+        if do_sediment and not any(name != "topo" for name in sum_vars_sed_dict):
+            raise ValueError("No sediment output variables were produced.")
+
+        DS_wat_fin = xr.Dataset(sum_vars_wat_dict) if do_water else None
+        DS_sed_fin = xr.Dataset(sum_vars_sed_dict) if do_sediment else None
+
+        if do_water:
+            _copy_source_metadata(DS_wat_fin, DS)
+            gm_names = {da.attrs.get("grid_mapping") for da in DS_wat_fin.data_vars.values()}
+            _copy_support_vars(DS_wat_fin, DS, extra_grid_mapping_names=gm_names)
+
+        if do_sediment:
+            _copy_source_metadata(DS_sed_fin, DS)
+            gm_names = {da.attrs.get("grid_mapping") for da in DS_sed_fin.data_vars.values()}
+            _copy_support_vars(DS_sed_fin, DS, extra_grid_mapping_names=gm_names)
+
+        wat_file = None
+        sed_file = None
+
+        if do_water:
+            if File_Name_out is not None:
+                wat_file = File_Path_out + "wat_" + File_Name_out
+                if not wat_file.endswith(".nc"):
+                    wat_file += ".nc"
+            else:
+                wat_file = (
+                    File_Path_out + "water_conc_" +
+                    (Chemical_name or "") + "_" +
+                    (Origin_marker_name or "") + ".nc"
+                )
+
+        if do_sediment:
+            if File_Name_out is not None:
+                sed_file = File_Path_out + "sed_" + File_Name_out
+                if not sed_file.endswith(".nc"):
+                    sed_file += ".nc"
+            else:
+                sed_file = (
+                    File_Path_out + "sediments_conc_" +
+                    (Chemical_name or "") + "_" +
+                    (Origin_marker_name or "") + ".nc"
+                )
+
+        if Save_files:
+            if do_water:
+                if Verbose:
+                    log("Saving water concentration file")
+                DS_wat_fin.to_netcdf(wat_file)
+
+            if do_sediment:
+                if Verbose:
+                    log("Saving sediment concentration file")
+                DS_sed_fin.to_netcdf(sed_file)
+
+        if Return_datasets:
+            if Verbose:
+                if do_water and do_sediment:
+                    log("Returning water and sediment DS")
+                elif do_water:
+                    log("Returning water DS")
+                else:
+                    log("Returning sediment DS")
+            return DS_wat_fin, DS_sed_fin
+
+    ##### Seeding of elements
     def emission_factors(self, scrubber_type, chemical_compound):
         """Emission factors for heavy metals and PAHs in
             open loop and closed loop scrubbers
@@ -7818,8 +9500,6 @@ class ChemicalDrift(OceanDrift):
                     * latitude   (latitude) float32
                     * longitude  (longitude) float32
                     * time       (time) datetime64[ns]
-
-
                 radius:      scalar, unit: meters
                 lowerbound:  scalar, elements with lower values are discarded
             """
@@ -7874,12 +9554,12 @@ class ChemicalDrift(OceanDrift):
     seed_from_STEAM = seed_from_DataArray
     ''' Alias of seed_from_DataArray method for backward compatibility
     '''
+
     ### Helpers for seed_from_NETCDF ###
     @staticmethod
     def _get_number_of_elements(g_mode, mass_element_ug=None, data_point=None, n_elements=None):
         """
         Returns number of elements to generate.
-
         For g_mode == "mass":
             Checks inputs. Number of full elements and residuals
             are handles speparately.
@@ -7909,17 +9589,16 @@ class ChemicalDrift(OceanDrift):
         number,
         NETCDF_data_dim_names,
         depth_seed=None, depth_min=None, depth_max=None,
-        sed_seafloor_eps=0.005,
+        emission_placement="upper_1m",
+        emission_seafloor_eps=None,
+        emission_depth_value=None,
     ):
         """
         Compute initial vertical positions (z) for seeded elements.
-          - Guards against non-finite inputs and invalid bounds (depth_max <= depth_min).
-          - Uses safe fallbacks for very thin layers.
-          - Validates number > 0.
-
         Returns:
-          - np.ndarray of shape (number,) with negative depths (meters) for water_conc/emission
-          - a string "seafloor+X" for sed_conc (OpenDrift convention)
+          - np.ndarray of shape (number,) with negative depths (meters) for
+            water_conc / emission / emission_depth
+          - a string "seafloor+X" for sed_conc or emission when requested
         """
         import numpy as np
 
@@ -7930,49 +9609,44 @@ class ChemicalDrift(OceanDrift):
             raise ValueError(f"number must be >= 0, got {number}")
         if number == 0:
             if mode == "sed_conc":
-                if sed_seafloor_eps is None or not np.isfinite(sed_seafloor_eps) or sed_seafloor_eps < 0:
-                    raise ValueError(f"sed_seafloor_eps must be finite and >= 0, got {sed_seafloor_eps}")
-                return f"seafloor+{float(sed_seafloor_eps)}"
+                return "seafloor+0.0"
+            if mode == "emission" and emission_placement == "seafloor":
+                eps = emission_seafloor_eps
+                if eps is None or not np.isfinite(eps) or eps < 0:
+                    raise ValueError(f"emission_seafloor_eps must be finite and >= 0, got {eps}")
+                return f"seafloor+{float(eps)}"
             return np.empty((0,), dtype=float)
 
         dim_names = set(NETCDF_data_dim_names or [])
 
         if mode == "water_conc":
-            # depth_seed is required in water_conc to handle the no-depth-dim case
             if depth_seed is None:
                 raise ValueError("water_conc requires depth_seed (bathymetry at seed point).")
             if not np.isfinite(depth_seed) or float(depth_seed) <= 0.0:
                 raise ValueError(f"water_conc requires finite depth_seed > 0, got {depth_seed}")
 
             if "depth" in dim_names:
-                # With explicit depth layers: seed uniformly inside [depth_min, depth_max]
                 if depth_min is None or depth_max is None:
                     raise ValueError(
-                        "depth_min and depth_max must be provided when 'depth' is a dimension."
-                    )
+                        "depth_min and depth_max must be provided when 'depth' is a dimension.")
                 if (not np.isfinite(depth_min)) or (not np.isfinite(depth_max)):
                     raise ValueError(
-                        f"depth_min/depth_max must be finite, got {depth_min}, {depth_max}"
-                    )
+                        f"depth_min/depth_max must be finite, got {depth_min}, {depth_max}")
 
                 lo = float(depth_min)
                 hi = float(depth_max)
-                # ensure ordering
                 if hi < lo:
                     lo, hi = hi, lo
 
-                # If the layer is extremely thin or degenerate, place all at lo (but not shallower than 1e-4)
                 eps = 1e-4
                 if hi - lo <= eps:
                     zpos = max(lo, eps)
                     return -np.full(number, zpos, dtype=float)
 
-                # avoid exact endpoints (optional but helps when bounds come from discretized levels)
                 lo2 = max(lo, eps)
                 hi2 = max(hi, lo2 + eps)
                 return -np.random.uniform(lo2, hi2, number)
 
-            # No depth dimension: seed somewhere in the water column, shallowly away from 0 and bottom
             eps = 1e-4
             hi = float(depth_seed) - eps
             if not np.isfinite(hi) or hi <= eps:
@@ -7980,19 +9654,132 @@ class ChemicalDrift(OceanDrift):
             return -np.random.uniform(eps, hi, number)
 
         if mode == "sed_conc":
-            if sed_seafloor_eps is None or not np.isfinite(sed_seafloor_eps) or sed_seafloor_eps < 0:
-                raise ValueError(f"sed_seafloor_eps must be finite and >= 0, got {sed_seafloor_eps}")
-            return f"seafloor+{float(sed_seafloor_eps)}"
+            return "seafloor+0.0"
 
         if mode == "emission":
-            # keep it very shallow by default (0..1 m), but avoid exactly 0
+            if emission_placement == "upper_1m":
+                eps = 1e-4
+                hi = 1.0 - eps
+
+                if depth_seed is not None:
+                    if not np.isfinite(depth_seed) or float(depth_seed) <= 0.0:
+                        raise ValueError(
+                            f"emission upper_1m requires finite depth_seed > 0 when provided, got {depth_seed}"
+                        )
+                    hi = min(hi, float(depth_seed) - eps)
+
+                if hi <= eps:
+                    return -np.full(number, eps, dtype=float)
+
+                return -np.random.uniform(eps, hi, number)
+
+            if emission_placement == "seafloor":
+                eps = emission_seafloor_eps
+                if eps is None or not np.isfinite(eps) or eps < 0:
+                    raise ValueError(f"emission_seafloor_eps must be finite and >= 0, got {eps}")
+                return f"seafloor+{float(eps)}"
+
+            raise ValueError(
+                f"Unsupported emission_placement '{emission_placement}', "
+                f"use 'upper_1m' or 'seafloor'")
+
+        if mode == "emission_depth":
             eps = 1e-4
-            hi = 1.0 - eps
-            if hi <= eps:
-                return -np.full(number, eps, dtype=float)
-            return -np.random.uniform(eps, hi, number)
+
+            if emission_depth_value is None:
+                raise ValueError("emission_depth requires emission_depth_value.")
+            if not np.isfinite(emission_depth_value) or float(emission_depth_value) < 0.0:
+                raise ValueError(
+                    f"emission_depth requires finite emission_depth_value >= 0, got {emission_depth_value}"
+                )
+
+            zpos = float(emission_depth_value)
+
+            if depth_seed is not None:
+                if not np.isfinite(depth_seed) or float(depth_seed) <= 0.0:
+                    raise ValueError(
+                        f"emission_depth requires finite depth_seed > 0 when provided, got {depth_seed}"
+                    )
+                if zpos > float(depth_seed) - eps:
+                    raise ValueError(
+                        f"Requested emission_depth_value={zpos} exceeds local water depth {depth_seed}."
+                    )
+
+            zpos = max(zpos, eps)
+            return -np.full(number, zpos, dtype=float)
 
         raise ValueError(f"Unsupported mode '{mode}' in _get_z")
+
+    @staticmethod
+    def _speciation_is_explicit(speciation):
+        """
+        True only for explicit seeding speciation.
+        Explicit forms:
+          - int
+          - species-name str
+          - array-like of int/str
+          - dict {species: fraction}
+        Non-explicit forms:
+          - None
+          - "config"
+          - "default"
+        """
+        if speciation is None:
+            return False
+        if isinstance(speciation, str) and speciation in ("config", "default"):
+            return False
+        return True
+
+    @staticmethod
+    def _validate_depth_layer_convention(depth_coord, depth_layer_convention, tol=1e-8):
+        """
+        Validate that the provided depth coordinate is consistent with the
+        declared layer convention.
+
+        depth_layer_convention == "top":
+            depth values are interpreted as TOP of layers
+            -> shallowest depth must be 0
+        depth_layer_convention == "bottom":
+            depth values are interpreted as BOTTOM of layers
+            -> depth coordinate must not contain 0
+        """
+        import numpy as np
+
+        if depth_layer_convention not in ("top", "bottom"):
+            raise ValueError(
+                "depth_layer_convention must be 'top' or 'bottom' when "
+                "NETCDF_data has a depth dimension.")
+
+        raw = np.asarray(depth_coord, dtype=float).ravel()
+        if raw.size == 0:
+            raise ValueError("NETCDF_data depth coordinate is empty.")
+        if not np.all(np.isfinite(raw)):
+            raise ValueError("NETCDF_data depth coordinate contains non-finite values.")
+
+        depth_abs = np.sort(np.unique(np.abs(raw)))
+        if depth_abs.size == 0:
+            raise ValueError("NETCDF_data depth coordinate is empty after processing.")
+
+        if np.any(np.diff(depth_abs) <= tol):
+            raise ValueError(
+                "NETCDF_data depth coordinate must contain distinct, strictly increasing "
+                "depth levels in magnitude.")
+
+        has_zero = np.isclose(depth_abs[0], 0.0, rtol=0.0, atol=tol)
+
+        if depth_layer_convention == "top":
+            if not has_zero:
+                raise ValueError(
+                    "depth_layer_convention='top' is inconsistent with the provided depth "
+                    f"coordinate: shallowest depth is {depth_abs[0]}, but top-of-layer "
+                    "coordinates must start at 0.0 m.")
+
+        elif depth_layer_convention == "bottom":
+            if has_zero:
+                raise ValueError(
+                    "depth_layer_convention='bottom' is inconsistent with the provided depth "
+                    "coordinate: it contains 0.0 m, but bottom-of-layer coordinates must be "
+                    "strictly greater than 0.0 m.")
 
     @staticmethod
     def _remove_positions(items, positions):
@@ -8057,10 +9844,9 @@ class ChemicalDrift(OceanDrift):
         import numpy as np
 
         # ChemicalDrift config-driven partitioning
-        if speciation in (None, "config"):
+        if speciation is None or (isinstance(speciation, str) and speciation == "config"):
             return None
-
-        if speciation == "default":
+        if isinstance(speciation, str) and speciation == "default":
             return np.full(n, int(default_specie), dtype=int)
 
         # scalar: all same (int or species-name string)
@@ -8144,8 +9930,7 @@ class ChemicalDrift(OceanDrift):
             return np.random.choice(idx, size=n, p=fracs).astype(int)
 
         raise TypeError(
-            "speciation must be None/'config'/'default', int, str, array-like of int/str, or dict of fractions."
-        )
+            "speciation must be None/'config'/'default', int, str, array-like of int/str, or dict of fractions.")
 
     def speciation_to_indices_set(self, speciation, name_to_idx, active_names, label="speciation"):
         """
@@ -8166,8 +9951,7 @@ class ChemicalDrift(OceanDrift):
             i = int(v)
             if i < 0 or i >= len(active_names):
                 raise ValueError(
-                    f"{label}: species index {i} out of range for active species list (0..{len(active_names)-1})."
-                )
+                    f"{label}: species index {i} out of range for active species list (0..{len(active_names)-1}).")
             return i
 
         if isinstance(speciation, dict):
@@ -8197,12 +9981,10 @@ class ChemicalDrift(OceanDrift):
         - allowed_names may include species that are not active in this run; those are ignored for building allowed_idx.
         - If the user requests a species name not active in this run -> raises ValueError with a helpful message.
         """
-        if speciation is None or speciation in ["config", "default"]:
-            if label == "sed_speciation":
-                if speciation is None or speciation == "config":
-                    raise ValueError(
-                        f"{label} cannot be None or 'config', it is: {speciation}"
-                    )
+        if speciation is None or (isinstance(speciation, str) and speciation in ("config", "default")):
+            if label == "sed_speciation" and (speciation is None or speciation == "config"):
+                raise ValueError(
+                    f"{label} cannot be None or 'config', it is: {speciation}")
             return
 
         if not hasattr(self, "name_species"):
@@ -8219,8 +10001,7 @@ class ChemicalDrift(OceanDrift):
         if not allowed_active:
             raise ValueError(
                 f"{label}: none of the allowed species are active in this run. "
-                f"Allowed: {sorted(allowed_set)}. Active: {active_names}"
-            )
+                f"Allowed: {sorted(allowed_set)}. Active: {active_names}")
 
         # Build index sets safely
         name_to_idx = {name: i for i, name in enumerate(active_names)}
@@ -8228,14 +10009,12 @@ class ChemicalDrift(OceanDrift):
 
         # Collect which species the user referenced (as indices), and also track missing names
         used_idx, missing_names = self.speciation_to_indices_set(
-            speciation, name_to_idx=name_to_idx, active_names=active_names, label=label
-        )
+            speciation, name_to_idx=name_to_idx, active_names=active_names, label=label)
 
         if missing_names:
             raise ValueError(
                 f"{label}: requested species are not active in this run: {sorted(missing_names)}. "
-                f"Active species: {active_names}"
-            )
+                f"Active species: {active_names}")
 
         bad_idx = sorted(set(used_idx) - set(allowed_idx))
         if bad_idx:
@@ -8243,6 +10022,75 @@ class ChemicalDrift(OceanDrift):
             raise ValueError(
                 f"{label}: contains species not allowed here: {bad_names}. "
                 f"Allowed (active subset): {sorted(allowed_active)}")
+
+    def _default_seed_specie(self, mode):
+        """
+        Resolve the canonical default specie for seeding, based on the active
+        transfer setup and the species actually created by init_species().
+        - water_conc / emission / emission_depth:
+            Sandnesfj_Al -> LMMcation
+            otherwise    -> prefer LMM
+        - sed_conc:
+            prefer Sediment reversible
+        Falls back to the first active allowed specie in the relevant family.
+        """
+        if not hasattr(self, 'name_species'):
+            self.init_species()
+
+        transfer_setup = self.get_config('chemical:transfer_setup')
+
+        if transfer_setup == 'custom':
+            raise ValueError(
+                "Default seed specie is undefined for chemical:transfer_setup='custom'. "
+                "Use explicit water_speciation / sed_speciation when seeding.")
+
+        if mode in ('water_conc', 'emission', 'emission_depth'):
+            if transfer_setup == 'Sandnesfj_Al':
+                preferred = [
+                    'LMMcation', 'LMManion',
+                    'Humic colloid', 'Polymer', 'Colloid',
+                    'Particle reversible', 'Particle slowly reversible',
+                    'Particle irreversible',]
+            else:
+                preferred = [
+                    'LMM', 'LMMcation', 'LMManion',
+                    'Humic colloid', 'Polymer', 'Colloid',
+                    'Particle reversible',
+                    'Particle slowly reversible',
+                    'Particle irreversible',]
+        elif mode == 'sed_conc':
+            preferred = [
+                'Sediment reversible',
+                'Sediment slowly reversible',
+                'Sediment irreversible',
+                'Sediment buried',]
+        else:
+            raise ValueError(f"Unsupported mode for default seed specie: {mode!r}")
+
+        for name in preferred:
+            if name in self.name_species:
+                return self.specie_name2num(name)
+
+        raise ValueError(
+            f"Could not resolve a default seed specie for mode={mode!r}. "
+            f"Active species are: {self.name_species}")
+
+    @staticmethod
+    def _record_seed_failure(fail_records, stage, point_index, exc, **context):
+
+        rec = {
+            "stage": stage,
+            "point_index": int(point_index),
+            "exception_type": type(exc).__name__,
+            "exception": str(exc),
+        }
+        rec.update(context)
+        fail_records.append(rec)
+
+        logger.exception(
+            "seed_from_NETCDF failure at stage=%s point=%s context=%s",
+            stage, point_index, context
+        )
 
     def seed_from_NETCDF(
             self,
@@ -8262,7 +10110,12 @@ class ChemicalDrift(OceanDrift):
             water_speciation=None,
             sed_speciation="default",
             last_depth_until_bathimetry=True,
-            sed_seafloor_eps=0.001
+            depth_layer_convention=None,
+            emission_placement="upper_1m",
+            emission_seafloor_eps=None,
+            active_sediment_layer_thickness_data=None,
+            f_OC_particle_data=None,
+            f_OC_sediment_data=None,
     ):
         """
         Seed elements based on a dataarray with water/sediment concentration or direct emissions to water.
@@ -8272,15 +10125,35 @@ class ChemicalDrift(OceanDrift):
             * latitude        (latitude) float32
             * longitude       (longitude) float32
             * time            (time) datetime64[ns]
-        Bathimetry_data:      dataarray with bathimetry data, MUST have the same grid of NETCDF_data, no time dimension, and positive values
+        Bathimetry_data:      dataarray with bathimetry data to calcuate volume of gridcells for water_conc
+                              MUST have the same grid of NETCDF_data, no time dimension, and positive values
             * latitude        (latitude) float32
             * longitude       (longitude) float32
-        Bathimetry_seed_data: dataarray with bathimetry data, MUST be the same used for running the simulation, no time dimension, and positive values
+        Bathimetry_seed_data: dataarray with bathimetry data to check seeding of elements,
+                              MUST be the same used for running the simulation, no time dimension, and positive downward.
+                              Required for "water_conc", "sed_conc", and "emission_depth".
+            * latitude        (latitude) float32
+            * longitude       (longitude) float32
+        f_OC_particle_data:   dataarray with local f_OC for water-column seeding.
+                              If not given, seed_elements() will build default f_OC internally.
+            * latitude        (latitude) float32
+            * longitude       (longitude) float32
+            * time            (time) datetime64[ns]
+        f_OC_sediment_data:   dataarray with local f_OC for sediment seeding.
+                              If not given, seed_elements() will build default f_OC internally.
+            * latitude        (latitude) float32
+            * longitude       (longitude) float32
+            * time            (time) datetime64[ns]
+        active_sediment_layer_thickness_data: dataarray with local active sediment layer thickness [m]
+                              MUST be on the same spatial grid as NETCDF_data. Used only for mode='sed_conc'.
+                              If not given, or if local values are invalid, the global self.get_config('chemical:sediment:mixing_depth') is used.
             * latitude        (latitude) float32
             * longitude       (longitude) float32
         mode:                 "water_conc" (seed from concentration in water column, in ug/L),
-                              "sed_conc" (seed from sediment concentration, in ug/kg d.w.),
-                              "emission" (seed from direct discharge to water, in kg)
+                      "sed_conc" (seed from sediment concentration, in ug/kg d.w.),
+                      "emission" (seed from direct discharge to water, in kg),
+                      "emission_depth" (seed from direct discharge to water, in kg,
+                                        at depth given by NETCDF_data.depth)
         radius:               float32, unit: meters, elements will be created in a circular area around coordinates
         lowerbound:           float32 elements with lower values are discarded
         higherbound:          float32, elements with higher values are discarded
@@ -8289,45 +10162,81 @@ class ChemicalDrift(OceanDrift):
         lon_resol:            float32, longitude resolution of the NETCDF dataset
         lat_resol:            float32, latitude resolution of the NETCDF dataset
         gen_mode:             string, "mass" (elements generated from mass), "fixed" (fixed number of elements for each data point)
-        water_speciation:     Controls initial species assignment for elements seeded in water_conc and emission modes.
-                                Accepted values:
-                                  - None or "config": do not pass 'specie' to ChemicalDrift.seed_elements;
-                                    triggers ChemicalDrift's config-driven initial partitioning
-                                    (seed:LMM_fraction and seed:particle_fraction, plus any transfer_setup logic).
-                                  - "default": pass specie=self.num_lmm for water_conc and emission modes
-                                  - int: force all seeded elements to the given species index.
-                                  - array-like of int or species names (length = number of elements seeded at that datapoint):
-                                    explicit per-element species indices or names.
-                                  - dict: {species: fraction, ...} to randomly assign species according to fractions.
-                                    Keys may be species indices (int) or species names (str) in self.name_species.
-                                    Fractions are normalized if they do not sum exactly to 1.
+        water_speciation:     Controls initial species assignment for elements seeded in water_conc, emission, and emission_depth modes.
+                              Accepted values:
+                                - None or "config": config-driven partitioning
+                                - "default": transfer_setup-dependent canonical default specie
+                                - int / str / array-like / dict: explicit species selection
+                              For chemical:transfer_setup='custom', only explicit species selection is allowed. None/"config"/"default" are rejected.
         sed_speciation:       Controls initial species assignment for elements seeded in sed_conc mode.
-                                  - Same accepted values and behavior as water_speciation, but applied to sediment
-                                    seeding (default species is self.num_srev).
-                                  - Cannot be None or "config", as partitioning to sediments from config is not implemented in ChemicalDrift.seed_elements
-        origin_marker:        int, or string "single", assign a marker to seeded elements. If "single" a different origin_marker will be assigned to each datapoint
+                              Accepted values:
+                                - "default"
+                                - int / str / array-like / dict: explicit species selection
+                              For chemical:transfer_setup='custom', only explicit species
+                              selection is allowed. None/"config"/"default" are rejected.
+        depth_layer_convention: string,"top" if depth coordinate stores TOP of each layer, "bottom" if depth coordinate stores BOTTOM of each layer.
+                                  Used only for mode='water_conc'.
         last_depth_until_bathimetry: boolean, when depth is specified in NETCDF_data using "water_conc" mode
                                     the water column below the highest depth value is considered the same as the last
                                     available layer (True) or is consedered without chemical (False)
-        sed_seafloor_eps:     float32, sediments will be seeded sed_seafloor_eps (m) above seafloor,
+        emission_placement:   "upper_1m" or "seafloor"
+                              Controls where emission-mode particles are initialized. Used only for mode='emission'.
+        emission_seafloor_eps:                              float32, optional offset above seabed used only when
+                              mode='emission' and emission_placement='seafloor'.
+        origin_marker:        int, or string "single", assign a marker to seeded elements. If "single" a different origin_marker will be assigned to each datapoint
         """
         import opendrift
         from datetime import datetime
         import numpy as np
-        # mass_element_ug=1e3   # 1e3 -> 1 element is 1mg chemical
-        # mass_element_ug=1e5   # 1e5 -> 1 element is 100mg chemical
-        # mass_element_ug=1e6   # 1e6 -> 1 element is 1g chemical
-        # mass_element_ug=1e9   # 1e9 -> 1 element is 1kg chemical
+        from collections import Counter
+        fail_records = []
+
+        def _time_repr(x):
+            if x is None:
+                return None
+            if hasattr(x, "isoformat"):
+                try:
+                    return x.isoformat()
+                except Exception:
+                    pass
+            try:
+                return str(np.datetime64(x))
+            except Exception:
+                return str(x)
+
+        if mode not in ['water_conc', 'sed_conc', 'emission', 'emission_depth']:
+            raise ValueError(
+                f"Invalid mode: '{mode}', only 'water_conc', 'sed_conc', "
+                "'emission', and 'emission_depth' are permitted")
+        if mode == "emission" and emission_placement not in ("upper_1m", "seafloor"):
+            raise ValueError(
+                f"Invalid emission_placement='{emission_placement}'. "
+                f"Use 'upper_1m' or 'seafloor'.")
+        if mode == "emission" and emission_placement == "seafloor" and emission_seafloor_eps is None:
+            raise ValueError(
+                "emission_seafloor_eps must be provided when mode='emission' "
+                "and emission_placement='seafloor'.")
 
         # Validate speciation inputs
-        if mode not in ['water_conc', 'sed_conc', 'emission']:
-            raise ValueError(f"Invalid mode: '{mode}', only 'water_conc', 'sed_conc', and 'emission' are permitted")
-
         if not np.all([(hasattr(self, attr)) for attr in ['nspecies', 'name_species', 'transfer_rates']]):
             if self.mode != opendrift.models.basemodel.Mode.Config:
                 self.mode = opendrift.models.basemodel.Mode.Config
             self.init_species()
             self.init_transfer_rates()
+
+        transfer_setup = self.get_config('chemical:transfer_setup')
+        if transfer_setup == 'custom':
+            if mode in ('water_conc', 'emission', 'emission_depth'):
+                if not self._speciation_is_explicit(water_speciation):
+                    raise ValueError(
+                        "For chemical:transfer_setup='custom', water_conc/emission/"
+                        "emission_depth seeding requires explicit water_speciation. "
+                        "None, 'config', and 'default' are not allowed.")
+            elif mode == 'sed_conc':
+                if not self._speciation_is_explicit(sed_speciation):
+                    raise ValueError(
+                        "For chemical:transfer_setup='custom', sed_conc seeding requires "
+                        "explicit sed_speciation. None, 'config', and 'default' are not allowed.")
 
         WATER_ALLOWED = {
             "LMM", "LMMcation", "LMManion",
@@ -8337,7 +10246,6 @@ class ChemicalDrift(OceanDrift):
             "Particle slowly reversible",
             "Particle irreversible",
         }
-
         SED_ALLOWED = {
             "Sediment reversible",
             "Sediment slowly reversible",
@@ -8348,13 +10256,87 @@ class ChemicalDrift(OceanDrift):
         self.validate_speciation_input_allowed(water_speciation, WATER_ALLOWED, label="water_speciation")
         self.validate_speciation_input_allowed(sed_speciation,   SED_ALLOWED,   label="sed_speciation")
 
+        # Validate f_OC inputs
+        def _build_uniform_foc_array(n, foc_value, label):
+            foc_value = float(foc_value)
+            if not np.isfinite(foc_value) or foc_value <= 0.0:
+                raise ValueError(f"{label} must be finite and > 0, got {foc_value}")
+            return np.full(n, foc_value, dtype=float)
+
+        def _lookup_scalar_map_value(da, lat, lon, fallback, label, time=None, point_index=None):
+            if da is None:
+                return fallback
+
+            try:
+                sel_kwargs = {
+                    "latitude": float(lat),
+                    "longitude": float(lon),
+                }
+
+                has_time = ("time" in da.dims) or ("time" in da.coords)
+                if has_time:
+                    if time is None:
+                        raise ValueError(
+                            f"{label} has a time coordinate/dimension, but no time was provided.")
+                    sel_kwargs["time"] = np.datetime64(time)
+
+                value = da.sel(method='nearest', **sel_kwargs).values
+                arr = np.asarray(value)
+
+                if arr.size != 1:
+                    raise ValueError(
+                        f"{label} selection did not reduce to a scalar; remaining shape={arr.shape}")
+
+                value = float(arr.squeeze())
+                if np.isfinite(value) and value > 0.0:
+                    return value
+
+                logger.debug(
+                    "Invalid %s at lon=%s lat=%s time=%s (value=%s), using fallback=%s",
+                    label, lon, lat, _time_repr(time), value, fallback
+                )
+                return fallback
+
+            except Exception as e:
+                if point_index is not None:
+                    self._record_seed_failure(
+                        fail_records=fail_records,
+                        stage=f"{label}_lookup",
+                        point_index=point_index,
+                        exc=e,
+                        lon=float(lon),
+                        lat=float(lat),
+                        time=_time_repr(time),
+                        fallback=float(fallback),
+                    )
+                else:
+                    logger.exception(
+                        "Could not read %s at lon=%s lat=%s time=%s. Using fallback=%s",
+                        label, lon, lat, _time_repr(time), fallback
+                    )
+                return fallback
+
+        def _build_seed_foc_array(n, mode, particle_foc, sediment_foc):
+            # Only override f_OC during seeding when a local map was provided.
+            # Otherwise let seed_elements() assign defaults internally from init_specie.
+            if mode in ("water_conc", "emission", "emission_depth"):
+                if f_OC_particle_data is None:
+                    return None
+                return _build_uniform_foc_array(n, particle_foc, "water-column f_OC")
+
+            if mode == "sed_conc":
+                if f_OC_sediment_data is None:
+                    return None
+                return _build_uniform_foc_array(n, sediment_foc, "sediment f_OC")
+
+            return None
+
         # Select data
         sel = np.where((NETCDF_data > lowerbound) & (NETCDF_data < higherbound))
 
-        time_check = NETCDF_data.sizes.get("time", 0)
-        if time_check == 0:
+        if ("time" not in NETCDF_data.dims) and ("time" not in NETCDF_data.coords):
             raise ValueError("NETCDF_data has no 'time' dimension/coord.")
-        time_check = (NETCDF_data.time).size
+        time_check = NETCDF_data.time.size
 
         NETCDF_data_dim_names = list(NETCDF_data.dims)
 
@@ -8387,13 +10369,27 @@ class ChemicalDrift(OceanDrift):
             time_name_index = None
 
         depth = None
-        all_depth_values = None
-
+        depth_name_index = None
         if "depth" in NETCDF_data.dims:
             depth_name_index = NETCDF_data_dim_names.index("depth")
-            all_depth_values = np.sort(np.absolute(np.unique(np.array(NETCDF_data.depth))))
-        else:
-            depth_name_index = None
+
+            if mode == "water_conc":
+                if depth_layer_convention is None:
+                    raise ValueError(
+                        "depth_layer_convention must be explicitly set to 'top' or 'bottom' "
+                        "when mode='water_conc' and NETCDF_data has a depth dimension.")
+                self._validate_depth_layer_convention(
+                    NETCDF_data.depth.values,
+                    depth_layer_convention,
+                )
+            elif depth_layer_convention is not None:
+                logger.info(
+                    "Ignoring depth_layer_convention=%s because it is only used for mode='water_conc'.",
+                    depth_layer_convention)
+        elif depth_layer_convention is not None:
+            logger.info(
+                "Ignoring depth_layer_convention=%s because NETCDF_data has no depth dimension.",
+                depth_layer_convention)
 
         # Time vector
         if time_check == 1:
@@ -8408,29 +10404,51 @@ class ChemicalDrift(OceanDrift):
             t = np.array(t, dtype='datetime64[s]')
 
         # Depth vector for selected points (if any)
-        if depth_name_index is not None:
+        if mode in ("water_conc", "emission_depth") and depth_name_index is not None:
             depth = np.absolute(NETCDF_data.depth[sel[depth_name_index]].data)
 
-        # find center of pixel for volume of water / sediments
+        if mode == "emission_depth":
+            if "depth" not in NETCDF_data.dims:
+                raise ValueError(
+                    "mode='emission_depth' requires NETCDF_data to have a 'depth' dimension.")
+            if Bathimetry_seed_data is None:
+                raise ValueError(
+                    "Bathimetry_seed_data is required for mode='emission_depth'")
+
+        # Find center of pixel for volume of water / sediments
         lon_array = lo + lon_resol / 2
         lat_array = la + lat_resol / 2
 
-        # Prune datapoints where Bathimetry_seed_data at the pixel-center is NaN/<=0.
-        if mode in ("water_conc", "sed_conc"):
+        # Prune datapoints where Bathimetry_seed_data at the pixel-center is NaN/<=0
+        if mode in ("water_conc", "sed_conc", "emission_depth"):
             if Bathimetry_seed_data is None:
-                raise ValueError("Bathimetry_seed_data is required for mode='water_conc' and mode='sed_conc'")
+                raise ValueError(
+                    "Bathimetry_seed_data is required for mode='water_conc', "
+                    "mode='sed_conc', and mode='emission_depth'")
 
             check_bad = []
             ncheck = int(np.size(lon_array))
             for i in range(ncheck):
-                Bseed = float(
-                    Bathimetry_seed_data.sel(
-                        latitude=float(lat_array[i]),
-                        longitude=float(lon_array[i]),
-                        method='nearest'
-                    ).values
-                )
-                if (not np.isfinite(Bseed)) or (Bseed <= 0.0):
+                try:
+                    Bseed = float(
+                        Bathimetry_seed_data.sel(
+                            latitude=float(lat_array[i]),
+                            longitude=float(lon_array[i]),
+                            method='nearest'
+                        ).values
+                    )
+                    if (not np.isfinite(Bseed)) or (Bseed <= 0.0):
+                        check_bad.append(i)
+                except Exception as e:
+                    self._record_seed_failure(
+                        fail_records=fail_records,
+                        stage="bathymetry_seed_prune",
+                        point_index=i,
+                        exc=e,
+                        lon=float(lon_array[i]),
+                        lat=float(lat_array[i]),
+                        mode=mode,
+                    )
                     check_bad.append(i)
 
             if check_bad:
@@ -8440,19 +10458,17 @@ class ChemicalDrift(OceanDrift):
 
                 sel, la, lo, lat_array, lon_array, depth_vec, t_vec = self._remove_positions(
                     (sel, la, lo, lat_array, lon_array, depth_vec, t_vec),
-                    bad
-                )
+                    bad)
 
                 if depth_vec is not None:
                     depth = depth_vec
                 if t_vec is not None:
                     t = t_vec
 
-                logger.info(f"{bad.size} datapoints removed due to inconsistent bathymetry (seed grid)")
+                logger.info("%s datapoints removed due to inconsistent bathymetry (seed grid)", bad.size)
 
-        if mode == 'water_conc':
-            if Bathimetry_data is None:
-                raise ValueError("Bathimetry_data is required for mode='water_conc'")
+        if mode == 'water_conc' and Bathimetry_data is None:
+            raise ValueError("Bathimetry_data is required for mode='water_conc'")
 
         # Build 1D values aligned with sel/la/lo/lat_array/lon_array (and depth/t if present)
         values = np.asarray(NETCDF_data.data)[sel]
@@ -8460,66 +10476,99 @@ class ChemicalDrift(OceanDrift):
 
         if npts == 0:
             logger.info("No datapoints left after filtering/pruning; nothing to seed.")
+            self._last_seed_from_netcdf_failures = fail_records
             return
 
         print(f"Seeding {npts} datapoints")
         list_index_print = self._print_progress_list(npts)
 
         if mode == 'sed_conc':
-            sed_mixing_depth = float(self.get_config('chemical:sediment:mixing_depth'))  # m
-            sed_density      = float(self.get_config('chemical:sediment:density'))       # kg/m3 (dry)
-            sed_porosity     = float(self.get_config('chemical:sediment:porosity'))      # m3/m3
+            sed_mixing_depth_global = float(self.get_config('chemical:sediment:mixing_depth'))
+            sed_density = float(self.get_config('chemical:sediment:density'))
+            sed_porosity = float(self.get_config('chemical:sediment:porosity'))
+
+            if active_sediment_layer_thickness_data is not None:
+                thickness_dims = set(active_sediment_layer_thickness_data.dims)
+                if not {'latitude', 'longitude'}.issubset(thickness_dims):
+                    raise ValueError(
+                        "active_sediment_layer_thickness_data must have at least "
+                        "'latitude' and 'longitude' dimensions.")
+
+        if f_OC_particle_data is not None:
+            focp_dims = set(f_OC_particle_data.dims)
+            if not {'latitude', 'longitude'}.issubset(focp_dims):
+                raise ValueError("f_OC_particle_data must have at least 'latitude' and 'longitude' dimensions.")
+            if 'time' in focp_dims and ('time' not in NETCDF_data.dims and 'time' not in NETCDF_data.coords):
+                raise ValueError("f_OC_particle_data has a time dimension, but NETCDF_data has no usable time coordinate.")
+        if f_OC_sediment_data is not None:
+            focs_dims = set(f_OC_sediment_data.dims)
+            if not {'latitude', 'longitude'}.issubset(focs_dims):
+                raise ValueError("f_OC_sediment_data must have at least 'latitude' and 'longitude' dimensions.")
+            if 'time' in focs_dims and ('time' not in NETCDF_data.dims and 'time' not in NETCDF_data.coords):
+                raise ValueError("f_OC_sediment_data has a time dimension, but NETCDF_data has no usable time coordinate.")
 
         # origin markers aligned with filtered points
         if origin_marker == "single":
             origin_marker_np = np.arange(npts)
 
-        fail_count = 0
-        fail_indices = []
-        FAIL_KEEP = 20
+        fOC_SPM_global = float(self.get_config('chemical:transformations:fOC_SPM'))
+        fOC_sed_global = float(self.get_config('chemical:transformations:fOC_sed'))
+
+        FAIL_PREVIEW = 20
 
         for i in range(npts):
-            invalid_depth_layer = False
-            if i == 0:
-                time_start_0 = datetime.now()
-            if i == 1:
-                time_start_1 = datetime.now()
-                estimated_time = (time_start_1 - time_start_0) * npts
-                print(f"Estimated time (h:min:s): {estimated_time}")
+            lai = None
+            loi = None
+            elem_lat = None
+            elem_lon = None
+            time = None
+            mass_ug = None
+            number = None
+            residual_to_seed = None
+            emission_depth_value = None
 
-            if i in list_index_print:
-                print(".", end="")
+            try:
+                if i == 0:
+                    time_start_0 = datetime.now()
+                if i == 1:
+                    time_start_1 = datetime.now()
+                    estimated_time = (time_start_1 - time_start_0) * npts
+                    print(f"Estimated time (h:min:s): {estimated_time}")
 
-            # Per-point lat/lon (scalar)
-            lai = float(la[i])
-            loi = float(lo[i])
+                if i in list_index_print:
+                    print(".", end="")
+                # Per-point lat/lon (scalar)
+                lai = float(la[i])
+                loi = float(lo[i])
+                # Grid size in meters (scalar)
+                lon_grid_m = float(
+                    6.371e6 * np.cos(2.0 * np.pi * float(lai) / 360.0)
+                    * lon_resol * (2.0 * np.pi) / 360.0)
+                lat_grid_m_scalar = float(6.371e6 * lat_resol * (2.0 * np.pi) / 360.0)
 
-            # Grid size in meters (scalar)
-            lon_grid_m = float(
-                6.371e6
-                * np.cos(2.0 * np.pi * float(lai) / 360.0)
-                * lon_resol
-                * (2.0 * np.pi) / 360.0
-            )
-            lat_grid_m_scalar = float(6.371e6 * lat_resol * (2.0 * np.pi) / 360.0)
+                depth_min = None
+                depth_max = None
+                depth_layer_high = None
+                Bathimetry_seed = None
 
-            depth_min = None
-            depth_max = None
-            depth_layer_high = None
-            Bathimetry_seed = None  # avoid stale reuse
+                Bathimetry_seed = None
+                if mode in ('water_conc', 'emission', 'emission_depth') and Bathimetry_seed_data is not None:
+                    Bathimetry_seed = float(
+                        Bathimetry_seed_data.sel(
+                            latitude=float(lat_array[i]),
+                            longitude=float(lon_array[i]),
+                            method='nearest'
+                        ).values
+                    )
 
-            if mode == 'water_conc':
-                Bathimetry_seed = float(
-                    Bathimetry_seed_data.sel(
-                        latitude=float(lat_array[i]),
-                        longitude=float(lon_array[i]),
-                        method='nearest'
-                    ).values
-                )
+                    if (not np.isfinite(Bathimetry_seed)) or (Bathimetry_seed <= 0.0):
+                        logger.debug(
+                            "Skipping point: invalid Bathimetry_seed_data at lon %.6f, lat %.6f (value=%s)",
+                            lon_array[i], lat_array[i], Bathimetry_seed
+                        )
+                        continue
 
-                if depth is not None:
-                    depth_datapoint = float(np.absolute(depth[i]))
-
+                if mode == 'water_conc':
                     Bathimetry_datapoint = float(
                         Bathimetry_data.sel(
                             latitude=float(lai),
@@ -8529,245 +10578,431 @@ class ChemicalDrift(OceanDrift):
                     )
 
                     if (not np.isfinite(Bathimetry_datapoint)) or (Bathimetry_datapoint <= 0.0):
-                        invalid_depth_layer = True
+                        logger.debug(
+                            "Skipping point: invalid Bathimetry_data at lon %.6f, lat %.6f (value=%s)",
+                            loi, lai, Bathimetry_datapoint)
+                        continue
 
-                    depth_datapoint_np = np.sort(np.abs(
-                        NETCDF_data.sel(latitude=lai, longitude=loi, method="nearest").depth.values
-                    ).astype(float))
+                    if depth is not None:
+                        depth_datapoint = float(np.absolute(depth[i]))
 
-                    depth_datapoint_np_index = int(np.argmin(np.abs(depth_datapoint_np - depth_datapoint)))
+                        depth_datapoint_np = np.sort(np.abs(
+                            NETCDF_data.sel(latitude=lai, longitude=loi, method="nearest").depth.values
+                        ).astype(float))
 
-                    if all_depth_values is not None and (0 in all_depth_values):
-                        # ChemicalDrift output convention: depth = TOP of layer
-                        depth_min = depth_datapoint
-                        if depth_datapoint_np_index >= len(depth_datapoint_np) - 1:
-                            depth_max = Bathimetry_datapoint
-                        else:
-                            depth_max = min(float(depth_datapoint_np[depth_datapoint_np_index + 1]), Bathimetry_datapoint)
+                        depth_datapoint_np_index = int(np.argmin(np.abs(depth_datapoint_np - depth_datapoint)))
 
-                        if Bathimetry_datapoint < depth_min:
-                            invalid_depth_layer = True
-                            depth_layer_high = 0.0
-                            logger.info(
-                                f"Skipping point: bathymetry ({Bathimetry_datapoint:.3f} m) is shallower than layer top "
-                                f"depth_min ({depth_min:.3f} m) at lon {loi:.6f}, lat {lai:.6f}"
-                            )
-                        else:
+                        if depth_layer_convention == "top":
+                            depth_min = float(depth_datapoint)
+
+                            if Bathimetry_datapoint < depth_min:
+                                logger.info(
+                                    "Skipping point: bathymetry (%.3f m) is shallower than layer top "
+                                    "depth_min (%.3f m) at lon %.6f, lat %.6f",
+                                    Bathimetry_datapoint, depth_min, loi, lai
+                                )
+                                continue
+
+                            is_last = depth_datapoint_np_index >= len(depth_datapoint_np) - 1
+
+                            if is_last:
+                                if last_depth_until_bathimetry:
+                                    depth_max = float(Bathimetry_datapoint)
+                                else:
+                                    continue
+                            else:
+                                depth_max = min(
+                                    float(depth_datapoint_np[depth_datapoint_np_index + 1]),
+                                    float(Bathimetry_datapoint))
+
+                            if depth_max <= depth_min:
+                                continue
+
                             depth_layer_high = depth_max - depth_min
+
+                        elif depth_layer_convention == "bottom":
+                            if depth_datapoint_np_index > 0:
+                                depth_min = float(depth_datapoint_np[depth_datapoint_np_index - 1])
+                            else:
+                                depth_min = 0.0
+
+                            if (depth_datapoint_np_index == len(depth_datapoint_np) - 1) and last_depth_until_bathimetry:
+                                depth_max = float(Bathimetry_datapoint)
+                            else:
+                                depth_max = float(depth_datapoint)
+
+                            depth_max = min(depth_max, float(Bathimetry_datapoint))
+
+                            if depth_max <= depth_min:
+                                logger.info(
+                                    "Skipping point: bathymetry (%.3f m) is shallower than layer top "
+                                    "depth_min (%.3f m) at lon %.6f, lat %.6f",
+                                    Bathimetry_datapoint, depth_min, loi, lai
+                                )
+                                continue
+
+                            depth_layer_high = depth_max - depth_min
+
+                        else:
+                            raise RuntimeError(
+                                "depth_layer_convention must have been validated before entering the seeding loop.")
                     else:
-                        # Standard convention: depth = BOTTOM of layer
-                        if depth_datapoint_np_index > 0:
-                            depth_min = float(depth_datapoint_np[depth_datapoint_np_index - 1])
-                        else:
-                            depth_min = 0.0
+                        depth_layer_high = Bathimetry_datapoint
 
-                        if (depth_datapoint_np_index == len(depth_datapoint_np) - 1) and (last_depth_until_bathimetry is True):
-                            depth_max = max(depth_datapoint, Bathimetry_datapoint)
-                        else:
-                            depth_max = depth_datapoint
+                    if (not np.isfinite(depth_layer_high)) or (depth_layer_high <= 0.0):
+                        logger.debug(
+                            "Skipping point: non-positive depth_layer_high at lon %.6f, lat %.6f (value=%s)",
+                            loi, lai, depth_layer_high)
+                        continue
 
-                        if Bathimetry_datapoint < depth_min:
-                            invalid_depth_layer = True
-                            depth_layer_high = 0.0
-                            logger.info(
-                                f"Skipping point: bathymetry ({Bathimetry_datapoint:.3f} m) is shallower than layer top "
-                                f"depth_min ({depth_min:.3f} m) at lon {loi:.6f}, lat {lai:.6f}"
+                elif mode == 'emission_depth':
+                    if depth is None:
+                        raise ValueError("mode='emission_depth' requires NETCDF_data to have a depth dimension.")
+
+                    emission_depth_value = float(np.absolute(depth[i]))
+                    eps = 1e-4
+
+                    if (not np.isfinite(emission_depth_value)) or (emission_depth_value < 0.0):
+                        logger.debug(
+                            "Skipping point: invalid emission depth at lon %.6f, lat %.6f (value=%s)",
+                            loi, lai, emission_depth_value)
+                        continue
+
+                    if Bathimetry_seed is None:
+                        raise ValueError("Bathimetry_seed_data is required for mode='emission_depth'")
+
+                    if emission_depth_value > float(Bathimetry_seed) - eps:
+                        logger.info(
+                            "Skipping point: requested emission depth %.3f m is deeper than/equal to "
+                            "local water depth %.3f m at lon %.6f, lat %.6f",
+                            emission_depth_value, Bathimetry_seed, loi, lai
+                        )
+                        continue
+
+                v = values[i]
+
+                if mode == 'water_conc' and depth_layer_high is None:
+                    raise ValueError("depth_layer_high is None for water_conc; check bathymetry/depth handling.")
+
+                if mode == 'water_conc':
+                    pixel_volume = depth_layer_high * lon_grid_m * lat_grid_m_scalar
+                    mass_ug = float(v) * (pixel_volume * 1e3)
+
+                elif mode == 'sed_conc':
+                    sed_mixing_depth_local = sed_mixing_depth_global
+                    if active_sediment_layer_thickness_data is not None:
+                        try:
+                            sed_thickness_value = active_sediment_layer_thickness_data.sel(
+                                latitude=float(lai),
+                                longitude=float(loi),
+                                method='nearest'
+                            ).values
+                            sed_thickness_value = float(np.asarray(sed_thickness_value).squeeze())
+
+                            if np.isfinite(sed_thickness_value) and sed_thickness_value > 0.0:
+                                sed_mixing_depth_local = sed_thickness_value
+                            else:
+                                logger.debug(
+                                    "Invalid active_sediment_layer_thickness at lon=%s lat=%s "
+                                    "(value=%s), using global chemical:sediment:mixing_depth=%s",
+                                    loi, lai, sed_thickness_value, sed_mixing_depth_global)
+                        except Exception as e:
+                            self._record_seed_failure(
+                                fail_records=fail_records,
+                                stage="active_sediment_layer_thickness_lookup",
+                                point_index=i,
+                                exc=e,
+                                lon=loi,
+                                lat=lai,
+                                fallback=sed_mixing_depth_global,
                             )
-                        else:
-                            depth_layer_high = depth_max - depth_min
+
+                    pixel_volume = sed_mixing_depth_local * (lon_grid_m * lat_grid_m_scalar)
+                    pixel_sed_mass = pixel_volume * (1 - sed_porosity) * sed_density
+                    mass_ug = float(v) * pixel_sed_mass
+
+                elif mode in ('emission', 'emission_depth'):
+                    mass_ug = float(v) * 1e9
+
                 else:
-                    Bathimetry_datapoint = float(
-                        Bathimetry_data.sel(
-                            latitude=float(lai),
-                            longitude=float(loi),
-                            method='nearest'
-                        ).values
-                    )
-                    depth_layer_high = Bathimetry_datapoint
+                    raise ValueError("Incorrect mode")
 
-            if invalid_depth_layer:
-                continue
-
-            # Mass per datapoint
-            v = values[i]
-
-            if mode == 'water_conc' and depth_layer_high is None:
-                raise ValueError("depth_layer_high is None for water_conc; check bathymetry/depth handling.")
-
-            if mode == 'water_conc':
-                pixel_volume = depth_layer_high * lon_grid_m * lat_grid_m_scalar    # m3
-                mass_ug = float(v) * (pixel_volume * 1e3)                           # ug/L * L
-            elif mode == 'sed_conc':
-                pixel_volume = sed_mixing_depth * (lon_grid_m * lat_grid_m_scalar)  # m3
-                pixel_sed_mass = pixel_volume * (1 - sed_porosity) * sed_density    # kg dry
-                mass_ug = float(v) * pixel_sed_mass                                 # ug/kg * kg
-            elif mode == 'emission':
-                mass_ug = float(v) * 1e9                                            # kg -> ug
-            else:
-                raise ValueError("Incorrect mode")
-
-            if mass_ug <= 0:
-                continue
-
-            # Time per point
-            if getattr(t, "size", 1) == 1:
-                time = datetime.utcfromtimestamp(
-                    int((np.array(t - np.datetime64('1970-01-01T00:00:00'))) / np.timedelta64(1, 's'))
-                )
-            else:
-                time = datetime.utcfromtimestamp(
-                    int((np.array(t[i] - np.datetime64('1970-01-01T00:00:00'))) / np.timedelta64(1, 's'))
-                )
-
-            # Default species + moving flag
-            if mode == 'sed_conc':
-                default_specie = self.num_srev
-                moving_element = False
-            else:
-                default_specie = self.num_lmm
-                moving_element = True
-
-            if gen_mode == "mass":
-                number_full = self._get_number_of_elements(
-                    g_mode="mass",
-                    mass_element_ug=mass_element_ug,
-                    data_point=mass_ug
-                )
-                mass_residual = float(mass_ug - number_full * float(mass_element_ug))
-                seed_single_residual_only = (number_full == 0 and mass_residual > 0)
-
-                number = int(number_full)
-                mass_element_seed_ug = float(mass_element_ug)
-
-            elif gen_mode == "fixed":
-                number = self._get_number_of_elements(g_mode="fixed", n_elements=number_of_elements)
-                if number <= 0:
+                if mass_ug <= 0:
                     continue
-                number = int(number)
-                mass_element_seed_ug = float(mass_ug / number)
-                mass_residual = 0.0
-                seed_single_residual_only = False
-            else:
-                raise ValueError("Invalid gen_mode")
-
-            # Per-point seed location (pixel center arrays already filtered)
-            elem_lat = float(lat_array[i])
-            elem_lon = float(lon_array[i])
-            origin_marker_seed = origin_marker_np[i] if origin_marker == "single" else origin_marker
 
 
-            # Unified, vectorized per-datapoint seeding for boh sed_conc and water/emission.
-            # On sed_conc failure, fallback to per-element seeding for that datapoint only.
-            speciation_ctrl = (
+                if getattr(t, "size", 1) == 1:
+                    time = datetime.utcfromtimestamp(
+                        int((np.array(t - np.datetime64('1970-01-01T00:00:00'))) / np.timedelta64(1, 's')))
+                else:
+                    time = datetime.utcfromtimestamp(
+                        int((np.array(t[i] - np.datetime64('1970-01-01T00:00:00'))) / np.timedelta64(1, 's')))
+
+                speciation_ctrl = (
                 sed_speciation if mode == "sed_conc"
-                else (water_speciation if mode in ("water_conc", "emission") else None)
-            )
+                else (water_speciation if mode in ("water_conc", "emission", "emission_depth") else None))
 
-            # main batch
-            if number > 0:
-                z = self._get_z(
+                moving_element = False if mode == 'sed_conc' else True
+
+                needs_default_specie = (
+                    speciation_ctrl is None or
+                    (isinstance(speciation_ctrl, str) and speciation_ctrl in ("config", "default")))
+
+                if needs_default_specie:
+                    default_specie = self._default_seed_specie(mode)
+                else:
+                    default_specie = None
+
+                if gen_mode == "mass":
+                    number_full = self._get_number_of_elements(
+                        g_mode="mass",
+                        mass_element_ug=mass_element_ug,
+                        data_point=mass_ug)
+
+                    mass_residual = float(mass_ug - number_full * float(mass_element_ug))
+                    seed_single_residual_only = (number_full == 0 and mass_residual > 0)
+
+                    number = int(number_full)
+                    mass_element_seed_ug = float(mass_element_ug)
+
+                elif gen_mode == "fixed":
+                    number = self._get_number_of_elements(g_mode="fixed", n_elements=number_of_elements)
+                    if number <= 0:
+                        continue
+                    number = int(number)
+                    mass_element_seed_ug = float(mass_ug / number)
+                    mass_residual = 0.0
+                    seed_single_residual_only = False
+
+                else:
+                    raise ValueError("Invalid gen_mode")
+
+                elem_lat = float(lat_array[i])
+                elem_lon = float(lon_array[i])
+                origin_marker_seed = origin_marker_np[i] if origin_marker == "single" else origin_marker
+
+                local_particle_foc = _lookup_scalar_map_value(
+                    f_OC_particle_data,
+                    elem_lat, elem_lon,
+                    fOC_SPM_global,
+                    'f_OC_particle_data',
+                    time=time,
+                    point_index=i,
+                )
+                local_sediment_foc = _lookup_scalar_map_value(
+                    f_OC_sediment_data,
+                    elem_lat, elem_lon,
+                    fOC_sed_global,
+                    'f_OC_sediment_data',
+                    time=time,
+                    point_index=i,
+                )
+
+                # main batch
+                if number > 0:
+                    z = self._get_z(
                     mode=mode,
                     number=number,
                     NETCDF_data_dim_names=NETCDF_data_dim_names,
                     depth_min=depth_min,
                     depth_max=depth_max,
-                    depth_seed=Bathimetry_seed if mode == 'water_conc' else None,
-                    sed_seafloor_eps=sed_seafloor_eps,
-                )
+                    depth_seed=Bathimetry_seed if mode in ('water_conc', 'emission', 'emission_depth') else None,
+                    emission_placement=emission_placement,
+                    emission_seafloor_eps=emission_seafloor_eps,
+                    emission_depth_value=emission_depth_value if mode == 'emission_depth' else None,)
 
-                spec_arr = self.build_specie_array(
-                    n=number,
-                    speciation=speciation_ctrl,
-                    default_specie=default_specie
-                )
-
-                kwargs_seed = dict(
-                    lon=elem_lon, lat=elem_lat, radius=radius,
-                    number=number, time=time,
-                    mass=mass_element_seed_ug,
-                    mass_degraded=0, mass_volatilized=0,
-                    moving=moving_element,
-                    z=z,
-                    origin_marker=origin_marker_seed
-                )
-
-                # If spec_arr is None => omit specie for config-driven partitioning (water/emission only)
-                if spec_arr is not None:
-                    kwargs_seed["specie"] = spec_arr
-                elif mode == "sed_conc":
-                    raise RuntimeError("sed_speciation resolved to None, which is not supported for sediment seeding.")
-
-                try:
-                    self.seed_elements(**kwargs_seed)
-
-                except Exception:
-                    # Robust fallback for sediments only (coastal failures due to radius sampling)
-                    if mode == "sed_conc":
-                        spec_choices = kwargs_seed.get("specie", None)
-
-                        for k in range(number):
-                            try:
-                                kwargs_one = dict(kwargs_seed)
-                                kwargs_one["number"] = 1
-                                kwargs_one["mass"] = mass_element_seed_ug
-                                kwargs_one["specie"] = int(spec_choices[k]) if spec_choices is not None else int(default_specie)
-                                self.seed_elements(**kwargs_one)
-                            except Exception:
-                                fail_count += 1
-                                if len(fail_indices) < FAIL_KEEP:
-                                    fail_indices.append(i)
-                    else:
-                        fail_count += 1
-                        if len(fail_indices) < FAIL_KEEP:
-                            fail_indices.append(i)
-
-            # residual (mass mode only)
-            if gen_mode == "mass":
-                residual_to_seed = float(mass_ug) if seed_single_residual_only else float(mass_residual)
-                if residual_to_seed > 0:
-                    z_res = self._get_z(
-                        mode=mode,
-                        number=1,
-                        NETCDF_data_dim_names=NETCDF_data_dim_names,
-                        depth_min=depth_min,
-                        depth_max=depth_max,
-                        depth_seed=Bathimetry_seed if mode == 'water_conc' else None,
-                        sed_seafloor_eps=sed_seafloor_eps,
-                    )
-
-                    spec_res = self.build_specie_array(
-                        n=1,
+                    spec_arr = self.build_specie_array(
+                        n=number,
                         speciation=speciation_ctrl,
-                        default_specie=default_specie
-                    )
+                        default_specie=default_specie)
 
-                    kwargs_res = dict(
-                        lon=elem_lon, lat=elem_lat, radius=radius,
-                        number=1, time=time,
-                        mass=residual_to_seed,
-                        mass_degraded=0, mass_volatilized=0,
+                    foc_seed = _build_seed_foc_array(
+                        number, mode, local_particle_foc, local_sediment_foc)
+
+                    kwargs_seed = dict(
+                        lon=elem_lon,
+                        lat=elem_lat,
+                        radius=radius,
+                        number=number,
+                        time=time,
+                        mass=mass_element_seed_ug,
+                        mass_degraded=0,
+                        mass_volatilized=0,
                         moving=moving_element,
-                        z=z_res,
-                        origin_marker=origin_marker_seed
-                    )
+                        z=z,
+                        origin_marker=origin_marker_seed)
 
-                    if spec_res is not None:
-                        kwargs_res["specie"] = spec_res
+                    if spec_arr is not None:
+                        kwargs_seed["specie"] = spec_arr
                     elif mode == "sed_conc":
-                        raise RuntimeError("sed_speciation resolved to None, which is not supported for sediment seeding.")
+                        raise RuntimeError(
+                            "sed_speciation resolved to None, which is not supported for sediment seeding.")
+
+                    if foc_seed is not None:
+                        kwargs_seed["f_OC"] = foc_seed
 
                     try:
-                        self.seed_elements(**kwargs_res)
-                    except Exception:
-                        fail_count += 1
-                        if len(fail_indices) < FAIL_KEEP:
-                            fail_indices.append(i)
+                        self.seed_elements(**kwargs_seed)
 
-        if fail_count > 0:
+                    except Exception as e_batch:
+                        self._record_seed_failure(
+                            fail_records=fail_records,
+                            stage="main_batch_seed",
+                            point_index=i,
+                            exc=e_batch,
+                            mode=mode,
+                            lon=elem_lon,
+                            lat=elem_lat,
+                            time=_time_repr(time),
+                            mass_ug=float(mass_ug),
+                            number=int(number),
+                            seed_mass_ug=float(mass_element_seed_ug),
+                            origin_marker=origin_marker_seed,
+                            z_kind="string" if isinstance(z, str) else "array",
+                        )
+
+                        # Fallback for sediments only (coastal failures due to radius sampling)
+                        if mode == "sed_conc":
+                            spec_choices = kwargs_seed.get("specie", None)
+
+                            for k in range(number):
+                                try:
+                                    kwargs_one = dict(kwargs_seed)
+                                    kwargs_one["number"] = 1
+                                    kwargs_one["mass"] = mass_element_seed_ug
+
+                                    if spec_choices is not None:
+                                        kwargs_one["specie"] = int(np.asarray(spec_choices).ravel()[k])
+                                    else:
+                                        kwargs_one["specie"] = int(default_specie)
+
+                                    if isinstance(z, str):
+                                        kwargs_one["z"] = z
+                                    else:
+                                        kwargs_one["z"] = np.asarray(z, dtype=float).ravel()[k:k+1]
+
+                                    if "f_OC" in kwargs_seed:
+                                        kwargs_one["f_OC"] = np.asarray(
+                                            kwargs_seed["f_OC"], dtype=float).ravel()[k:k+1]
+
+                                    self.seed_elements(**kwargs_one)
+
+                                except Exception as e_single:
+                                    self._record_seed_failure(
+                                        fail_records=fail_records,
+                                        stage="sediment_single_fallback_seed",
+                                        point_index=i,
+                                        exc=e_single,
+                                        mode=mode,
+                                        lon=elem_lon,
+                                        lat=elem_lat,
+                                        time=_time_repr(time),
+                                        mass_ug=float(mass_ug),
+                                        element_offset=int(k),
+                                        seed_mass_ug=float(mass_element_seed_ug),
+                                        origin_marker=origin_marker_seed,
+                                    )
+
+                # residual (mass mode only)
+                if gen_mode == "mass":
+                    residual_to_seed = float(mass_ug) if seed_single_residual_only else float(mass_residual)
+
+                    if residual_to_seed > 0:
+                        z_res = self._get_z(
+                                    mode=mode,
+                                    number=1,
+                                    NETCDF_data_dim_names=NETCDF_data_dim_names,
+                                    depth_min=depth_min,
+                                    depth_max=depth_max,
+                                    depth_seed=Bathimetry_seed if mode in ('water_conc', 'emission', 'emission_depth') else None,
+                                    emission_placement=emission_placement,
+                                    emission_seafloor_eps=emission_seafloor_eps,
+                                    emission_depth_value=emission_depth_value if mode == 'emission_depth' else None,
+                                )
+
+                        spec_res = self.build_specie_array(
+                            n=1,
+                            speciation=speciation_ctrl,
+                            default_specie=default_specie)
+
+                        foc_res = _build_seed_foc_array(
+                            1, mode, local_particle_foc, local_sediment_foc)
+
+                        kwargs_res = dict(
+                            lon=elem_lon,
+                            lat=elem_lat,
+                            radius=radius,
+                            number=1,
+                            time=time,
+                            mass=residual_to_seed,
+                            mass_degraded=0,
+                            mass_volatilized=0,
+                            moving=moving_element,
+                            z=z_res,
+                            origin_marker=origin_marker_seed)
+
+                        if spec_res is not None:
+                            kwargs_res["specie"] = spec_res
+                        elif mode == "sed_conc":
+                            raise RuntimeError(
+                                "sed_speciation resolved to None, which is not supported for sediment seeding.")
+
+                        if foc_res is not None:
+                            kwargs_res["f_OC"] = foc_res
+
+                        try:
+                            self.seed_elements(**kwargs_res)
+
+                        except Exception as e_res:
+                            self._record_seed_failure(
+                                fail_records=fail_records,
+                                stage="residual_seed",
+                                point_index=i,
+                                exc=e_res,
+                                mode=mode,
+                                lon=elem_lon,
+                                lat=elem_lat,
+                                time=_time_repr(time),
+                                mass_ug=float(mass_ug),
+                                residual_mass_ug=float(residual_to_seed),
+                                origin_marker=origin_marker_seed,
+                                z_kind="string" if isinstance(z_res, str) else "array",
+                            )
+
+            except Exception as e_point:
+                self._record_seed_failure(
+                    fail_records=fail_records,
+                    stage="point_processing",
+                    point_index=i,
+                    exc=e_point,
+                    mode=mode,
+                    lon=loi,
+                    lat=lai,
+                    elem_lon=elem_lon,
+                    elem_lat=elem_lat,
+                    time=_time_repr(time),
+                    mass_ug=float(mass_ug) if mass_ug is not None and np.isfinite(mass_ug) else None,
+                    number=int(number) if number is not None else None,
+                    residual_mass_ug=float(residual_to_seed)
+                    if residual_to_seed is not None and np.isfinite(residual_to_seed) else None,
+                )
+                continue
+
+        self._last_seed_from_netcdf_failures = fail_records
+
+        if fail_records:
+            stage_counts = Counter(rec["stage"] for rec in fail_records)
             logger.warning(
-                f"Seeding completed with {fail_count} failed seed_elements calls "
-                f"(showing up to {len(fail_indices)} failing point indices: {fail_indices})."
-            )
+                "Seeding completed with %s recorded failures. Stage counts: %s",
+                len(fail_records), dict(stage_counts))
+
+            for rec in fail_records[:FAIL_PREVIEW]:
+                logger.warning("seed_from_NETCDF failure record: %s", rec)
+
+            if len(fail_records) > FAIL_PREVIEW:
+                logger.warning(
+                    "... %s additional seed_from_NETCDF failure records omitted from log preview",
+                    len(fail_records) - FAIL_PREVIEW)
         else:
             logger.info("Seeding completed with 0 failures.")
 
@@ -9033,870 +11268,6 @@ class ChemicalDrift(OceanDrift):
         regridded_dataset.to_netcdf(filename_regridded)
 
         print(f"Time elapsed (hr:min:sec): {dt.now()-start}")
-
-    ##### Helpers for calculate_water_sediment_conc
-    @staticmethod
-    def _rename_dimensions(DataArray):
-        '''
-        Rename latitude/longitude of xarray dataarray to standard format
-        '''
-        if "latitude" in DataArray.dims:
-            pass
-        else:
-            if "lat" in DataArray.dims:
-                DataArray = DataArray.rename({'lat': 'latitude'})
-            elif "y" in DataArray.dims:
-                DataArray = DataArray.rename({'y': 'latitude'})
-            else:
-                raise ValueError("Unknown spatial lat coordinates")
-
-        if "longitude" in DataArray.dims:
-            pass
-        else:
-            if "lon" in DataArray.dims:
-                DataArray = DataArray.rename({'lon': 'longitude'})
-            elif "x" in DataArray.dims:
-                DataArray = DataArray.rename({'x': 'longitude'})
-            else:
-                raise ValueError("Unknown spatial lon coordinates")
-
-        DataArray['latitude'] = DataArray['latitude'].assign_attrs(
-                                standard_name="latitude",
-                                long_name="latitude",
-                                units="degrees_north",
-                                axis="Y",
-                            )
-        DataArray['longitude'] = DataArray['longitude'].assign_attrs(
-                                standard_name="longitude",
-                                long_name="longitude",
-                                units="degrees_east",
-                                axis="X",
-                            )
-        return(DataArray)
-
-
-    def correct_conc_coordinates(self, DC_Conc_array, lon_coord, lat_coord, time_coord, time_name,
-                                 shift_time=False, Verbose = True):
-        """
-        Add longitude, latitude, and time coordinates to water and sediments concentration xarray DataArray
-
-        DC_Conc_array:     xarray DataArray for water or sediment concentration from sum of "species"
-                           from "write_netcdf_chemical_density_map" output
-        lon_coord:         np array of float64, with longitude of "write_netcdf_chemical_density_map" output
-        lat_coord:         np array of float64, with latitude of "write_netcdf_chemical_density_map" output
-        time_coord:        np array of datetime64[ns] with avg_time of "write_netcdf_chemical_density_map" output
-        shift_time:        boolean, if True shifts back time of 1 timestep so that the timestamp corresponds to
-                           the beginning of the first simulation timestep, not to the next one
-        Verbose:           boolean, if True prints progress messages
-        """
-        import numpy as np
-
-        if (("longitude" not in DC_Conc_array.dims) or ("latitude" not in DC_Conc_array.dims)):
-            DC_Conc_array = self._rename_dimensions(DC_Conc_array)
-            if all(x is not None for x in [lon_coord, lat_coord]):
-                DC_Conc_array['latitude'] = ('latitude', lat_coord)
-                DC_Conc_array['longitude'] = ('longitude', lon_coord)
-            else:
-                raise ValueError('lat/lon_coord not in DS')
-
-        # Add latitude and longitude to the concentration dataset
-        # Add attributes to latitude and longitude so that "remapcon" function from cdo can interpolate results
-        DC_Conc_array = self._rename_dimensions(DC_Conc_array)
-
-        if time_name is not None:
-            if (time_name in DC_Conc_array.dims) and shift_time == True:
-                # Shifts back time 1 timestep so that the timestamp corresponds to the beginning of the first simulation timestep, not the next one
-                time_correction = time_coord[1] - time_coord[0]
-                time_corrected = np.array(time_coord - time_correction)
-                DC_Conc_array[time_name] = (time_name, time_corrected)
-                if Verbose:
-                    print(f"Shifted {time_name} back of one timestep")
-
-        if ("avg_time" in DC_Conc_array.dims):
-            DC_Conc_array_corrected=DC_Conc_array.rename({'avg_time': 'time'})
-        else:
-            DC_Conc_array_corrected=DC_Conc_array
-
-        return DC_Conc_array_corrected
-
-    @staticmethod
-    def _species_dict(string, allowed=None):
-        """
-        Parse "...\\nspecie 0:LMM 1:Humic colloid 2:Particle reversible ..."
-        into {"LMM": 0, "Humic colloid": 1, ...}
-
-        If allowed is provided (list/set), names are validated against it.
-        """
-        import re
-        if allowed is None:
-             allowed = ["LMM", "LMMcation", "LMManion",
-                        "Colloid", "Humic colloid",
-                        "Polymer", "Particle reversible",
-                        "Particle slowly reversible",
-                        "Particle irreversible",
-                        "dissolved", "DOC", "SPM",
-                        "Sediment reversible",
-                        "Sediment slowly reversible",
-                     	"Sediment buried",
-                        "Sediment irreversible",
-                        "sediment", "buried"]
-
-        tail = string.split("\n", 1)[1] if "\n" in string else string
-        pairs = re.findall(r'(\d+)\s*:\s*(.*?)(?=\s+\d+\s*:|$)', tail)
-
-        out = {}
-        allowed_set = set(a.strip() for a in allowed) if allowed is not None else None
-
-        for idx_str, raw_name in pairs:
-            name = raw_name.strip()
-            if allowed_set is not None and name not in allowed_set:
-                raise ValueError("Unknown species name: {!r}".format(name))
-            out[name] = int(idx_str)
-
-        return out
-
-    @staticmethod
-    def _format_species_pairs(pairs):
-        # pairs is list of (name, idx)
-        return ", ".join(f'"{name}": {idx}' for name, idx in pairs)
-
-    @staticmethod
-    def _excluded_pairs(specie_ids_num, excluded_names, TOT_Conc=None):
-        """
-        Return [(name, idx), ...] for excluded species that are present in specie_ids_num
-        and (if TOT_Conc provided) whose idx exists in TOT_Conc.specie coords.
-        """
-        coord_vals = None
-        if TOT_Conc is not None and "specie" in TOT_Conc.coords:
-            coord_vals = set(TOT_Conc["specie"].values)
-
-        pairs = []
-        for name in excluded_names:
-            idx = specie_ids_num.get(name)
-            if idx is None:
-                continue
-            if coord_vals is not None and idx not in coord_vals:
-                continue
-            pairs.append((name, idx))
-        return pairs
-
-    @staticmethod
-    def _water_column_conc(TOT_Conc, specie_ids_num, water_species, Verbose=False):
-        """
-        Compute the concentration in the water column as sum of all species listed in `water_species` if:
-          - the name exists in `specie_ids_num` (name -> index), and
-          - that index is present in TOT_Conc.specie coordinate.
-        Returns an xarray DataArray (or None if nothing matched), and the list of included species.
-        """
-
-        out = None
-        included = []
-        specie_coord_vals = set(TOT_Conc["specie"].values) if "specie" in TOT_Conc.coords else None
-
-        for name in water_species:
-            idx = specie_ids_num.get(name)
-            if idx is None:
-                if Verbose:
-                    print(f"Skipping {name!r}: not found in specie_ids_num")
-                continue
-
-            if specie_coord_vals is not None and idx not in specie_coord_vals:
-                if Verbose:
-                    print(f"Skipping {name!r}: specie index {idx} not in TOT_Conc.specie")
-                continue
-
-            da = TOT_Conc.sel(specie=idx)
-            out = da if out is None else (out + da)
-            included.append((name, idx))
-
-        if out is None:
-            if Verbose:
-                print("No water species matched; returning None.")
-            return None, []
-        if Verbose:
-            print("Included water species:", ", ".join(name for name, _ in included))
-
-        # Drop singleton depth if present
-        if "depth" in out.dims and out.sizes.get("depth", 0) == 1:
-            out = out.isel(depth=0, drop=True)
-
-        return out, included
-
-    @staticmethod
-    def _sediment_conc_sum(TOT_Conc, specie_ids_num, sed_species, Verbose=False):
-        """
-        Compute a depth-collapsed sediment concentration as sum of all species listed in 'sed_species' if:
-          - the name exists in `specie_ids_num` (name -> index), and
-          - that index is present in TOT_Conc.specie coordinate.
-
-        If a 'depth' dimension exists, collapses the sediment output to a single layer by summing
-        over 'depth'.
-        Preserves the sediment landmask by applying NaNs from the original dataset at depth=0
-        (using mask = isnan(TOT_Conc), applied via xr.where on mask.isel(specie=0, depth=0)).
-        If no 'depth' dimension exists, the mask is applied using mask.isel(specie=0).
-
-        Returns an xarray DataArray (or None if nothing matched), and the list of included species.
-        """
-        import xarray as xr
-        import numpy as np
-
-        specie_coord_vals = set(TOT_Conc["specie"].values) if "specie" in TOT_Conc.coords else None
-
-        da_sed = None
-        included = []
-        for name in sed_species:
-            idx = specie_ids_num.get(name)
-            if idx is None:
-                if Verbose:
-                    print(f"Skipping {name!r}: not found in specie_ids_num")
-                continue
-
-            if specie_coord_vals is not None and idx not in specie_coord_vals:
-                if Verbose:
-                    print(f"Skipping {name!r}: specie index {idx} not in TOT_Conc.specie")
-                continue
-
-            part = TOT_Conc.sel(specie=idx)
-            da_sed = part if da_sed is None else (da_sed + part)
-            included.append((name, idx))
-
-        if da_sed is None:
-            if Verbose:
-                print("No sediment species matched; returning None.")
-            return None, []
-
-        if Verbose:
-            print("Included sediment species:", ", ".join(name for name, _ in included))
-
-        # keep landmask from sediments at depth=0
-        mask = np.isnan(TOT_Conc)
-
-        if "depth" in da_sed.dims:
-            if Verbose:
-                print("depth included in DA_Conc_array_sed -> summing over depth")
-
-            da_sed = da_sed.sum(dim="depth")
-            # landmask from depth=0
-            da_sed = xr.where(mask.isel(specie=0, depth=0), np.nan, da_sed)
-        else:
-            da_sed = xr.where(mask.isel(specie=0), np.nan, da_sed)
-
-        return da_sed, included
-
-    @staticmethod
-    def _sim_description_attr(src_da, Sim_description):
-        """
-        Resolve the simulation description string to attach to derived outputs.
-          1) If `src_da` (typically an xarray DataArray from the concentration file)
-             has attribute `sim_description`, return it.
-          2) Else, if `Sim_description` argument is provided, return it as `str(...)`.
-          3) Else return None.
-
-        src_da : xarray.DataArray, Source data array from which metadata may be inherited.
-        Sim_description : Any, User-provided simulation description.
-        """
-        if hasattr(src_da, "sim_description"):
-            return src_da.sim_description
-        if Sim_description is not None:
-            return str(Sim_description)
-        return None
-
-    @staticmethod
-    def _base_long_name(src_da, Chemical_name, variable):
-        """
-        Build a base `long_name` prefix for derived water/sediment products using the `long_name` attribute,
-        otherwise, it constructs a fallback base name using the provided chemical name and  and variable label: "<Chemical_name> <variable>".
-
-        src_da:         xarray.DataArray, Source data array from which metadata may be inherited.
-        Chemical_name:  str or None, Chemical name used in fallback naming.
-        variable:       str, variable name (e.g., "concentration", "density", ...).
-        """
-        if hasattr(src_da, "long_name"):
-            return src_da.long_name.split("specie")[0].strip()
-        return (Chemical_name or "") + f" {variable}"
-
-    @staticmethod
-    def _water_units(src_da, variable, default="ug/m3 (assumed default)"):
-        """
-        Extract the water-column unit string from a source variable's `units` attribute.
-
-        Intended for variables containing "concentration". For non-concentration variables
-        (e.g., "density"), this returns "1".
-
-        src_da:   xarray.DataArray, Source data array providing the `units` attribute.
-        variable: str, variable name used to decide if this is a concentration-like variable.
-        default:  str, returned if no valid water unit can be parsed.
-        """
-        import re
-        units_raw = getattr(src_da, "units", None)
-        if "concentration" not in variable:
-            return "1"
-        if not units_raw:
-            return default
-        unit_wat = units_raw.split("(", 1)[0].strip()
-        unit_wat = re.sub(r"\s*/\s*", "/", unit_wat)  # normalize spaces around '/'
-        unit_wat = unit_wat.strip()
-        return unit_wat or default
-
-    @staticmethod
-    def _sed_units(src_da, variable, default="ug/Kg d.w (assumed default)"):
-        """
-        Extract the sediment unit string from a source variable's `units` attribute.
-
-        Intended for variables containing "concentration". For non-concentration variables
-        (e.g., "density"), this returns "1".
-
-        src_da:   xarray.DataArray, Source data array providing the `units` attribute.
-        variable: str, variable name used to decide if this is a concentration-like variable.
-        default:  str, returned if no valid water unit can be parsed.
-        """
-        import re
-        units_raw = getattr(src_da, "units", None)
-        if "concentration" not in variable:
-            return "1"
-        if not units_raw:
-            return default
-        m = re.search(r"\(\s*sed\s*([^)]+)\)", units_raw, flags=re.IGNORECASE)
-        unit_sed = m.group(1).strip() if m else ""
-        unit_sed = re.sub(r"\s*/\s*", "/", unit_sed)  # remove spaces around '/', keep others
-        return unit_sed or default
-
-    @staticmethod
-    def _apply_common_attrs(out_da, Sim_description,
-                            projection_proj4=None, grid_mapping=None,
-                            longitude=None, latitude=None):
-        """
-        Apply common metadata attributes to a derived output DataArray.
-          - "sim_description" if provided,
-          - "projection" as a proj4 string if provided,
-          - "grid_mapping" if provided,
-          - "lon_resol" and "lat_resol" (in degrees) if coordinate vectors are provided
-            and contain at least two elements.
-
-        out_da:           xarray.DataArray, Output data array to be annotated.
-        Sim_description:  str, simulation description to store in attributes.
-        projection_proj4: str, projection definition (proj4 string) to store in attributes.
-        grid_mapping:     str, grid mapping attribute (often points to a CF grid mapping variable).
-        longitude:        array-like, longitude coordinate vector used to infer resolution.
-        latitude:         array-like, latitude coordinate vector used to infer resolution.
-        """
-        import numpy as np
-
-        if Sim_description is not None:
-            out_da.attrs["sim_description"] = (Sim_description)
-
-        if projection_proj4 is not None:
-            out_da.attrs["projection"] = str(projection_proj4)
-
-        if grid_mapping is not None:
-            out_da.attrs["grid_mapping"] = grid_mapping
-
-        if longitude is not None and len(longitude) > 1:
-            out_da.attrs["lon_resol"] = f"{np.around(abs(longitude[0]-longitude[1]), decimals=8)} degrees E"
-        if latitude is not None and len(latitude) > 1:
-            out_da.attrs["lat_resol"] = f"{np.around(abs(latitude[0]-latitude[1]), decimals=8)} degrees N"
-
-        return out_da
-
-    def specie_ids_num_from_ds(self, DS, TOT_Conc=None):
-        """
-        Build a `{species_name: species_index}` mapping from an xarray Dataset.
-
-        If present, `specie_name` is interpreted as the canonical list of species names
-        aligned with the `specie` axis of the concentration variables. This function
-        supports common NetCDF encodings for strings:
-          - 2D char arrays (specie, strlen) stored as bytes ('S1'), unicode ('U1'),
-            or integer ASCII codes (uint8/int).
-          - 1D arrays of strings/bytes.
-          - Masked arrays (filled safely).
-
-        If `specie_name` is not present, and `TOT_Conc` has attribute `long_name`, the
-        mapping is parsed from the species listing embedded in that string using
-        `self._species_dict(...)`. The keys are normalized to clean strings as above.
-
-        DS : xarray.Dataset, dataset containing concentration variables and, ideally, a `specie_name` variable.
-        TOT_Conc : xarray.DataArray, source variable (e.g., DS["concentration"]) used for fallback parsing from `long_name`.
-        """
-        import numpy as np
-
-        def _clean_name(x) -> str:
-            """Return a clean python str name (no b'' wrappers, no nulls, trimmed)."""
-            # bytes -> decode
-            if isinstance(x, (bytes, bytearray, np.bytes_)):
-                s = bytes(x).decode("utf-8", errors="ignore")
-            else:
-                s = str(x)
-            s = s.replace("\x00", "").strip()
-            # unwrap string representation of bytes:  b'NAME   '  or  b"NAME"
-            if (s.startswith("b'") and s.endswith("'")) or (s.startswith('b"') and s.endswith('"')):
-                s = s[2:-1].replace("\x00", "").strip()
-            return s
-
-        if "specie_name" in DS.variables:
-            a = np.asarray(DS["specie_name"].values)
-            # If masked, fill with 0
-            if np.ma.isMaskedArray(a):
-                a = a.filled(0)
-
-            names = []
-            # Case 1: 1D strings/bytes
-            if a.ndim == 1:
-                if a.dtype.kind == "S":
-                    # numpy bytes scalars -> decode properly
-                    names = [_clean_name(s) for s in a.tolist()]
-                elif a.dtype.kind == "U":
-                    names = [_clean_name(s) for s in a.tolist()]
-                else:
-                    # 1D of numbers/objects
-                    names = [_clean_name(x) for x in a.tolist()]
-            # Case 2: (specie, strlen) char array
-            elif a.ndim == 2:
-                if a.dtype.kind == "S":
-                    # bytes per char
-                    for row in a:
-                        s = row.tobytes().decode("utf-8", errors="ignore")
-                        names.append(_clean_name(s))
-                elif a.dtype.kind == "U":
-                    for row in a:
-                        s = "".join(row)
-                        names.append(_clean_name(s))
-                elif a.dtype.kind in ("i", "u"):
-                    # integer ASCII codes
-                    a8 = a.astype(np.uint8, copy=False)
-                    for row in a8:
-                        s = bytes(row.tolist()).decode("utf-8", errors="ignore")
-                        names.append(_clean_name(s))
-                else:
-                    # object array rows (bytes/ints/str mix)
-                    for row in a:
-                        if len(row) == 0:
-                            names.append("")
-                            continue
-                        first = row[0]
-                        if isinstance(first, (bytes, np.bytes_)):
-                            b = b"".join([x if isinstance(x, (bytes, np.bytes_)) else bytes([int(x)]) for x in row])
-                            names.append(_clean_name(b))
-                        elif isinstance(first, (int, np.integer)):
-                            b = bytes([int(x) & 0xFF for x in row])
-                            names.append(_clean_name(b))
-                        else:
-                            names.append(_clean_name("".join([str(x) for x in row])))
-            else:
-                # Unexpected shape
-                names = [_clean_name(x) for x in a.reshape(-1).tolist()]
-
-            # Drop empties and keep order
-            names = [n for n in names if n]
-            return {name: int(i) for i, name in enumerate(names)}
-
-        # Fallback: parse long_name
-        if TOT_Conc is not None and hasattr(TOT_Conc, "long_name"):
-            # ensure keys are clean strings too
-            raw = self._species_dict(TOT_Conc.long_name)
-            return {_clean_name(k): int(v) for k, v in raw.items()}
-
-        raise ValueError("Cannot build species mapping: missing specie_name and long_name.")
-
-    def fallback_specie_ids_num_from_flags(self):
-        """
-        Build fallback specie_ids_num using ONLY:
-          - transfer_setup = self.get_config('chemical:transfer_setup')
-          - slowly_fraction flag (chemical:slowly_fraction)
-          - irreversible_fraction flag (chemical:irreversible_fraction)
-
-        Returns:
-            dict: {species_name: idx} matching the canonical build order
-        """
-        transfer_setup = self.get_config("chemical:transfer_setup")
-        slowly = bool(self.get_config("chemical:slowly_fraction"))
-        irrev  = bool(self.get_config("chemical:irreversible_fraction"))
-
-        # Canonical order (must match self.name_species builder)
-        order = [
-            "LMM", "LMMcation", "LMManion",
-            "Colloid", "Humic colloid",
-            "Polymer",
-            "Particle reversible", "Particle slowly reversible", "Particle irreversible",
-            "Sediment reversible", "Sediment slowly reversible", "Sediment buried",
-            "Sediment irreversible",
-        ]
-        # Base sets per transfer_setup (minimum guaranteed pools)
-        base = {
-            "metals": {
-                "LMM",
-                "Particle reversible",
-                "Sediment reversible",
-                "Sediment buried",
-            },
-            "organics": {
-                "LMM",
-                "Humic colloid",
-                "Particle reversible",
-                "Sediment reversible",
-                "Sediment buried",
-            },
-            "137Cs_rev": {
-                "LMM",
-                "Particle reversible",
-                "Sediment reversible",
-            },
-            "Sandnesfj_Al": {
-                "LMMcation",
-                "LMManion",
-                "Humic colloid",
-                "Polymer",
-                "Particle reversible",
-                "Sediment reversible",
-            },
-        }
-
-        if transfer_setup == "custom":
-            raise ValueError("Cannot build fallback for transfer_setup='custom' from flags alone.")
-        if transfer_setup not in base:
-            raise ValueError(f"Unknown transfer_setup: {transfer_setup!r}")
-
-        species = set(base[transfer_setup])
-        # Slowly pools exist only for metals/organics setups and require BOTH particle+sediment slow
-        if slowly and transfer_setup in ("metals", "organics"):
-            species.add("Particle slowly reversible")
-            species.add("Sediment slowly reversible")
-        # Irreversible pools require both particle+sediment irreversible
-        if irrev and transfer_setup in ("metals", "organics"):
-            species.add("Particle irreversible")
-            species.add("Sediment irreversible")
-
-        # Build list+mapping in canonical order
-        name_species_out = [s for s in order if s in species]
-        specie_ids_num = {name: i for i, name in enumerate(name_species_out)}
-        return specie_ids_num
-
-
-    def calculate_water_sediment_conc(self,
-                                   File_Path,
-                                   File_Name,
-                                   File_Path_out,
-                                   Chemical_name,
-                                   Origin_marker_name,
-                                   File_Name_out = None,
-                                   variables = None,
-                                   Concentration_file = None,
-                                   Shift_time = False,
-                                   Excluded_species = None,
-                                   Sim_description=None,
-                                   Save_files = True,
-                                   Return_datasets = True,
-                                   Verbose = True):
-        """
-        Sum concentration by species into water and sediment concentration arrays.
-        DataSets of (topo, DataArray) can be returned or saved as netCDF files.
-        Results can be used as inputs by "seed_from_NETCDF" function.
-
-        Concentration_file:    "write_netcdf_chemical_density_map" output if already loaded (original or after regrid_conc)
-        File_Path:             string, path of "write_netcdf_chemical_density_map" output
-        File_Name:             string, name of "write_netcdf_chemical_density_map" output
-        File_Name_out:         string, suffix of wat/sed output files
-        File_Path_out:         string, path where created concentration files will be saved, must end with "/"
-        Chemical_name:         string, name of modelled chemical
-        Origin_marker_name:    string, name of source indicated by "origin_marker" parameter
-        variables:             list, list of variables' name to be considered
-        Shift_time:            boolean, if True shifts back time of 1 timestep so that the timestamp corresponds to
-                               the beginning of the first simulation timestep, not to the next one
-        Excluded_species:      dict, {"water": [...], "sed":[...]} lists of names of species to be excluded from water column or sediment concentration
-        Sim_description:       string, description of simulation to be included in netcdf attributes
-        Save_files:            boolean, if True saves outputs to disk, otherwise return xr.Datasets
-        Return_datasets:       boolean, if True return xr.Datasets
-        Verbose:               boolean, if True prints progress messages
-        """
-        from datetime import datetime
-        import numpy as np
-        import xarray as xr
-        import time
-
-        water_species = ["LMM", "LMMcation", "LMManion",
-                        "Colloid", "Humic colloid",
-                        "Polymer", "Particle reversible",
-                        "Particle slowly reversible",
-                        "Particle irreversible"]
-        sed_species = ["Sediment reversible",
-                       "Sediment slowly reversible",
-                       "Sediment buried",
-                       "Sediment irreversible"]
-
-        # Exclude specified species from water/sediment concentration maps
-        if Excluded_species is None:
-            Excluded_species = {"water":[None], "sed":[None]}
-
-        excluded_water = [x for x in Excluded_species.get("water", []) if x is not None]
-        excluded_set_w = set(excluded_water)
-        removed_water = [sp for sp in water_species if sp in excluded_set_w]
-        water_species = [sp for sp in water_species if sp not in excluded_set_w]
-
-        excluded_sed = [x for x in Excluded_species.get("sed", []) if x is not None]
-        excluded_set_s = set(excluded_sed)
-        removed_sed = [sp for sp in sed_species if sp in excluded_set_s]
-        sed_species = [sp for sp in sed_species if sp not in excluded_set_s]
-
-        if Verbose and removed_water:
-            print("Excluded water species:", ", ".join(removed_water))
-
-        if Verbose and removed_sed:
-            print("Excluded sediment species:", ", ".join(removed_sed))
-
-        # timing helpers (elapsed since start of this call)
-        _t0 = time.perf_counter()
-        _start_wall = datetime.now()
-
-        def log(msg: str) -> None:
-            elapsed_s = time.perf_counter() - _t0
-            # hh:mm:ss
-            h, rem = divmod(int(elapsed_s), 3600)
-            m, s = divmod(rem, 60)
-            print(f"{msg} | elapsed {h:02d}:{m:02d}:{s:02d} (started {_start_wall.strftime('%Y-%m-%d %H:%M:%S')})")
-
-
-        if Concentration_file is None and File_Path is not None and File_Name is not None:
-            log("Loading Concentration_file from File_Path")
-            DS = xr.open_dataset(File_Path + File_Name)
-        elif Concentration_file is not None:
-            DS = Concentration_file
-        else:
-            raise ValueError("Incorrect file or file/path not specified")
-
-        # If neither saving nor returning was requested
-        if not Save_files and not Return_datasets:
-            raise ValueError("Nothing to do: set Save_files=True and/or Return_datasets=True.")
-
-        if not any([var in DS.data_vars for var in  ['concentration', 'concentration_avg',
-                       'concentration_smooth', 'concentration_smooth_avg',
-                       'density', 'density_avg']]):
-            raise ValueError("No valid variables")
-
-        if "time" in DS.dims:
-            time_name = "time"
-        else:
-            time_name = "avg_time"
-
-        variable_ls = ['concentration', 'concentration_avg',
-                       'concentration_smooth', 'concentration_smooth_avg',
-                       'density', 'density_avg']
-
-        if variables is not None:
-            variable_ls = variables
-
-        time_array = np.array(DS[time_name])
-
-        if ('topo' in DS.data_vars):
-            topo = DS.topo
-
-        sum_vars_wat_dict = {}
-        sum_vars_sed_dict = {}
-        first_var = True
-        for variable in variable_ls:
-            # variable = variable_ls[1]
-            if (variable in DS.data_vars) and (variable != 'topo'):
-                if Verbose:
-                    print(variable)
-                var_wat_name = variable + "_wat"
-                var_sed_name = variable + "_sed"
-
-                TOT_Conc = DS[variable]
-
-                try:
-                    specie_ids_num = self.specie_ids_num_from_ds(DS, TOT_Conc)
-                except:
-                    print("Used default specie_ids_num dictionary")
-                    specie_ids_num = self.fallback_specie_ids_num_from_flags()
-
-                # keep only names that exist in the current file mapping
-                legacy_alias = {
-                    "dissolved": "LMM",
-                    "DOC": "Humic colloid",
-                    "SPM": "Particle reversible",
-                    "sediment": "Sediment reversible",
-                    "buried": "Sediment buried",
-                }
-
-                def _alias_and_filter(species_list, specie_ids_num, legacy_alias):
-                    out = []
-                    seen = set()
-                    for s in species_list:
-                        s2 = legacy_alias.get(s, s)
-                        if s2 in specie_ids_num and s2 not in seen:
-                            out.append(s2)
-                            seen.add(s2)
-                    return out
-
-                water_species_eff = _alias_and_filter(water_species, specie_ids_num, legacy_alias)
-                sed_species_eff   = _alias_and_filter(sed_species,   specie_ids_num, legacy_alias)
-
-                if Verbose:
-                    log("Running sum of water concentration")
-
-                DA_Conc_array_wat, included_wat = self._water_column_conc(
-                    TOT_Conc=TOT_Conc,
-                    specie_ids_num=specie_ids_num,
-                    water_species=water_species_eff,
-                    Verbose=Verbose
-                    )
-
-                if Verbose:
-                    log("Running sediment concentration")
-
-                DA_Conc_array_sed, included_sed = self._sediment_conc_sum(
-                    TOT_Conc=TOT_Conc,
-                    specie_ids_num=specie_ids_num,
-                    sed_species=sed_species_eff,
-                    Verbose=Verbose
-                    )
-
-                if DA_Conc_array_wat is None or DA_Conc_array_sed is None:
-                    parts = []
-                    if DA_Conc_array_wat is None:
-                        parts.append(f"DA_Conc_array_wat (water_species={water_species})")
-                    if DA_Conc_array_sed is None:
-                        parts.append(f"DA_Conc_array_sed (sed_species={sed_species})")
-
-                    raise ValueError(
-                        "Missing: " + " | ".join(parts) +
-                        ". Reason: no correspondence between TOT_Conc.specie and specie_ids_num or all species present were excluded."
-                    )
-
-                # Included attributes
-                DA_Conc_array_wat.attrs["species_included"] = self._format_species_pairs(included_wat)
-                DA_Conc_array_sed.attrs["species_included"] = self._format_species_pairs(included_sed)
-
-                # Excluded attributes (only those that exist in specie_ids_num / file)
-                excluded_water_names = [x for x in Excluded_species.get("water", []) if x is not None]
-                excluded_sed_names   = [x for x in Excluded_species.get("sed", []) if x is not None]
-
-                excluded_wat_pairs = self._excluded_pairs(specie_ids_num, excluded_water_names, TOT_Conc=TOT_Conc)
-                excluded_sed_pairs = self._excluded_pairs(specie_ids_num, excluded_sed_names,   TOT_Conc=TOT_Conc)
-
-                DA_Conc_array_wat.attrs["species_excluded"] = self._format_species_pairs(excluded_wat_pairs)
-                DA_Conc_array_sed.attrs["species_excluded"] = self._format_species_pairs(excluded_sed_pairs)
-
-                DA_Conc_array_wat.attrs.pop("coordinates", None)
-
-                if Verbose:
-                    log("Changing coordinates")
-
-                if "latitude" not in DS[variable].dims:
-                    if "lat" in DS.data_vars:
-                        lat = np.array(DS.lat[:,1])
-                        latitude = np.array(DS.lat[:,1])
-                        if Verbose:
-                            print("lat data_var used")
-                    else:
-                        raise ValueError("Latitude information not present in DS")
-                else:
-                    latitude = np.array(DS[variable].latitude)
-                    lat = None
-
-                if "longitude" not in DS[variable].dims:
-                    if "lon" in DS.data_vars:
-                        lon = np.array(DS.lon[1,:])
-                        longitude = np.array(DS.lon[1,:])
-                        if Verbose:
-                            print("lon data_var used")
-                    else:
-                        raise ValueError("Incorrect dimension lon/x")
-                else:
-                    longitude = np.array(DS[variable].longitude)
-                    lon = None
-
-                DA_Conc_array_wat = self.correct_conc_coordinates(DC_Conc_array = DA_Conc_array_wat,
-                                                              lon_coord = lon,
-                                                              lat_coord = lat,
-                                                              time_coord = time_array,
-                                                              shift_time = Shift_time,
-                                                              time_name = time_name)
-
-                DA_Conc_array_sed = self.correct_conc_coordinates(DC_Conc_array = DA_Conc_array_sed,
-                                                              lon_coord = lon,
-                                                              lat_coord = lat,
-                                                              time_coord = time_array,
-                                                              shift_time = Shift_time,
-                                                              time_name = time_name)
-                if ('topo' in DS.data_vars):
-                    if first_var == True:
-                        DC_topo = self.correct_conc_coordinates(DC_Conc_array = topo,
-                                                                      lon_coord = lon,
-                                                                      lat_coord = lat,
-                                                                      time_coord = time_array,
-                                                                      shift_time = Shift_time,
-                                                                      time_name = time_name)
-                        first_var = False
-                        sum_vars_wat_dict['topo'] = DC_topo
-                        sum_vars_sed_dict['topo'] = DC_topo
-
-                src_da = TOT_Conc
-                # sim_description precedence (src_da overrides Sim_description)
-                sim_desc = self._sim_description_attr(src_da, Sim_description)
-                base_ln = self._base_long_name(src_da, Chemical_name, variable)
-
-                projection_proj4 = getattr(getattr(DS, "projection", None), "proj4", None)
-                projection_proj4 = str(projection_proj4) if projection_proj4 is not None else None
-
-                grid_mapping = getattr(src_da, "grid_mapping", None)
-
-                DA_Conc_array_wat.name = var_wat_name
-                DA_Conc_array_wat.attrs["long_name"] = base_ln + " in water"
-                DA_Conc_array_wat.attrs["units"] = self._water_units(src_da, variable)
-
-                DA_Conc_array_wat = self._apply_common_attrs(
-                    out_da=DA_Conc_array_wat,
-                    Sim_description=sim_desc,
-                    projection_proj4=projection_proj4,
-                    grid_mapping=grid_mapping,
-                    longitude=longitude,
-                    latitude=latitude,
-                )
-
-                sum_vars_wat_dict[var_wat_name] = DA_Conc_array_wat
-
-
-                DA_Conc_array_sed.name = var_sed_name
-                DA_Conc_array_sed.attrs["long_name"] = base_ln + " in sediments"
-                DA_Conc_array_sed.attrs["units"] = self._sed_units(src_da, variable)
-
-                DA_Conc_array_sed = self._apply_common_attrs(
-                    out_da=DA_Conc_array_sed,
-                    Sim_description=sim_desc,
-                    projection_proj4=projection_proj4,
-                    grid_mapping=grid_mapping,
-                    longitude=longitude,
-                    latitude=latitude,
-                )
-
-                sum_vars_sed_dict[var_sed_name] = DA_Conc_array_sed
-
-        DS_wat_fin = xr.Dataset(sum_vars_wat_dict)
-        DS_sed_fin = xr.Dataset(sum_vars_sed_dict)
-
-        if File_Name_out is not None:
-            wat_file = File_Path_out + "wat_" + File_Name_out
-            sed_file = File_Path_out + "sed_" + File_Name_out
-            if not wat_file.endswith(".nc"):
-                wat_file = wat_file + ".nc"
-            if not sed_file.endswith(".nc"):
-                sed_file = sed_file + ".nc"
-        else:
-            wat_file = File_Path_out + "water_conc_" + (Chemical_name or "") + "_" + (Origin_marker_name or "") + ".nc"
-            sed_file = File_Path_out + "sediments_conc_" + (Chemical_name or "") + "_" + (Origin_marker_name or "")+ ".nc"
-
-        if Save_files:
-            if Verbose:
-                log("Saving water concentration file")
-            DS_wat_fin.to_netcdf(wat_file)
-            if Verbose:
-                log("Saving sediment concentration file")
-            DS_sed_fin.to_netcdf(sed_file)
-
-        if Return_datasets:
-            if Verbose:
-                log("Returning water and sediment DS")
-            return DS_wat_fin, DS_sed_fin
-
 
     @staticmethod
     def _save_masked_DataArray(DataArray_masked,
@@ -10164,7 +11535,7 @@ class ChemicalDrift(OceanDrift):
         else:
             raise ValueError("DataArray or file_path/file_name not specified")
 
-
+    ##### Helpers for create_images
     @staticmethod
     def _simmetrical_colormap(cmap):
         '''
@@ -13834,9 +15205,7 @@ class ChemicalDrift(OceanDrift):
                         kind="line",
                         cols=[col],
                         ylabel=ylabel,
-                        legend={"max_cols": 1},
-                    )
-                )
+                        legend={"max_cols": 1},))
 
             # force following sanity section to start on a fresh row too
             if row_mode == "double" and (len(panels) % 2 == 1):
@@ -13875,8 +15244,7 @@ class ChemicalDrift(OceanDrift):
             "degraded water", "degraded sediment", "volatilized",
             "biodegraded water", "biodegraded sediment",
             "hydrolyzed water", "hydrolyzed sediment",
-            "photodegraded",
-        ]
+            "photodegraded",]
 
         color_map = self._build_explicit_color_map(all_labels)
 
@@ -13913,8 +15281,7 @@ class ChemicalDrift(OceanDrift):
                 handlelength=2.2,
                 handletextpad=0.85,
                 columnspacing=1.2,
-                borderaxespad=0.0,
-            )
+                borderaxespad=0.0,)
 
             # Thicken legend line samples
             for h in leg.get_lines():
@@ -13934,8 +15301,7 @@ class ChemicalDrift(OceanDrift):
 
             is_percent_axis = (
                 kind in ("stack_share", "stack100", "stack_to_total")
-                or any("[%]" in c for c in cols)
-            )
+                or any("[%]" in c for c in cols))
 
             if is_percent_axis:
                 ax.set_ylabel("Percentage [%]", fontsize=fs["ylabel"], labelpad=2)
@@ -13973,8 +15339,7 @@ class ChemicalDrift(OceanDrift):
                         x, dfc[col],
                         label=pretty,
                         color=color_map.get(key, None),
-                        linewidth=1.8
-                    )
+                        linewidth=1.8)
 
             elif kind == "stack100":
                 keep = [col for col in cols if col in dfc.columns and not self._is_all_zero(dfc[col], atol=1e-12)]
@@ -14008,8 +15373,7 @@ class ChemicalDrift(OceanDrift):
                             ax.bar(
                                 xpos, np.full(len(xpos), 100.0),
                                 width=width, color="none",
-                                edgecolor="0.85", linewidth=0.6, zorder=0
-                            )
+                                edgecolor="0.85", linewidth=0.6, zorder=0)
 
                         bottom = np.zeros(len(xpos), dtype=float)
                         for lab, colr, j in zip(labels, colors, range(len(labels))):
@@ -14027,8 +15391,7 @@ class ChemicalDrift(OceanDrift):
                             ax.set_xticks(xpos)
                             ax.set_xticklabels(
                                 [f"{v:g}" if isinstance(v, (float, np.floating)) else str(v) for v in x],
-                                rotation=0
-                            )
+                                rotation=0)
                         else:
                             step = max(1, n // 12)
                             idx = np.arange(0, n, step)
@@ -14036,8 +15399,7 @@ class ChemicalDrift(OceanDrift):
                             xvals = x.iloc[idx] if hasattr(x, "iloc") else [x[i] for i in idx]
                             ax.set_xticklabels(
                                 [f"{v:g}" if isinstance(v, (float, np.floating)) else str(v) for v in xvals],
-                                rotation=0
-                            )
+                                rotation=0)
                     else:
                         ax.stackplot(x, shares.T, labels=labels, colors=colors)
                         ax.set_ylim(0, 100)
@@ -14078,8 +15440,7 @@ class ChemicalDrift(OceanDrift):
                             xpos, totals,
                             width=width, color="none",
                             edgecolor="0.85", linewidth=0.6,
-                            zorder=0, align="center"
-                        )
+                            zorder=0, align="center")
 
                     bottom = np.zeros(len(xpos), dtype=float)
                     for lab, colr, j in zip(labels, colors, range(len(labels))):
@@ -14096,8 +15457,7 @@ class ChemicalDrift(OceanDrift):
                         ax.set_xticks(xpos)
                         ax.set_xticklabels(
                             [f"{v:g}" if isinstance(v, (float, np.floating)) else str(v) for v in x],
-                            rotation=0
-                        )
+                            rotation=0)
                     else:
                         step = max(1, n // 12)
                         idx = np.arange(0, n, step)
@@ -14105,8 +15465,7 @@ class ChemicalDrift(OceanDrift):
                         xvals = x.iloc[idx] if hasattr(x, "iloc") else [x[i] for i in idx]
                         ax.set_xticklabels(
                             [f"{v:g}" if isinstance(v, (float, np.floating)) else str(v) for v in xvals],
-                            rotation=0
-                        )
+                            rotation=0)
 
             elif kind == "bar_elim_summary":
                 if len(dfc) == 0:
@@ -14187,14 +15546,12 @@ class ChemicalDrift(OceanDrift):
                     mcol("mass_degraded_ts"),
                     mcol("mass_photodegraded_ts"),
                     mcol("mass_biodegraded_ts"),
-                    mcol("mass_hydrolyzed_ts")
-                ]
+                    mcol("mass_hydrolyzed_ts")]
                 if all(n in dfc.columns for n in needed):
                     sum_path = (
                         dfc[mcol("mass_photodegraded_ts")] +
                         dfc[mcol("mass_biodegraded_ts")] +
-                        dfc[mcol("mass_hydrolyzed_ts")]
-                    )
+                        dfc[mcol("mass_hydrolyzed_ts")])
                     key1 = self._strip_units(mcol("mass_degraded_ts"))
                     ax.plot(x, dfc[mcol("mass_degraded_ts")],
                             label=self._pretty_label(key1),
@@ -14207,14 +15564,12 @@ class ChemicalDrift(OceanDrift):
                     mcol("mass_degraded_cumulative"),
                     mcol("mass_photodegraded_cumulative"),
                     mcol("mass_biodegraded_cumulative"),
-                    mcol("mass_hydrolyzed_cumulative")
-                ]
+                    mcol("mass_hydrolyzed_cumulative")]
                 if all(n in dfc.columns for n in needed):
                     sum_path = (
                         dfc[mcol("mass_photodegraded_cumulative")] +
                         dfc[mcol("mass_biodegraded_cumulative")] +
-                        dfc[mcol("mass_hydrolyzed_cumulative")]
-                    )
+                        dfc[mcol("mass_hydrolyzed_cumulative")])
                     key1 = self._strip_units(mcol("mass_degraded_cumulative"))
                     ax.plot(x, dfc[mcol("mass_degraded_cumulative")],
                             label=self._pretty_label(key1),
@@ -14251,8 +15606,7 @@ class ChemicalDrift(OceanDrift):
             title_txt = None
             if fig_title or page_title:
                 title_txt = page_title if page_title and not fig_title else (
-                    f"{fig_title} - {page_title}" if page_title else fig_title
-                )
+                    f"{fig_title} - {page_title}" if page_title else fig_title)
                 title_txt = f"{title_txt}{period_suffix}"
                 fig.suptitle(title_txt, fontsize=fs["figure_title"])
 
@@ -14266,8 +15620,7 @@ class ChemicalDrift(OceanDrift):
                 right=0.95 if row_mode == "double" else 0.97,
                 top=top, bottom=0.06,
                 wspace=0.34 if row_mode == "double" else 0.0,
-                hspace=0.24
-            )
+                hspace=0.24)
 
             blank = dict(kind="blank", cols=[], title="", legend={"max_cols": 1})
 
@@ -14302,8 +15655,7 @@ class ChemicalDrift(OceanDrift):
                     sub = outer[rr, cc].subgridspec(
                         nrows=3, ncols=1,
                         height_ratios=hr,
-                        hspace=0.03
-                    )
+                        hspace=0.03)
 
                     ax = fig.add_subplot(sub[0])
                     ax_xlab = fig.add_subplot(sub[1])
@@ -14325,8 +15677,7 @@ class ChemicalDrift(OceanDrift):
                             ax, ax_leg,
                             max_cols=legend_max_cols if row_mode == "double" else max(legend_max_cols, 3),
                             fontsize=fs["legend"],
-                            legend_lw=3.0
-                        )
+                            legend_lw=3.0)
 
             return fig, ax_plots
 
@@ -14410,8 +15761,7 @@ class ChemicalDrift(OceanDrift):
                 right=0.95 if row_mode == "double" else 0.97,
                 top=top, bottom=0.06,
                 wspace=0.34 if row_mode == "double" else 0.0,
-                hspace=0.24
-            )
+                hspace=0.24)
 
             ax_plots = np.empty((nrows_local, ncols_local), dtype=object)
             blank = dict(kind="blank", cols=[], title="", legend={"max_cols": 1})
@@ -14441,8 +15791,7 @@ class ChemicalDrift(OceanDrift):
                     sub = outer[rr, cc].subgridspec(
                         nrows=3, ncols=1,
                         height_ratios=hr,
-                        hspace=0.03
-                    )
+                        hspace=0.03)
 
                     ax = fig.add_subplot(sub[0])
                     ax_xlab = fig.add_subplot(sub[1])
@@ -14464,8 +15813,7 @@ class ChemicalDrift(OceanDrift):
                             ax, ax_leg,
                             max_cols=legend_max_cols if row_mode == "double" else max(legend_max_cols, 3),
                             fontsize=fs["legend"],
-                            legend_lw=3.0
-                        )
+                            legend_lw=3.0)
 
             return fig, ax_plots, dfc
 
@@ -14726,8 +16074,7 @@ class ChemicalDrift(OceanDrift):
             "mass_unit": mass_unit,
             "n_rows": len(df),
             "mass": {},
-            "perc": {},
-        }
+            "perc": {},}
 
         if denom_col not in df.columns or len(df) == 0:
             # nothing to check
@@ -14753,8 +16100,7 @@ class ChemicalDrift(OceanDrift):
                 .apply(pd.to_numeric, errors="coerce")
                 .fillna(0.0)
                 .sum(axis=1)
-                .to_numpy(dtype=float)
-            )
+                .to_numpy(dtype=float))
         else:
             mass_sp_sum = np.full(len(df), np.nan, dtype=float)
 
@@ -14772,8 +16118,7 @@ class ChemicalDrift(OceanDrift):
             "kept_mass_cols": kept_mass_cols,
             "n_fail": int((~mass_ok).sum()),
             "max_abs_residual": float(np.nanmax(abs_res)) if np.isfinite(abs_res).any() else np.nan,
-            "max_rel_residual_pct": float(np.nanmax(np.abs(residual_rel))) if np.isfinite(residual_rel).any() else np.nan,
-        })
+            "max_rel_residual_pct": float(np.nanmax(np.abs(residual_rel))) if np.isfinite(residual_rel).any() else np.nan,})
 
         # PERCENT sum
         perc_cols = [c for c in df.columns if c.startswith("perc_sp_") and c.endswith("[%]")]
@@ -14790,8 +16135,7 @@ class ChemicalDrift(OceanDrift):
                 .apply(pd.to_numeric, errors="coerce")
                 .fillna(0.0)
                 .sum(axis=1)
-                .to_numpy(dtype=float)
-            )
+                .to_numpy(dtype=float))
         else:
             perc_sum = np.full(len(df), np.nan, dtype=float)
 
@@ -14801,8 +16145,7 @@ class ChemicalDrift(OceanDrift):
         report["perc"].update({
             "kept_perc_cols": kept_perc_cols,
             "n_fail": int((~perc_ok).sum()),
-            "max_abs_err": float(np.nanmax(np.abs(perc_sum - target))) if np.isfinite(perc_sum).any() else np.nan,
-        })
+            "max_abs_err": float(np.nanmax(np.abs(perc_sum - target))) if np.isfinite(perc_sum).any() else np.nan,})
 
         # optional QC columns
         if add_qc_columns:
@@ -14834,8 +16177,7 @@ class ChemicalDrift(OceanDrift):
                 f"(max |res|={report['mass']['max_abs_residual']}, "
                 f"max |res_rel|%={report['mass']['max_rel_residual_pct']}). "
                 f"Percent-sum fails: {report['perc']['n_fail']}/{len(df)} "
-                f"(max abs err={report['perc']['max_abs_err']})."
-            )
+                f"(max abs err={report['perc']['max_abs_err']}).")
 
             if on_fail == "raise":
                 raise ValueError(msg)
@@ -15057,15 +16399,13 @@ class ChemicalDrift(OceanDrift):
                 df,
                 target_mass_unit=target_mass_unit,
                 target_time_unit=target_time_unit,
-                time_col=time_col,
-            )
+                time_col=time_col,)
 
             if ref_cols is None:
                 ref_cols = list(dfc.columns)
                 ref_time_col = next(
                     (c for c in ref_cols if c.startswith("time [") and c.endswith("]")),
-                    None
-                )
+                    None)
 
             perc_sp_cols_union.update([c for c in dfc.columns if c.startswith("perc_sp_") and c.endswith("[%]")])
             perc_elim_cols_union.update([c for c in dfc.columns if c.startswith("perc_elim_") and c.endswith("[%]")])
@@ -15122,8 +16462,7 @@ class ChemicalDrift(OceanDrift):
             start_date=start_date,
             end_date=end_date,
             freq_time=freq_time_used,
-            verbose=verbose,
-        )
+            verbose=verbose,)
 
         reindexed = [
             self._reindex_ds(
@@ -15132,10 +16471,8 @@ class ChemicalDrift(OceanDrift):
                 target_time=target_time,
                 nearest_tol_time=nearest_tol_time,
                 align_mode=align_mode,
-                clip_to_original=clip_to_original,
-            )
-            for ds in ds_list
-        ]
+                clip_to_original=clip_to_original,)
+            for ds in ds_list]
 
         all_vars = sorted(set().union(*[set(ds.data_vars) for ds in reindexed]))
         standardized = []
@@ -15145,8 +16482,7 @@ class ChemicalDrift(OceanDrift):
                     ds[v] = xr.DataArray(
                         np.full(ds[time_name].shape, np.nan, dtype="float64"),
                         coords={time_name: ds[time_name]},
-                        dims=(time_name,),
-                    )
+                        dims=(time_name,),)
             standardized.append(ds[all_vars])
 
         aligned = xr.align(*standardized, join="exact", copy=False)
@@ -15204,8 +16540,7 @@ class ChemicalDrift(OceanDrift):
         if mw in out.columns and ms in out.columns:
             out[ma] = (
                 pd.to_numeric(out[mw], errors="coerce").fillna(0.0)
-                + pd.to_numeric(out[ms], errors="coerce").fillna(0.0)
-            )
+                + pd.to_numeric(out[ms], errors="coerce").fillna(0.0))
 
         # ensure perc_sp columns exist, then recompute
         for pc in sorted(perc_sp_cols_union):
@@ -15217,8 +16552,7 @@ class ChemicalDrift(OceanDrift):
             mass_unit=UM_mass,
             denom_base="mass_actual_ts",
             normalize_to_100=normalize_perc_to_100,
-            exclude_keys=("sed_buried",),
-        )
+            exclude_keys=("sed_buried",),)
 
         # ensure perc_elim columns exist, then recompute
         for pc in sorted(perc_elim_cols_union):
@@ -15234,8 +16568,7 @@ class ChemicalDrift(OceanDrift):
                 "mass_volatilized_ts",
                 "mass_adv_out_ts",
                 "mass_stranded_ts",
-                "mass_buried_ts",),
-        )
+                "mass_buried_ts",),)
 
         # QC
         qc_report = None
@@ -15248,8 +16581,7 @@ class ChemicalDrift(OceanDrift):
                 add_qc_columns=add_qc_columns,
                 on_fail=qc_on_fail,
                 return_report=return_qc_report,
-                time_hint_col=(date_col if date_col in out.columns else None),
-            )
+                time_hint_col=(date_col if date_col in out.columns else None),)
             if return_qc_report:
                 if add_qc_columns:
                     out, qc_report = qc_result
@@ -15295,7 +16627,6 @@ class ChemicalDrift(OceanDrift):
             out = out[ordered + extras]
 
         return (out, qc_report) if return_qc_report else out
-
 
     ### Helpers for sum_DataArray_list
     @staticmethod
@@ -15446,8 +16777,7 @@ class ChemicalDrift(OceanDrift):
                     raise ValueError(f'Missing dimension "{dim}" in array {idx}')
                 if da.sizes[dim] != ref.size:
                     raise ValueError(
-                        f'Dimension "{dim}" length differs: {da.sizes[dim]} vs {ref.size} for array {idx}'
-                    )
+                        f'Dimension "{dim}" length differs: {da.sizes[dim]} vs {ref.size} for array {idx}')
 
             tol = None if coord_tolerance_dict is None else coord_tolerance_dict.get(dim)
             all_exact = True
@@ -15459,8 +16789,7 @@ class ChemicalDrift(OceanDrift):
                     diff = np.abs(vals - ref)
                     if np.nanmax(diff) > tol:
                         raise ValueError(
-                            f'Dimension "{dim}" values differ by > tolerance ({tol}) in array {idx}'
-                        )
+                            f'Dimension "{dim}" values differ by > tolerance ({tol}) in array {idx}')
                     if not np.array_equal(vals, ref):
                         all_exact = False
             else:
@@ -15495,8 +16824,7 @@ class ChemicalDrift(OceanDrift):
             else:
                 stack = np.stack(
                     [np.asarray(da[dim].values, dtype=np.float64) for da in DataArray_ls],
-                    axis=0,
-                )
+                    axis=0,)
                 can0 = np.nanmedian(stack, axis=0)
                 inc = (can0[-1] >= can0[0])
                 first = can0[0]
@@ -15594,8 +16922,7 @@ class ChemicalDrift(OceanDrift):
                         f"Inconsistent depth coordinates between inputs {i} and {depth_ref_idx}:\n"
                         f"  depth[{i}] = {depth_arr}\n"
                         f"  depth[{depth_ref_idx}] = {ref_arr}\n"
-                        "All depth coordinate values must be identical."
-                    )
+                        "All depth coordinate values must be identical.")
 
         def _drop_specie(aa: xr.DataArray) -> xr.DataArray:
             if "specie" in aa.dims:
@@ -15692,8 +17019,7 @@ class ChemicalDrift(OceanDrift):
             area,
             dims=(lat_name, lon_name),
             coords={lat_name: lat, lon_name: lon},
-            name="cell_area",
-        )
+            name="cell_area",)
 
     def _standardize_horizontal_names(self, da, lat_name="latitude", lon_name="longitude"):
         """
@@ -15767,8 +17093,7 @@ class ChemicalDrift(OceanDrift):
             if vals_field.shape != vals_ref.shape:
                 raise ValueError(
                     f"Coordinate '{dim}' shape mismatch: "
-                    f"field={vals_field.shape} vs ref={vals_ref.shape}"
-                )
+                    f"field={vals_field.shape} vs ref={vals_ref.shape}")
 
             if np.array_equal(vals_field, vals_ref):
                 continue
@@ -15778,8 +17103,7 @@ class ChemicalDrift(OceanDrift):
                 max_abs = float(np.nanmax(diff)) if diff.size else 0.0
                 raise ValueError(
                     f"Coordinate '{dim}' differs between topography and da_ref "
-                    f"(max_abs_diff={max_abs:.6e}, atol={atol})"
-                )
+                    f"(max_abs_diff={max_abs:.6e}, atol={atol})")
 
             out = out.assign_coords({dim: ref[dim].values})
 
@@ -15810,15 +17134,13 @@ class ChemicalDrift(OceanDrift):
         expected_dims = {lat_name_ref, lon_name_ref}
         if set(topo.dims) != expected_dims:
             raise ValueError(
-                f"topo_ref must be 2-D on ({lat_name_ref}, {lon_name_ref}); got dims {topo.dims}"
-            )
+                f"topo_ref must be 2-D on ({lat_name_ref}, {lon_name_ref}); got dims {topo.dims}")
 
         topo = self._snap_2d_field_to_ref_coords(
             topo,
             da_ref,
             dims=(lat_name_ref, lon_name_ref),
-            atol=1e-8,
-        )
+            atol=1e-8,)
 
         topo = topo.astype(np.float64).clip(min=0.0)
 
@@ -15826,8 +17148,7 @@ class ChemicalDrift(OceanDrift):
             da_ref[lat_name_ref].values,
             da_ref[lon_name_ref].values,
             lat_name=lat_name_ref,
-            lon_name=lon_name_ref,
-        )
+            lon_name=lon_name_ref,)
 
         topo, area = xr.align(topo, area, join="exact", copy=False)
 
@@ -15959,13 +17280,11 @@ class ChemicalDrift(OceanDrift):
         if DataArray_dict_work is not None:
             nan_counts_inputs = {
                 key: int(DataArray_dict_work[key][variable].isnull().sum().item())
-                for key in ordered_keys
-            }
+                for key in ordered_keys}
         else:
             nan_counts_inputs = {
                 i: int(da.isnull().sum().item())
-                for i, da in enumerate(DataArray_ls)
-            }
+                for i, da in enumerate(DataArray_ls)}
 
         if len(DataArray_ls) < 1:
             raise ValueError("Empty DataArray_ls")
@@ -16009,8 +17328,7 @@ class ChemicalDrift(OceanDrift):
             coord_tolerance_dict=coord_tolerance_dict,
             snap_mode=snap_mode,
             dim_res_dict=dim_res_dict,
-            Verbose=Verbose,
-        )
+            Verbose=Verbose,)
 
         # Find common attributes to be added in Final_sum
         common_attrs = DataArray_ls[0].attrs.copy()
@@ -16018,8 +17336,7 @@ class ChemicalDrift(OceanDrift):
             common_attrs = {
                 key: value
                 for key, value in common_attrs.items()
-                if da.attrs.get(key) == value
-            }
+                if da.attrs.get(key) == value}
 
         H_can_out = None
         nan_counts_interp = None
@@ -16048,15 +17365,13 @@ class ChemicalDrift(OceanDrift):
             lon_can = canonical_dims_dict["longitude"]
 
             need_horizontal_interp = any(
-                bool(need_interpolation.get(k, False)) for k in ("latitude", "longitude")
-            )
+                bool(need_interpolation.get(k, False)) for k in ("latitude", "longitude"))
             depth_top_can = canonical_dims_dict.get("depth", None)
             need_vertical_interp = bool(need_interpolation.get("depth", False)) if depth_top_can is not None else False
 
             unsupported_interp_dims = {
                 dim for dim, needed in need_interpolation.items()
-                if needed and dim not in {"latitude", "longitude", "depth"}
-            }
+                if needed and dim not in {"latitude", "longitude", "depth"}}
             if unsupported_interp_dims:
                 raise ValueError(
                     f"Interpolation is only supported for latitude/longitude "
@@ -16111,9 +17426,7 @@ class ChemicalDrift(OceanDrift):
                         lon=(["lon"], lon),
                         lat=(["lat"], lat),
                         lon_b=(["lon_b"], lon_b),
-                        lat_b=(["lat_b"], lat_b),
-                    )
-                )
+                        lat_b=(["lat_b"], lat_b),))
 
             def get_regridder(src_lon, src_lat, dst_lon, dst_lat, *, method="conservative", periodic=True, weights_dir=None, prefix="weights"):
                 """
@@ -16135,8 +17448,7 @@ class ChemicalDrift(OceanDrift):
                     method=method,
                     periodic=periodic,
                     filename=weights_path,
-                    reuse_weights=reuse,
-                )
+                    reuse_weights=reuse,)
                 if weights_path is not None and not reuse:
                     R.to_netcdf(weights_path)
                 return R, weights_path
@@ -16166,8 +17478,7 @@ class ChemicalDrift(OceanDrift):
                     method="conservative",
                     periodic=periodic,
                     weights_dir=weights_dir,
-                    prefix="topo_conservative",
-                )
+                    prefix="topo_conservative",)
 
                 H_regridded = topo_R(
                     H_ord.rename({"latitude": "lat", "longitude": "lon"})
@@ -16176,8 +17487,7 @@ class ChemicalDrift(OceanDrift):
                 H_back = H_regridded.transpose(*other, "latitude", "longitude", missing_dims="ignore")
                 return H_back.assign_coords(
                     latitude=("latitude", lat_out),
-                    longitude=("longitude", lon_out),
-                )
+                    longitude=("longitude", lon_out),)
 
             def _safe_assign_depth(da, depth_dim, coord_vals):
                 """
@@ -16187,8 +17497,7 @@ class ChemicalDrift(OceanDrift):
                 coord_vals = np.asarray(coord_vals)
                 if da.sizes[depth_dim] != coord_vals.size:
                     raise ValueError(
-                        f"conflicting sizes for '{depth_dim}': data={da.sizes[depth_dim]} vs coord={coord_vals.size}"
-                    )
+                        f"conflicting sizes for '{depth_dim}': data={da.sizes[depth_dim]} vs coord={coord_vals.size}")
                 return da.assign_coords({depth_dim: (depth_dim, coord_vals)})
 
             def _regrid_horizontal_conservative_mass(mass_src, lon_out, lat_out, *, periodic=True, weights_dir=None, depth_dim=None):
@@ -16244,8 +17553,7 @@ class ChemicalDrift(OceanDrift):
                             lon=(("lon",), lon),
                             lat=(("lat",), lat),
                             lon_b=(("lon_b",), _edges_1d(lon, periodic=periodic)),
-                            lat_b=(("lat_b",), _edges_1d(lat, periodic=False)),
-                        ))
+                            lat_b=(("lat_b",), _edges_1d(lat, periodic=False)),))
 
                 src_grid = make_rect_grid(
                     np.asarray(M[lon_name].values),
@@ -16265,8 +17573,7 @@ class ChemicalDrift(OceanDrift):
                         np.asarray(M[lat_name].values),
                         np.asarray(lon_out),
                         np.asarray(lat_out),
-                        method=method,
-                    )
+                        method=method,)
                     os.makedirs(weights_dir, exist_ok=True)
                     weights_path = os.path.join(weights_dir, f"mass_{method}_{gid}.nc")
                     reuse = os.path.exists(weights_path)
@@ -16277,8 +17584,7 @@ class ChemicalDrift(OceanDrift):
                     method=method,
                     periodic=periodic,
                     filename=weights_path,
-                    reuse_weights=reuse,
-                )
+                    reuse_weights=reuse,)
                 if weights_path is not None and not reuse:
                     R.to_netcdf(weights_path)
 
@@ -16288,8 +17594,7 @@ class ChemicalDrift(OceanDrift):
                     lead_sizes = [M0.sizes[d] for d in lead]
                     lead_coords = {
                         d: (np.asarray(M0.coords[d].values) if d in M0.coords else np.arange(M0.sizes[d]))
-                        for d in lead
-                    }
+                        for d in lead}
 
                     # Stack for xESMF, but rebuild explicitly after regrid
                     M_stacked = M0.stack(_lead=lead).transpose("_lead", lat_name, lon_name)
@@ -16308,9 +17613,7 @@ class ChemicalDrift(OceanDrift):
 
                     out_vals = np.asarray(out_stacked.data).reshape(
                         *lead_sizes,
-                        len(lat_out),
-                        len(lon_out),
-                    )
+                        len(lat_out), len(lon_out),)
 
                     out = xr.DataArray(
                         out_vals,
@@ -16319,16 +17622,13 @@ class ChemicalDrift(OceanDrift):
                             **lead_coords,
                             lat_name: np.asarray(lat_out),
                             lon_name: np.asarray(lon_out),
-                        },
-                        name=mass_src.name,
-                    )
+                        }, name=mass_src.name,)
 
                     # Preserve scalar/non-dimension coords if any
                     scalar_coords = {
                         c: mass_src.coords[c]
                         for c in mass_src.coords
-                        if c not in mass_src.dims and c not in out.coords
-                    }
+                        if c not in mass_src.dims and c not in out.coords}
                     if scalar_coords:
                         out = out.assign_coords(scalar_coords)
 
@@ -16346,8 +17646,7 @@ class ChemicalDrift(OceanDrift):
                     out = out.transpose(lat_name, lon_name)
                     out = out.assign_coords({
                         lat_name: (lat_name, lat_out),
-                        lon_name: (lon_name, lon_out),
-                    })
+                        lon_name: (lon_name, lon_out),})
 
                 out.attrs.update(mass_src.attrs)
                 out.attrs["regrid_method"] = "conservative"
@@ -16388,9 +17687,7 @@ class ChemicalDrift(OceanDrift):
                 A_src = self._cell_areas_from_1d(
                     da["latitude"].values,
                     da["longitude"].values,
-                    lat_name="latitude",
-                    lon_name="longitude",
-                )
+                    lat_name="latitude", lon_name="longitude",)
 
                 if has_depth:
                     depth_top_src = np.asarray(da[dd].values, dtype=np.float64)
@@ -16403,8 +17700,7 @@ class ChemicalDrift(OceanDrift):
                             ).broadcast_like(topo_src),
                             topo_src.astype(np.float64).expand_dims({dd: [depth_top_src.size]}),
                         ],
-                        dim=dd,
-                    ).rename({dd: "depth_edge"}).transpose("depth_edge", "latitude", "longitude")
+                        dim=dd,).rename({dd: "depth_edge"}).transpose("depth_edge", "latitude", "longitude")
 
                     dz_src = z_edges_src_col.diff("depth_edge").rename({"depth_edge": dd}).clip(min=0.0).astype(np.float64)
                     dz_src = _safe_assign_depth(dz_src, dd, da[dd].values)
@@ -16429,16 +17725,14 @@ class ChemicalDrift(OceanDrift):
                     lat_out=np.asarray(lat_can),
                     periodic=periodic_lon,
                     weights_dir=weights_dir,
-                    depth_dim=dd,
-                )
+                    depth_dim=dd,)
                 vol_h = _regrid_horizontal_conservative_mass(
                     mass_src=vol_src,
                     lon_out=np.asarray(lon_can),
                     lat_out=np.asarray(lat_can),
                     periodic=periodic_lon,
                     weights_dir=weights_dir,
-                    depth_dim=dd,
-                )
+                    depth_dim=dd,)
 
                 if has_depth:
                     vol_h = _safe_assign_depth(vol_h, depth_dim, da[depth_dim].values)
@@ -16482,8 +17776,7 @@ class ChemicalDrift(OceanDrift):
                 conc_out.attrs.update(da.attrs)
                 conc_out.attrs["regrid_note"] = (
                     "mass-conserving: xESMF conservative (horizontal); "
-                    "vertical conservative remap not yet implemented"
-                )
+                    "vertical conservative remap not yet implemented")
                 return conc_out
 
             with tempfile.TemporaryDirectory() as tmpdir:
@@ -16503,15 +17796,12 @@ class ChemicalDrift(OceanDrift):
                         weights_dir=tmpdir,
                         idx=key,
                         idx_tot=len(ordered_keys),
-                        Verbose=Verbose,
-                    )
-                    for key in ordered_keys
-                ]
+                        Verbose=Verbose,)
+                    for key in ordered_keys]
 
                 nan_counts_interp = {
                     key: int(np.count_nonzero(np.isnan(da.values)))
-                    for key, da in zip(ordered_keys, DataArray_ls)
-                }
+                    for key, da in zip(ordered_keys, DataArray_ls)}
 
                 first_idx = ordered_keys[0]
                 H_can_out = regrid_topography_conservative(
@@ -16566,11 +17856,9 @@ class ChemicalDrift(OceanDrift):
                         f"{'+' if (math.isinf(p) or p >= 0) else ''}"
                         f"{'inf' if math.isinf(p) else f'{p:.2f}%'}"
                         f")"
-                        for k, b, a, p in offenders
-                    )
+                        for k, b, a, p in offenders)
                     raise ValueError(
-                        f"Interpolation NaN count changed by more than {threshold_pct:.1f}% for: {details}"
-                    )
+                        f"Interpolation NaN count changed by more than {threshold_pct:.1f}% for: {details}")
 
             if Verbose:
                 report_interp_nan_changes(nan_counts_inputs, nan_counts_interp)
@@ -16582,8 +17870,7 @@ class ChemicalDrift(OceanDrift):
             coord_tolerance_dict=None,
             snap_mode=snap_mode,
             dim_res_dict=None,
-            Verbose=Verbose,
-        )
+            Verbose=Verbose,)
 
         time_equal = False
         if all(time_name in da.dims for da in DataArray_ls):
@@ -16636,8 +17923,7 @@ class ChemicalDrift(OceanDrift):
                 else:
                     # fallback: non-regular union of all timestamps
                     target_time = np.unique(
-                        np.concatenate([da[time_name].values for da in DataArray_ls])
-                    )
+                        np.concatenate([da[time_name].values for da in DataArray_ls]))
                     if Verbose:
                         print("freq_time could not be inferred; using union of timestamps")
 
@@ -16669,10 +17955,8 @@ class ChemicalDrift(OceanDrift):
                     time_name=time_name,
                     target_time=target_time,
                     nearest_tol_time=nearest_tol_time,
-                    align_mode=align_mode,
-                )
-                for da in DataArray_ls
-            ]
+                    align_mode=align_mode,)
+                for da in DataArray_ls]
 
             aligned = xr.align(*reindexed, join="exact", copy=False)
 
@@ -16704,8 +17988,7 @@ class ChemicalDrift(OceanDrift):
         else:
             cell_volume_common = self._build_common_cell_volume(
                 da_ref=aligned[0],
-                topo_ref=common_topo_for_mass,
-            )
+                topo_ref=common_topo_for_mass,)
 
             mass_aligned_parts = None
             for da in aligned:
@@ -16719,8 +18002,7 @@ class ChemicalDrift(OceanDrift):
                     mass_final,
                     mass_aligned_parts,
                     rtol=1e-6,
-                    atol=1e-12,
-                )
+                    atol=1e-12,)
             except AssertionError as e:
                 diff = (mass_final - mass_aligned_parts).astype(np.float64)
                 max_abs = float(np.nanmax(np.abs(diff.values)))
@@ -16731,8 +18013,7 @@ class ChemicalDrift(OceanDrift):
 
                 raise AssertionError(
                     "Mass conservation check failed on aligned grid: "
-                    f"max_abs_diff={max_abs:.6e}, max_rel_diff={max_rel:.6e}"
-                ) from e
+                    f"max_abs_diff={max_abs:.6e}, max_rel_diff={max_rel:.6e}") from e
 
             if Verbose:
                 total_mass_inputs = float(mass_aligned_parts.fillna(0).sum().item())
@@ -16779,8 +18060,7 @@ class ChemicalDrift(OceanDrift):
         # Masking should never reduce NaNs
         if nans_after_mask < nans_before_mask:
             raise ValueError(
-                f"Masking reduced NaNs unexpectedly: before={nans_before_mask}, after={nans_after_mask}"
-            )
+                f"Masking reduced NaNs unexpectedly: before={nans_before_mask}, after={nans_after_mask}")
 
         # Check that newly created NaNs come only from mask=False where data was previously finite
         added_nan_mask = Final_sum.isnull() & Final_sum_before_mask.notnull()
@@ -16797,8 +18077,7 @@ class ChemicalDrift(OceanDrift):
             added_nans = nans_after_mask - nans_before_mask
             print(
                 f"Masking NaN check OK: before={nans_before_mask}, "
-                f"after={nans_after_mask}, added={added_nans}"
-            )
+                f"after={nans_after_mask}, added={added_nans}")
 
         time_end = datetime.now()
         sum_time = time_end - time_start
@@ -16816,6 +18095,7 @@ class ChemicalDrift(OceanDrift):
 
         return Final_sum, H_can_out
 
+    ##### Helpers for vertical_depth_mean
     @staticmethod
     def _check_dims_values(dims_values):
         '''
@@ -16838,6 +18118,43 @@ class ChemicalDrift(OceanDrift):
                 raise ValueError(f'Dimension "{key}" has different values across DataArray_ls')
             else:
                 pass
+
+    @staticmethod
+    def _rename_dimensions(DataArray):
+        '''
+        Rename latitude/longitude of xarray dataarray to standard format
+        '''
+        if "latitude" in DataArray.dims:
+            pass
+        else:
+            if "lat" in DataArray.dims:
+                DataArray = DataArray.rename({'lat': 'latitude'})
+            elif "y" in DataArray.dims:
+                DataArray = DataArray.rename({'y': 'latitude'})
+            else:
+                raise ValueError("Unknown spatial lat coordinates")
+
+        if "longitude" in DataArray.dims:
+            pass
+        else:
+            if "lon" in DataArray.dims:
+                DataArray = DataArray.rename({'lon': 'longitude'})
+            elif "x" in DataArray.dims:
+                DataArray = DataArray.rename({'x': 'longitude'})
+            else:
+                raise ValueError("Unknown spatial lon coordinates")
+
+        DataArray['latitude'] = DataArray['latitude'].assign_attrs(
+                                standard_name="latitude",
+                                long_name="latitude",
+                                units="degrees_north",
+                                axis="Y",)
+        DataArray['longitude'] = DataArray['longitude'].assign_attrs(
+                                standard_name="longitude",
+                                long_name="longitude",
+                                units="degrees_east",
+                                axis="X",)
+        return(DataArray)
 
     def vertical_depth_mean(self,
                             Dataset,
