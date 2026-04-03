@@ -211,7 +211,7 @@ class ChemicalDrift(OceanDrift):
             'chemical:doc_concentration_half_depth': {'type': 'float', 'default': 1000, # TODO: check better
                 'min': 0, 'max': 1200, 'units': 'm',                                    # Vertical conc drops more slowly slower than for SPM
                 'level': CONFIG_LEVEL_ADVANCED, 'description': ''},                     # example: 10.3389/fmars.2017.00436. lower limit around 40 umol/L
-            'chemical:particle_diameter_uncertainty': {'type': 'float', 'default': 0.35,  # https://www.hec.usace.army.mil/confluence/rasdocs/d2sd/ras2dsedtr/latest/model-description/water-and-sediment-properties/sediment-properties
+            'chemical:particle_diameter_uncertainty': {'type': 'float', 'default': 0.35,# https://www.hec.usace.army.mil/confluence/rasdocs/d2sd/ras2dsedtr/latest/model-description/water-and-sediment-properties/sediment-properties
                 'min': 0, 'max': 5, 'units': '',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Log-space standard deviation sigma_ln of the particle-diameter distribution, used in a log-normal sampling around chemical:particle_diameter interpreted as the median diameter.'},
             'chemical:doc_particle_diameter_uncertainty': {'type': 'float', 'default': 0.70, # https://doi.org/10.1038/35248
@@ -261,10 +261,10 @@ class ChemicalDrift(OceanDrift):
             'chemical:transformations:S0': {'type': 'float', 'default': 0.0,
                 'min': 0, 'max': 100, 'units': 'PSU',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Parameter controlling salinity dependency of Kd for metals'},
-            'chemical:transformations:Dc': {'type': 'float', 'default': 1.16e-5,                # Simonsen 2019
+            'chemical:transformations:Dc': {'type': 'float', 'default': 1.16e-5,                 # Simonsen 2019
                 'min': 0, 'max': 1e6, 'units': '',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Desorption rate of metals from particles'},
-            'chemical:transformations:slow_coeff': {'type': 'float', 'default': 0, #1.2e-7,         # Simonsen 2019
+            'chemical:transformations:slow_coeff': {'type': 'float', 'default': 0,     # 1.2e-7, # Simonsen 2019
                 'min': 0, 'max': 1e6, 'units': '',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Adsorption coefficient to slowly reversible fractions (metals)'},
             'chemical:transformations:slow_coeff_des': {'type': 'float', 'default': 0, # 2.77e-7 1/s (up to 1.11e-6 1/s) # doi.org/10.1021/es960300+ Cornelissen et al. (1997) # doi.org/10.1897/06-104R.1 Birdwell et al. (2007)
@@ -289,10 +289,10 @@ class ChemicalDrift(OceanDrift):
             'chemical:transformations:dissociation': {'type': 'enum',
                 'enum': ['nondiss','acid', 'base', 'amphoter'], 'default': 'nondiss',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Select dissociation mode'},
-            'chemical:transformations:LogKOW': {'type': 'float', 'default': 3.361,          # Naphthalene
+            'chemical:transformations:LogKOW': {'type': 'float', 'default': 3.361,           # Naphthalene
                 'min': -3, 'max': 10, 'units': '',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Log10 of Octanol/Water partitioning coefficient'},
-            'chemical:transformations:TrefKOW': {'type': 'float', 'default': 25.,           # Naphthalene
+            'chemical:transformations:TrefKOW': {'type': 'float', 'default': 25.,            # Naphthalene
                 'min': -3, 'max': 30, 'units': 'C',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Reference temperature of KOW'},
             'chemical:transformations:DeltaH_KOC_Sed': {'type': 'float', 'default': -21036., # Naphthalene
@@ -301,7 +301,7 @@ class ChemicalDrift(OceanDrift):
             'chemical:transformations:DeltaH_KOC_DOM': {'type': 'float', 'default': -25900., # Naphthalene
                 'min': -100000., 'max': 100000., 'units': 'J/mol',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Enthalpy of sorption to DOM'},
-            'chemical:transformations:Setchenow': {'type': 'float', 'default': 0.2503,      # Naphthalene
+            'chemical:transformations:Setchenow': {'type': 'float', 'default': 0.2503,       # Naphthalene
                 'min': -2, 'max': 1, 'units': 'L/mol',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Setchenow constant of organic chemicals'},
             'chemical:transformations:pKa_acid': {'type': 'float', 'default': -1,
@@ -344,24 +344,24 @@ class ChemicalDrift(OceanDrift):
             'chemical:transformations:Tref_kWt': {'type': 'float', 'default': 25.,          # Naphthalene
                 'min': -3, 'max': 30, 'units': '°C',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Reference temperature of t12_W_tot'},
-            'chemical:transformations:DeltaH_kWt': {'type': 'float', 'default': 50000.,     # generic
+            'chemical:transformations:DeltaH_kWt': {'type': 'float', 'default': 50000.,     # Generic
                 'min': -100000., 'max': 100000., 'units': 'J/mol',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Entalpy of t12_W_tot'},
             # Degradation in sediment layer
             'chemical:transformations:t12_S_tot': {'type': 'float', 'default': 5012.4,      # Naphthalene
                 'min': 1, 'max': None, 'units': 'hours',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Half life in sediments, total'},
-            'chemical:transformations:ssrev_slow_deg_factor': {'type': 'float', 'default': 1,      # No slow degradation
+            'chemical:transformations:ssrev_slow_deg_factor': {'type': 'float', 'default': 1,# No slow degradation
                 'min': 0, 'max': 1, 'units': '',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Correction factor for slower degradation in buried sediments'},
             'chemical:transformations:Tref_kSt': {'type': 'float', 'default': 25.,          # Naphthalene
                 'min': -3, 'max': 30, 'units': '°C',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Reference temperature of t12_S_tot'},
-            'chemical:transformations:DeltaH_kSt': {'type': 'float', 'default': 50000.,     # generic
+            'chemical:transformations:DeltaH_kSt': {'type': 'float', 'default': 50000.,     # Generic
                 'min': -100000., 'max': 100000., 'units': 'J/mol',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Entalpy of t12_S_tot'},
             # Volatilization
-            'chemical:transformations:MolWt': {'type': 'float', 'default': 128.1705,         # Naphthalene
+            'chemical:transformations:MolWt': {'type': 'float', 'default': 128.1705,        # Naphthalene
                 'min': 50, 'max': 1000, 'units': 'g/mol',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Molecular weight'},
             'chemical:transformations:Henry': {'type': 'float', 'default': -1,
@@ -375,23 +375,23 @@ class ChemicalDrift(OceanDrift):
             'chemical:transformations:Vpress': {'type': 'float', 'default': -1,
                 'min': None, 'max': None, 'units': 'Pa',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Vapour pressure'},
-            'chemical:transformations:Tref_Vpress': {'type': 'float', 'default': 25.,        # Naphthalene
+            'chemical:transformations:Tref_Vpress': {'type': 'float', 'default': 25.,       # Naphthalene
                 'min': None, 'max': None, 'units': '°C',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Vapour pressure ref temp'},
-            'chemical:transformations:DeltaH_Vpress': {'type': 'float', 'default': 55925.,   # Naphthalene
+            'chemical:transformations:DeltaH_Vpress': {'type': 'float', 'default': 55925.,  # Naphthalene
                 'min': -100000., 'max': 150000., 'units': 'J/mol',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Enthalpy of volatilization'},
             # Solubility
             'chemical:transformations:Solub': {'type': 'float', 'default': -1,
                 'min': None, 'max': None, 'units': 'g/m3',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Solubility'},
-            'chemical:transformations:Tref_Solub': {'type': 'float', 'default': 25.,         # Naphthalene
+            'chemical:transformations:Tref_Solub': {'type': 'float', 'default': 25.,        # Naphthalene
                 'min': None, 'max': None, 'units': '°C',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Solubility ref temp'},
-            'chemical:transformations:DeltaH_Solub': {'type': 'float', 'default': 25300.,    # Naphthalene
+            'chemical:transformations:DeltaH_Solub': {'type': 'float', 'default': 25300.,   # Naphthalene
                 'min': -100000., 'max': 100000., 'units': 'J/mol',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Enthalpy of solubilization'},
-            'chemical:transformations:Tref_Henry': {'type': 'float', 'default': 25.,         # Naphthalene
+            'chemical:transformations:Tref_Henry': {'type': 'float', 'default': 25.,        # Naphthalene
                 'min': None, 'max': None, 'units': '°C',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Henry constant ref temp'},
             # Sedimentation/Resuspension
@@ -425,7 +425,7 @@ class ChemicalDrift(OceanDrift):
             'chemical:sediment:resuspension_depth_uncert': {'type': 'float', 'default': .5,
                 'min': 0, 'max': 100, 'units': 'm',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
-            'chemical:sediment:burial_rate': {'type': 'float', 'default': .0003,   # MacKay
+            'chemical:sediment:burial_rate': {'type': 'float', 'default': .0003,   # Parnis, J.M. Mackay, D. (2020) # doi.org/10.1201/9780367809829
                 'min': 0, 'max': 10, 'units': 'm/year',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Rate of sediment burial'},
             'chemical:sediment:buried_leaking_rate': {'type': 'float', 'default': 0,
@@ -565,81 +565,81 @@ class ChemicalDrift(OceanDrift):
             'chemical:transformations:Hydrolysis': {'type': 'bool', 'default': True,
                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Toggle hydrolysis'},
             # Biodegradation
-            'chemical:transformations:k_DecayMax_water': {'type': 'float', 'default': 0.054,      # from AQUATOX Database (0.13 1/day)
+            'chemical:transformations:k_DecayMax_water': {'type': 'float', 'default': 0.054,      # from AQUATOX (0.13 1/day) https://www.google.com/url?sa=t&source=web&rct=j&opi=89978449&url=https://www.epa.gov/sites/default/files/2018-09/documents/aquatox_tech_doc_3.2.pdf&ved=2ahUKEwjAirfT7dGTAxVflP0HHZ6HBeEQFnoECBcQAQ&usg=AOvVaw1drIYKLK3UCdid-gVz4Jgb
                 'min': 0, 'max': None, 'units': '1/hours',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' Max first-order rate constant for biodegradation in aerobic condition'},
-            'chemical:transformations:k_Anaerobic_water': {'type': 'float', 'default': 0,      # Default for no anaerobic biodegradation
+            'chemical:transformations:k_Anaerobic_water': {'type': 'float', 'default': 0,         # Default for no anaerobic biodegradation
                 'min': 0, 'max': None, 'units': '1/hours',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' Max first-order rate constant for biodegradation in anaerobic condition '},
-            'chemical:transformations:HalfSatO_w': {'type': 'float', 'default': 0.5,      # Half-saturation constant for oxygen, default from AQUATOX Database
+            'chemical:transformations:HalfSatO_w': {'type': 'float', 'default': 0.5,              # Default from AQUATOX
                 'min': 0.01, 'max': None, 'units': 'g/m3',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ' Half-saturation constant for oxygen, default from AQUATOX Database'},
-            'chemical:transformations:T_Max_bio': {'type': 'float', 'default': 50,     # Default from AQUATOX Database
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ' Half-saturation constant for oxygen'},
+            'chemical:transformations:T_Max_bio': {'type': 'float', 'default': 50,                # Default from AQUATOX
                 'min': 1, 'max': None, 'units': 'C',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ' Maximum temperature at which biodegradation process will occur, default from AQUATOX Database'},
-            'chemical:transformations:T_Opt_bio': {'type': 'float', 'default': 24,     # Default from AQUATOX Database
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ' Maximum temperature at which biodegradation process will occur'},
+            'chemical:transformations:T_Opt_bio': {'type': 'float', 'default': 24,                # Default from AQUATOX
                  'min': 1, 'max': None, 'units': 'C',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Optimal temperature for biodegradation, default from AQUATOX Database'},
-            'chemical:transformations:T_Adp_bio': {'type': 'float', 'default': 2,     # Default from AQUATOX Database
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Optimal temperature for biodegradation'},
+            'chemical:transformations:T_Adp_bio': {'type': 'float', 'default': 2,                 # Default from AQUATOX
                  'min': 0.1, 'max': None, 'units': 'C',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': '“adaptation” temperature below which there is no acclimation for biobegradation, default from AQUATOX Database'},
-            'chemical:transformations:Max_Accl_bio': {'type': 'float', 'default': 2,     # Default from AQUATOX Database
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': '“adaptation” temperature below which there is no acclimation for biobegradation'},
+            'chemical:transformations:Max_Accl_bio': {'type': 'float', 'default': 2,              # Default from AQUATOX
                  'min': 0.1, 'max': None, 'units': 'C',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Maximum acclimation allowed for biodegratation, default from AQUATOX Database'},
-            'chemical:transformations:Dec_Accl_bio': {'type': 'float', 'default': 0.5,     # Default from AQUATOX Database
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Maximum acclimation allowed for biodegratation'},
+            'chemical:transformations:Dec_Accl_bio': {'type': 'float', 'default': 0.5,            # Default from AQUATOX
                  'min': 0.1, 'max': None, 'units': '',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Coefficient for decreasing acclimation as temperature approaches T_Adp_bio, default from AQUATOX Database'},
-            'chemical:transformations:Q10_bio': {'type': 'float', 'default': 2,     # Default from AQUATOX Database
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Coefficient for decreasing acclimation as temperature approaches T_Adp_bio'},
+            'chemical:transformations:Q10_bio': {'type': 'float', 'default': 2,                   # Default from AQUATOX
                  'min': 0, 'max': None, 'units': '',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Slope or rate of change per 10°C temperature change for biodegradation, default from AQUATOX Database'},
-            'chemical:transformations:pH_min_bio': {'type': 'float', 'default': 5,     # Default from AQUATOX Database
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Slope or rate of change per 10°C temperature change for biodegradation'},
+            'chemical:transformations:pH_min_bio': {'type': 'float', 'default': 5,                # Default from AQUATOX
                  'min': 0, 'max': None, 'units': '',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Minimum pH below which limitation on biodegradation rate occurs, default from AQUATOX Database'},
-            'chemical:transformations:pH_max_bio': {'type': 'float', 'default': 8.5,     # Default from AQUATOX Database
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Minimum pH below which limitation on biodegradation rate occurs'},
+            'chemical:transformations:pH_max_bio': {'type': 'float', 'default': 8.5,              # Default from AQUATOX
                  'min': 0, 'max': None, 'units': '',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Maximum pH over which limitation on biodegradation rate occurs, default from AQUATOX Database'},
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Maximum pH over which limitation on biodegradation rate occurs'},
             # Hydrolysis
             # Based on the approach reported by Mabey, W., & Mill, T. (1978) https://doi.org/10.1063/1.555572 (Figure 1)
-            'chemical:transformations:k_Acid': {'type': 'float', 'default': 0,     # Default: no acid catalyzed hydrolysis
+            'chemical:transformations:k_Acid': {'type': 'float', 'default': 0,        # Default: no acid catalyzed hydrolysis
                  'min': None, 'max': None, 'units': 'L/mol*h',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': 'acid-catalyzed pseudo-second-order coefficient'},
-            'chemical:transformations:k_Base': {'type': 'float', 'default': 0,     # Default: no base catalyzed hydrolysis
+            'chemical:transformations:k_Base': {'type': 'float', 'default': 0,        # Default: no base catalyzed hydrolysis
                  'min': None, 'max': None, 'units': 'L/mol*h',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': 'base-catalyzed pseudo-second-order coefficient'},
-            'chemical:transformations:k_Hydr_Uncat': {'type': 'float', 'default': 0,     # Default: no hydrolysis
+            'chemical:transformations:k_Hydr_Uncat': {'type': 'float', 'default': 0,  # Default: no hydrolysis
                  'min': 0, 'max': None, 'units': '1/hours',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': 'Measured first-order hydrolysis rate at pH 7'},
             # Photolysis
             'chemical:transformations:solar_input_unit': { 'type': 'enum', 'enum': ['W_m2', 'Ly_day'], 'default': 'W_m2',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Unit of environment.solar_irradiance. AQUATOX photolysis uses Ly/day; W/m2 is converted using 1 Ly/day = 0.4843 W/m2.'},
-            'chemical:transformations:k_Photo': {'type': 'float', 'default': 0,     # Default: no photolysis
+            'chemical:transformations:k_Photo': {'type': 'float', 'default': 0,            # Default: no photolysis
                  'min': 0, 'max': None, 'units': '1/hours',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': 'Measured first-order photolysis rate'},
-            'chemical:transformations:RadDistr': {'type': 'float', 'default': 1.6,     # Default from AQUATOX Database
+            'chemical:transformations:RadDistr': {'type': 'float', 'default': 1.6,         # Default from AQUATOX
                  'min': 0, 'max': None, 'units': '',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': 'Radiance distribution function, which is the ratio of the average pathlength to the depth'},
-            'chemical:transformations:RadDistr0_ml': {'type': 'float', 'default': 1.2,     # Default from AQUATOX Database
+            'chemical:transformations:RadDistr0_ml': {'type': 'float', 'default': 1.2,     # Default from AQUATOX
                  'min': 0, 'max': None, 'units': '',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': 'Standard radiance distribution function in the Mixed Layer'},
-            'chemical:transformations:RadDistr0_bml': {'type': 'float', 'default': 1.6,     # Default from AQUATOX Database
+            'chemical:transformations:RadDistr0_bml': {'type': 'float', 'default': 1.6,    # Default from AQUATOX
                  'min': 0, 'max': None, 'units': '',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': 'Standard radiance distribution function below the Mixed Layer'},
-            'chemical:transformations:WaterExt': {'type': 'float', 'default': 0.21,     # Default from AQUATOX Database
+            'chemical:transformations:WaterExt': {'type': 'float', 'default': 0.21,        # Default from AQUATOX
                  'min': 0, 'max': None, 'units': '1/m',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': 'Extinction coefficient of light in the water with depht due to water'},
-            'chemical:transformations:ExtCoeffDOM': {'type': 'float', 'default': 0.028,     # Default from AQUATOX Database
+            'chemical:transformations:ExtCoeffDOM': {'type': 'float', 'default': 0.028,    # Default from AQUATOX
                  'min': 0, 'max': None, 'units': '1/(m*g/m3)',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': 'Extinction coefficient of light in the water with depht due to DOM'},
-            'chemical:transformations:ExtCoeffSPM': {'type': 'float', 'default': 0.17,     # Default from AQUATOX Database
+            'chemical:transformations:ExtCoeffSPM': {'type': 'float', 'default': 0.17,     # Default from AQUATOX
                  'min': 0, 'max': None, 'units': '1/(m*g/m3)',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': 'Extinction coefficient of light in the water with depht due to SPM'},
-            'chemical:transformations:ExtCoeffPHY': {'type': 'float', 'default': 0.14,     # Default from AQUATOX Database
+            'chemical:transformations:ExtCoeffPHY': {'type': 'float', 'default': 0.14,     # Default from AQUATOX
                  'min': 0, 'max': None, 'units': '1/(m*g/m3)',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': 'Extinction coefficient of light in the water with depht due to phytoplankton'},
-            'chemical:transformations:C2PHYC': {'type': 'float', 'default': 0.44,     # Default from https://doi.org/10.1007/BF00006636
+            'chemical:transformations:C2PHYC': {'type': 'float', 'default': 0.44,           # Default from https://doi.org/10.1007/BF00006636
                  'min': 0, 'max': None, 'units': 'g_Caron/g_Biomass',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': 'Phytoplankton carbon content'},
-            'chemical:transformations:AveSolar': {'type': 'float', 'default': 500,     # Default from AQUATOX Database
+            'chemical:transformations:AveSolar': {'type': 'float', 'default': 500,          # Default from AQUATOX
                  'min': 0, 'max': None, 'units': 'Ly/day',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': 'Average light intensity for late spring or early summer, corresponding to time when photolytic half-life is often measured'},
             })
