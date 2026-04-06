@@ -5492,83 +5492,7 @@ class ChemicalDrift(OceanDrift):
 
     ##### Helpers for write_netcdf_chemical_density_map
     @staticmethod
-    def _normalize_landmask(mask, policy="auto", thr=0.5):
-        """
-        Returns boolean array: True = land, False = water.
-        policy:
-          - "auto"    : choose based on values
-          - "eq1"     : land iff == 1
-          - "nonzero" : land iff != 0
-          - "thr"     : land iff >= thr
-        NaNs/Infs/masked -> water
-        """
-        import numpy as np
-
-        m_ma = np.ma.asarray(mask)
-        m = np.asarray(np.ma.filled(m_ma, np.nan))
-
-        if m.dtype == np.bool_:
-            return m
-        if np.issubdtype(m.dtype, np.floating):
-            m = np.where(np.isfinite(m), m, 0.0)
-        if policy == "auto":
-            v = m[np.isfinite(m)].ravel()
-            if v.size == 0:
-                return np.zeros(m.shape, dtype=bool)
-            if v.size > 100000:
-                step = max(1, v.size // 100000)
-                v = v[::step]
-            u = np.unique(v)
-            if np.all(np.isin(u, [0, 1])):
-                policy = "eq1"
-            elif np.issubdtype(m.dtype, np.integer) and u.max() > 1:
-                policy = "nonzero"
-            elif np.issubdtype(m.dtype, np.floating) and (v.min() >= 0.0) and (v.max() <= 1.0):
-                policy = "thr"
-            else:
-                policy = "nonzero"
-
-        if policy == "eq1":
-            return (m == 1)
-        elif policy == "nonzero":
-            return (m != 0)
-        elif policy == "thr":
-            return (m >= thr)
-        else:
-            raise ValueError(f"Unknown policy: {policy}")
-
-    @staticmethod
-    def _build_z_array(zlevels, *, zmin_cap=-10000.0, ztop=0.0):
-        """
-        Build strictly increasing bin edges (more negative -> less negative),
-        always including zmin_cap and ztop exactly once.
-        """
-        import numpy as np
-        if zlevels is None:
-            return np.array([zmin_cap, ztop], dtype=np.float32)
-
-        zlev = np.asarray(zlevels, dtype=np.float32)
-        # Remove NaNs/Infs
-        zlev = zlev[np.isfinite(zlev)]
-        # Force anything > ztop down to ztop
-        zlev = np.minimum(zlev, ztop)
-        # Ensure caps are included
-        zlev = np.concatenate(([zmin_cap], zlev, [ztop]))
-        # Prevents duplicate 0
-        zlev = np.unique(np.sort(zlev))
-        # Ensure strictly increasing
-        if zlev.size < 2:
-            zlev = np.array([zmin_cap, ztop], dtype=np.float32)
-
-        return zlev.astype(np.float32, copy=False)
-
-    @staticmethod
     def _make_edges(lo, hi, step, dtype=np.float32):
-        """
-        Build monotonic bin edges including the last edge explicitly.
-        """
-        import numpy as np
-
         vals = np.array([lo, hi, step], dtype=np.float64)
         if not np.all(np.isfinite(vals)):
             raise ValueError(f"Non-finite lo/hi/step: lo={lo}, hi={hi}, step={step}")
@@ -5608,14 +5532,11 @@ class ChemicalDrift(OceanDrift):
             raise ValueError("w_cum must be a 2D array (T, N)")
 
         T, N = w_cum.shape
-
         want_deltas = mode in ("deltas", "both")
-        want_ffill  = mode in ("ffill", "both")
-
+        want_ffill = mode in ("ffill", "both")
         if mode not in ("deltas", "ffill", "both"):
             raise ValueError("mode must be one of {'deltas','ffill','both'}")
 
-        # Allocate outputs as needed
         if want_deltas:
             if out is None:
                 out = np.empty((T, N), dtype=np.float32)
@@ -5632,7 +5553,6 @@ class ChemicalDrift(OceanDrift):
                 if out_ff.shape != (T, N):
                     raise ValueError(f"out_ff must have shape {(T, N)}, got {out_ff.shape}")
 
-        # Process in chunks
         for start in range(0, N, chunk_cols):
             end = min(start + chunk_cols, N)
             width = end - start
@@ -5643,7 +5563,6 @@ class ChemicalDrift(OceanDrift):
             for t in range(T):
                 cur = w_cum[t, start:end]
                 finite = np.isfinite(cur)
-                # cur_ff = prev_ff; then overwrite finite entries with current
                 np.copyto(cur_ff, prev_ff)
                 if finite.any():
                     cur_ff[finite] = cur[finite]
@@ -5652,7 +5571,7 @@ class ChemicalDrift(OceanDrift):
                     out_ff[t, start:end] = cur_ff
 
                 if want_deltas:
-                    out_row = out[t, start:end]  # float32 view
+                    out_row = out[t, start:end]
                     np.subtract(cur_ff, prev_ff, out=out_row, casting="unsafe")
                     np.maximum(out_row, 0.0, out=out_row)
                     out_row[~np.isfinite(out_row)] = 0.0
@@ -5665,53 +5584,6 @@ class ChemicalDrift(OceanDrift):
             return out_ff
         return out, out_ff
 
-    def horizontal_smooth(self, a, n=0, landmask=None, pad_mode="edge", land_value=0.0):
-        """
-        2D box smoothing (mean over (2n+1)x(2n+1)), no wrap.
-        - Ignores NaNs
-        - If landmask is provided (True=land), land is excluded from averages
-        - Land cells in output are set to land_value (default 0.0)
-        """
-        import numpy as np
-        a = np.asarray(a, dtype=np.float64)
-        if n <= 0:
-            return a
-
-        n = int(n)
-        ydm, xdm = a.shape
-
-        valid = np.isfinite(a)
-        lm = None
-        if landmask is not None:
-            lm = np.asarray(landmask, dtype=bool)
-            if lm.shape != a.shape and lm.T.shape == a.shape:
-                lm = lm.T
-            if lm.shape != a.shape:
-                raise ValueError(f"landmask shape {lm.shape} != a shape {a.shape}")
-            valid &= ~lm
-
-        a0 = np.where(valid, a, 0.0)
-        w0 = valid.astype(np.float64)
-
-        a_pad = np.pad(a0, ((n, n), (n, n)), mode=pad_mode)
-        w_pad = np.pad(w0, ((n, n), (n, n)), mode=pad_mode)
-
-        # integral images with leading zeros
-        S = np.pad(a_pad, ((1, 0), (1, 0)), mode="constant").cumsum(0).cumsum(1)
-        W = np.pad(w_pad, ((1, 0), (1, 0)), mode="constant").cumsum(0).cumsum(1)
-
-        k = 2 * n + 1
-        num = S[k:, k:] - S[:-k, k:] - S[k:, :-k] + S[:-k, :-k]
-        den = W[k:, k:] - W[:-k, k:] - W[k:, :-k] + W[:-k, :-k]
-
-        out = np.full((ydm, xdm), np.nan, dtype=np.float64)
-        ok = den > 0
-        out[ok] = num[ok] / den[ok]
-
-        if lm is not None:
-            out[lm] = land_value # keep land clean
-
-        return out
     @staticmethod
     def _centers_to_edges_1d(centers):
         c = np.asarray(centers, dtype=np.float64)
@@ -5769,6 +5641,40 @@ class ChemicalDrift(OceanDrift):
         )
 
     @staticmethod
+    def _corners4_to_nodes(node_corners4, atol=1e-10, rtol=1e-10):
+        c = np.asarray(node_corners4, dtype=np.float64)
+        if c.ndim != 3 or c.shape[-1] != 4:
+            raise ValueError(f"corners4 must have shape (X, Y, 4), got {c.shape}")
+
+        X, Y, _ = c.shape
+        nodes = np.full((X + 1, Y + 1), np.nan, dtype=np.float64)
+
+        def _merge(target, values, label):
+            existing = nodes[target]
+            same_mask = np.isfinite(existing) & np.isfinite(values)
+            if np.any(same_mask):
+                ok = np.isclose(existing[same_mask], values[same_mask], rtol=rtol, atol=atol)
+                if not np.all(ok):
+                    raise ValueError(
+                        f"Inconsistent shared corners while rebuilding nodes from {label}."
+                    )
+            fill_mask = ~np.isfinite(existing)
+            existing[fill_mask] = values[fill_mask]
+            nodes[target] = existing
+
+        # corner order is assumed to be:
+        # 0 = lower-left, 1 = lower-right, 2 = upper-right, 3 = upper-left
+        _merge((slice(0, X),     slice(0, Y)),     c[:, :, 0], "corner 0")
+        _merge((slice(1, X + 1), slice(0, Y)),     c[:, :, 1], "corner 1")
+        _merge((slice(1, X + 1), slice(1, Y + 1)), c[:, :, 2], "corner 2")
+        _merge((slice(0, X),     slice(1, Y + 1)), c[:, :, 3], "corner 3")
+
+        if not np.all(np.isfinite(nodes)):
+            raise ValueError("Could not reconstruct a complete node array from quadrilateral corners.")
+
+        return nodes
+
+    @staticmethod
     def _quad_area_plane(x4, y4):
         x = np.asarray(x4, dtype=np.float64)
         y = np.asarray(y4, dtype=np.float64)
@@ -5783,8 +5689,8 @@ class ChemicalDrift(OceanDrift):
             )
         )
 
-    @staticmethod
-    def _build_curvilinear_locator(grid_spec):
+
+    def _build_curvilinear_locator(self, grid_spec):
         import matplotlib.tri as mtri
 
         X, Y = grid_spec["shape"]
@@ -5792,6 +5698,13 @@ class ChemicalDrift(OceanDrift):
         y_nodes = grid_spec.get("bin_y_nodes", None)
         x_corners = grid_spec.get("bin_x_corners_4", None)
         y_corners = grid_spec.get("bin_y_corners_4", None)
+        if (x_nodes is None or y_nodes is None) and (x_corners is not None and y_corners is not None):
+            try:
+                x_nodes = self._corners4_to_nodes(x_corners)
+                y_nodes = self._corners4_to_nodes(y_corners)
+            except ValueError:
+                # keep the old corner arrays available for fallback/error
+                pass
 
         def _poly_area(vx, vy):
             return 0.5 * abs(np.sum(vx * np.roll(vy, -1) - vy * np.roll(vx, -1)))
@@ -5896,11 +5809,78 @@ class ChemicalDrift(OceanDrift):
             "bbox": bbox,
         }
 
+# -----------------------------------------------------------------------------
+# Triangular unstructured mesh helpers and overrides
+# -----------------------------------------------------------------------------
+    @staticmethod
+    def _triangle_area_plane(x0, y0, x1, y1, x2, y2):
+        return 0.5 * np.abs((x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0))
+
+    @staticmethod
+    def _normalize_triangle_connectivity(conn, obj=None, name="face_node_connectivity"):
+        tri = np.asarray(conn)
+        if tri.ndim != 2:
+            raise ValueError(f"{name} must be 2D, got shape {tri.shape}")
+
+        dims = tuple(str(d).lower() for d in getattr(obj, 'dims', ()))
+        if dims:
+            if 'face' in dims:
+                tri = np.moveaxis(tri, dims.index('face'), 0)
+            if tri.shape[-1] != 3:
+                if tri.shape[0] == 3:
+                    tri = tri.T
+                else:
+                    raise ValueError(f"{name} must contain triangles with exactly 3 nodes per face.")
+        else:
+            if tri.shape[-1] == 3:
+                pass
+            elif tri.shape[0] == 3:
+                tri = tri.T
+            else:
+                raise ValueError(f"{name} must have shape (face, 3) or (3, face)")
+
+        tri = np.asarray(tri, dtype=np.int64)
+        start_index = 0
+        if obj is not None and hasattr(obj, 'attrs'):
+            start_index = int(obj.attrs.get('start_index', 0))
+        tri = tri - start_index
+        if np.any(tri < 0):
+            raise ValueError(f"{name} contains negative node indices after applying start_index={start_index}")
+        return tri
+
+    @staticmethod
+    def _build_unstructured_locator(grid_spec):
+        import matplotlib.tri as mtri
+
+        conn = np.asarray(grid_spec['face_node_connectivity'], dtype=np.int64)
+        if conn.ndim != 2 or conn.shape[1] != 3:
+            raise ValueError('face_node_connectivity must have shape (nface, 3)')
+
+        if grid_spec['binning_coords'] == 'projected':
+            x = np.asarray(grid_spec['node_x'], dtype=np.float64)
+            y = np.asarray(grid_spec['node_y'], dtype=np.float64)
+        else:
+            x = np.asarray(grid_spec['node_lon'], dtype=np.float64)
+            y = np.asarray(grid_spec['node_lat'], dtype=np.float64)
+
+        tri = mtri.Triangulation(x, y, triangles=conn)
+        finite = np.isfinite(x) & np.isfinite(y)
+        bbox = (
+            np.nanmin(x[finite]), np.nanmin(y[finite]),
+            np.nanmax(x[finite]), np.nanmax(y[finite]),
+        )
+        return {
+            'trifinder': tri.get_trifinder(),
+            'tri_to_cell': np.arange(conn.shape[0], dtype=np.int64),
+            'bbox': bbox,
+        }
+
     def _normalize_output_grid(self, output_grid, density_proj=None):
         from pyproj import CRS, Proj, Geod
+
         if output_grid is None:
             return None
-        if isinstance(output_grid, dict) and output_grid.get("_normalized_output_grid", False):
+        if isinstance(output_grid, dict) and output_grid.get('_normalized_output_grid', False):
             return output_grid
 
         def _get_obj(names):
@@ -5912,11 +5892,11 @@ class ChemicalDrift(OceanDrift):
                         return output_grid[nm]
                 return None
             for nm in names:
-                if hasattr(output_grid, "coords") and nm in output_grid.coords:
+                if hasattr(output_grid, 'coords') and nm in output_grid.coords:
                     return output_grid.coords[nm]
-                if hasattr(output_grid, "data_vars") and nm in output_grid.data_vars:
+                if hasattr(output_grid, 'data_vars') and nm in output_grid.data_vars:
                     return output_grid[nm]
-                if hasattr(output_grid, "variables") and nm in output_grid.variables:
+                if hasattr(output_grid, 'variables') and nm in output_grid.variables:
                     return output_grid[nm]
             return None
 
@@ -5924,8 +5904,8 @@ class ChemicalDrift(OceanDrift):
             obj = _get_obj(explicit_names)
             if obj is not None:
                 return obj
-            if center_obj is not None and hasattr(center_obj, "attrs"):
-                bname = center_obj.attrs.get("bounds", None)
+            if center_obj is not None and hasattr(center_obj, 'attrs'):
+                bname = center_obj.attrs.get('bounds', None)
                 if bname:
                     obj = _get_obj([str(bname)])
                     if obj is not None:
@@ -5935,15 +5915,15 @@ class ChemicalDrift(OceanDrift):
         def _as_array(obj):
             if obj is None:
                 return None
-            return np.asarray(obj.values if hasattr(obj, "values") else obj)
+            return np.asarray(obj.values if hasattr(obj, 'values') else obj)
 
         def _dims(obj):
-            return tuple(str(d).lower() for d in getattr(obj, "dims", ()))
+            return tuple(str(d).lower() for d in getattr(obj, 'dims', ()))
 
         def _canonical_proj4(user_crs, geographic_default=False):
             if user_crs is None:
                 if geographic_default:
-                    return "+proj=longlat +datum=WGS84 +no_defs"
+                    return '+proj=longlat +datum=WGS84 +no_defs'
                 return None
             crs = CRS.from_user_input(user_crs)
             try:
@@ -5965,7 +5945,7 @@ class ChemicalDrift(OceanDrift):
                 return v[::-1], True
             raise ValueError(f"{name} must be strictly monotonic.")
 
-        def _bounds1d_to_edges(bounds, n, flip_axis=False, name="bounds"):
+        def _bounds1d_to_edges(bounds, n, flip_axis=False, name='bounds'):
             b = np.asarray(bounds, dtype=np.float64)
             if b.ndim != 2:
                 raise ValueError(f"{name} must be a 2D array with shape (n, 2) or (2, n).")
@@ -5974,9 +5954,7 @@ class ChemicalDrift(OceanDrift):
             elif b.shape == (2, n):
                 bb = b.T.copy()
             else:
-                raise ValueError(
-                    f"{name} shape {b.shape} is not compatible with a 1D axis of length {n}."
-                )
+                raise ValueError(f"{name} shape {b.shape} is not compatible with a 1D axis of length {n}.")
 
             if flip_axis:
                 bb = bb[::-1, :]
@@ -6002,14 +5980,14 @@ class ChemicalDrift(OceanDrift):
                 raise ValueError(f"Could not construct a strictly increasing edge vector from {name}.")
             return edges
 
-        def _to_internal_2d(arr, obj=None, x_size=None, y_size=None, name="array"):
+        def _to_internal_2d(arr, obj=None, x_size=None, y_size=None, name='array'):
             a = np.asarray(arr, dtype=np.float64)
             if a.ndim != 2:
                 raise ValueError(f"{name} must be 2D, got {a.shape}")
             dims = _dims(obj)
             if dims:
-                x_like = {"x", "lon", "longitude", "xc"}
-                y_like = {"y", "lat", "latitude", "yc"}
+                x_like = {'x', 'lon', 'longitude', 'xc'}
+                y_like = {'y', 'lat', 'latitude', 'yc'}
                 if len(dims) == 2 and dims[0] in x_like and dims[1] in y_like:
                     return a
                 if len(dims) == 2 and dims[0] in y_like and dims[1] in x_like:
@@ -6018,12 +5996,10 @@ class ChemicalDrift(OceanDrift):
                 if a.shape == (y_size, x_size):
                     return a.T
                 if a.shape == (x_size, y_size):
-                    # For unlabeled arrays, default input convention is (y, x).
                     return a if x_size != y_size else a.T
-            # Unlabeled 2D arrays are assumed to be (y, x) on input.
             return a.T
 
-        def _to_internal_nodes(arr, x_size, y_size, obj=None, name="node bounds"):
+        def _to_internal_nodes(arr, x_size, y_size, obj=None, name='node bounds'):
             a = np.asarray(arr, dtype=np.float64)
             if a.ndim != 2:
                 raise ValueError(f"{name} must be 2D, got {a.shape}")
@@ -6036,22 +6012,25 @@ class ChemicalDrift(OceanDrift):
                 return a if x_size != y_size else a.T
             return _to_internal_2d(a, obj=obj, x_size=x_size + 1, y_size=y_size + 1, name=name)
 
-        def _to_internal_quad(arr, x_size, y_size, obj=None, name="quad bounds"):
+        def _to_internal_quad(arr, x_size, y_size, obj=None, name='quad bounds'):
             a = np.asarray(arr, dtype=np.float64)
             if a.ndim != 3:
                 raise ValueError(f"{name} must be 3D, got {a.shape}")
             dims = _dims(obj)
-            if dims and len(dims) == 3 and "nv" in dims:
-                nv_pos = dims.index("nv")
-                a = np.moveaxis(a, nv_pos, -1)
-                dims = ()
+            if dims and len(dims) == 3 and ('nv' in dims or 'nv4' in dims or 'nmax_face_nodes' in dims):
+                for candidate in ('nv', 'nv4', 'nmax_face_nodes'):
+                    if candidate in dims:
+                        nv_pos = dims.index(candidate)
+                        a = np.moveaxis(a, nv_pos, -1)
+                        dims = ()
+                        break
             if dims:
-                x_like = {"x", "lon", "longitude", "xc"}
-                y_like = {"y", "lat", "latitude", "yc"}
+                x_like = {'x', 'lon', 'longitude', 'xc'}
+                y_like = {'y', 'lat', 'latitude', 'yc'}
                 if len(dims) == 3:
-                    if dims[0] in x_like and dims[1] in y_like and dims[2] == "nv":
+                    if dims[0] in x_like and dims[1] in y_like:
                         return a
-                    if dims[0] in y_like and dims[1] in x_like and dims[2] == "nv":
+                    if dims[0] in y_like and dims[1] in x_like:
                         return np.transpose(a, (1, 0, 2))
             if a.shape == (y_size, x_size, 4):
                 return np.transpose(a, (1, 0, 2))
@@ -6061,9 +6040,7 @@ class ChemicalDrift(OceanDrift):
                 return np.transpose(a, (2, 1, 0))
             if a.shape == (4, x_size, y_size):
                 return np.transpose(a, (1, 2, 0)) if x_size != y_size else np.transpose(a, (2, 1, 0))
-            raise ValueError(
-                f"{name} shape {a.shape} is not compatible with (x, y, 4)=({x_size}, {y_size}, 4)."
-            )
+            raise ValueError(f"{name} shape {a.shape} is not compatible with (x, y, 4)=({x_size}, {y_size}, 4).")
 
         def _quad_or_nodes_from_bounds(bounds_obj, x_size, y_size, name):
             if bounds_obj is None:
@@ -6080,15 +6057,13 @@ class ChemicalDrift(OceanDrift):
             lat_f = np.asarray(lat, dtype=np.float64)
             mask = np.isfinite(lon_f) & np.isfinite(lat_f)
             if not np.any(mask):
-                raise ValueError("No finite lon/lat values found in output_grid.")
+                raise ValueError('No finite lon/lat values found in output_grid.')
             lonv = lon_f[mask]
             latv = lat_f[mask]
             if np.nanmin(lonv) < -180.0 or np.nanmax(lonv) > 180.0:
-                raise ValueError(
-                    "output_grid longitudes must use the ChemicalDrift [-180, 180] convention."
-                )
+                raise ValueError('output_grid longitudes must use the ChemicalDrift [-180, 180] convention.')
             if (np.nanmax(lonv) - np.nanmin(lonv)) > 180.0:
-                raise ValueError("Dateline-crossing explicit output grids are not supported.")
+                raise ValueError('Dateline-crossing explicit output grids are not supported.')
             return (
                 float(np.nanmin(lonv)),
                 float(np.nanmin(latv)),
@@ -6097,7 +6072,7 @@ class ChemicalDrift(OceanDrift):
             )
 
         def _geographic_area(lon4, lat4):
-            geod = Geod(ellps="WGS84")
+            geod = Geod(ellps='WGS84')
             X, Y, _ = lon4.shape
             area = np.full((X, Y), np.nan, dtype=np.float64)
             for ix in range(X):
@@ -6110,17 +6085,118 @@ class ChemicalDrift(OceanDrift):
                     area[ix, iy] = abs(a)
             return area
 
-        lon_obj = _get_obj(["lon", "longitude", "lon_center", "longitude_center"])
-        lat_obj = _get_obj(["lat", "latitude", "lat_center", "latitude_center"])
-        x2d_obj = _get_obj(["x_center", "xc", "projection_x_coordinate_center"])
-        y2d_obj = _get_obj(["y_center", "yc", "projection_y_coordinate_center"])
-        x_obj = x2d_obj if x2d_obj is not None else _get_obj(["x", "projection_x_coordinate"])
-        y_obj = y2d_obj if y2d_obj is not None else _get_obj(["y", "projection_y_coordinate"])
+        # triangular unstructured mesh detection
+        face_conn_obj = _get_obj(['face_node_connectivity', 'triangles', 'faces'])
+        node_lon_obj = _get_obj(['node_lon', 'lon_node'])
+        node_lat_obj = _get_obj(['node_lat', 'lat_node'])
+        node_x_obj = _get_obj(['node_x', 'x_node'])
+        node_y_obj = _get_obj(['node_y', 'y_node'])
 
-        lon_b_obj = _get_bounds_obj(lon_obj, ["lon_bounds", "lon_bnds", "longitude_bounds", "longitude_bnds"])
-        lat_b_obj = _get_bounds_obj(lat_obj, ["lat_bounds", "lat_bnds", "latitude_bounds", "latitude_bnds"])
-        x_b_obj = _get_bounds_obj(x_obj, ["x_bounds", "x_bnds", "projection_x_coordinate_bounds"])
-        y_b_obj = _get_bounds_obj(y_obj, ["y_bounds", "y_bnds", "projection_y_coordinate_bounds"])
+        if face_conn_obj is not None:
+            conn = self._normalize_triangle_connectivity(
+                _as_array(face_conn_obj), obj=face_conn_obj, name='face_node_connectivity'
+            )
+            nface = conn.shape[0]
+
+            have_geo_nodes = (node_lon_obj is not None and node_lat_obj is not None)
+            have_xy_nodes = (node_x_obj is not None and node_y_obj is not None)
+            if not have_geo_nodes and not have_xy_nodes:
+                raise ValueError('Triangular output_grid must provide either node_lon/node_lat or node_x/node_y.')
+
+            if density_proj is None:
+                if have_geo_nodes:
+                    use_xy = False
+                else:
+                    raise ValueError('density_proj must be provided when triangular output_grid is defined only in projected node_x/node_y.')
+            else:
+                if have_xy_nodes:
+                    use_xy = True
+                else:
+                    crs_in = CRS.from_user_input(density_proj)
+                    if not crs_in.is_geographic:
+                        raise ValueError('When triangular output_grid is specified only by node_lon/node_lat, density_proj must be geographic or omitted.')
+                    use_xy = False
+
+            density_proj_str = _canonical_proj4(density_proj, geographic_default=(not use_xy))
+            proj = Proj(density_proj_str)
+
+            if use_xy:
+                node_x = np.asarray(_as_array(node_x_obj), dtype=np.float64)
+                node_y = np.asarray(_as_array(node_y_obj), dtype=np.float64)
+                if have_geo_nodes:
+                    node_lon = np.asarray(_as_array(node_lon_obj), dtype=np.float64)
+                    node_lat = np.asarray(_as_array(node_lat_obj), dtype=np.float64)
+                else:
+                    node_lon, node_lat = proj(node_x, node_y, inverse=True)
+
+                if conn.max() >= node_x.size:
+                    raise ValueError('face_node_connectivity references node indices outside node_x/node_y')
+
+                x0, x1, x2 = node_x[conn[:, 0]], node_x[conn[:, 1]], node_x[conn[:, 2]]
+                y0, y1, y2 = node_y[conn[:, 0]], node_y[conn[:, 1]], node_y[conn[:, 2]]
+                cell_area = self._triangle_area_plane(x0, y0, x1, y1, x2, y2)
+                face_x_center = (x0 + x1 + x2) / 3.0
+                face_y_center = (y0 + y1 + y2) / 3.0
+            else:
+                node_lon = np.asarray(_as_array(node_lon_obj), dtype=np.float64)
+                node_lat = np.asarray(_as_array(node_lat_obj), dtype=np.float64)
+                if conn.max() >= node_lon.size:
+                    raise ValueError('face_node_connectivity references node indices outside node_lon/node_lat')
+
+                geod = Geod(ellps='WGS84')
+                cell_area = np.empty(nface, dtype=np.float64)
+                for i in range(nface):
+                    lons = [node_lon[conn[i, 0]], node_lon[conn[i, 1]], node_lon[conn[i, 2]]]
+                    lats = [node_lat[conn[i, 0]], node_lat[conn[i, 1]], node_lat[conn[i, 2]]]
+                    a, _ = geod.polygon_area_perimeter(lons, lats)
+                    cell_area[i] = abs(a)
+                node_x = None
+                node_y = None
+                face_x_center = None
+                face_y_center = None
+
+            face_lon_center = (node_lon[conn[:, 0]] + node_lon[conn[:, 1]] + node_lon[conn[:, 2]]) / 3.0
+            face_lat_center = (node_lat[conn[:, 0]] + node_lat[conn[:, 1]] + node_lat[conn[:, 2]]) / 3.0
+
+            native_x_units = str(getattr(node_x_obj, 'attrs', {}).get('units', 'm')).strip() if node_x_obj is not None else None
+            native_y_units = str(getattr(node_y_obj, 'attrs', {}).get('units', 'm')).strip() if node_y_obj is not None else None
+
+            return {
+                '_normalized_output_grid': True,
+                'topology': 'triangular_unstructured',
+                'binning_mode': 'unstructured',
+                'binning_coords': 'projected' if use_xy else 'geographic',
+                'nface': nface,
+                'nnode': int(node_lon.size),
+                'face_node_connectivity': conn,
+                'node_lon': node_lon,
+                'node_lat': node_lat,
+                'node_x': node_x,
+                'node_y': node_y,
+                'face_lon_center': face_lon_center,
+                'face_lat_center': face_lat_center,
+                'face_x_center': face_x_center,
+                'face_y_center': face_y_center,
+                'cell_area': cell_area,
+                'bbox_lonlat': _bbox_from_lonlat(node_lon, node_lat),
+                'density_proj_str': density_proj_str,
+                'x_is_index': True,
+                'y_is_index': True,
+                'native_x_units': native_x_units or ('m' if use_xy else None),
+                'native_y_units': native_y_units or ('m' if use_xy else None),
+            }
+
+        lon_obj = _get_obj(['lon', 'longitude', 'lon_center', 'longitude_center'])
+        lat_obj = _get_obj(['lat', 'latitude', 'lat_center', 'latitude_center'])
+        x2d_obj = _get_obj(['x_center', 'xc', 'projection_x_coordinate_center'])
+        y2d_obj = _get_obj(['y_center', 'yc', 'projection_y_coordinate_center'])
+        x_obj = x2d_obj if x2d_obj is not None else _get_obj(['x', 'projection_x_coordinate'])
+        y_obj = y2d_obj if y2d_obj is not None else _get_obj(['y', 'projection_y_coordinate'])
+
+        lon_b_obj = _get_bounds_obj(lon_obj, ['lon_bounds', 'lon_bnds', 'longitude_bounds', 'longitude_bnds'])
+        lat_b_obj = _get_bounds_obj(lat_obj, ['lat_bounds', 'lat_bnds', 'latitude_bounds', 'latitude_bnds'])
+        x_b_obj = _get_bounds_obj(x_obj, ['x_bounds', 'x_bnds', 'projection_x_coordinate_bounds'])
+        y_b_obj = _get_bounds_obj(y_obj, ['y_bounds', 'y_bnds', 'projection_y_coordinate_bounds'])
 
         lon_arr = _as_array(lon_obj)
         lat_arr = _as_array(lat_obj)
@@ -6128,9 +6204,9 @@ class ChemicalDrift(OceanDrift):
         y_arr = _as_array(y_obj)
 
         if (lon_arr is None) != (lat_arr is None):
-            raise ValueError("output_grid must provide both lon and lat, or neither.")
+            raise ValueError('output_grid must provide both lon and lat, or neither.')
         if (x_arr is None) != (y_arr is None):
-            raise ValueError("output_grid must provide both x and y, or neither.")
+            raise ValueError('output_grid must provide both x and y, or neither.')
 
         have_geo = (lon_arr is not None and lat_arr is not None)
         have_xy = (x_arr is not None and y_arr is not None)
@@ -6143,107 +6219,86 @@ class ChemicalDrift(OceanDrift):
             if geo_rect or geo_curv:
                 use_xy = False
             elif xy_rect or xy_curv:
-                raise ValueError(
-                    "density_proj must be provided when output_grid is defined only in x/y coordinates."
-                )
+                raise ValueError('density_proj must be provided when output_grid is defined only in x/y coordinates.')
             else:
-                raise ValueError(
-                    "output_grid must define either 1D/2D lon+lat or 1D/2D x+y arrays."
-                )
+                raise ValueError('output_grid must define either 1D/2D lon+lat or 1D/2D x+y arrays.')
         else:
             if xy_rect or xy_curv:
                 use_xy = True
             elif geo_rect or geo_curv:
                 crs_in = CRS.from_user_input(density_proj)
                 if not crs_in.is_geographic:
-                    raise ValueError(
-                        "When output_grid is specified only by lon/lat, density_proj must be geographic or omitted."
-                    )
+                    raise ValueError('When output_grid is specified only by lon/lat, density_proj must be geographic or omitted.')
                 use_xy = False
             else:
-                raise ValueError(
-                    "output_grid must define either 1D/2D lon+lat or 1D/2D x+y arrays."
-                )
+                raise ValueError('output_grid must define either 1D/2D lon+lat or 1D/2D x+y arrays.')
 
         density_proj_str = _canonical_proj4(density_proj, geographic_default=(not use_xy))
         proj = Proj(density_proj_str)
 
-        native_x_units = str(getattr(x_obj, "attrs", {}).get("units", "m")).strip() if x_obj is not None else None
-        native_y_units = str(getattr(y_obj, "attrs", {}).get("units", "m")).strip() if y_obj is not None else None
+        native_x_units = str(getattr(x_obj, 'attrs', {}).get('units', 'm')).strip() if x_obj is not None else None
+        native_y_units = str(getattr(y_obj, 'attrs', {}).get('units', 'm')).strip() if y_obj is not None else None
 
         if (not use_xy) and geo_rect:
-            lon1d, _ = _ensure_monotonic_increasing(lon_arr, "output_grid lon")
-            lat1d, _ = _ensure_monotonic_increasing(lat_arr, "output_grid lat")
-            lon_edges = (
-                _bounds1d_to_edges(_as_array(lon_b_obj), len(lon1d), name="lon_bounds")
-                if lon_b_obj is not None else self._centers_to_edges_1d(lon1d)
-            )
-            lat_edges = (
-                _bounds1d_to_edges(_as_array(lat_b_obj), len(lat1d), name="lat_bounds")
-                if lat_b_obj is not None else self._centers_to_edges_1d(lat1d)
-            )
-
-            Xc, Yc = np.meshgrid(lon1d, lat1d, indexing="xy")
+            lon1d, _ = _ensure_monotonic_increasing(lon_arr, 'output_grid lon')
+            lat1d, _ = _ensure_monotonic_increasing(lat_arr, 'output_grid lat')
+            lon_edges = (_bounds1d_to_edges(_as_array(lon_b_obj), len(lon1d), name='lon_bounds') if lon_b_obj is not None else self._centers_to_edges_1d(lon1d))
+            lat_edges = (_bounds1d_to_edges(_as_array(lat_b_obj), len(lat1d), name='lat_bounds') if lat_b_obj is not None else self._centers_to_edges_1d(lat1d))
+            Xc, Yc = np.meshgrid(lon1d, lat1d, indexing='xy')
             lon_center_2d = Xc.T.astype(np.float64, copy=False)
             lat_center_2d = Yc.T.astype(np.float64, copy=False)
-
-            Xn, Yn = np.meshgrid(lon_edges, lat_edges, indexing="xy")
+            Xn, Yn = np.meshgrid(lon_edges, lat_edges, indexing='xy')
             lon_nodes = Xn.T.astype(np.float64, copy=False)
             lat_nodes = Yn.T.astype(np.float64, copy=False)
             lon_corners_4 = self._nodes_to_corners4(lon_nodes)
             lat_corners_4 = self._nodes_to_corners4(lat_nodes)
             cell_area = _geographic_area(lon_corners_4, lat_corners_4)
-
             return {
-                "_normalized_output_grid": True,
-                "shape": lon_center_2d.shape,
-                "binning_mode": "rectilinear",
-                "binning_coords": "geographic",
-                "x_edges": lon_edges.astype(np.float64, copy=False),
-                "y_edges": lat_edges.astype(np.float64, copy=False),
-                "x_centers": lon1d.astype(np.float64, copy=False),
-                "y_centers": lat1d.astype(np.float64, copy=False),
-                "x_center_2d": None,
-                "y_center_2d": None,
-                "lon_center_2d": lon_center_2d,
-                "lat_center_2d": lat_center_2d,
-                "x_nodes": None,
-                "y_nodes": None,
-                "lon_nodes": lon_nodes,
-                "lat_nodes": lat_nodes,
-                "x_corners_4": None,
-                "y_corners_4": None,
-                "lon_corners_4": lon_corners_4,
-                "lat_corners_4": lat_corners_4,
-                "bin_x_nodes": lon_nodes,
-                "bin_y_nodes": lat_nodes,
-                "bin_x_corners_4": lon_corners_4,
-                "bin_y_corners_4": lat_corners_4,
-                "cell_area": cell_area,
-                "bbox_lonlat": _bbox_from_lonlat(lon_nodes, lat_nodes),
-                "density_proj_str": "+proj=longlat +datum=WGS84 +no_defs",
-                "x_is_index": False,
-                "y_is_index": False,
-                "native_x_units": "degrees_east",
-                "native_y_units": "degrees_north",
+                '_normalized_output_grid': True,
+                'shape': lon_center_2d.shape,
+                'topology': 'structured',
+                'binning_mode': 'rectilinear',
+                'binning_coords': 'geographic',
+                'x_edges': lon_edges.astype(np.float64, copy=False),
+                'y_edges': lat_edges.astype(np.float64, copy=False),
+                'x_centers': lon1d.astype(np.float64, copy=False),
+                'y_centers': lat1d.astype(np.float64, copy=False),
+                'x_center_2d': None,
+                'y_center_2d': None,
+                'lon_center_2d': lon_center_2d,
+                'lat_center_2d': lat_center_2d,
+                'x_nodes': None,
+                'y_nodes': None,
+                'lon_nodes': lon_nodes,
+                'lat_nodes': lat_nodes,
+                'x_corners_4': None,
+                'y_corners_4': None,
+                'lon_corners_4': lon_corners_4,
+                'lat_corners_4': lat_corners_4,
+                'bin_x_nodes': lon_nodes,
+                'bin_y_nodes': lat_nodes,
+                'bin_x_corners_4': lon_corners_4,
+                'bin_y_corners_4': lat_corners_4,
+                'cell_area': cell_area,
+                'bbox_lonlat': _bbox_from_lonlat(
+                    lon_nodes if lon_nodes is not None else lon_corners_4,
+                    lat_nodes if lat_nodes is not None else lat_corners_4,),
+                'density_proj_str': '+proj=longlat +datum=WGS84 +no_defs',
+                'x_is_index': False,
+                'y_is_index': False,
+                'native_x_units': 'degrees_east',
+                'native_y_units': 'degrees_north',
             }
 
         if use_xy and xy_rect:
-            x1d, flip_x = _ensure_monotonic_increasing(x_arr, "output_grid x")
-            y1d, flip_y = _ensure_monotonic_increasing(y_arr, "output_grid y")
-            x_edges = (
-                _bounds1d_to_edges(_as_array(x_b_obj), len(x1d), flip_axis=flip_x, name="x_bounds")
-                if x_b_obj is not None else self._centers_to_edges_1d(x1d)
-            )
-            y_edges = (
-                _bounds1d_to_edges(_as_array(y_b_obj), len(y1d), flip_axis=flip_y, name="y_bounds")
-                if y_b_obj is not None else self._centers_to_edges_1d(y1d)
-            )
-
-            Xc, Yc = np.meshgrid(x1d, y1d, indexing="xy")
+            x1d, flip_x = _ensure_monotonic_increasing(x_arr, 'output_grid x')
+            y1d, flip_y = _ensure_monotonic_increasing(y_arr, 'output_grid y')
+            x_edges = (_bounds1d_to_edges(_as_array(x_b_obj), len(x1d), flip_axis=flip_x, name='x_bounds') if x_b_obj is not None else self._centers_to_edges_1d(x1d))
+            y_edges = (_bounds1d_to_edges(_as_array(y_b_obj), len(y1d), flip_axis=flip_y, name='y_bounds') if y_b_obj is not None else self._centers_to_edges_1d(y1d))
+            Xc, Yc = np.meshgrid(x1d, y1d, indexing='xy')
             x_center_2d = Xc.T.astype(np.float64, copy=False)
             y_center_2d = Yc.T.astype(np.float64, copy=False)
-            Xn, Yn = np.meshgrid(x_edges, y_edges, indexing="xy")
+            Xn, Yn = np.meshgrid(x_edges, y_edges, indexing='xy')
             x_nodes = Xn.T.astype(np.float64, copy=False)
             y_nodes = Yn.T.astype(np.float64, copy=False)
             x_corners_4 = self._nodes_to_corners4(x_nodes)
@@ -6251,11 +6306,9 @@ class ChemicalDrift(OceanDrift):
 
             if have_geo:
                 if lon_arr.ndim != 2 or lat_arr.ndim != 2:
-                    raise ValueError(
-                        "When x/y define the output grid, lon/lat auxiliaries must be 2D."
-                    )
-                lon_center_2d = _to_internal_2d(lon_arr, obj=lon_obj, x_size=len(x1d), y_size=len(y1d), name="lon")
-                lat_center_2d = _to_internal_2d(lat_arr, obj=lat_obj, x_size=len(x1d), y_size=len(y1d), name="lat")
+                    raise ValueError('When x/y define the output grid, lon/lat auxiliaries must be 2D.')
+                lon_center_2d = _to_internal_2d(lon_arr, obj=lon_obj, x_size=len(x1d), y_size=len(y1d), name='lon')
+                lat_center_2d = _to_internal_2d(lat_arr, obj=lat_obj, x_size=len(x1d), y_size=len(y1d), name='lat')
                 if flip_x:
                     lon_center_2d = lon_center_2d[::-1, :]
                     lat_center_2d = lat_center_2d[::-1, :]
@@ -6266,10 +6319,10 @@ class ChemicalDrift(OceanDrift):
                 lon_center_2d, lat_center_2d = proj(x_center_2d, y_center_2d, inverse=True)
 
             if (lon_b_obj is None) != (lat_b_obj is None):
-                raise ValueError("lon_bounds and lat_bounds must be supplied together.")
+                raise ValueError('lon_bounds and lat_bounds must be supplied together.')
             if lon_b_obj is not None:
-                lon_nodes, lon_corners_4 = _quad_or_nodes_from_bounds(lon_b_obj, len(x1d), len(y1d), "lon_bounds")
-                lat_nodes, lat_corners_4 = _quad_or_nodes_from_bounds(lat_b_obj, len(x1d), len(y1d), "lat_bounds")
+                lon_nodes, lon_corners_4 = _quad_or_nodes_from_bounds(lon_b_obj, len(x1d), len(y1d), 'lon_bounds')
+                lat_nodes, lat_corners_4 = _quad_or_nodes_from_bounds(lat_b_obj, len(x1d), len(y1d), 'lat_bounds')
                 if lon_nodes is not None and lat_nodes is not None:
                     if flip_x:
                         lon_nodes = lon_nodes[::-1, :]
@@ -6294,116 +6347,113 @@ class ChemicalDrift(OceanDrift):
                 lat_corners_4 = self._nodes_to_corners4(lat_nodes)
 
             cell_area = self._quad_area_plane(x_corners_4, y_corners_4)
-
             return {
-                "_normalized_output_grid": True,
-                "shape": x_center_2d.shape,
-                "binning_mode": "rectilinear",
-                "binning_coords": "projected",
-                "x_edges": x_edges.astype(np.float64, copy=False),
-                "y_edges": y_edges.astype(np.float64, copy=False),
-                "x_centers": x1d.astype(np.float64, copy=False),
-                "y_centers": y1d.astype(np.float64, copy=False),
-                "x_center_2d": x_center_2d,
-                "y_center_2d": y_center_2d,
-                "lon_center_2d": np.asarray(lon_center_2d, dtype=np.float64),
-                "lat_center_2d": np.asarray(lat_center_2d, dtype=np.float64),
-                "x_nodes": x_nodes,
-                "y_nodes": y_nodes,
-                "lon_nodes": lon_nodes,
-                "lat_nodes": lat_nodes,
-                "x_corners_4": x_corners_4,
-                "y_corners_4": y_corners_4,
-                "lon_corners_4": lon_corners_4,
-                "lat_corners_4": lat_corners_4,
-                "bin_x_nodes": x_nodes,
-                "bin_y_nodes": y_nodes,
-                "bin_x_corners_4": x_corners_4,
-                "bin_y_corners_4": y_corners_4,
-                "cell_area": cell_area,
-                "bbox_lonlat": _bbox_from_lonlat(
-                    lon_nodes if lon_nodes is not None else lon_corners_4,
-                    lat_nodes if lat_nodes is not None else lat_corners_4,
-                ),
-                "density_proj_str": density_proj_str,
-                "x_is_index": False,
-                "y_is_index": False,
-                "native_x_units": native_x_units or "m",
-                "native_y_units": native_y_units or "m",
+                '_normalized_output_grid': True,
+                'shape': x_center_2d.shape,
+                'topology': 'structured',
+                'binning_mode': 'rectilinear',
+                'binning_coords': 'projected',
+                'x_edges': x_edges.astype(np.float64, copy=False),
+                'y_edges': y_edges.astype(np.float64, copy=False),
+                'x_centers': x1d.astype(np.float64, copy=False),
+                'y_centers': y1d.astype(np.float64, copy=False),
+                'x_center_2d': x_center_2d,
+                'y_center_2d': y_center_2d,
+                'lon_center_2d': np.asarray(lon_center_2d, dtype=np.float64),
+                'lat_center_2d': np.asarray(lat_center_2d, dtype=np.float64),
+                'x_nodes': x_nodes,
+                'y_nodes': y_nodes,
+                'lon_nodes': lon_nodes,
+                'lat_nodes': lat_nodes,
+                'x_corners_4': x_corners_4,
+                'y_corners_4': y_corners_4,
+                'lon_corners_4': lon_corners_4,
+                'lat_corners_4': lat_corners_4,
+                'bin_x_nodes': x_nodes,
+                'bin_y_nodes': y_nodes,
+                'bin_x_corners_4': x_corners_4,
+                'bin_y_corners_4': y_corners_4,
+                'cell_area': cell_area,
+                'bbox_lonlat': _bbox_from_lonlat(lon_nodes if lon_nodes is not None else lon_corners_4,
+                                                 lat_nodes if lat_nodes is not None else lat_corners_4),
+                'density_proj_str': density_proj_str,
+                'x_is_index': False,
+                'y_is_index': False,
+                'native_x_units': native_x_units or 'm',
+                'native_y_units': native_y_units or 'm',
             }
 
         if (not use_xy) and geo_curv:
-            lon_center_2d = _to_internal_2d(lon_arr, obj=lon_obj, name="lon")
-            lat_center_2d = _to_internal_2d(lat_arr, obj=lat_obj, x_size=lon_center_2d.shape[0], y_size=lon_center_2d.shape[1], name="lat")
+            lon_center_2d = _to_internal_2d(lon_arr, obj=lon_obj, name='lon')
+            lat_center_2d = _to_internal_2d(lat_arr, obj=lat_obj, x_size=lon_center_2d.shape[0], y_size=lon_center_2d.shape[1], name='lat')
             X, Y = lon_center_2d.shape
-
             if (lon_b_obj is None) != (lat_b_obj is None):
-                raise ValueError("lon_bounds and lat_bounds must be supplied together.")
-
+                raise ValueError('lon_bounds and lat_bounds must be supplied together.')
             if lon_b_obj is not None:
-                lon_nodes, lon_corners_4 = _quad_or_nodes_from_bounds(lon_b_obj, X, Y, "lon_bounds")
-                lat_nodes, lat_corners_4 = _quad_or_nodes_from_bounds(lat_b_obj, X, Y, "lat_bounds")
+                lon_nodes, lon_corners_4 = _quad_or_nodes_from_bounds(lon_b_obj, X, Y, 'lon_bounds')
+                lat_nodes, lat_corners_4 = _quad_or_nodes_from_bounds(lat_b_obj, X, Y, 'lat_bounds')
                 if lon_nodes is not None and lat_nodes is not None:
                     lon_corners_4 = self._nodes_to_corners4(lon_nodes)
                     lat_corners_4 = self._nodes_to_corners4(lat_nodes)
                 elif lon_corners_4 is None or lat_corners_4 is None:
-                    raise ValueError("Could not interpret curvilinear lon/lat bounds.")
+                    raise ValueError('Could not interpret curvilinear lon/lat bounds.')
             else:
                 lon_nodes = self._centers2d_to_nodes(lon_center_2d)
                 lat_nodes = self._centers2d_to_nodes(lat_center_2d)
                 lon_corners_4 = self._nodes_to_corners4(lon_nodes)
                 lat_corners_4 = self._nodes_to_corners4(lat_nodes)
-
             cell_area = _geographic_area(lon_corners_4, lat_corners_4)
             return {
-                "_normalized_output_grid": True,
-                "shape": lon_center_2d.shape,
-                "binning_mode": "curvilinear",
-                "binning_coords": "geographic",
-                "x_edges": None,
-                "y_edges": None,
-                "x_centers": np.arange(X, dtype=np.int64),
-                "y_centers": np.arange(Y, dtype=np.int64),
-                "x_center_2d": None,
-                "y_center_2d": None,
-                "lon_center_2d": lon_center_2d,
-                "lat_center_2d": lat_center_2d,
-                "x_nodes": None,
-                "y_nodes": None,
-                "lon_nodes": lon_nodes,
-                "lat_nodes": lat_nodes,
-                "x_corners_4": None,
-                "y_corners_4": None,
-                "lon_corners_4": lon_corners_4,
-                "lat_corners_4": lat_corners_4,
-                "bin_x_nodes": lon_nodes,
-                "bin_y_nodes": lat_nodes,
-                "bin_x_corners_4": lon_corners_4,
-                "bin_y_corners_4": lat_corners_4,
-                "cell_area": cell_area,
-                "bbox_lonlat": _bbox_from_lonlat(lon_nodes, lat_nodes),
-                "density_proj_str": "+proj=longlat +datum=WGS84 +no_defs",
-                "x_is_index": True,
-                "y_is_index": True,
-                "native_x_units": None,
-                "native_y_units": None,
+                '_normalized_output_grid': True,
+                'shape': lon_center_2d.shape,
+                'topology': 'structured',
+                'binning_mode': 'curvilinear',
+                'binning_coords': 'geographic',
+                'x_edges': None,
+                'y_edges': None,
+                'x_centers': np.arange(X, dtype=np.int64),
+                'y_centers': np.arange(Y, dtype=np.int64),
+                'x_center_2d': None,
+                'y_center_2d': None,
+                'lon_center_2d': lon_center_2d,
+                'lat_center_2d': lat_center_2d,
+                'x_nodes': None,
+                'y_nodes': None,
+                'lon_nodes': lon_nodes,
+                'lat_nodes': lat_nodes,
+                'x_corners_4': None,
+                'y_corners_4': None,
+                'lon_corners_4': lon_corners_4,
+                'lat_corners_4': lat_corners_4,
+                'bin_x_nodes': lon_nodes,
+                'bin_y_nodes': lat_nodes,
+                'bin_x_corners_4': lon_corners_4,
+                'bin_y_corners_4': lat_corners_4,
+                'cell_area': cell_area,
+                'bbox_lonlat': _bbox_from_lonlat(
+                        lon_nodes if lon_nodes is not None else lon_corners_4,
+                        lat_nodes if lat_nodes is not None else lat_corners_4,),
+                'density_proj_str': '+proj=longlat +datum=WGS84 +no_defs',
+                'x_is_index': True,
+                'y_is_index': True,
+                'native_x_units': None,
+                'native_y_units': None,
             }
 
         if use_xy and xy_curv:
-            x_center_2d = _to_internal_2d(x_arr, obj=x_obj, name="x_center")
-            y_center_2d = _to_internal_2d(y_arr, obj=y_obj, x_size=x_center_2d.shape[0], y_size=x_center_2d.shape[1], name="y_center")
+            x_center_2d = _to_internal_2d(x_arr, obj=x_obj, name='x_center')
+            y_center_2d = _to_internal_2d(y_arr, obj=y_obj, x_size=x_center_2d.shape[0], y_size=x_center_2d.shape[1], name='y_center')
             X, Y = x_center_2d.shape
             if (x_b_obj is None) != (y_b_obj is None):
-                raise ValueError("x_bounds and y_bounds must be supplied together.")
-
+                raise ValueError('x_bounds and y_bounds must be supplied together.')
             if x_b_obj is not None:
-                x_nodes, x_corners_4 = _quad_or_nodes_from_bounds(x_b_obj, X, Y, "x_bounds")
-                y_nodes, y_corners_4 = _quad_or_nodes_from_bounds(y_b_obj, X, Y, "y_bounds")
+                x_nodes, x_corners_4 = _quad_or_nodes_from_bounds(x_b_obj, X, Y, 'x_bounds')
+                y_nodes, y_corners_4 = _quad_or_nodes_from_bounds(y_b_obj, X, Y, 'y_bounds')
                 if x_nodes is not None and y_nodes is not None:
                     x_corners_4 = self._nodes_to_corners4(x_nodes)
                     y_corners_4 = self._nodes_to_corners4(y_nodes)
                 elif x_corners_4 is None or y_corners_4 is None:
-                    raise ValueError("Could not interpret curvilinear x/y bounds.")
+                    raise ValueError('Could not interpret curvilinear x/y bounds.')
             else:
                 x_nodes = self._centers2d_to_nodes(x_center_2d)
                 y_nodes = self._centers2d_to_nodes(y_center_2d)
@@ -6412,24 +6462,22 @@ class ChemicalDrift(OceanDrift):
 
             if have_geo:
                 if lon_arr.ndim != 2 or lat_arr.ndim != 2:
-                    raise ValueError(
-                        "For projected curvilinear output grids, lon/lat auxiliaries must be 2D."
-                    )
-                lon_center_2d = _to_internal_2d(lon_arr, obj=lon_obj, x_size=X, y_size=Y, name="lon")
-                lat_center_2d = _to_internal_2d(lat_arr, obj=lat_obj, x_size=X, y_size=Y, name="lat")
+                    raise ValueError('For projected curvilinear output grids, lon/lat auxiliaries must be 2D.')
+                lon_center_2d = _to_internal_2d(lon_arr, obj=lon_obj, x_size=X, y_size=Y, name='lon')
+                lat_center_2d = _to_internal_2d(lat_arr, obj=lat_obj, x_size=X, y_size=Y, name='lat')
             else:
                 lon_center_2d, lat_center_2d = proj(x_center_2d, y_center_2d, inverse=True)
 
             if (lon_b_obj is None) != (lat_b_obj is None):
-                raise ValueError("lon_bounds and lat_bounds must be supplied together.")
+                raise ValueError('lon_bounds and lat_bounds must be supplied together.')
             if lon_b_obj is not None:
-                lon_nodes, lon_corners_4 = _quad_or_nodes_from_bounds(lon_b_obj, X, Y, "lon_bounds")
-                lat_nodes, lat_corners_4 = _quad_or_nodes_from_bounds(lat_b_obj, X, Y, "lat_bounds")
+                lon_nodes, lon_corners_4 = _quad_or_nodes_from_bounds(lon_b_obj, X, Y, 'lon_bounds')
+                lat_nodes, lat_corners_4 = _quad_or_nodes_from_bounds(lat_b_obj, X, Y, 'lat_bounds')
                 if lon_nodes is not None and lat_nodes is not None:
                     lon_corners_4 = self._nodes_to_corners4(lon_nodes)
                     lat_corners_4 = self._nodes_to_corners4(lat_nodes)
                 elif lon_corners_4 is None or lat_corners_4 is None:
-                    raise ValueError("Could not interpret curvilinear lon/lat bounds.")
+                    raise ValueError('Could not interpret curvilinear lon/lat bounds.')
             else:
                 lon_nodes, lat_nodes = proj(x_nodes, y_nodes, inverse=True)
                 lon_corners_4 = self._nodes_to_corners4(lon_nodes)
@@ -6437,42 +6485,43 @@ class ChemicalDrift(OceanDrift):
 
             cell_area = self._quad_area_plane(x_corners_4, y_corners_4)
             return {
-                "_normalized_output_grid": True,
-                "shape": x_center_2d.shape,
-                "binning_mode": "curvilinear",
-                "binning_coords": "projected",
-                "x_edges": None,
-                "y_edges": None,
-                "x_centers": np.arange(X, dtype=np.int64),
-                "y_centers": np.arange(Y, dtype=np.int64),
-                "x_center_2d": x_center_2d,
-                "y_center_2d": y_center_2d,
-                "lon_center_2d": np.asarray(lon_center_2d, dtype=np.float64),
-                "lat_center_2d": np.asarray(lat_center_2d, dtype=np.float64),
-                "x_nodes": x_nodes,
-                "y_nodes": y_nodes,
-                "lon_nodes": lon_nodes,
-                "lat_nodes": lat_nodes,
-                "x_corners_4": x_corners_4,
-                "y_corners_4": y_corners_4,
-                "lon_corners_4": lon_corners_4,
-                "lat_corners_4": lat_corners_4,
-                "bin_x_nodes": x_nodes,
-                "bin_y_nodes": y_nodes,
-                "bin_x_corners_4": x_corners_4,
-                "bin_y_corners_4": y_corners_4,
-                "cell_area": cell_area,
-                "bbox_lonlat": _bbox_from_lonlat(lon_nodes, lat_nodes),
-                "density_proj_str": density_proj_str,
-                "x_is_index": True,
-                "y_is_index": True,
-                "native_x_units": native_x_units or "m",
-                "native_y_units": native_y_units or "m",
+                '_normalized_output_grid': True,
+                'shape': x_center_2d.shape,
+                'topology': 'structured',
+                'binning_mode': 'curvilinear',
+                'binning_coords': 'projected',
+                'x_edges': None,
+                'y_edges': None,
+                'x_centers': np.arange(X, dtype=np.int64),
+                'y_centers': np.arange(Y, dtype=np.int64),
+                'x_center_2d': x_center_2d,
+                'y_center_2d': y_center_2d,
+                'lon_center_2d': np.asarray(lon_center_2d, dtype=np.float64),
+                'lat_center_2d': np.asarray(lat_center_2d, dtype=np.float64),
+                'x_nodes': x_nodes,
+                'y_nodes': y_nodes,
+                'lon_nodes': lon_nodes,
+                'lat_nodes': lat_nodes,
+                'x_corners_4': x_corners_4,
+                'y_corners_4': y_corners_4,
+                'lon_corners_4': lon_corners_4,
+                'lat_corners_4': lat_corners_4,
+                'bin_x_nodes': x_nodes,
+                'bin_y_nodes': y_nodes,
+                'bin_x_corners_4': x_corners_4,
+                'bin_y_corners_4': y_corners_4,
+                'cell_area': cell_area,
+                'bbox_lonlat': _bbox_from_lonlat(
+                    lon_nodes if lon_nodes is not None else lon_corners_4,
+                    lat_nodes if lat_nodes is not None else lat_corners_4,),
+                'density_proj_str': density_proj_str,
+                'x_is_index': True,
+                'y_is_index': True,
+                'native_x_units': native_x_units or 'm',
+                'native_y_units': native_y_units or 'm',
             }
 
-        raise ValueError(
-            "Unsupported output_grid layout. Provide either 1D lon/lat, 2D lon/lat, 1D x/y, or 2D x_center/y_center."
-        )
+        raise ValueError('Unsupported output_grid layout. Provide either 1D lon/lat, 2D lon/lat, 1D x/y, 2D x_center/y_center, or triangular node/connectivity arrays.')
 
     def get_chemical_density_array(self, pixelsize_m, z_array,
                                    is_moll, is_latlon,
@@ -6486,7 +6535,7 @@ class ChemicalDrift(OceanDrift):
                                    time_chunk_size=50,
                                    timestep_values=False,
                                    compress_species=False,
-                                   weight_mode="extensive",
+                                   weight_mode='extensive',
                                    output_grid=None):
         """
         Compute a gridded species-resolved histogram from particle positions.
@@ -6516,32 +6565,24 @@ class ChemicalDrift(OceanDrift):
         - Supplied output corners must be non-crossing in [-180, 180].
         - timestep_values is intended only for cumulative extensive mass-like quantities.
         """
-
         import pandas as pd
         from pyproj import Transformer, Proj
 
         def _is_supported_cumulative_mass_weight(name):
             cumulative_mass_names = {
-                'mass_degraded',
-                'mass_degraded_water',
-                'mass_degraded_sediment',
-                'mass_volatilized',
-                'mass_photodegraded',
-                'mass_biodegraded',
-                'mass_biodegraded_water',
-                'mass_biodegraded_sediment',
-                'mass_hydrolyzed',
-                'mass_hydrolyzed_water',
-                'mass_hydrolyzed_sediment',
+                'mass_degraded', 'mass_degraded_water', 'mass_degraded_sediment',
+                'mass_volatilized', 'mass_photodegraded', 'mass_biodegraded',
+                'mass_biodegraded_water', 'mass_biodegraded_sediment',
+                'mass_hydrolyzed', 'mass_hydrolyzed_water', 'mass_hydrolyzed_sediment',
             }
             return str(name) in cumulative_mass_names
 
         def _should_drop_all_zero_trajectories(weight_name, weight_mode, timestep_values):
-            if weight_mode != "extensive":
+            if weight_mode != 'extensive':
                 return False
             if timestep_values:
                 return True
-            return ("mass" in str(weight_name).lower())
+            return ('mass' in str(weight_name).lower())
 
         def _validate_longitude_convention(lon_values, *, allow_dateline_span=False):
             lon_values = np.asarray(lon_values, dtype=float)
@@ -6549,47 +6590,42 @@ class ChemicalDrift(OceanDrift):
             if lon_f.size == 0:
                 return
             if lon_f.min() < -180.0 or lon_f.max() > 180.0:
-                raise ValueError(
-                    "ChemicalDrift uses longitudes in the [-180, 180] convention. "
-                    "0..360 longitudes are not supported here."
-                )
+                raise ValueError('ChemicalDrift uses longitudes in the [-180, 180] convention. 0..360 longitudes are not supported here.')
             if not allow_dateline_span and (lon_f.max() - lon_f.min() > 180.0):
-                raise ValueError(
-                    "Automatic bounds inference is disabled for dateline-spanning data in the [-180, 180] convention."
-                )
-
-        if density_proj is None:
-            raise ValueError("density_proj must be a pyproj.Proj instance (or compatible).")
+                raise ValueError('Automatic bounds inference is disabled for dateline-spanning data in the [-180, 180] convention.')
 
         weight_mode = str(weight_mode).lower()
-        if weight_mode not in {"extensive", "mean"}:
+        if weight_mode not in {'extensive', 'mean'}:
             raise ValueError("weight_mode must be one of: 'extensive', 'mean'")
         if weight is None:
-            raise ValueError("weight must be specified explicitly.")
-        if weight_mode == "extensive" and "mass" not in str(weight).lower():
+            raise ValueError('weight must be specified explicitly.')
+        if weight_mode == 'extensive' and 'mass' not in str(weight).lower():
             raise ValueError("weight_mode='extensive' currently supports only mass-like weights.")
-        if timestep_values and weight_mode != "extensive":
+        if timestep_values and weight_mode != 'extensive':
             raise ValueError("timestep_values=True is only valid with weight_mode='extensive'.")
         if timestep_values and not _is_supported_cumulative_mass_weight(weight):
-            raise ValueError(
-                f"timestep_values=True is intended only for known cumulative extensive mass quantities. Got weight={weight!r}."
-            )
+            raise ValueError(f"timestep_values=True is intended only for known cumulative extensive mass quantities. Got weight={weight!r}.")
 
         Nspecies_total = int(self.nspecies)
-        need_counts = elements_density or (weight_mode == "mean")
+        need_counts = elements_density or (weight_mode == 'mean')
 
         grid_spec = None
         if output_grid is not None:
-            if isinstance(output_grid, dict) and output_grid.get("_normalized_output_grid", False):
+            if isinstance(output_grid, dict) and output_grid.get('_normalized_output_grid', False):
                 grid_spec = output_grid
             else:
                 grid_spec = self._normalize_output_grid(output_grid, density_proj=density_proj)
 
+        if density_proj is None:
+            if grid_spec is None:
+                raise ValueError('density_proj must be a pyproj.Proj instance (or compatible).')
+            density_proj = Proj(grid_spec['density_proj_str'])
+
         if grid_spec is None:
             if is_moll and pixelsize_m is None:
-                raise ValueError("pixelsize_m must be provided for Mollweide grids (is_moll=True).")
+                raise ValueError('pixelsize_m must be provided for Mollweide grids (is_moll=True).')
             if (not is_moll) and (lat_resol is None or lon_resol is None):
-                raise ValueError("lat_resol and lon_resol must be provided for non-moll grids (is_moll=False).")
+                raise ValueError('lat_resol and lon_resol must be provided for non-moll grids (is_moll=False).')
 
         times_1d = pd.to_datetime(self.result.time.values)
         if time_start is not None:
@@ -6604,7 +6640,7 @@ class ChemicalDrift(OceanDrift):
             if time_end is not None:
                 tmask &= (times_1d <= time_end)
             if not tmask.any():
-                raise ValueError("No timesteps fall within [time_start, time_end].")
+                raise ValueError('No timesteps fall within [time_start, time_end].')
             time_sel = np.flatnonzero(tmask)
             time_filtered = True
         else:
@@ -6614,7 +6650,7 @@ class ChemicalDrift(OceanDrift):
         weight_2d = None
         keep_idx = None
         if weight is not None:
-            w_T = self.result[weight].transpose("time", "trajectory").data
+            w_T = self.result[weight].transpose('time', 'trajectory').data
             if timestep_values:
                 if isinstance(time_sel, slice):
                     idx_ext = slice(None)
@@ -6629,12 +6665,12 @@ class ChemicalDrift(OceanDrift):
                         idx_ext = idx_sel
                         drop_first = False
                 w_cum_ext = w_T[idx_ext, :]
-                dW_ext = self._cumulative_to_deltas_ffill(w_cum_ext, chunk_cols=20000, out=None, mode="deltas", out_ff=None)
+                dW_ext = self._cumulative_to_deltas_ffill(w_cum_ext, chunk_cols=20000, out=None, mode='deltas', out_ff=None)
                 dW = dW_ext[1:, :] if drop_first else dW_ext
                 elem_keep = np.any(dW > 0, axis=0)
                 keep_idx = np.flatnonzero(elem_keep)
                 if keep_idx.size == 0:
-                    raise ValueError("All trajectories have zero timestep increments in the selected window.")
+                    raise ValueError('All trajectories have zero timestep increments in the selected window.')
                 weight_2d = dW[:, keep_idx].astype(np.float32, copy=False)
             else:
                 w_sel = w_T[time_sel, :]
@@ -6644,7 +6680,7 @@ class ChemicalDrift(OceanDrift):
                         elem_keep &= np.any(w_sel != 0, axis=0)
                     keep_idx = np.flatnonzero(elem_keep)
                     if keep_idx.size == 0:
-                        raise ValueError("All trajectories are non-finite in the selected window.")
+                        raise ValueError('All trajectories are non-finite in the selected window.')
                     w_sel = w_sel[:, keep_idx]
                 weight_2d = w_sel.astype(np.float32, copy=False)
 
@@ -6656,13 +6692,13 @@ class ChemicalDrift(OceanDrift):
                 try:
                     out.setflags(write=False)
                 except Exception as e:
-                    logger.debug("Could not mark sliced array readonly: %s", e, exc_info=True)
+                    logger.debug('Could not mark sliced array readonly: %s', e, exc_info=True)
             return out
 
-        lon_T = self.result.lon.transpose("time", "trajectory").data
-        lat_T = self.result.lat.transpose("time", "trajectory").data
-        z_T = self.result.z.transpose("time", "trajectory").data
-        sp_T = self.result.specie.transpose("time", "trajectory").data
+        lon_T = self.result.lon.transpose('time', 'trajectory').data
+        lat_T = self.result.lat.transpose('time', 'trajectory').data
+        z_T = self.result.z.transpose('time', 'trajectory').data
+        sp_T = self.result.specie.transpose('time', 'trajectory').data
 
         lon_2d = _slice_time_traj(lon_T, time_sel, keep_idx, readonly=True)
         lat_2d = _slice_time_traj(lat_T, time_sel, keep_idx, readonly=True)
@@ -6673,34 +6709,34 @@ class ChemicalDrift(OceanDrift):
         originmarker_2d = None
         status_2d = None
         if origin_marker is not None:
-            om_T = self.result.origin_marker.transpose("time", "trajectory").data
+            om_T = self.result.origin_marker.transpose('time', 'trajectory').data
             originmarker_2d = _slice_time_traj(om_T, time_sel, keep_idx, readonly=True)
         if active_status:
-            st_T = self.result.status.transpose("time", "trajectory").data
+            st_T = self.result.status.transpose('time', 'trajectory').data
             status_2d = _slice_time_traj(st_T, time_sel, keep_idx, readonly=True)
 
         n_timef, n_elem = lon_2d.shape
 
         transformer = None
         if grid_spec is not None:
-            if grid_spec["binning_coords"] == "projected":
-                source_proj = Proj("+proj=longlat +datum=WGS84 +no_defs")
+            if grid_spec['binning_coords'] == 'projected':
+                source_proj = Proj('+proj=longlat +datum=WGS84 +no_defs')
                 transformer = Transformer.from_proj(source_proj, density_proj, always_xy=True)
         else:
             if not is_latlon:
-                source_proj = Proj("+proj=longlat +datum=WGS84 +no_defs")
+                source_proj = Proj('+proj=longlat +datum=WGS84 +no_defs')
                 transformer = Transformer.from_proj(source_proj, density_proj, always_xy=True)
 
         present_species = np.zeros(Nspecies_total, dtype=bool)
         bounds_from_corners = (grid_spec is not None) or all(v is not None for v in (llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat))
         if any(v is not None for v in (llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat)) and not bounds_from_corners:
-            raise ValueError("Either provide all four corners or none.")
+            raise ValueError('Either provide all four corners or none.')
 
         if grid_spec is None and bounds_from_corners:
             if not (-180.0 <= llcrnrlon <= 180.0 and -180.0 <= urcrnrlon <= 180.0):
-                raise ValueError("Supplied output longitudes must use the ChemicalDrift [-180, 180] convention.")
+                raise ValueError('Supplied output longitudes must use the ChemicalDrift [-180, 180] convention.')
             if llcrnrlon > urcrnrlon:
-                raise ValueError("Dateline-crossing output domains are not supported here.")
+                raise ValueError('Dateline-crossing output domains are not supported here.')
             llcrnrx, llcrnry = density_proj(llcrnrlon, llcrnrlat)
             urcrnrx, urcrnry = density_proj(urcrnrlon, urcrnrlat)
             xmin = xmax = ymin = ymax = None
@@ -6713,12 +6749,13 @@ class ChemicalDrift(OceanDrift):
 
         if active_status:
             status_categories = self.status_categories
-            if "active" not in status_categories:
-                raise ValueError("No active elements in simulation.")
-            active_index = status_categories.index("active")
+            if 'active' not in status_categories:
+                raise ValueError('No active elements in simulation.')
+            active_index = status_categories.index('active')
         else:
             active_index = None
 
+        # pass 1: discover present species and bounds if needed
         for t0i in range(0, n_timef, time_chunk_size):
             t1i = min(t0i + time_chunk_size, n_timef)
             blk_T = t1i - t0i
@@ -6753,27 +6790,17 @@ class ChemicalDrift(OceanDrift):
                         m &= (om_row == origin_marker)
                 if st_row is not None:
                     m &= (st_row == active_index)
-
-                np.isfinite(lon_row, out=tmp)
-                m &= tmp
-                np.isfinite(lat_row, out=tmp)
-                m &= tmp
-                np.isfinite(z_row, out=tmp)
-                m &= tmp
-                np.greater_equal(lon_row, -180.0, out=tmp)
-                m &= tmp
-                np.less_equal(lon_row, 180.0, out=tmp)
-                m &= tmp
-                np.greater_equal(lat_row, -90.0, out=tmp)
-                m &= tmp
-                np.less_equal(lat_row, 90.0, out=tmp)
-                m &= tmp
-
+                np.isfinite(lon_row, out=tmp); m &= tmp
+                np.isfinite(lat_row, out=tmp); m &= tmp
+                np.isfinite(z_row, out=tmp); m &= tmp
+                np.greater_equal(lon_row, -180.0, out=tmp); m &= tmp
+                np.less_equal(lon_row, 180.0, out=tmp); m &= tmp
+                np.greater_equal(lat_row, -90.0, out=tmp); m &= tmp
+                np.less_equal(lat_row, 90.0, out=tmp); m &= tmp
                 if not m.any():
                     continue
                 idx = np.flatnonzero(m)
                 sp_vals = sp_row[idx]
-
                 if np.issubdtype(sp_vals.dtype, np.integer):
                     sp_int = sp_vals.astype(np.int32, copy=False)
                     valid_sp = (sp_int >= 0) & (sp_int < Nspecies_total)
@@ -6783,13 +6810,11 @@ class ChemicalDrift(OceanDrift):
                     intlike = finite_sp & (sp_vals == sp_round)
                     sp_int = sp_round.astype(np.int32, copy=False)
                     valid_sp = intlike & (sp_int >= 0) & (sp_int < Nspecies_total)
-
                 if not valid_sp.any():
                     continue
                 idx = idx[valid_sp]
                 sp_int = sp_int[valid_sp]
                 present_species[sp_int] = True
-
                 if grid_spec is None and not bounds_from_corners:
                     xs = lon_row[idx]
                     ys = lat_row[idx]
@@ -6803,7 +6828,7 @@ class ChemicalDrift(OceanDrift):
         if compress_species:
             keep_species = np.flatnonzero(present_species).astype(np.int32)
             if keep_species.size == 0:
-                raise ValueError("No species found after filtering.")
+                raise ValueError('No species found after filtering.')
             name_species_out = [self.name_species[i] for i in keep_species]
         else:
             keep_species = np.arange(Nspecies_total, dtype=np.int32)
@@ -6813,26 +6838,147 @@ class ChemicalDrift(OceanDrift):
         old2new[keep_species] = np.arange(keep_species.size, dtype=np.int32)
         Nout = int(keep_species.size)
 
-        locator = None
+        # triangular unstructured branch
+        if grid_spec is not None and grid_spec.get('topology') == 'triangular_unstructured':
+            locator = self._build_unstructured_locator(grid_spec)
+            nface = int(grid_spec['nface'])
+            z_array = np.asarray(z_array, dtype=np.float32)
+            if z_array.size < 2:
+                raise ValueError('z_array must contain at least two edges.')
+            Zx = len(z_array) - 1
+
+            H = np.zeros((n_timef, Nout, Zx, nface), dtype=np.float32)
+            H_count = np.zeros_like(H, dtype=np.uint32) if need_counts else None
+            x_centers = np.arange(nface, dtype=np.int64)
+            y_centers = None
+            lon_center = np.asarray(grid_spec['face_lon_center'], dtype=np.float64)
+            lat_center = np.asarray(grid_spec['face_lat_center'], dtype=np.float64)
+
+            m.fill(False); tmp.fill(False)
+            for t0i in range(0, n_timef, time_chunk_size):
+                t1i = min(t0i + time_chunk_size, n_timef)
+                blk_T = t1i - t0i
+                lon_blk = lon_2d[t0i:t1i, :]
+                lat_blk = lat_2d[t0i:t1i, :]
+                z_blk = z_2d[t0i:t1i, :]
+                sp_blk = specie_2d[t0i:t1i, :]
+                w_blk = weight_2d[t0i:t1i, :] if weight_2d is not None else None
+                om_blk = originmarker_2d[t0i:t1i, :] if originmarker_2d is not None else None
+                st_blk = status_2d[t0i:t1i, :] if status_2d is not None else None
+
+                for t_rel in range(blk_T):
+                    ti = t0i + t_rel
+                    lon_row = lon_blk[t_rel, :]
+                    lat_row = lat_blk[t_rel, :]
+                    z_row = z_blk[t_rel, :]
+                    sp_row = sp_blk[t_rel, :]
+                    w_row = None if w_blk is None else w_blk[t_rel, :]
+                    om_row = None if om_blk is None else om_blk[t_rel, :]
+                    st_row = None if st_blk is None else st_blk[t_rel, :]
+
+                    m.fill(True)
+                    if w_row is not None:
+                        np.isfinite(w_row, out=tmp); m &= tmp
+                        if timestep_values:
+                            np.greater(w_row, 0.0, out=tmp); m &= tmp
+                    if om_row is not None:
+                        if isinstance(origin_marker, (list, tuple, np.ndarray)):
+                            m &= np.isin(om_row, origin_marker)
+                        else:
+                            m &= (om_row == origin_marker)
+                    if st_row is not None:
+                        m &= (st_row == active_index)
+                    np.isfinite(lon_row, out=tmp); m &= tmp
+                    np.isfinite(lat_row, out=tmp); m &= tmp
+                    np.isfinite(z_row, out=tmp); m &= tmp
+                    if not m.any():
+                        continue
+
+                    idx = np.flatnonzero(m)
+                    sp_vals = sp_row[idx]
+                    if np.issubdtype(sp_vals.dtype, np.integer):
+                        sp_int = sp_vals.astype(np.int32, copy=False)
+                        valid_sp = (sp_int >= 0) & (sp_int < Nspecies_total)
+                    else:
+                        finite_sp = np.isfinite(sp_vals)
+                        sp_round = np.rint(sp_vals)
+                        intlike = finite_sp & (sp_vals == sp_round)
+                        sp_int = sp_round.astype(np.int32, copy=False)
+                        valid_sp = intlike & (sp_int >= 0) & (sp_int < Nspecies_total)
+                    if not valid_sp.any():
+                        continue
+                    idx = idx[valid_sp]
+                    sp_int = sp_int[valid_sp]
+                    sp_new = old2new[sp_int]
+                    ok = (sp_new >= 0)
+                    if not ok.any():
+                        continue
+                    idx = idx[ok]
+                    sp_new = sp_new[ok]
+
+                    for sp_out in np.unique(sp_new):
+                        sel = (sp_new == sp_out)
+                        if not sel.any():
+                            continue
+                        idx_sp = idx[sel]
+                        xs = lon_row[idx_sp]
+                        ys = lat_row[idx_sp]
+                        zs = z_row[idx_sp].astype(np.float32, copy=True)
+                        ws = None if w_row is None else w_row[idx_sp]
+                        pos = zs >= 0.0
+                        if pos.any():
+                            zs[pos] = -1e-4
+                        if grid_spec['binning_coords'] == 'projected':
+                            xs, ys = transformer.transform(xs, ys)
+                        bbox = locator['bbox']
+                        inside = np.isfinite(xs) & np.isfinite(ys) & (xs >= bbox[0]) & (xs <= bbox[2]) & (ys >= bbox[1]) & (ys <= bbox[3])
+                        if not inside.any():
+                            continue
+                        xs = xs[inside]
+                        ys = ys[inside]
+                        zs = zs[inside]
+                        ws = ws[inside] if ws is not None else None
+                        face_idx = locator['trifinder'](xs, ys)
+                        if np.ma.isMaskedArray(face_idx):
+                            face_idx = face_idx.filled(-1)
+                        face_idx = np.asarray(face_idx, dtype=np.int64)
+                        zbin = np.searchsorted(z_array, zs, side='right') - 1
+                        ok = (face_idx >= 0) & (zbin >= 0) & (zbin < Zx)
+                        if not ok.any():
+                            continue
+                        face_idx = face_idx[ok]
+                        zbin = zbin[ok]
+                        H_view = H[ti, sp_out, :, :]
+                        if ws is None:
+                            np.add.at(H_view, (zbin, face_idx), 1.0)
+                        else:
+                            np.add.at(H_view, (zbin, face_idx), ws[ok].astype(np.float32, copy=False))
+                        if H_count is not None:
+                            Hc_view = H_count[ti, sp_out, :, :]
+                            np.add.at(Hc_view, (zbin, face_idx), 1)
+
+            return H, x_centers, y_centers, lon_center, lat_center, H_count, keep_species, name_species_out
+
+        # structured branches
         if grid_spec is not None:
-            if grid_spec["binning_mode"] == "rectilinear":
-                x_edges = np.asarray(grid_spec["x_edges"], dtype=np.float32)
-                y_edges = np.asarray(grid_spec["y_edges"], dtype=np.float32)
+            if grid_spec['binning_mode'] == 'rectilinear':
+                x_edges = np.asarray(grid_spec['x_edges'], dtype=np.float32)
+                y_edges = np.asarray(grid_spec['y_edges'], dtype=np.float32)
                 if x_edges.size < 2 or y_edges.size < 2:
-                    raise ValueError(f"Invalid explicit rectilinear edges: x={x_edges.size}, y={y_edges.size}")
+                    raise ValueError(f'Invalid explicit rectilinear edges: x={x_edges.size}, y={y_edges.size}')
             else:
                 x_edges = None
                 y_edges = None
                 locator = self._build_curvilinear_locator(grid_spec)
-            x_centers = np.asarray(grid_spec["x_centers"])
-            y_centers = np.asarray(grid_spec["y_centers"])
-            lon_center_2d = np.asarray(grid_spec["lon_center_2d"], dtype=np.float64)
-            lat_center_2d = np.asarray(grid_spec["lat_center_2d"], dtype=np.float64)
-            Xx, Yx = grid_spec["shape"]
+            x_centers = np.asarray(grid_spec['x_centers'])
+            y_centers = np.asarray(grid_spec['y_centers'])
+            lon_center_2d = np.asarray(grid_spec['lon_center_2d'], dtype=np.float64)
+            lat_center_2d = np.asarray(grid_spec['lat_center_2d'], dtype=np.float64)
+            Xx, Yx = grid_spec['shape']
         else:
             if not bounds_from_corners:
                 if not np.isfinite([xmin, xmax, ymin, ymax]).all():
-                    raise ValueError("Could not infer bounds from data after filtering.")
+                    raise ValueError('Could not infer bounds from data after filtering.')
                 if is_moll:
                     llcrnrx, llcrnry = xmin - pixelsize_m, ymin - pixelsize_m
                     urcrnrx, urcrnry = xmax + pixelsize_m, ymax + pixelsize_m
@@ -6848,9 +6994,7 @@ class ChemicalDrift(OceanDrift):
             x_edges = np.asarray(x_edges, dtype=np.float32)
             y_edges = np.asarray(y_edges, dtype=np.float32)
             if x_edges.size < 2 or y_edges.size < 2:
-                raise ValueError(
-                    f"Invalid bin edges: x={x_edges.size}, y={y_edges.size}. Check bounds/resolution and/or data coverage."
-                )
+                raise ValueError(f'Invalid bin edges: x={x_edges.size}, y={y_edges.size}. Check bounds/resolution and/or data coverage.')
             x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
             y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])
             Xc, Yc = np.meshgrid(x_centers, y_centers, indexing='xy')
@@ -6866,14 +7010,11 @@ class ChemicalDrift(OceanDrift):
 
         z_array = np.asarray(z_array, dtype=np.float32)
         if z_array.size < 2:
-            raise ValueError("z_array must contain at least two edges.")
+            raise ValueError('z_array must contain at least two edges.')
         Zx = len(z_array) - 1
-
         H = np.zeros((n_timef, Nout, Zx, Xx, Yx), dtype=np.float32)
         H_count = np.zeros_like(H, dtype=np.uint32) if need_counts else None
-
-        m.fill(False)
-        tmp.fill(False)
+        m.fill(False); tmp.fill(False)
 
         for t0i in range(0, n_timef, time_chunk_size):
             t1i = min(t0i + time_chunk_size, n_timef)
@@ -6898,11 +7039,9 @@ class ChemicalDrift(OceanDrift):
 
                 m.fill(True)
                 if w_row is not None:
-                    np.isfinite(w_row, out=tmp)
-                    m &= tmp
+                    np.isfinite(w_row, out=tmp); m &= tmp
                     if timestep_values:
-                        np.greater(w_row, 0.0, out=tmp)
-                        m &= tmp
+                        np.greater(w_row, 0.0, out=tmp); m &= tmp
                 if om_row is not None:
                     if isinstance(origin_marker, (list, tuple, np.ndarray)):
                         m &= np.isin(om_row, origin_marker)
@@ -6910,23 +7049,15 @@ class ChemicalDrift(OceanDrift):
                         m &= (om_row == origin_marker)
                 if st_row is not None:
                     m &= (st_row == active_index)
-                np.isfinite(lon_row, out=tmp)
-                m &= tmp
-                np.isfinite(lat_row, out=tmp)
-                m &= tmp
-                np.isfinite(z_row, out=tmp)
-                m &= tmp
-                np.greater_equal(lon_row, -180.0, out=tmp)
-                m &= tmp
-                np.less_equal(lon_row, 180.0, out=tmp)
-                m &= tmp
-                np.greater_equal(lat_row, -90.0, out=tmp)
-                m &= tmp
-                np.less_equal(lat_row, 90.0, out=tmp)
-                m &= tmp
+                np.isfinite(lon_row, out=tmp); m &= tmp
+                np.isfinite(lat_row, out=tmp); m &= tmp
+                np.isfinite(z_row, out=tmp); m &= tmp
+                np.greater_equal(lon_row, -180.0, out=tmp); m &= tmp
+                np.less_equal(lon_row, 180.0, out=tmp); m &= tmp
+                np.greater_equal(lat_row, -90.0, out=tmp); m &= tmp
+                np.less_equal(lat_row, 90.0, out=tmp); m &= tmp
                 if not m.any():
                     continue
-
                 idx = np.flatnonzero(m)
                 sp_vals = sp_row[idx]
                 if np.issubdtype(sp_vals.dtype, np.integer):
@@ -6960,14 +7091,12 @@ class ChemicalDrift(OceanDrift):
                     pos = (zs >= 0.0)
                     if pos.any():
                         zs[pos] = -1e-4
-                    ws = None
-                    if w_row is not None:
-                        ws = w_row[idx_sp]
+                    ws = None if w_row is None else w_row[idx_sp]
 
                     if grid_spec is not None:
-                        if grid_spec["binning_coords"] == "projected":
+                        if grid_spec['binning_coords'] == 'projected':
                             xs, ys = transformer.transform(xs, ys)
-                        if grid_spec["binning_mode"] == "rectilinear":
+                        if grid_spec['binning_mode'] == 'rectilinear':
                             if ws is None:
                                 H_xyz, _ = np.histogramdd((xs, ys, zs), bins=(x_edges, y_edges, z_array))
                                 H[ti, sp_out, :, :, :] += H_xyz.transpose(2, 0, 1).astype(np.float32, copy=False)
@@ -6980,27 +7109,23 @@ class ChemicalDrift(OceanDrift):
                                     H_xyz_c, _ = np.histogramdd((xs, ys, zs), bins=(x_edges, y_edges, z_array))
                                     H_count[ti, sp_out, :, :, :] += H_xyz_c.transpose(2, 0, 1).astype(np.uint32, copy=False)
                         else:
-                            bbox = locator["bbox"]
-                            inside_bbox = (
-                                np.isfinite(xs) & np.isfinite(ys) &
-                                (xs >= bbox[0]) & (xs <= bbox[2]) &
-                                (ys >= bbox[1]) & (ys <= bbox[3])
-                            )
+                            bbox = locator['bbox']
+                            inside_bbox = np.isfinite(xs) & np.isfinite(ys) & (xs >= bbox[0]) & (xs <= bbox[2]) & (ys >= bbox[1]) & (ys <= bbox[3])
                             if not inside_bbox.any():
                                 continue
                             xs_loc = xs[inside_bbox]
                             ys_loc = ys[inside_bbox]
                             zs_loc = zs[inside_bbox]
                             ws_loc = ws[inside_bbox] if ws is not None else None
-                            tri_idx = locator["trifinder"](xs_loc, ys_loc)
+                            tri_idx = locator['trifinder'](xs_loc, ys_loc)
                             if np.ma.isMaskedArray(tri_idx):
                                 tri_idx = tri_idx.filled(-1)
                             tri_idx = np.asarray(tri_idx, dtype=np.int64)
-                            zbin = np.searchsorted(z_array, zs_loc, side="right") - 1
+                            zbin = np.searchsorted(z_array, zs_loc, side='right') - 1
                             ok = (tri_idx >= 0) & (zbin >= 0) & (zbin < Zx)
                             if not ok.any():
                                 continue
-                            cell_flat = locator["tri_to_cell"][tri_idx[ok]]
+                            cell_flat = locator['tri_to_cell'][tri_idx[ok]]
                             zbin = zbin[ok]
                             H_view = H[ti, sp_out, :, :, :].reshape(Zx, -1)
                             if ws_loc is None:
@@ -7026,6 +7151,7 @@ class ChemicalDrift(OceanDrift):
                                 H_count[ti, sp_out, :, :, :] += H_xyz_c.transpose(2, 0, 1).astype(np.uint32, copy=False)
 
         return H, x_centers, y_centers, lon_center_2d, lat_center_2d, H_count, keep_species, name_species_out
+
 
     def get_pixel_mean_depth(self, lons, lats,
                              is_moll, is_latlon,
@@ -7060,6 +7186,7 @@ class ChemicalDrift(OceanDrift):
         on the output grid.
         """
         from scipy import interpolate
+        import gc
 
         def _interp_linear_then_nearest(x_src, y_src, v_src, x_tgt, y_tgt, field_name):
             x_src = np.asarray(x_src, dtype=float).ravel()
@@ -7121,7 +7248,8 @@ class ChemicalDrift(OceanDrift):
             if blt_src_invalid is None:
                 blt_src_invalid = (
                     np.ma.getmaskarray(self.conc_active_sediment_layer_thickness) |
-                    ~np.isfinite(blt_grd))
+                    ~np.isfinite(blt_grd)
+                )
             blt_invalid_mask = _interp_mask_nearest(
                 lon_grd, lat_grd, blt_src_invalid,
                 lons, lats,
@@ -7131,16 +7259,16 @@ class ChemicalDrift(OceanDrift):
 
         for attr in (
             'conc_lon', 'conc_lat', 'conc_topo', 'conc_topo_source_invalid',
-            'conc_active_sediment_layer_thickness', 'conc_active_sediment_layer_thickness_source_invalid',):
+            'conc_active_sediment_layer_thickness', 'conc_active_sediment_layer_thickness_source_invalid'
+        ):
             if hasattr(self, attr):
                 setattr(self, attr, None)
+        gc.collect()
 
         if output_grid is not None and output_grid.get('cell_area', None) is not None:
             area = np.asarray(output_grid['cell_area'], dtype=np.float64)
-            if area.shape != lons.shape:
-                raise ValueError(
-                    f"Explicit output_grid cell_area shape {area.shape} != target shape {lons.shape}"
-                )
+            if area.shape != np.asarray(lons).shape:
+                raise ValueError(f"Explicit output_grid cell_area shape {area.shape} != target shape {np.asarray(lons).shape}")
             return h, area, active_sediment_layer_thickness, bathy_invalid_mask
 
         if is_moll:
@@ -7158,6 +7286,325 @@ class ChemicalDrift(OceanDrift):
 
         area = np.full_like(lats, abs(lat_resol * lon_resol), dtype=np.float64)
         return h, area, active_sediment_layer_thickness, bathy_invalid_mask
+
+# -----------------------------------------------------------------------------
+# Additional writer / derived-output helpers
+# -----------------------------------------------------------------------------
+    @staticmethod
+    def _normalize_landmask(mask, policy='auto', thr=0.5):
+        m_ma = np.ma.asarray(mask)
+        m = np.asarray(np.ma.filled(m_ma, np.nan))
+        if m.dtype == np.bool_:
+            return m
+        if np.issubdtype(m.dtype, np.floating):
+            m = np.where(np.isfinite(m), m, 0.0)
+        if policy == 'auto':
+            v = m[np.isfinite(m)].ravel()
+            if v.size == 0:
+                return np.zeros(m.shape, dtype=bool)
+            if v.size > 100000:
+                step = max(1, v.size // 100000)
+                v = v[::step]
+            u = np.unique(v)
+            if np.all(np.isin(u, [0, 1])):
+                policy = 'eq1'
+            elif np.issubdtype(m.dtype, np.integer) and u.max() > 1:
+                policy = 'nonzero'
+            elif np.issubdtype(m.dtype, np.floating) and (v.min() >= 0.0) and (v.max() <= 1.0):
+                policy = 'thr'
+            else:
+                policy = 'nonzero'
+        if policy == 'eq1':
+            return (m == 1)
+        elif policy == 'nonzero':
+            return (m != 0)
+        elif policy == 'thr':
+            return (m >= thr)
+        else:
+            raise ValueError(f'Unknown policy: {policy}')
+
+    @staticmethod
+    def _build_z_array(zlevels, *, zmin_cap=-10000.0, ztop=0.0):
+        if zlevels is None:
+            return np.array([zmin_cap, ztop], dtype=np.float32)
+        zlev = np.asarray(zlevels, dtype=np.float32)
+        zlev = zlev[np.isfinite(zlev)]
+        zlev = np.minimum(zlev, ztop)
+        zlev = np.concatenate(([zmin_cap], zlev, [ztop]))
+        zlev = np.unique(np.sort(zlev))
+        if zlev.size < 2:
+            zlev = np.array([zmin_cap, ztop], dtype=np.float32)
+        return zlev.astype(np.float32, copy=False)
+
+    def horizontal_smooth(self, a, n=0, landmask=None, pad_mode='edge', land_value=0.0):
+        """
+        2D box smoothing (mean over (2n+1)x(2n+1)), no wrap.
+        - Ignores NaNs
+        - If landmask is provided (True=land), land is excluded from averages
+        - Land cells in output are set to land_value (default 0.0)
+        """
+        a = np.asarray(a, dtype=np.float64)
+        if n <= 0:
+            return a
+        n = int(n)
+        ydm, xdm = a.shape
+        valid = np.isfinite(a)
+        lm = None
+        if landmask is not None:
+            lm = np.asarray(landmask, dtype=bool)
+            if lm.shape != a.shape and lm.T.shape == a.shape:
+                lm = lm.T
+            if lm.shape != a.shape:
+                raise ValueError(f'landmask shape {lm.shape} != a shape {a.shape}')
+            valid &= ~lm
+        a0 = np.where(valid, a, 0.0)
+        w0 = valid.astype(np.float64)
+        a_pad = np.pad(a0, ((n, n), (n, n)), mode=pad_mode)
+        w_pad = np.pad(w0, ((n, n), (n, n)), mode=pad_mode)
+        S = np.pad(a_pad, ((1, 0), (1, 0)), mode='constant').cumsum(0).cumsum(1)
+        W = np.pad(w_pad, ((1, 0), (1, 0)), mode='constant').cumsum(0).cumsum(1)
+        k = 2 * n + 1
+        num = S[k:, k:] - S[:-k, k:] - S[k:, :-k] + S[:-k, :-k]
+        den = W[k:, k:] - W[:-k, k:] - W[k:, :-k] + W[:-k, :-k]
+        out = np.full((ydm, xdm), np.nan, dtype=np.float64)
+        ok = den > 0
+        out[ok] = num[ok] / den[ok]
+        if lm is not None:
+            out[lm] = land_value
+        return out
+    @staticmethod
+    def _reorder_depth_for_output(arr, depth_order):
+        if arr is None:
+            return None
+        arr = np.asarray(arr)
+        if arr.ndim == 5:
+            return arr[:, :, depth_order, :, :]
+        if arr.ndim == 4:
+            return arr[:, :, depth_order, :]
+        if arr.ndim == 3:
+            return arr[depth_order, :, :]
+        if arr.ndim == 2:
+            return arr[depth_order, :]
+        raise ValueError(f'Unexpected array rank for depth reorder: {arr.ndim}')
+
+    @staticmethod
+    def _rename_common_dims(da, time_name=None):
+        out = da.copy()
+        renamed_avg_time = False
+        if time_name == 'avg_time' and 'avg_time' in out.dims:
+            out = out.rename({'avg_time': 'time'})
+            renamed_avg_time = True
+        if renamed_avg_time:
+            out.attrs['source_time_coordinate'] = 'avg_time'
+        return out
+
+    @staticmethod
+    def _build_unique_rename_map(dims, pairs, context='dimension rename'):
+        rename_pairs = [(old, new) for old, new in pairs if old in dims]
+        target_to_sources = {}
+        for old, new in rename_pairs:
+            target_to_sources.setdefault(new, []).append(old)
+        duplicate_targets = {new: olds for new, olds in target_to_sources.items() if len(olds) > 1}
+        if duplicate_targets:
+            raise ValueError(f"Ambiguous {context}: multiple source dims map to the same target {duplicate_targets}. Input dims are {tuple(dims)}")
+        rename_map = dict(rename_pairs)
+        for old, new in rename_pairs:
+            if new in dims and old != new:
+                raise ValueError(f"Cannot rename {old!r} -> {new!r}: {new!r} already exists in dims {tuple(dims)}")
+        return rename_map
+
+    @staticmethod
+    def _apply_common_attrs(out_da, Sim_description,
+                            projection_proj4=None, grid_mapping=None,
+                            longitude=None, latitude=None,
+                            x=None, y=None,
+                            x_units=None, y_units=None):
+        if Sim_description is not None:
+            out_da.attrs['sim_description'] = str(Sim_description)
+        if projection_proj4 is not None:
+            out_da.attrs['projection'] = str(projection_proj4)
+        if grid_mapping is not None:
+            out_da.attrs['grid_mapping'] = str(grid_mapping)
+        if longitude is not None:
+            lon_arr = np.asarray(longitude)
+            if lon_arr.ndim == 1 and lon_arr.size > 1:
+                out_da.attrs['lon_resol'] = f"{np.around(abs(lon_arr[1] - lon_arr[0]), decimals=8)} degrees_east"
+        if latitude is not None:
+            lat_arr = np.asarray(latitude)
+            if lat_arr.ndim == 1 and lat_arr.size > 1:
+                out_da.attrs['lat_resol'] = f"{np.around(abs(lat_arr[1] - lat_arr[0]), decimals=8)} degrees_north"
+        if x is not None:
+            x_arr = np.asarray(x)
+            if x_arr.ndim == 1 and x_arr.size > 1:
+                xu = str(x_units) if x_units is not None else 'm'
+                out_da.attrs['dx'] = f"{np.around(abs(x_arr[1] - x_arr[0]), decimals=8)} {xu}"
+        if y is not None:
+            y_arr = np.asarray(y)
+            if y_arr.ndim == 1 and y_arr.size > 1:
+                yu = str(y_units) if y_units is not None else 'm'
+                out_da.attrs['dy'] = f"{np.around(abs(y_arr[1] - y_arr[0]), decimals=8)} {yu}"
+        return out_da
+
+
+    def _prepare_unstructured_output_da(self, da, src_ds):
+        out = da.copy()
+        if 'face' not in out.dims:
+            raise ValueError("Unstructured output requires a 'face' dimension.")
+        for nm in ('face_lon', 'face_lat', 'face_x', 'face_y', 'lon', 'lat'):
+            if nm in src_ds.variables and nm not in out.coords:
+                var = src_ds[nm]
+                if getattr(var, 'dims', ()) == ('face',):
+                    out = out.assign_coords({nm: ('face', np.asarray(var.values))})
+                    out.coords[nm].attrs = dict(getattr(var, 'attrs', {}))
+        return out
+
+
+    def _prepare_rectilinear_output_da(self, da, lat_var=None, lon_var=None, lat1d_from_2d=None, lon1d_from_2d=None):
+        out = da.copy()
+        def _coord_attrs_or_default(coord, defaults):
+            attrs = {}
+            if coord is not None and hasattr(coord, 'attrs'):
+                attrs.update(dict(coord.attrs))
+            for k, v in defaults.items():
+                attrs.setdefault(k, v)
+            return attrs
+        def _maybe_get_existing_1d_coord(out_da, names):
+            for nm in names:
+                if nm in out_da.coords and getattr(out_da.coords[nm], 'ndim', 0) == 1:
+                    return out_da.coords[nm]
+            return None
+        existing_lat_1d = _maybe_get_existing_1d_coord(out, ('latitude', 'lat'))
+        existing_lon_1d = _maybe_get_existing_1d_coord(out, ('longitude', 'lon'))
+        stale_geo_coords = [nm for nm in ('lat', 'lon', 'latitude', 'longitude') if nm in out.coords]
+        if stale_geo_coords:
+            out = out.drop_vars(stale_geo_coords)
+        rename_map = self._build_unique_rename_map(out.dims, (('lat', 'latitude'), ('lon', 'longitude'), ('y', 'latitude'), ('x', 'longitude')), context='rectilinear spatial dimension rename')
+        if rename_map:
+            out = out.rename(rename_map)
+        if 'latitude' not in out.dims or 'longitude' not in out.dims:
+            raise ValueError("Rectilinear geographic output requires dimensions that can be mapped to ('latitude', 'longitude').")
+        lat_vals = lon_vals = lat_attrs = lon_attrs = None
+        if (lat_var is not None and getattr(lat_var, 'ndim', 0) == 1 and lon_var is not None and getattr(lon_var, 'ndim', 0) == 1):
+            lat_vals = np.asarray(lat_var.values)
+            lon_vals = np.asarray(lon_var.values)
+            lat_attrs = _coord_attrs_or_default(lat_var, {'standard_name': 'latitude', 'long_name': 'latitude', 'units': 'degrees_north', 'axis': 'Y'})
+            lon_attrs = _coord_attrs_or_default(lon_var, {'standard_name': 'longitude', 'long_name': 'longitude', 'units': 'degrees_east', 'axis': 'X'})
+        elif lat1d_from_2d is not None and lon1d_from_2d is not None:
+            lat_vals = np.asarray(lat1d_from_2d, dtype=float)
+            lon_vals = np.asarray(lon1d_from_2d, dtype=float)
+            lat_attrs = {'standard_name': 'latitude', 'long_name': 'latitude', 'units': 'degrees_north', 'axis': 'Y'}
+            lon_attrs = {'standard_name': 'longitude', 'long_name': 'longitude', 'units': 'degrees_east', 'axis': 'X'}
+        elif existing_lat_1d is not None and existing_lon_1d is not None:
+            lat_vals = np.asarray(existing_lat_1d.values)
+            lon_vals = np.asarray(existing_lon_1d.values)
+            lat_attrs = _coord_attrs_or_default(existing_lat_1d, {'standard_name': 'latitude', 'long_name': 'latitude', 'units': 'degrees_north', 'axis': 'Y'})
+            lon_attrs = _coord_attrs_or_default(existing_lon_1d, {'standard_name': 'longitude', 'long_name': 'longitude', 'units': 'degrees_east', 'axis': 'X'})
+        else:
+            raise ValueError('Could not build rectilinear geographic output.')
+        if out.sizes['latitude'] != lat_vals.size:
+            raise ValueError(f"Latitude size mismatch: data has {out.sizes['latitude']} rows, but derived latitude has {lat_vals.size} values.")
+        if out.sizes['longitude'] != lon_vals.size:
+            raise ValueError(f"Longitude size mismatch: data has {out.sizes['longitude']} cols, but derived longitude has {lon_vals.size} values.")
+        out = out.assign_coords(latitude=('latitude', lat_vals), longitude=('longitude', lon_vals))
+        out.coords['latitude'].attrs = lat_attrs
+        out.coords['longitude'].attrs = lon_attrs
+        return out
+
+    @staticmethod
+    def _prepare_curvilinear_output_da(da, y_var=None, x_var=None, lon2d=None, lat2d=None, separable=False, Verbose=True):
+        out = da.copy()
+        import xarray as xr
+        def _coord_attrs_or_default(coord, defaults):
+            attrs = {}
+            if coord is not None and hasattr(coord, 'attrs'):
+                attrs.update(dict(coord.attrs))
+            for k, v in defaults.items():
+                attrs.setdefault(k, v)
+            return attrs
+        if 'lat' in out.dims or 'lon' in out.dims or 'latitude' in out.dims or 'longitude' in out.dims:
+            raise ValueError('Curvilinear/projected output helper expects y/x dimensions.')
+        if 'y' not in out.dims or 'x' not in out.dims:
+            raise ValueError("Curvilinear/projected mode requires data dimensions containing both 'y' and 'x'.")
+        stale_geo_coords = [nm for nm in ('lat', 'lon', 'latitude', 'longitude') if nm in out.coords]
+        if stale_geo_coords:
+            out = out.drop_vars(stale_geo_coords)
+        if y_var is not None and getattr(y_var, 'ndim', 0) == 1:
+            y_vals = np.asarray(y_var.values)
+            if out.sizes['y'] != y_vals.size:
+                raise ValueError(f"y size mismatch: data has {out.sizes['y']} rows, but source y has {y_vals.size} values.")
+            out = out.assign_coords(y=('y', y_vals))
+            out.coords['y'].attrs = _coord_attrs_or_default(y_var, {'standard_name': 'projection_y_coordinate', 'long_name': 'y', 'units': 'm', 'axis': 'Y'})
+        if x_var is not None and getattr(x_var, 'ndim', 0) == 1:
+            x_vals = np.asarray(x_var.values)
+            if out.sizes['x'] != x_vals.size:
+                raise ValueError(f"x size mismatch: data has {out.sizes['x']} cols, but source x has {x_vals.size} values.")
+            out = out.assign_coords(x=('x', x_vals))
+            out.coords['x'].attrs = _coord_attrs_or_default(x_var, {'standard_name': 'projection_x_coordinate', 'long_name': 'x', 'units': 'm', 'axis': 'X'})
+        if lon2d is not None and lat2d is not None:
+            if lon2d.shape != lat2d.shape:
+                raise ValueError(f'lon2d/lat2d shape mismatch: {lon2d.shape} vs {lat2d.shape}')
+            if tuple(lon2d.dims) != tuple(lat2d.dims):
+                raise ValueError(f'lon2d/lat2d dims mismatch: {lon2d.dims} vs {lat2d.dims}')
+            if tuple(lon2d.dims) != ('y', 'x'):
+                raise ValueError(f"Expected 2D lon/lat auxiliary coords on dims ('y', 'x'), got {lon2d.dims}")
+            if lon2d.shape != (out.sizes['y'], out.sizes['x']):
+                raise ValueError(f"2D longitude shape mismatch: expected {(out.sizes['y'], out.sizes['x'])}, got {lon2d.shape}")
+            lon_aux = xr.DataArray(np.asarray(lon2d.values), dims=('y', 'x'), attrs={'standard_name': 'longitude', 'long_name': 'longitude of cell center', 'units': 'degrees_east', **dict(getattr(lon2d, 'attrs', {}))})
+            lat_aux = xr.DataArray(np.asarray(lat2d.values), dims=('y', 'x'), attrs={'standard_name': 'latitude', 'long_name': 'latitude of cell center', 'units': 'degrees_north', **dict(getattr(lat2d, 'attrs', {}))})
+            out = out.assign_coords(lon=lon_aux, lat=lat_aux)
+        if Verbose and lon2d is not None and lat2d is not None and not separable:
+            print('Preserving projected/curvilinear y/x grid with 2D lon/lat auxiliary coordinates')
+        return out
+
+    def prepare_derived_output_da(self, da, src_ds, time_name=None, spatial_mode='auto', rectilinear_tol=1e-10, Verbose=True):
+        spatial_mode = str(spatial_mode).lower()
+        if spatial_mode not in {'auto', 'rectilinear', 'curvilinear'}:
+            raise ValueError("spatial_mode must be one of: 'auto', 'rectilinear', 'curvilinear'")
+        out = self._rename_common_dims(da, time_name=time_name)
+        if 'face' in out.dims:
+            return self._prepare_unstructured_output_da(out, src_ds)
+        def _get_src_var(names):
+            for name in names:
+                if name in src_ds.coords:
+                    return src_ds.coords[name]
+                if name in src_ds.data_vars:
+                    return src_ds[name]
+                if name in src_ds.variables:
+                    return src_ds[name]
+            return None
+        def _is_separable_2d(lon_da, lat_da, tol):
+            lon2d = np.asarray(lon_da.values, dtype=float)
+            lat2d = np.asarray(lat_da.values, dtype=float)
+            if lon2d.ndim != 2 or lat2d.ndim != 2 or lon2d.shape != lat2d.shape:
+                return False, None, None
+            lon1d = lon2d[0, :]
+            lat1d = lat2d[:, 0]
+            lon_ok = np.allclose(lon2d, np.broadcast_to(lon1d[None, :], lon2d.shape), rtol=0.0, atol=tol, equal_nan=True)
+            lat_ok = np.allclose(lat2d, np.broadcast_to(lat1d[:, None], lat2d.shape), rtol=0.0, atol=tol, equal_nan=True)
+            return bool(lon_ok and lat_ok), lon1d, lat1d
+        lat_var = _get_src_var(['latitude', 'lat'])
+        lon_var = _get_src_var(['longitude', 'lon'])
+        y_var = _get_src_var(['y'])
+        x_var = _get_src_var(['x'])
+        lon2d = lon_var if (lon_var is not None and getattr(lon_var, 'ndim', 0) == 2) else None
+        lat2d = lat_var if (lat_var is not None and getattr(lat_var, 'ndim', 0) == 2) else None
+        separable = False
+        lon1d_from_2d = None
+        lat1d_from_2d = None
+        if lon2d is not None and lat2d is not None:
+            separable, lon1d_from_2d, lat1d_from_2d = _is_separable_2d(lon2d, lat2d, rectilinear_tol)
+        has_native_1d_geo = (lat_var is not None and getattr(lat_var, 'ndim', 0) == 1 and lon_var is not None and getattr(lon_var, 'ndim', 0) == 1)
+        already_rectilinear_geo_dims = (('latitude' in out.dims or 'lat' in out.dims) and ('longitude' in out.dims or 'lon' in out.dims))
+        if spatial_mode == 'auto':
+            target_mode = 'rectilinear' if (has_native_1d_geo or separable) else 'curvilinear'
+        else:
+            target_mode = spatial_mode
+        if target_mode == 'rectilinear':
+            return self._prepare_rectilinear_output_da(out, lat_var=lat_var, lon_var=lon_var, lat1d_from_2d=lat1d_from_2d if separable else None, lon1d_from_2d=lon1d_from_2d if separable else None)
+        if already_rectilinear_geo_dims:
+            return self._prepare_rectilinear_output_da(out, lat_var=lat_var, lon_var=lon_var)
+        return self._prepare_curvilinear_output_da(out, y_var=y_var, x_var=x_var, lon2d=lon2d, lat2d=lat2d, separable=separable, Verbose=Verbose)
+
 
     def write_netcdf_chemical_density_map(self, filename, pixelsize_m='auto', zlevels=None,
                                           lat_resol=None, lon_resol=None,
@@ -7183,7 +7630,7 @@ class ChemicalDrift(OceanDrift):
                                           sim_description=None,
                                           timestep_values=False,
                                           compress_species=False,
-                                          weight_mode="extensive",
+                                          weight_mode='extensive',
                                           weight_unit=None,
                                           output_grid=None):
         '''
@@ -7303,24 +7750,39 @@ class ChemicalDrift(OceanDrift):
         mass_unit and weight_unit are labels only here. No unit conversion is performed.
         '''
         import numpy as np
+        import pandas as pd
+        import gc
         from netCDF4 import Dataset, date2num
         import opendrift
         from pyproj import CRS, Proj, Transformer
-        import pandas as pd
-        import gc
+
+        def _close_if_possible(obj, name):
+            if obj is not None and hasattr(obj, 'close'):
+                try:
+                    obj.close()
+                except Exception as e:
+                    logger.debug('Could not close %s: %s', name, e, exc_info=True)
+
+        def _remove_reader_by_key(self, key):
+            rdr = self.env.readers.pop(key, None)
+            if rdr is not None and hasattr(rdr, 'close'):
+                try:
+                    rdr.close()
+                except Exception as e:
+                    logger.debug('Could not close reader %r: %s', key, e, exc_info=True)
 
         def is_valid_proj4(density_proj):
             try:
                 CRS.from_string(density_proj)
                 return density_proj
             except Exception as e1:
-                logger.debug("CRS.from_string failed for density_proj=%r: %s", density_proj, e1, exc_info=True)
+                logger.debug('CRS.from_string failed for density_proj=%r: %s', density_proj, e1, exc_info=True)
                 try:
                     density_proj = CRS.from_epsg(density_proj).to_proj4()
                     return density_proj
                 except Exception as e2:
-                    logger.debug("CRS.from_epsg failed for density_proj=%r: %s", density_proj, e2, exc_info=True)
-                    raise ValueError(f"Invalid density_proj: {density_proj}") from e2
+                    logger.debug('CRS.from_epsg failed for density_proj=%r: %s', density_proj, e2, exc_info=True)
+                    raise ValueError(f'Invalid density_proj: {density_proj}') from e2
 
         def _normalize_unit_string(u):
             if u is None:
@@ -7331,158 +7793,90 @@ class ChemicalDrift(OceanDrift):
             src_unit = None
             if weight is not None and weight in self.result.variables:
                 try:
-                    src_unit = _normalize_unit_string(self.result[weight].attrs.get("units", None))
+                    src_unit = _normalize_unit_string(self.result[weight].attrs.get('units', None))
                 except Exception as e:
-                    logger.debug("Could not read source units for weight=%r: %s", weight, e, exc_info=True)
+                    logger.debug('Could not read source units for weight=%r: %s', weight, e, exc_info=True)
                     src_unit = None
-
-            if weight_mode == "extensive":
+            if weight_mode == 'extensive':
                 if mass_unit is None:
                     if not src_unit:
-                        raise ValueError(
-                            "mass_unit must be specified when source weight units are unavailable "
-                            "for weight_mode='extensive'.")
+                        raise ValueError("mass_unit must be specified when source weight units are unavailable for weight_mode='extensive'.")
                     return src_unit
                 out_unit = _normalize_unit_string(mass_unit)
                 if src_unit and out_unit != src_unit:
-                    raise ValueError(
-                        f"mass_unit={out_unit!r} does not match source units {src_unit!r}. "
-                        "This writer does not perform unit conversion.")
+                    raise ValueError(f"mass_unit={out_unit!r} does not match source units {src_unit!r}. This writer does not perform unit conversion.")
                 return out_unit
-
             out_unit = _normalize_unit_string(weight_unit)
             if not out_unit:
-                raise ValueError(
-                    "weight_unit must be specified explicitly for weight_mode='mean'. "
-                    "This writer does not infer or convert units in mean mode.")
+                raise ValueError("weight_unit must be specified explicitly for weight_mode='mean'. This writer does not infer or convert units in mean mode.")
             if src_unit and out_unit != src_unit:
-                raise ValueError(
-                    f"weight_unit={out_unit!r} does not match source units {src_unit!r}. "
-                    "This writer does not perform unit conversion.")
+                raise ValueError(f"weight_unit={out_unit!r} does not match source units {src_unit!r}. This writer does not perform unit conversion.")
             return out_unit
 
         def _resolve_var_name(ds, requested_name_or_standard_name):
             if requested_name_or_standard_name in ds.data_vars:
                 return requested_name_or_standard_name
-            matches = [
-                v for v in ds.data_vars
-                if str(ds[v].attrs.get("standard_name", "")).strip() == requested_name_or_standard_name]
-
+            matches = [v for v in ds.data_vars if str(ds[v].attrs.get('standard_name', '')).strip() == requested_name_or_standard_name]
             if len(matches) == 1:
                 return matches[0]
             elif len(matches) > 1:
-                raise ValueError(
-                    f"More than one variable in dataset matches standard_name "
-                    f"{requested_name_or_standard_name!r}: {matches}")
+                raise ValueError(f'More than one variable in dataset matches standard_name {requested_name_or_standard_name!r}: {matches}')
             else:
-                raise ValueError(
-                    f"No variable found with name or standard_name "
-                    f"{requested_name_or_standard_name!r}")
+                raise ValueError(f'No variable found with name or standard_name {requested_name_or_standard_name!r}')
 
-        def _open_cf_reader_with_var(nc_path, var_name,
-                                     llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat,
-                                     allow_corner_adjust=False):
-            """
-            Open an auxiliary CF-like reader and subset it with lon/lat corners.
-
-            This helper currently supports only auxiliary datasets whose selection
-            coordinates are rectilinear longitude/latitude in the ChemicalDrift
-            [-180, 180] convention.
-            It does not support:
-              - projected auxiliary x/y coordinates in meters
-              - 0..360 longitude convention
-              - dateline-crossing auxiliary domains
-              - curvilinear 2D lon/lat coordinate selection
-            """
+        def _open_cf_reader_with_var(nc_path, var_name, llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat, allow_corner_adjust=False):
             from opendrift.readers import reader_netCDF_CF_generic
             import xarray as xr
-
-            for nm, vv in {
-                "llcrnrlon": llcrnrlon,
-                "urcrnrlon": urcrnrlon,
-                "llcrnrlat": llcrnrlat,
-                "urcrnrlat": urcrnrlat,
-            }.items():
+            for nm, vv in {'llcrnrlon': llcrnrlon, 'urcrnrlon': urcrnrlon, 'llcrnrlat': llcrnrlat, 'urcrnrlat': urcrnrlat}.items():
                 if vv is None or not np.isfinite(vv):
-                    raise ValueError(f"{nm} must be finite, got {vv!r}")
-
+                    raise ValueError(f'{nm} must be finite, got {vv!r}')
             if not (-180.0 <= llcrnrlon <= 180.0 and -180.0 <= urcrnrlon <= 180.0):
-                raise ValueError(
-                    "Output corners must use the ChemicalDrift longitude convention [-180, 180]. "
-                    "0..360 output domains are not supported here.")
+                raise ValueError('Output corners must use the ChemicalDrift longitude convention [-180, 180]. 0..360 output domains are not supported here.')
             if llcrnrlon > urcrnrlon:
-                raise ValueError(
-                    "Dateline-crossing output domains are not supported in this writer. "
-                    "Use non-crossing corners with llcrnrlon <= urcrnrlon.")
-
+                raise ValueError('Dateline-crossing output domains are not supported in this writer. Use non-crossing corners with llcrnrlon <= urcrnrlon.')
             with xr.open_dataset(nc_path) as ds:
                 resolved_var = _resolve_var_name(ds, var_name)
                 da = ds[resolved_var]
-
-                lat_names = ["latitude", "lat"]
-                lon_names = ["longitude", "lon", "long"]
+                lat_names = ['latitude', 'lat']
+                lon_names = ['longitude', 'lon', 'long']
                 lat_name = next((name for name in lat_names if name in da.coords), None)
                 lon_name = next((name for name in lon_names if name in da.coords), None)
                 if any(x is None for x in [lat_name, lon_name]):
-                    raise ValueError(f"Latitude/longitude coordinate names not found in {nc_path}")
-
+                    raise ValueError(f'Latitude/longitude coordinate names not found in {nc_path}')
                 lat_values = np.asarray(da.coords[lat_name].values)
                 lon_values = np.asarray(da.coords[lon_name].values)
                 lat_f = lat_values[np.isfinite(lat_values)]
                 lon_f = lon_values[np.isfinite(lon_values)]
-
                 if lon_f.size == 0 or lat_f.size == 0:
-                    raise ValueError(f"No finite lat/lon values found in {nc_path}")
-
+                    raise ValueError(f'No finite lat/lon values found in {nc_path}')
                 if np.nanmin(lon_f) < -180.0 or np.nanmax(lon_f) > 180.0:
-                    raise ValueError(
-                        f"{nc_path} appears not to use the ChemicalDrift longitude convention [-180, 180]. "
-                        "0..360 reader longitudes are not supported by this writer.")
-
+                    raise ValueError(f'{nc_path} appears not to use the ChemicalDrift longitude convention [-180, 180]. 0..360 reader longitudes are not supported by this writer.')
                 lat_sorted = np.sort(lat_f)
                 lon_sorted = np.sort(lon_f)
                 if allow_corner_adjust:
                     if lat_sorted.size < 3 or lon_sorted.size < 3:
-                        raise ValueError(
-                            f"Grid in {nc_path} is too small to safely adjust corners.")
+                        raise ValueError(f'Grid in {nc_path} is too small to safely adjust corners.')
                 lat_min, lat_max = lat_sorted[0], lat_sorted[-1]
                 lon_min, lon_max = lon_sorted[0], lon_sorted[-1]
-
                 if allow_corner_adjust:
                     if llcrnrlat < lat_min:
-                        new = lat_sorted[1]
-                        logger.warning(f"Changed llcrnrlat from {llcrnrlat} to {new} for {var_name}")
-                        llcrnrlat = new
+                        llcrnrlat = lat_sorted[1]
                     if urcrnrlat > lat_max:
-                        new = lat_sorted[-2]
-                        logger.warning(f"Changed urcrnrlat from {urcrnrlat} to {new} for {var_name}")
-                        urcrnrlat = new
+                        urcrnrlat = lat_sorted[-2]
                     if llcrnrlon < lon_min:
-                        new = lon_sorted[1]
-                        logger.warning(f"Changed llcrnrlon from {llcrnrlon} to {new} for {var_name}")
-                        llcrnrlon = new
+                        llcrnrlon = lon_sorted[1]
                     if urcrnrlon > lon_max:
-                        new = lon_sorted[-2]
-                        logger.warning(f"Changed urcrnrlon from {urcrnrlon} to {new} for {var_name}")
-                        urcrnrlon = new
+                        urcrnrlon = lon_sorted[-2]
                 else:
                     if not (lat_min <= llcrnrlat <= urcrnrlat <= lat_max):
-                        raise ValueError(f"Corners are outside latitude bounds of {var_name!r} in {nc_path}")
+                        raise ValueError(f'Corners are outside latitude bounds of {var_name!r} in {nc_path}')
                     if not (lon_min <= llcrnrlon <= urcrnrlon <= lon_max):
-                        raise ValueError(f"Corners are outside longitude bounds of {var_name!r} in {nc_path}")
-
-                da_sel = da.where(
-                    (da[lon_name] >= llcrnrlon) &
-                    (da[lon_name] <= urcrnrlon) &
-                    (da[lat_name] >= llcrnrlat) &
-                    (da[lat_name] <= urcrnrlat),
-                    drop=True)
-
+                        raise ValueError(f'Corners are outside longitude bounds of {var_name!r} in {nc_path}')
+                da_sel = da.where((da[lon_name] >= llcrnrlon) & (da[lon_name] <= urcrnrlon) & (da[lat_name] >= llcrnrlat) & (da[lat_name] <= urcrnrlat), drop=True)
                 num_x = da_sel.coords[lon_name].size
                 num_y = da_sel.coords[lat_name].size
                 if num_x == 0 or num_y == 0:
-                    raise ValueError(f"Empty selection for {var_name!r} in {nc_path}")
-
+                    raise ValueError(f'Empty selection for {var_name!r} in {nc_path}')
             rdr = reader_netCDF_CF_generic.Reader(nc_path)
             return rdr, num_x, num_y, llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat
 
@@ -7498,15 +7892,13 @@ class ChemicalDrift(OceanDrift):
             Tsnap = len(times)
             if Tsnap == 0:
                 return 1, 0, None
-
             if Tsnap == 1 or deltat_hours is None:
                 ndt = 1
             else:
                 dt_hours = (times[1] - times[0]).total_seconds() / 3600.0
                 if dt_hours <= 0:
-                    raise ValueError("Model output times must be strictly increasing.")
+                    raise ValueError('Model output times must be strictly increasing.')
                 ndt = max(1, int(np.ceil(float(deltat_hours) / dt_hours)))
-
             odt = int(np.ceil(Tsnap / ndt))
             block_end_idx = np.minimum((np.arange(odt) + 1) * ndt - 1, Tsnap - 1)
             avg_times = times[block_end_idx]
@@ -7514,49 +7906,33 @@ class ChemicalDrift(OceanDrift):
 
         def _species_category_ids():
             sediment_ids = set()
-            for attr in ("num_srev", "num_ssrev", "num_sirrev", "num_sburied"):
+            for attr in ('num_srev', 'num_ssrev', 'num_sirrev', 'num_sburied'):
                 if hasattr(self, attr):
                     sediment_ids.add(int(getattr(self, attr)))
             particle_ids = set()
-            for attr in ("num_prev", "num_psrev", "num_pirrev"):
+            for attr in ('num_prev', 'num_psrev', 'num_pirrev'):
                 if hasattr(self, attr):
                     particle_ids.add(int(getattr(self, attr)))
             return sediment_ids, particle_ids
-
-        def _reorder_depth_for_output(arr, depth_order):
-            if arr is None:
-                return None
-            arr = np.asarray(arr)
-            if arr.ndim == 5:
-                return arr[:, :, depth_order, :, :]
-            if arr.ndim == 3:
-                return arr[depth_order, :, :]
-            raise ValueError(f"Unexpected array rank for depth reorder: {arr.ndim}")
 
         def _make_cf_depth_axis(z_edges_model):
             z_edges_model = np.asarray(z_edges_model, dtype=np.float64)
             nlay = z_edges_model.size - 1
             if nlay <= 0:
-                raise ValueError("z_edges_model must contain at least two edges.")
-
+                raise ValueError('z_edges_model must contain at least two edges.')
             depth_order = np.arange(nlay - 1, -1, -1)
-
             z_top_model = z_edges_model[1:]
             z_bot_model = z_edges_model[:-1]
-
             z_top_model = z_top_model[depth_order]
             z_bot_model = z_bot_model[depth_order]
-
             depth = -z_top_model
             depth_bounds = np.column_stack((-z_top_model, -z_bot_model)).astype(np.float64)
             depth_model_top = z_top_model.astype(np.float64)
             depth_model_bounds = np.column_stack((z_top_model, z_bot_model)).astype(np.float64)
-
             return depth_order, depth, depth_bounds, depth_model_top, depth_model_bounds
 
         def _write_cf_crs_variable(nc, density_proj_str):
             crs_obj = CRS.from_user_input(density_proj_str)
-
             crs_var = nc.createVariable('crs', 'i4')
             crs_var.long_name = 'Coordinate reference system'
             crs_var.spatial_ref = crs_obj.to_wkt()
@@ -7569,1643 +7945,926 @@ class ChemicalDrift(OceanDrift):
                     try:
                         setattr(crs_var, k, v)
                     except Exception as e:
-                        logger.debug("Could not set CRS attribute %r=%r: %s", k, v, e, exc_info=True)
+                        logger.debug('Could not set CRS attribute %r=%r: %s', k, v, e, exc_info=True)
             except Exception as e:
-                logger.debug("Could not build CF CRS dict for %r: %s", density_proj_str, e, exc_info=True)
-
+                logger.debug('Could not build CF CRS dict for %r: %s', density_proj_str, e, exc_info=True)
             return crs_obj, crs_var
 
-        explicit_grid = None
-        if output_grid is not None:
-            explicit_grid = self._normalize_output_grid(output_grid, density_proj=density_proj)
 
-            if any(v is not None for v in (lat_resol, lon_resol)):
-                raise ValueError("lat_resol/lon_resol cannot be used together with output_grid.")
-            if pixelsize_m not in (None, 'auto'):
-                raise ValueError("pixelsize_m cannot be used together with output_grid.")
-            if any(v is not None for v in (llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat)):
-                raise ValueError(
-                    "llcrnrlon/llcrnrlat/urcrnrlon/urcrnrlat cannot be used together with output_grid."
-                )
 
-            llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat = explicit_grid["bbox_lonlat"]
-            pixelsize_m = None
-            lat_resol = None
-            lon_resol = None
-
-        # Input checks
-        if explicit_grid is None:
-            if sum(x is None for x in [lat_resol, lon_resol]) == 1:
-                raise ValueError("Both lat_resol and lon_resol must be specified together.")
-            elif sum(x is None for x in [lat_resol, lon_resol]) == 0:
-                if pixelsize_m is not None:
-                    raise ValueError("If lat_resol/lon_resol are specified, pixelsize_m must be None.")
-
-        weight_mode = str(weight_mode).lower()
-        if weight_mode not in {"extensive", "mean"}:
-            raise ValueError("weight_mode must be one of: 'extensive', 'mean'")
-
-        if weight is None:
-            raise ValueError("weight must be specified explicitly for both weight modes.")
-
-        if weight_mode == "extensive" and "mass" not in str(weight).lower():
-            raise ValueError(
-                "weight_mode='extensive' currently supports only mass-like weights. "
-                f"Got weight={weight!r}.")
-
-        if timestep_values and weight_mode != "extensive":
-            raise ValueError("timestep_values=True is only valid with weight_mode='extensive'.")
-
-        if timestep_values and str(weight) == "mass":
-            raise ValueError(
-                "timestep_values=True is intended for cumulative extensive quantities, not plain 'mass'.")
-
-        resolved_weight_unit = _resolve_weight_units()
-
-        if any(v is not None for v in (llcrnrlon, urcrnrlon)):
-            if llcrnrlon is None or urcrnrlon is None:
-                raise ValueError("llcrnrlon and urcrnrlon must be specified together.")
-            if not (-180.0 <= llcrnrlon <= 180.0 and -180.0 <= urcrnrlon <= 180.0):
-                raise ValueError("Supplied output longitudes must be in the ChemicalDrift [-180, 180] convention.")
-            if llcrnrlon > urcrnrlon:
-                raise ValueError("Dateline-crossing output domains are not supported here.")
-
-        if self.mode != opendrift.models.basemodel.Mode.Config:
-            self.mode = opendrift.models.basemodel.Mode.Config
-            logger.debug("Changed self.mode to Config")
-
-        # Time filtering
-        all_times = pd.to_datetime(self.result.time).to_pydatetime()
-        if time_start is not None:
-            time_start = pd.to_datetime(time_start).to_pydatetime()
-        if time_end is not None:
-            time_end = pd.to_datetime(time_end).to_pydatetime()
-
-        if (time_start is not None) or (time_end is not None):
-            tmask = np.ones(len(all_times), dtype=bool)
-            if time_start is not None:
-                tmask &= np.array(all_times) >= time_start
-            if time_end is not None:
-                tmask &= np.array(all_times) <= time_end
-            if not tmask.any():
-                logger.warning(f"No timesteps fall within time_start={time_start} and time_end={time_end}.")
-                return
-            filtered_times = np.array(all_times)[tmask]
-        else:
-            filtered_times = np.asarray(all_times)
-
-        # Landmask readers
-        if landmask_shapefile is not None:
-            if 'shape' in self.env.readers:
-                del self.env.readers['shape']
-            from opendrift.readers import reader_shape
-            custom_landmask = reader_shape.Reader.from_shpfiles(landmask_shapefile)
-            self.add_reader(custom_landmask)
-        elif 'global_landmask' not in self.env.readers:
-            from opendrift.readers import reader_global_landmask
-            global_landmask = reader_global_landmask.Reader()
-            self.add_reader(global_landmask)
-
-        # Bathymetry reader
-        if reader_sea_depth is not None:
-            if any(v is None for v in (llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat)):
-                raise ValueError("Corners must be provided when reader_sea_depth is used.")
-
-            reader_sea_depth, num_x, num_y, llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat = _open_cf_reader_with_var(
-                reader_sea_depth,
-                'sea_floor_depth_below_sea_level',
-                llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat,
-                allow_corner_adjust=True)
-        else:
-            raise ValueError("A reader for 'sea_floor_depth_below_sea_level' must be specified.")
-
+        reader_sea_depth_obj = None
         active_sediment_layer_thickness_reader = None
-        if reader_active_sediment_layer_thickness is not None:
-            if any(v is None for v in (llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat)):
-                raise ValueError("Corners must be provided when reader_active_sediment_layer_thickness is used.")
 
-            active_sediment_layer_thickness_reader, _, _, _, _, _, _ = _open_cf_reader_with_var(
-                reader_active_sediment_layer_thickness,
-                'active_sediment_layer_thickness',
-                llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat,
-                allow_corner_adjust=False)
+        H = H_count = None
+        Hsm = Hcount_sm = None
+        mean_field = mean_dens = None
+        mean_field_sm = mean_dens_sm = None
 
-        # Species init
-        if not hasattr(self, "name_species"):
-            self.init_species()
-        if not hasattr(self, "nspecies"):
-            self.nspecies = 4
-        if not hasattr(self, "name_species"):
-            self.name_species = ['dissolved', 'DOC', 'SPM', 'sediment']
+        H_out = Hsm_out = None
+        mean_field_out = mean_field_sm_out = None
+        H_count_out = mean_dens_out = None
+        Hcount_sm_out = mean_dens_sm_out = None
 
-        if self.mode != opendrift.models.basemodel.Mode.Result:
-            self.mode = opendrift.models.basemodel.Mode.Result
-            logger.debug("Changed self.mode to Result")
+        pixel_volume = pixel_volume_out = None
+        pixel_sed_mass = None
 
-        logger.info("Postprocessing: write density/concentration/property maps to netCDF")
+        pixel_mean_depth = pixel_area = None
+        pixel_active_sediment_layer_thickness = None
+        bathy_invalid_mask = None
 
-        bathimetry_res = 500
-        if num_x > 500 and num_y > 500:
-            bathimetry_res = min(num_x, num_y) - 1
-            logger.warning(f"Changed intermediate bathymetry interpolation resolution to {bathimetry_res}")
+        landmask_raw = landmask = combined_mask = None
+        landmask_yx = domain_invalid_yx = combined_mask_yx = None
+        landmask_face = domain_invalid_face = combined_mask_face = None
+        added_shape_reader = False
+        added_global_landmask = False
 
-        grid = np.meshgrid(
-            np.linspace(llcrnrlon, urcrnrlon, bathimetry_res),
-            np.linspace(llcrnrlat, urcrnrlat, bathimetry_res))
-        self.conc_lon = grid[0]
-        self.conc_lat = grid[1]
 
-        topo_raw = reader_sea_depth.get_variables_interpolated_xy(
-            ['sea_floor_depth_below_sea_level'],
-            x=self.conc_lon.flatten(),
-            y=self.conc_lat.flatten(),
-            time=reader_sea_depth.times[0] if reader_sea_depth.times is not None else None
-        )[0]['sea_floor_depth_below_sea_level'].reshape(self.conc_lon.shape)
-
-        self.conc_topo_source_invalid = (
-            np.ma.getmaskarray(topo_raw) |
-            ~np.isfinite(np.asarray(topo_raw, dtype=float)))
-        self.conc_topo = np.asarray(np.ma.filled(topo_raw, np.nan), dtype=np.float64)
-
-        self.conc_active_sediment_layer_thickness = None
-        self.conc_active_sediment_layer_thickness_source_invalid = None
-
-        if active_sediment_layer_thickness_reader is not None:
-            aslt_raw = active_sediment_layer_thickness_reader.get_variables_interpolated_xy(
-                ['active_sediment_layer_thickness'],
-                x=self.conc_lon.flatten(),
-                y=self.conc_lat.flatten(),
-                time=active_sediment_layer_thickness_reader.times[0] if active_sediment_layer_thickness_reader.times is not None else None
-            )[0]['active_sediment_layer_thickness'].reshape(self.conc_lon.shape)
-
-            self.conc_active_sediment_layer_thickness_source_invalid = (
-                np.ma.getmaskarray(aslt_raw) |
-                ~np.isfinite(np.asarray(aslt_raw, dtype=float)))
-            self.conc_active_sediment_layer_thickness = np.asarray(
-                np.ma.filled(aslt_raw, np.nan), dtype=np.float64)
-
-        if explicit_grid is None and pixelsize_m == 'auto':
-            lat = self.result.lat
-            latspan = lat.max() - lat.min()
-            pixelsize_m = 30
-            if latspan > 0.05:
-                pixelsize_m = 50
-            if latspan > 0.1:
-                pixelsize_m = 300
-            if latspan > 0.3:
-                pixelsize_m = 500
-            if latspan > 0.7:
-                pixelsize_m = 1000
-            if latspan > 2:
-                pixelsize_m = 2000
-            if latspan > 5:
-                pixelsize_m = 4000
-
-        if explicit_grid is not None:
-            density_proj_str = explicit_grid["density_proj_str"]
-        elif density_proj is None:
-            density_proj_str = '+proj=moll +ellps=WGS84 +lon_0=0.0'
-        else:
-            density_proj_str = is_valid_proj4(density_proj)
-
-        density_proj = Proj(density_proj_str)
-        crs_obj = CRS.from_user_input(density_proj_str)
-
-        is_moll = "+proj=moll" in density_proj_str
-        is_latlon = crs_obj.is_geographic
-
-        if explicit_grid is None and (not is_moll) and (lat_resol is None or lon_resol is None):
-            raise ValueError("lat_resol and lon_resol must be set for non-moll projections.")
-
-        input_lat_resol_deg = None
-        input_lon_resol_deg = None
-
-        if sum(x is None for x in [lat_resol, lon_resol]) == 0:
-            if (not is_moll) and (not is_latlon):
-                input_lon_resol_deg = float(lon_resol)
-                input_lat_resol_deg = float(lat_resol)
-
-                source_proj = Proj("+proj=longlat +datum=WGS84 +no_defs")
-                transformer = Transformer.from_proj(source_proj, density_proj, always_xy=True)
-
-                dummy_lon = (llcrnrlon + urcrnrlon) / 2.0
-                dummy_lat = (llcrnrlat + urcrnrlat) / 2.0
-                x1, y1 = transformer.transform(dummy_lon, dummy_lat)
-                x2, y2 = transformer.transform(dummy_lon + lon_resol, dummy_lat + lat_resol)
-
-                lon_resol = abs(x2 - x1)
-                lat_resol = abs(y2 - y1)
-
-                logger.warning(
-                    "Converted supplied lon_resol/lat_resol from degrees to projected grid spacing "
-                    f"(dx={lon_resol}, dy={lat_resol}) in the target CRS.")
-
-        z_array = self._build_z_array(zlevels, zmin_cap=-10000.0, ztop=0.0)
-        logger.info("Internal model z grid boundaries: %s", [str(item) for item in z_array])
-
-        need_counts = elements_density or (weight_mode == "mean")
-        write_density = elements_density or (weight_mode == "mean")
-
-        H, x_centers, y_centers, lon_center_2d, lat_center_2d, H_count, keep_species, name_species_out = self.get_chemical_density_array(
-            pixelsize_m=pixelsize_m,
-            is_moll=is_moll, is_latlon=is_latlon,
-            z_array=z_array,
-            lat_resol=lat_resol,
-            lon_resol=lon_resol,
-            density_proj=density_proj,
-            llcrnrlon=llcrnrlon, llcrnrlat=llcrnrlat,
-            urcrnrlon=urcrnrlon, urcrnrlat=urcrnrlat,
-            weight=weight,
-            origin_marker=origin_marker,
-            active_status=active_status,
-            elements_density=need_counts,
-            time_start=time_start,
-            time_end=time_end,
-            time_chunk_size=time_chunk_size,
-            timestep_values=timestep_values,
-            compress_species=compress_species,
-            weight_mode=weight_mode,
-            output_grid=explicit_grid,)
-
-        nspecies_out = len(name_species_out)
-
-        if (landmask_bathymetry_thr is not None) and (reader_sea_depth is not None):
-            vals = reader_sea_depth.get_variables_interpolated_xy(
-                ['sea_floor_depth_below_sea_level'],
-                x=np.clip(lon_center_2d.ravel(), reader_sea_depth.xmin, reader_sea_depth.xmax),
-                y=np.clip(lat_center_2d.ravel(), reader_sea_depth.ymin, reader_sea_depth.ymax),
-                time=reader_sea_depth.times[0] if reader_sea_depth.times is not None else None
-            )[0]['sea_floor_depth_below_sea_level']
-            landmask_raw = (vals <= landmask_bathymetry_thr).reshape(lon_center_2d.shape)
-        elif landmask_shapefile is not None:
-            landmask_raw = self.env.readers['shape'].get_variables(
-                'land_binary_mask', x=lon_center_2d, y=lat_center_2d
-            )['land_binary_mask']
-        else:
-            landmask_raw = self.env.readers['global_landmask'].get_variables(
-                'land_binary_mask', x=lon_center_2d, y=lat_center_2d
-            )['land_binary_mask']
-
-        if landmask_raw.shape != lon_center_2d.shape:
-            landmask_raw = landmask_raw.reshape(lon_center_2d.shape)
-
-        raw = np.asarray(landmask_raw)
-        if raw.dtype != np.bool_:
-            if np.issubdtype(raw.dtype, np.floating):
-                raw_f = raw[np.isfinite(raw)]
-            else:
-                raw_f = raw.ravel()
-            vals = np.unique(raw_f)[:10]
-            if vals.size and not np.all(np.isin(vals, [0, 1])):
-                logger.warning(
-                    f"Landmask contained non-binary values (sample: {vals}). "
-                    "Normalizing with policy='auto'.")
-
-        pixel_mean_depth, pixel_area, pixel_active_sediment_layer_thickness, bathy_invalid_mask = self.get_pixel_mean_depth(
-            lon_center_2d, lat_center_2d,
-            is_moll, is_latlon, lat_resol, lon_resol,
-            output_grid=explicit_grid)
-
-        landmask = self._normalize_landmask(landmask_raw, policy="auto", thr=0.5)
-
-        if bathy_invalid_mask is None:
-            bathy_invalid_mask = np.zeros_like(landmask, dtype=bool)
-        else:
-            bathy_invalid_mask = np.asarray(bathy_invalid_mask, dtype=bool)
-            if bathy_invalid_mask.shape != landmask.shape:
-                raise ValueError(
-                    f"bathy_invalid_mask shape {bathy_invalid_mask.shape} != landmask shape {landmask.shape}")
-
-        combined_mask = landmask | bathy_invalid_mask
-
-        landmask_yx = landmask.T
-        domain_invalid_yx = bathy_invalid_mask.T
-        combined_mask_yx = combined_mask.T
-
-        if (lon_center_2d.shape[0] > bathimetry_res) or (lon_center_2d.shape[1] > bathimetry_res):
-            logger.warning(
-                "The requested output grid is finer than the intermediate auxiliary interpolation grid. "
-                "This may increase apparent spatial resolution without adding information.")
-
-        def _remove_reader_by_key(self, key):
-            rdr = self.env.readers.pop(key, None)
-            if rdr is not None and hasattr(rdr, "close"):
-                try:
-                    rdr.close()
-                except Exception as e:
-                    logger.debug("Could not close reader %r: %s", key, e, exc_info=True)
-
-        _remove_reader_by_key(self, 'shape')
-        _remove_reader_by_key(self, 'global_landmask')
-
-        pixel_volume = np.zeros_like(H[0, 0, :, :, :], dtype=np.float32)
-        has_cell_area = pixel_area is not None
-
-        for zi, zz in enumerate(z_array[:-1]):
-            topotmp = -pixel_mean_depth.copy()
-            topotmp[topotmp < zz] = zz
-            topotmp = z_array[zi + 1] - topotmp
-            topotmp[topotmp < 0.1] = 0.0
-
-            if has_cell_area:
-                pixel_volume[zi, :, :] = topotmp * pixel_area
-            else:
-                pixel_volume[zi, :, :] = topotmp * (pixelsize_m ** 2)
-
-        pixel_volume[pixel_volume == 0.0] = np.nan
-        pixel_volume = np.where(~combined_mask[None, :, :], pixel_volume, np.nan)
-
-        sed_L_cfg = self.get_config('chemical:sediment:mixing_depth')
-        sed_dens = self.get_config('chemical:sediment:density')
-        sed_poro = self.get_config('chemical:sediment:porosity')
-
-        if pixel_active_sediment_layer_thickness is None:
-            sed_L = sed_L_cfg
-        else:
-            sed_L = np.asarray(pixel_active_sediment_layer_thickness, dtype=np.float32)
-            sed_L = np.where(np.isfinite(sed_L), sed_L, sed_L_cfg)
-            sed_L = np.maximum(sed_L, 0.0)
-
-        if has_cell_area:
-            pixel_sed_mass = (pixel_area * sed_L) * (1 - sed_poro) * sed_dens
-        else:
-            pixel_sed_mass = ((pixelsize_m ** 2) * sed_L) * (1 - sed_poro) * sed_dens
-
-        pixel_sed_mass = np.where(pixel_sed_mass > 0.0, pixel_sed_mass, np.nan)
-        pixel_sed_mass = np.where(~combined_mask, pixel_sed_mass, np.nan)
-
-        sediment_species_ids, _ = _species_category_ids()
-        sediment_mask_out = np.array(
-            [int(old_id) in sediment_species_ids for old_id in keep_species],
-            dtype=bool)
-
-        if weight_mode == "extensive":
-            for sp_out in range(nspecies_out):
-                if not sediment_mask_out[sp_out]:
-                    H[:, sp_out, :, :, :] = H[:, sp_out, :, :, :] / pixel_volume[None, :, :, :]
-                else:
-                    H[:, sp_out, :, :, :] = H[:, sp_out, :, :, :] / pixel_sed_mass[None, None, :, :]
-        else:
-            if H_count is None:
-                raise ValueError("H_count is required for weight_mode='mean'.")
-            H = _safe_divide_num_count(H, H_count)
-
-        Hsm = None
-        Hcount_sm = None
-        if horizontal_smoothing and not time_avg_conc:
-            Hsm = np.empty_like(H, dtype=np.float32)
-            for ti in range(H.shape[0]):
-                for sp in range(nspecies_out):
-                    for zi in range(len(z_array) - 1):
-                        Hsm[ti, sp, zi, :, :] = self.horizontal_smooth(
-                            H[ti, sp, zi, :, :],
-                            n=smoothing_cells,
-                            landmask=combined_mask,
-                        ).astype(np.float32, copy=False)
-
-            if write_density and H_count is not None:
-                Hcount_sm = np.empty(H_count.shape, dtype=np.float32)
-                for ti in range(H_count.shape[0]):
-                    for sp in range(H_count.shape[1]):
-                        for zi in range(H_count.shape[2]):
-                            Hcount_sm[ti, sp, zi, :, :] = self.horizontal_smooth(
-                                H_count[ti, sp, zi, :, :].astype(np.float32, copy=False),
-                                n=smoothing_cells,
-                                landmask=combined_mask,
-                            ).astype(np.float32, copy=False)
-
-        mean_field = None
-        mean_dens = None
-        mean_field_sm = None
-        mean_dens_sm = None
+        lon_center_2d = lat_center_2d = None
+        topo_raw = aslt_raw = None
+        grid = None
         avg_times = None
+        filtered_times = None
 
-        if time_avg_conc:
-            ndt, odt, avg_times = _compute_snapshot_block_layout(filtered_times, deltat)
-            if odt == 0:
-                logger.warning("No snapshots available for block averaging.")
-                return
+        try:
+            explicit_grid = None
+            if output_grid is not None:
+                explicit_grid = self._normalize_output_grid(output_grid, density_proj=density_proj)
+                if any(v is not None for v in (lat_resol, lon_resol)):
+                    raise ValueError('lat_resol/lon_resol cannot be used together with output_grid.')
+                if pixelsize_m not in (None, 'auto'):
+                    raise ValueError('pixelsize_m cannot be used together with output_grid.')
+                if any(v is not None for v in (llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat)):
+                    raise ValueError('llcrnrlon/llcrnrlat/urcrnrlon/urcrnrlat cannot be used together with output_grid.')
+                llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat = explicit_grid['bbox_lonlat']
+                pixelsize_m = None
+                lat_resol = None
+                lon_resol = None
 
-            mean_field = np.full(
-                (odt, H.shape[1], H.shape[2], H.shape[3], H.shape[4]),
-                np.nan, dtype=np.float32)
+            if explicit_grid is None:
+                if sum(x is None for x in [lat_resol, lon_resol]) == 1:
+                    raise ValueError('Both lat_resol and lon_resol must be specified together.')
+                elif sum(x is None for x in [lat_resol, lon_resol]) == 0:
+                    if pixelsize_m is not None:
+                        raise ValueError('If lat_resol/lon_resol are specified, pixelsize_m must be None.')
 
-            for ii in range(odt):
-                s0 = ii * ndt
-                s1 = min((ii + 1) * ndt, H.shape[0])
-                if s0 >= s1:
-                    continue
+            weight_mode = str(weight_mode).lower()
+            if weight_mode not in {'extensive', 'mean'}:
+                raise ValueError("weight_mode must be one of: 'extensive', 'mean'")
+            if weight is None:
+                raise ValueError('weight must be specified explicitly for both weight modes.')
+            if weight_mode == 'extensive' and 'mass' not in str(weight).lower():
+                raise ValueError(f"weight_mode='extensive' currently supports only mass-like weights. Got weight={weight!r}.")
+            if timestep_values and weight_mode != 'extensive':
+                raise ValueError("timestep_values=True is only valid with weight_mode='extensive'.")
+            if timestep_values and str(weight) == 'mass':
+                raise ValueError("timestep_values=True is intended for cumulative extensive quantities, not plain 'mass'.")
 
-                if weight_mode == "mean":
-                    mean_field[ii, :, :, :, :] = np.nanmean(
-                        H[s0:s1, :, :, :, :], axis=0
-                    ).astype(np.float32, copy=False)
-                else:
-                    mean_field[ii, :, :, :, :] = np.mean(
-                        H[s0:s1, :, :, :, :], axis=0, dtype=np.float32)
+            resolved_weight_unit = _resolve_weight_units()
+            if any(v is not None for v in (llcrnrlon, urcrnrlon)):
+                if llcrnrlon is None or urcrnrlon is None:
+                    raise ValueError('llcrnrlon and urcrnrlon must be specified together.')
+                if not (-180.0 <= llcrnrlon <= 180.0 and -180.0 <= urcrnrlon <= 180.0):
+                    raise ValueError('Supplied output longitudes must be in the ChemicalDrift [-180, 180] convention.')
+                if llcrnrlon > urcrnrlon:
+                    raise ValueError('Dateline-crossing output domains are not supported here.')
 
-            if write_density and H_count is not None:
-                mean_dens = np.zeros(
-                    (odt, H_count.shape[1], H_count.shape[2], H_count.shape[3], H_count.shape[4]),
-                    dtype=np.float32)
-                for ii in range(odt):
-                    s0 = ii * ndt
-                    s1 = min((ii + 1) * ndt, H_count.shape[0])
-                    if s0 >= s1:
-                        continue
-                    mean_dens[ii, :, :, :, :] = np.mean(
-                        H_count[s0:s1, :, :, :, :], axis=0, dtype=np.float32)
+            if self.mode != opendrift.models.basemodel.Mode.Config:
+                self.mode = opendrift.models.basemodel.Mode.Config
+                logger.debug('Changed self.mode to Config')
 
-            if horizontal_smoothing:
-                mean_field_sm = np.empty_like(mean_field, dtype=np.float32)
-                for ti in range(mean_field.shape[0]):
+            all_times = pd.to_datetime(self.result.time).to_pydatetime()
+            if time_start is not None:
+                time_start = pd.to_datetime(time_start).to_pydatetime()
+            if time_end is not None:
+                time_end = pd.to_datetime(time_end).to_pydatetime()
+            if (time_start is not None) or (time_end is not None):
+                tmask = np.ones(len(all_times), dtype=bool)
+                if time_start is not None:
+                    tmask &= np.array(all_times) >= time_start
+                if time_end is not None:
+                    tmask &= np.array(all_times) <= time_end
+                if not tmask.any():
+                    logger.warning('No timesteps fall within time_start=%s and time_end=%s.', time_start, time_end)
+                    return
+                filtered_times = np.array(all_times)[tmask]
+            else:
+                filtered_times = np.asarray(all_times)
+
+            if landmask_shapefile is not None:
+                old_shape_reader = self.env.readers.pop('shape', None)
+                _close_if_possible(old_shape_reader, 'old_shape_reader')
+                from opendrift.readers import reader_shape
+                custom_landmask = reader_shape.Reader.from_shpfiles(landmask_shapefile)
+                self.add_reader(custom_landmask)
+                added_shape_reader = True
+
+            elif 'global_landmask' not in self.env.readers:
+                from opendrift.readers import reader_global_landmask
+                global_landmask = reader_global_landmask.Reader()
+                self.add_reader(global_landmask)
+                added_global_landmask = True
+
+            if reader_sea_depth is not None:
+                if any(v is None for v in (llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat)):
+                    raise ValueError('Corners must be provided when reader_sea_depth is used.')
+                reader_sea_depth_obj, num_x, num_y, llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat = _open_cf_reader_with_var(reader_sea_depth, 'sea_floor_depth_below_sea_level', llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat, allow_corner_adjust=True)
+            else:
+                raise ValueError("A reader for 'sea_floor_depth_below_sea_level' must be specified.")
+
+            active_sediment_layer_thickness_reader = None
+            if reader_active_sediment_layer_thickness is not None:
+                if any(v is None for v in (llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat)):
+                    raise ValueError('Corners must be provided when reader_active_sediment_layer_thickness is used.')
+                active_sediment_layer_thickness_reader, _, _, _, _, _, _ = _open_cf_reader_with_var(reader_active_sediment_layer_thickness, 'active_sediment_layer_thickness', llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat, allow_corner_adjust=False)
+
+            if not hasattr(self, 'name_species'):
+                self.init_species()
+            if not hasattr(self, 'nspecies'):
+                self.nspecies = 4
+            if not hasattr(self, 'name_species'):
+                self.name_species = ['dissolved', 'DOC', 'SPM', 'sediment']
+
+            if self.mode != opendrift.models.basemodel.Mode.Result:
+                self.mode = opendrift.models.basemodel.Mode.Result
+                logger.debug('Changed self.mode to Result')
+
+            logger.info('Postprocessing: write density/concentration/property maps to netCDF')
+
+            bathimetry_res = 500
+            if num_x > 500 and num_y > 500:
+                bathimetry_res = min(num_x, num_y) - 1
+                logger.warning('Changed intermediate bathymetry interpolation resolution to %s', bathimetry_res)
+
+            grid = np.meshgrid(np.linspace(llcrnrlon, urcrnrlon, bathimetry_res), np.linspace(llcrnrlat, urcrnrlat, bathimetry_res))
+            self.conc_lon = grid[0]
+            self.conc_lat = grid[1]
+            topo_raw = reader_sea_depth_obj.get_variables_interpolated_xy(['sea_floor_depth_below_sea_level'], x=self.conc_lon.flatten(), y=self.conc_lat.flatten(), time=reader_sea_depth_obj.times[0] if reader_sea_depth_obj.times is not None else None)[0]['sea_floor_depth_below_sea_level'].reshape(self.conc_lon.shape)
+            self.conc_topo_source_invalid = np.ma.getmaskarray(topo_raw) | ~np.isfinite(np.asarray(topo_raw, dtype=float))
+            self.conc_topo = np.asarray(np.ma.filled(topo_raw, np.nan), dtype=np.float64)
+            self.conc_active_sediment_layer_thickness = None
+            self.conc_active_sediment_layer_thickness_source_invalid = None
+            if active_sediment_layer_thickness_reader is not None:
+                aslt_raw = active_sediment_layer_thickness_reader.get_variables_interpolated_xy(['active_sediment_layer_thickness'], x=self.conc_lon.flatten(), y=self.conc_lat.flatten(), time=active_sediment_layer_thickness_reader.times[0] if active_sediment_layer_thickness_reader.times is not None else None)[0]['active_sediment_layer_thickness'].reshape(self.conc_lon.shape)
+                self.conc_active_sediment_layer_thickness_source_invalid = np.ma.getmaskarray(aslt_raw) | ~np.isfinite(np.asarray(aslt_raw, dtype=float))
+                self.conc_active_sediment_layer_thickness = np.asarray(np.ma.filled(aslt_raw, np.nan), dtype=np.float64)
+
+            if explicit_grid is None and pixelsize_m == 'auto':
+                lat = self.result.lat
+                latspan = lat.max() - lat.min()
+                pixelsize_m = 30
+                if latspan > 0.05: pixelsize_m = 50
+                if latspan > 0.1: pixelsize_m = 300
+                if latspan > 0.3: pixelsize_m = 500
+                if latspan > 0.7: pixelsize_m = 1000
+                if latspan > 2: pixelsize_m = 2000
+                if latspan > 5: pixelsize_m = 4000
+
+            if explicit_grid is not None:
+                density_proj_str = explicit_grid['density_proj_str']
+            elif density_proj is None:
+                density_proj_str = '+proj=moll +ellps=WGS84 +lon_0=0.0'
+            else:
+                density_proj_str = is_valid_proj4(density_proj)
+
+            density_proj = Proj(density_proj_str)
+            crs_obj = CRS.from_user_input(density_proj_str)
+            is_moll = '+proj=moll' in density_proj_str
+            is_latlon = crs_obj.is_geographic
+            if explicit_grid is None and (not is_moll) and (lat_resol is None or lon_resol is None):
+                raise ValueError('lat_resol and lon_resol must be set for non-moll projections.')
+
+            input_lat_resol_deg = None
+            input_lon_resol_deg = None
+            if sum(x is None for x in [lat_resol, lon_resol]) == 0:
+                if (not is_moll) and (not is_latlon):
+                    input_lon_resol_deg = float(lon_resol)
+                    input_lat_resol_deg = float(lat_resol)
+                    source_proj = Proj('+proj=longlat +datum=WGS84 +no_defs')
+                    transformer = Transformer.from_proj(source_proj, density_proj, always_xy=True)
+                    dummy_lon = (llcrnrlon + urcrnrlon) / 2.0
+                    dummy_lat = (llcrnrlat + urcrnrlat) / 2.0
+                    x1, y1 = transformer.transform(dummy_lon, dummy_lat)
+                    x2, y2 = transformer.transform(dummy_lon + lon_resol, dummy_lat + lat_resol)
+                    lon_resol = abs(x2 - x1)
+                    lat_resol = abs(y2 - y1)
+                    logger.warning('Converted supplied lon_resol/lat_resol from degrees to projected grid spacing (dx=%s, dy=%s) in the target CRS.', lon_resol, lat_resol)
+
+            z_array = self._build_z_array(zlevels, zmin_cap=-10000.0, ztop=0.0)
+            need_counts = elements_density or (weight_mode == 'mean')
+            write_density = elements_density or (weight_mode == 'mean')
+            H, x_centers, y_centers, lon_center_2d, lat_center_2d, H_count, keep_species, name_species_out = self.get_chemical_density_array(
+                pixelsize_m=pixelsize_m, is_moll=is_moll, is_latlon=is_latlon, z_array=z_array,
+                lat_resol=lat_resol, lon_resol=lon_resol, density_proj=density_proj,
+                llcrnrlon=llcrnrlon, llcrnrlat=llcrnrlat, urcrnrlon=urcrnrlon, urcrnrlat=urcrnrlat,
+                weight=weight, origin_marker=origin_marker, active_status=active_status,
+                elements_density=need_counts, time_start=time_start, time_end=time_end, time_chunk_size=time_chunk_size,
+                timestep_values=timestep_values, compress_species=compress_species, weight_mode=weight_mode,
+                output_grid=explicit_grid)
+            nspecies_out = len(name_species_out)
+            unstructured = explicit_grid is not None and explicit_grid.get('topology') == 'triangular_unstructured'
+
+            if landmask_bathymetry_thr is not None and reader_sea_depth_obj is not None:
+                vals = reader_sea_depth_obj.get_variables_interpolated_xy(['sea_floor_depth_below_sea_level'], x=np.clip(np.ravel(lon_center_2d), reader_sea_depth_obj.xmin, reader_sea_depth_obj.xmax), y=np.clip(np.ravel(lat_center_2d), reader_sea_depth_obj.ymin, reader_sea_depth_obj.ymax), time=reader_sea_depth_obj.times[0] if reader_sea_depth_obj.times is not None else None)[0]['sea_floor_depth_below_sea_level']
+                landmask_raw = vals.reshape(np.shape(lon_center_2d))
+                landmask_raw = (landmask_raw <= landmask_bathymetry_thr)
+            elif landmask_shapefile is not None:
+                landmask_raw = self.env.readers['shape'].get_variables('land_binary_mask', x=lon_center_2d, y=lat_center_2d)['land_binary_mask']
+            else:
+                landmask_raw = self.env.readers['global_landmask'].get_variables('land_binary_mask', x=lon_center_2d, y=lat_center_2d)['land_binary_mask']
+            if np.shape(landmask_raw) != np.shape(lon_center_2d):
+                landmask_raw = np.asarray(landmask_raw).reshape(np.shape(lon_center_2d))
+
+            pixel_mean_depth, pixel_area, pixel_active_sediment_layer_thickness, bathy_invalid_mask = self.get_pixel_mean_depth(lon_center_2d, lat_center_2d, is_moll, is_latlon, lat_resol, lon_resol, output_grid=explicit_grid)
+            landmask = self._normalize_landmask(landmask_raw, policy='auto', thr=0.5)
+            if bathy_invalid_mask is None:
+                bathy_invalid_mask = np.zeros_like(landmask, dtype=bool)
+            else:
+                bathy_invalid_mask = np.asarray(bathy_invalid_mask, dtype=bool)
+                if bathy_invalid_mask.shape != landmask.shape:
+                    raise ValueError(f'bathy_invalid_mask shape {bathy_invalid_mask.shape} != landmask shape {landmask.shape}')
+            combined_mask = landmask | bathy_invalid_mask
+            if not unstructured:
+                landmask_yx = landmask.T
+                domain_invalid_yx = bathy_invalid_mask.T
+                combined_mask_yx = combined_mask.T
+            else:
+                landmask_face = landmask
+                domain_invalid_face = bathy_invalid_mask
+                combined_mask_face = combined_mask
+
+            if unstructured:
+                pixel_volume = np.zeros((len(z_array) - 1, H.shape[-1]), dtype=np.float32)
+                has_cell_area = pixel_area is not None
+                for zi, zz in enumerate(z_array[:-1]):
+                    topotmp = -np.asarray(pixel_mean_depth, dtype=np.float64).copy()
+                    topotmp[topotmp < zz] = zz
+                    topotmp = z_array[zi + 1] - topotmp
+                    topotmp[topotmp < 0.1] = 0.0
+                    if has_cell_area:
+                        pixel_volume[zi, :] = topotmp * pixel_area
+                    else:
+                        pixel_volume[zi, :] = topotmp * (pixelsize_m ** 2)
+                pixel_volume[pixel_volume == 0.0] = np.nan
+                pixel_volume = np.where(~combined_mask_face[None, :], pixel_volume, np.nan)
+            else:
+                pixel_volume = np.zeros_like(H[0, 0, :, :, :], dtype=np.float32)
+                has_cell_area = pixel_area is not None
+                for zi, zz in enumerate(z_array[:-1]):
+                    topotmp = -pixel_mean_depth.copy()
+                    topotmp[topotmp < zz] = zz
+                    topotmp = z_array[zi + 1] - topotmp
+                    topotmp[topotmp < 0.1] = 0.0
+                    if has_cell_area:
+                        pixel_volume[zi, :, :] = topotmp * pixel_area
+                    else:
+                        pixel_volume[zi, :, :] = topotmp * (pixelsize_m ** 2)
+                pixel_volume[pixel_volume == 0.0] = np.nan
+                pixel_volume = np.where(~combined_mask[None, :, :], pixel_volume, np.nan)
+
+            sed_L_cfg = self.get_config('chemical:sediment:mixing_depth')
+            sed_dens = self.get_config('chemical:sediment:density')
+            sed_poro = self.get_config('chemical:sediment:porosity')
+            if pixel_active_sediment_layer_thickness is None:
+                sed_L = sed_L_cfg
+            else:
+                sed_L = np.asarray(pixel_active_sediment_layer_thickness, dtype=np.float32)
+                sed_L = np.where(np.isfinite(sed_L), sed_L, sed_L_cfg)
+                sed_L = np.maximum(sed_L, 0.0)
+            if has_cell_area:
+                pixel_sed_mass = (pixel_area * sed_L) * (1 - sed_poro) * sed_dens
+            else:
+                pixel_sed_mass = ((pixelsize_m ** 2) * sed_L) * (1 - sed_poro) * sed_dens
+            pixel_sed_mass = np.where(pixel_sed_mass > 0.0, pixel_sed_mass, np.nan)
+            pixel_sed_mass = np.where(~combined_mask, pixel_sed_mass, np.nan)
+
+            sediment_species_ids, _ = _species_category_ids()
+            sediment_mask_out = np.array([int(old_id) in sediment_species_ids for old_id in keep_species], dtype=bool)
+            if weight_mode == 'extensive':
+                for sp_out in range(nspecies_out):
+                    if not sediment_mask_out[sp_out]:
+                        if unstructured:
+                            H[:, sp_out, :, :] = H[:, sp_out, :, :] / pixel_volume[None, :, :]
+                        else:
+                            H[:, sp_out, :, :, :] = H[:, sp_out, :, :, :] / pixel_volume[None, :, :, :]
+                    else:
+                        if unstructured:
+                            H[:, sp_out, :, :] = H[:, sp_out, :, :] / pixel_sed_mass[None, None, :]
+                        else:
+                            H[:, sp_out, :, :, :] = H[:, sp_out, :, :, :] / pixel_sed_mass[None, None, :, :]
+            else:
+                if H_count is None:
+                    raise ValueError("H_count is required for weight_mode='mean'.")
+                H = _safe_divide_num_count(H, H_count)
+
+            if unstructured and horizontal_smoothing:
+                raise NotImplementedError('horizontal_smoothing is not implemented yet for triangular unstructured output grids.')
+
+            Hsm = None
+            Hcount_sm = None
+            if horizontal_smoothing and not time_avg_conc:
+                Hsm = np.empty_like(H, dtype=np.float32)
+                for ti in range(H.shape[0]):
                     for sp in range(nspecies_out):
                         for zi in range(len(z_array) - 1):
-                            mean_field_sm[ti, sp, zi, :, :] = self.horizontal_smooth(
-                                mean_field[ti, sp, zi, :, :],
-                                n=smoothing_cells,
-                                landmask=combined_mask,
-                            ).astype(np.float32, copy=False)
+                            Hsm[ti, sp, zi, :, :] = self.horizontal_smooth(H[ti, sp, zi, :, :], n=smoothing_cells, landmask=combined_mask).astype(np.float32, copy=False)
+                if write_density and H_count is not None:
+                    Hcount_sm = np.empty(H_count.shape, dtype=np.float32)
+                    for ti in range(H_count.shape[0]):
+                        for sp in range(H_count.shape[1]):
+                            for zi in range(H_count.shape[2]):
+                                Hcount_sm[ti, sp, zi, :, :] = self.horizontal_smooth(H_count[ti, sp, zi, :, :].astype(np.float32, copy=False), n=smoothing_cells, landmask=combined_mask).astype(np.float32, copy=False)
 
-                if write_density and mean_dens is not None:
-                    mean_dens_sm = np.empty_like(mean_dens, dtype=np.float32)
-                    for ti in range(mean_dens.shape[0]):
-                        for sp in range(mean_dens.shape[1]):
-                            for zi in range(mean_dens.shape[2]):
-                                mean_dens_sm[ti, sp, zi, :, :] = self.horizontal_smooth(
-                                    mean_dens[ti, sp, zi, :, :],
-                                    n=smoothing_cells,
-                                    landmask=combined_mask,
-                                ).astype(np.float32, copy=False)
-
-        depth_order, depth_cf, depth_bounds_cf, depth_model_top, depth_model_bounds = _make_cf_depth_axis(z_array)
-
-        H_out = _reorder_depth_for_output(H, depth_order)
-        Hsm_out = _reorder_depth_for_output(Hsm, depth_order)
-        mean_field_out = _reorder_depth_for_output(mean_field, depth_order)
-        mean_field_sm_out = _reorder_depth_for_output(mean_field_sm, depth_order)
-        H_count_out = _reorder_depth_for_output(H_count, depth_order)
-        mean_dens_out = _reorder_depth_for_output(mean_dens, depth_order)
-        Hcount_sm_out = _reorder_depth_for_output(Hcount_sm, depth_order)
-        mean_dens_sm_out = _reorder_depth_for_output(mean_dens_sm, depth_order)
-        pixel_volume_out = _reorder_depth_for_output(pixel_volume, depth_order)
-
-        compound = self.get_config('chemical:compound')
-        if compound is None:
-            compound = "None"
-        species_str = ' '.join([f"{isp}:{sp}" for isp, sp in enumerate(name_species_out)])
-
-        nc = Dataset(filename, 'w')
-        nc.Conventions = "CF-1.10"
-        nc.title = "ChemicalDrift gridded chemical field"
-        nc.source = "OpenDrift ChemicalDrift"
-        nc.history = "Created by write_netcdf_chemical_density_map"
-        nc.actual_density_proj_str = density_proj_str
-        nc.weight_name = str(weight)
-        nc.weight_mode = weight_mode
-        if weight_mode == "extensive":
-            nc.phase_units_metadata_mode = "compatibility"
-        if weight_mode == "extensive":
-            nc.comment = (
-                "Depth is written as a CF-style positive-down coordinate derived from model z coordinates. "
-                "Auxiliary-reader interpolation is linear first, then nearest-neighbour fill for remaining NaNs; "
-                "this is not conservative. "
-                "For concentration outputs in compatibility mode, use units_water, "
-                "units_sediment and specie_phase to interpret phase-specific units.")
-        else:
-            nc.comment = (
-                "Depth is written as a CF-style positive-down coordinate derived from model z coordinates. "
-                "Auxiliary-reader interpolation is linear first, then nearest-neighbour fill for remaining NaNs; "
-                "this is not conservative. "
-                "This file stores per-cell mean property fields; no mixed-phase "
-                "compatibility-unit interpretation is required.")
-
-        nc.createDimension('x', x_centers.size)
-        nc.createDimension('y', y_centers.size)
-        nc.createDimension('depth', len(depth_cf))
-        nc.createDimension('depth_bounds_dim', 2)
-        nc.createDimension('specie', nspecies_out)
-
-        nc.species_axis_compressed = int(bool(compress_species))
-
-        nc.createVariable('specie_original_id', 'i4', ('specie',))
-        nc.variables['specie_original_id'][:] = keep_species.astype('i4')
-        nc.variables['specie_original_id'].long_name = 'Original species id in model indexing'
-
-        nc.createVariable('specie_phase', 'i4', ('specie',))
-        nc.variables['specie_phase'][:] = sediment_mask_out.astype('i4')
-        nc.variables['specie_phase'].long_name = 'Species phase class'
-        nc.variables['specie_phase'].flag_values = np.array([0, 1], dtype='i4')
-        nc.variables['specie_phase'].flag_meanings = 'water_like sediment_like'
-
-        maxlen = max(len(s) for s in name_species_out) if name_species_out else 1
-        nc.createDimension('name_strlen', maxlen)
-        specie_name_var = nc.createVariable('specie_name', 'S1', ('specie', 'name_strlen'))
-        specie_name_bytes = np.array([list(s.ljust(maxlen)) for s in name_species_out], dtype='S1')
-        specie_name_var[:] = specie_name_bytes
-        specie_name_var.long_name = 'Species name aligned with specie axis'
-
-        timestr = 'seconds since 1970-01-01 00:00:00'
-        if not time_avg_conc:
-            nc.createDimension('time', H_out.shape[0])
-            nc.createVariable('time', 'f8', ('time',))
-            nc.variables['time'][:] = date2num(filtered_times, timestr)
-            nc.variables['time'].units = timestr
-            nc.variables['time'].standard_name = 'time'
-            nc.variables['time'].long_name = 'Model output snapshot time'
-        else:
-            nc.createDimension('avg_time', mean_field_out.shape[0])
-            nc.createVariable('avg_time', 'f8', ('avg_time',))
-            nc.variables['avg_time'][:] = date2num(avg_times, timestr)
-            nc.variables['avg_time'].units = timestr
-            nc.variables['avg_time'].standard_name = 'time'
-            nc.variables['avg_time'].long_name = 'Timestamp of last snapshot included in the averaging block'
-            nc.variables['avg_time'].comment = (
-                "This is a block mean of discrete model snapshots; no synthetic or shifted timestamps are used.")
-
-        _crs_obj, _ = _write_cf_crs_variable(nc, density_proj_str)
-
-        x_is_index = bool(explicit_grid["x_is_index"]) if explicit_grid is not None else False
-        y_is_index = bool(explicit_grid["y_is_index"]) if explicit_grid is not None else False
-
-        nc.createVariable('x', 'f8', ('x',))
-        nc.createVariable('y', 'f8', ('y',))
-        nc.variables['x'][:] = x_centers
-        nc.variables['y'][:] = y_centers
-
-        if x_is_index or y_is_index:
-            nc.variables['x'].long_name = 'grid x index'
-            nc.variables['x'].units = '1'
-            nc.variables['x'].axis = 'X'
-
-            nc.variables['y'].long_name = 'grid y index'
-            nc.variables['y'].units = '1'
-            nc.variables['y'].axis = 'Y'
-        elif crs_obj.is_geographic:
-            nc.variables['x'].standard_name = 'longitude'
-            nc.variables['x'].long_name = 'longitude of cell center'
-            nc.variables['x'].units = 'degrees_east'
-            nc.variables['x'].axis = 'X'
-
-            nc.variables['y'].standard_name = 'latitude'
-            nc.variables['y'].long_name = 'latitude of cell center'
-            nc.variables['y'].units = 'degrees_north'
-            nc.variables['y'].axis = 'Y'
-        else:
-            nc.variables['x'].standard_name = 'projection_x_coordinate'
-            nc.variables['x'].long_name = 'x coordinate of cell center in target CRS'
-            nc.variables['x'].units = 'm'
-            nc.variables['x'].axis = 'X'
-
-            nc.variables['y'].standard_name = 'projection_y_coordinate'
-            nc.variables['y'].long_name = 'y coordinate of cell center in target CRS'
-            nc.variables['y'].units = 'm'
-            nc.variables['y'].axis = 'Y'
-
-        nc.createVariable('lon', 'f8', ('y', 'x'))
-        nc.createVariable('lat', 'f8', ('y', 'x'))
-        nc.variables['lon'][:] = lon_center_2d.T
-        nc.variables['lat'][:] = lat_center_2d.T
-        nc.variables['lon'].standard_name = 'longitude'
-        nc.variables['lon'].long_name = 'longitude of cell center'
-        nc.variables['lon'].units = 'degrees_east'
-        nc.variables['lat'].standard_name = 'latitude'
-        nc.variables['lat'].long_name = 'latitude of cell center'
-        nc.variables['lat'].units = 'degrees_north'
-
-        if explicit_grid is not None and explicit_grid.get('lon_corners_4') is not None and explicit_grid.get('lat_corners_4') is not None:
-            if 'nv' not in nc.dimensions:
-                nc.createDimension('nv', 4)
-
-            nc.createVariable('lon_bounds', 'f8', ('y', 'x', 'nv'))
-            nc.createVariable('lat_bounds', 'f8', ('y', 'x', 'nv'))
-            nc.variables['lon_bounds'][:] = np.transpose(explicit_grid['lon_corners_4'], (1, 0, 2))
-            nc.variables['lat_bounds'][:] = np.transpose(explicit_grid['lat_corners_4'], (1, 0, 2))
-            nc.variables['lon_bounds'].long_name = 'longitude bounds of grid cell'
-            nc.variables['lat_bounds'].long_name = 'latitude bounds of grid cell'
-            nc.variables['lon_bounds'].units = 'degrees_east'
-            nc.variables['lat_bounds'].units = 'degrees_north'
-            nc.variables['lon'].bounds = 'lon_bounds'
-            nc.variables['lat'].bounds = 'lat_bounds'
-
-        if explicit_grid is not None and explicit_grid.get('x_is_index', False) and \
-                explicit_grid.get('x_center_2d') is not None and explicit_grid.get('y_center_2d') is not None:
-            nc.createVariable('x_center', 'f8', ('y', 'x'))
-            nc.createVariable('y_center', 'f8', ('y', 'x'))
-            nc.variables['x_center'][:] = explicit_grid['x_center_2d'].T
-            nc.variables['y_center'][:] = explicit_grid['y_center_2d'].T
-            nc.variables['x_center'].long_name = 'x coordinate of cell center in target CRS'
-            nc.variables['y_center'].long_name = 'y coordinate of cell center in target CRS'
-            nc.variables['x_center'].units = explicit_grid.get('native_x_units', 'm') or 'm'
-            nc.variables['y_center'].units = explicit_grid.get('native_y_units', 'm') or 'm'
-            nc.variables['x_center'].grid_mapping = 'crs'
-            nc.variables['y_center'].grid_mapping = 'crs'
-            nc.variables['x_center'].coordinates = 'lat lon'
-            nc.variables['y_center'].coordinates = 'lat lon'
-
-            if explicit_grid.get('x_corners_4') is not None and explicit_grid.get('y_corners_4') is not None:
-                if 'nv' not in nc.dimensions:
-                    nc.createDimension('nv', 4)
-                nc.createVariable('x_bounds', 'f8', ('y', 'x', 'nv'))
-                nc.createVariable('y_bounds', 'f8', ('y', 'x', 'nv'))
-                nc.variables['x_bounds'][:] = np.transpose(explicit_grid['x_corners_4'], (1, 0, 2))
-                nc.variables['y_bounds'][:] = np.transpose(explicit_grid['y_corners_4'], (1, 0, 2))
-                nc.variables['x_bounds'].units = explicit_grid.get('native_x_units', 'm') or 'm'
-                nc.variables['y_bounds'].units = explicit_grid.get('native_y_units', 'm') or 'm'
-                nc.variables['x_center'].bounds = 'x_bounds'
-                nc.variables['y_center'].bounds = 'y_bounds'
-
-        nc.createVariable('depth', 'f8', ('depth',))
-        nc.variables['depth'][:] = depth_cf
-        nc.variables['depth'].standard_name = 'depth'
-        nc.variables['depth'].long_name = 'Top of vertical layer, positive downward, derived from model z coordinates'
-        nc.variables['depth'].units = 'm'
-        nc.variables['depth'].positive = 'down'
-        nc.variables['depth'].axis = 'Z'
-        nc.variables['depth'].bounds = 'depth_bounds'
-
-        nc.createVariable('depth_bounds', 'f8', ('depth', 'depth_bounds_dim'))
-        nc.variables['depth_bounds'][:] = depth_bounds_cf
-        nc.variables['depth_bounds'].long_name = 'Positive-down depth bounds for each vertical layer'
-        nc.variables['depth_bounds'].units = 'm'
-
-        nc.createVariable('depth_model_top', 'f8', ('depth',))
-        nc.variables['depth_model_top'][:] = depth_model_top
-        nc.variables['depth_model_top'].long_name = 'Top of vertical layer in original model z coordinates'
-        nc.variables['depth_model_top'].units = 'm'
-        nc.variables['depth_model_top'].positive = 'up'
-
-        nc.createVariable('depth_model_bounds', 'f8', ('depth', 'depth_bounds_dim'))
-        nc.variables['depth_model_bounds'][:] = depth_model_bounds
-        nc.variables['depth_model_bounds'].long_name = 'Layer bounds in original model z coordinates'
-        nc.variables['depth_model_bounds'].units = 'm'
-
-        nc.createVariable('specie', 'i4', ('specie',))
-        nc.variables['specie'][:] = np.arange(nspecies_out)
-        nc.variables['specie'].long_name = 'Species index'
-        nc.variables['specie'].comment = ' '.join([f"{isp}:{sp}" for isp, sp in enumerate(name_species_out)])
-
-        if explicit_grid is None:
-            if pixelsize_m is not None:
-                nc.createVariable('cell_size', 'f8')
-                nc.variables['cell_size'][:] = pixelsize_m
-                nc.variables['cell_size'].long_name = 'Nominal grid cell size'
-                nc.variables['cell_size'].units = 'm'
-            else:
-                if crs_obj.is_geographic:
-                    nc.createVariable('lat_resol', 'f8')
-                    nc.variables['lat_resol'][:] = lat_resol
-                    nc.variables['lat_resol'].long_name = 'Latitude resolution used to build the output grid'
-                    nc.variables['lat_resol'].units = 'degrees_north'
-
-                    nc.createVariable('lon_resol', 'f8')
-                    nc.variables['lon_resol'][:] = lon_resol
-                    nc.variables['lon_resol'].long_name = 'Longitude resolution used to build the output grid'
-                    nc.variables['lon_resol'].units = 'degrees_east'
+            mean_field = None
+            mean_dens = None
+            mean_field_sm = None
+            mean_dens_sm = None
+            avg_times = None
+            if time_avg_conc:
+                ndt, odt, avg_times = _compute_snapshot_block_layout(filtered_times, deltat)
+                if odt == 0:
+                    logger.warning('No snapshots available for block averaging.')
+                    return
+                if unstructured:
+                    mean_field = np.full((odt, H.shape[1], H.shape[2], H.shape[3]), np.nan, dtype=np.float32)
                 else:
-                    nc.createVariable('dy', 'f8')
-                    nc.variables['dy'][:] = lat_resol
-                    nc.variables['dy'].long_name = 'Grid spacing in projected y direction'
-                    nc.variables['dy'].units = 'm'
+                    mean_field = np.full((odt, H.shape[1], H.shape[2], H.shape[3], H.shape[4]), np.nan, dtype=np.float32)
+                for ii in range(odt):
+                    s0 = ii * ndt
+                    s1 = min((ii + 1) * ndt, H.shape[0])
+                    if s0 >= s1:
+                        continue
+                    if weight_mode == 'mean':
+                        mean_field[ii, ...] = np.nanmean(H[s0:s1, ...], axis=0).astype(np.float32, copy=False)
+                    else:
+                        mean_field[ii, ...] = np.mean(H[s0:s1, ...], axis=0, dtype=np.float32)
+                if write_density and H_count is not None:
+                    if unstructured:
+                        mean_dens = np.zeros((odt, H_count.shape[1], H_count.shape[2], H_count.shape[3]), dtype=np.float32)
+                    else:
+                        mean_dens = np.zeros((odt, H_count.shape[1], H_count.shape[2], H_count.shape[3], H_count.shape[4]), dtype=np.float32)
+                    for ii in range(odt):
+                        s0 = ii * ndt
+                        s1 = min((ii + 1) * ndt, H_count.shape[0])
+                        if s0 >= s1:
+                            continue
+                        mean_dens[ii, ...] = np.mean(H_count[s0:s1, ...], axis=0, dtype=np.float32)
+                if horizontal_smoothing and not unstructured:
+                    mean_field_sm = np.empty_like(mean_field, dtype=np.float32)
+                    for ti in range(mean_field.shape[0]):
+                        for sp in range(nspecies_out):
+                            for zi in range(len(z_array) - 1):
+                                mean_field_sm[ti, sp, zi, :, :] = self.horizontal_smooth(mean_field[ti, sp, zi, :, :], n=smoothing_cells, landmask=combined_mask).astype(np.float32, copy=False)
+                    if write_density and mean_dens is not None:
+                        mean_dens_sm = np.empty_like(mean_dens, dtype=np.float32)
+                        for ti in range(mean_dens.shape[0]):
+                            for sp in range(mean_dens.shape[1]):
+                                for zi in range(mean_dens.shape[2]):
+                                    mean_dens_sm[ti, sp, zi, :, :] = self.horizontal_smooth(mean_dens[ti, sp, zi, :, :], n=smoothing_cells, landmask=combined_mask).astype(np.float32, copy=False)
 
-                    nc.createVariable('dx', 'f8')
-                    nc.variables['dx'][:] = lon_resol
-                    nc.variables['dx'].long_name = 'Grid spacing in projected x direction'
-                    nc.variables['dx'].units = 'm'
+            depth_order, depth_cf, depth_bounds_cf, depth_model_top, depth_model_bounds = _make_cf_depth_axis(z_array)
+            H_out = self._reorder_depth_for_output(H, depth_order)
+            Hsm_out = self._reorder_depth_for_output(Hsm, depth_order)
+            mean_field_out = self._reorder_depth_for_output(mean_field, depth_order)
+            mean_field_sm_out = self._reorder_depth_for_output(mean_field_sm, depth_order)
+            H_count_out = self._reorder_depth_for_output(H_count, depth_order)
+            mean_dens_out = self._reorder_depth_for_output(mean_dens, depth_order)
+            Hcount_sm_out = self._reorder_depth_for_output(Hcount_sm, depth_order)
+            mean_dens_sm_out = self._reorder_depth_for_output(mean_dens_sm, depth_order)
+            pixel_volume_out = self._reorder_depth_for_output(pixel_volume, depth_order)
 
-                    if input_lat_resol_deg is not None:
-                        nc.createVariable('input_lat_resol_deg', 'f8')
-                        nc.variables['input_lat_resol_deg'][:] = input_lat_resol_deg
-                        nc.variables['input_lat_resol_deg'].long_name = 'Original user-supplied latitude increment before projected conversion'
-                        nc.variables['input_lat_resol_deg'].units = 'degrees_north'
-                    if input_lon_resol_deg is not None:
-                        nc.createVariable('input_lon_resol_deg', 'f8')
-                        nc.variables['input_lon_resol_deg'][:] = input_lon_resol_deg
-                        nc.variables['input_lon_resol_deg'].long_name = 'Original user-supplied longitude increment before projected conversion'
-                        nc.variables['input_lon_resol_deg'].units = 'degrees_east'
-        else:
-            nc.explicit_output_grid = 1
-            nc.output_grid_mode = explicit_grid['binning_mode']
-            nc.output_grid_coords = explicit_grid['binning_coords']
+            compound = self.get_config('chemical:compound')
+            if compound is None:
+                compound = 'None'
+            species_str = ' '.join([f'{isp}:{sp}' for isp, sp in enumerate(name_species_out)])
+            units_water = f'{resolved_weight_unit} m-3' if weight_mode == 'extensive' else None
+            units_sediment = f'{resolved_weight_unit} kg-1 dry_weight' if weight_mode == 'extensive' else None
 
-        if horizontal_smoothing:
-            nc.createVariable('smoothing_cells', 'i8')
-            nc.variables['smoothing_cells'][:] = smoothing_cells
-            nc.variables['smoothing_cells'].long_name = 'Horizontal smoothing half-width in grid cells'
-            nc.variables['smoothing_cells'].units = '1'
+            # ------------------------------------------------------------------
+            # Unstructured triangular writer
+            # ------------------------------------------------------------------
+            if unstructured:
+                with Dataset(filename, 'w') as nc:
+                    nc.Conventions = 'CF-1.10'
+                    nc.title = 'ChemicalDrift gridded chemical field'
+                    nc.source = 'OpenDrift ChemicalDrift'
+                    nc.history = 'Created by write_netcdf_chemical_density_map'
+                    nc.actual_density_proj_str = density_proj_str
+                    nc.weight_name = str(weight)
+                    nc.weight_mode = weight_mode
+                    if weight_mode == 'extensive':
+                        nc.phase_units_metadata_mode = 'compatibility'
+                    nc.comment = 'Triangular unstructured mesh output. Depth is written as a CF-style positive-down coordinate derived from model z coordinates.'
 
-        def _mask5d(arr_5d_tsd_yx, mask_yx):
-            mm = np.asarray(mask_yx, dtype=bool)
-            if mm.shape != arr_5d_tsd_yx.shape[-2:]:
-                if mm.T.shape == arr_5d_tsd_yx.shape[-2:]:
-                    mm = mm.T
+                    nc.createDimension('face', explicit_grid['nface'])
+                    nc.createDimension('node', explicit_grid['nnode'])
+                    nc.createDimension('nmax_face_nodes', 3)
+                    nc.createDimension('depth', len(depth_cf))
+                    nc.createDimension('depth_bounds_dim', 2)
+                    nc.createDimension('specie', nspecies_out)
+                    nc.species_axis_compressed = int(bool(compress_species))
+
+                    if not time_avg_conc:
+                        nc.createDimension('time', H_out.shape[0])
+                        tvar = nc.createVariable('time', 'f8', ('time',))
+                        tvar[:] = date2num(filtered_times, 'seconds since 1970-01-01 00:00:00')
+                        tvar.units = 'seconds since 1970-01-01 00:00:00'
+                        tvar.standard_name = 'time'
+                    else:
+                        nc.createDimension('avg_time', mean_field_out.shape[0])
+                        tvar = nc.createVariable('avg_time', 'f8', ('avg_time',))
+                        tvar[:] = date2num(avg_times, 'seconds since 1970-01-01 00:00:00')
+                        tvar.units = 'seconds since 1970-01-01 00:00:00'
+                        tvar.standard_name = 'time'
+
+                    _crs_obj, _ = _write_cf_crs_variable(nc, density_proj_str)
+
+                    nc.createVariable('face', 'i4', ('face',))[:] = np.arange(explicit_grid['nface'], dtype='i4')
+                    nc.createVariable('node', 'i4', ('node',))[:] = np.arange(explicit_grid['nnode'], dtype='i4')
+
+                    nc.createVariable('specie_original_id', 'i4', ('specie',))[:] = keep_species.astype('i4')
+                    sp_phase = nc.createVariable('specie_phase', 'i4', ('specie',))
+                    sp_phase[:] = sediment_mask_out.astype('i4')
+                    sp_phase.long_name = 'Species phase class'
+                    sp_phase.flag_values = np.array([0, 1], dtype='i4')
+                    sp_phase.flag_meanings = 'water_like sediment_like'
+
+                    maxlen = max(len(s) for s in name_species_out) if name_species_out else 1
+                    nc.createDimension('name_strlen', maxlen)
+                    specie_name_var = nc.createVariable('specie_name', 'S1', ('specie', 'name_strlen'))
+                    specie_name_bytes = np.array([list(s.ljust(maxlen)) for s in name_species_out], dtype='S1')
+                    specie_name_var[:] = specie_name_bytes
+
+                    dvar = nc.createVariable('depth', 'f8', ('depth',))
+                    dvar[:] = depth_cf
+                    dvar.standard_name = 'depth'
+                    dvar.positive = 'down'
+                    dvar.bounds = 'depth_bounds'
+                    nc.createVariable('depth_bounds', 'f8', ('depth', 'depth_bounds_dim'))[:] = depth_bounds_cf
+                    nc.createVariable('depth_model_top', 'f8', ('depth',))[:] = depth_model_top
+                    nc.createVariable('depth_model_bounds', 'f8', ('depth', 'depth_bounds_dim'))[:] = depth_model_bounds
+                    nc.createVariable('specie', 'i4', ('specie',))[:] = np.arange(nspecies_out)
+
+                    mesh = nc.createVariable('mesh', 'i4')
+                    mesh.cf_role = 'mesh_topology'
+                    mesh.long_name = 'Triangular unstructured mesh'
+                    mesh.topology_dimension = 2
+                    mesh.face_node_connectivity = 'face_node_connectivity'
+                    mesh.face_coordinates = 'face_lon face_lat'
+                    if explicit_grid['binning_coords'] == 'projected':
+                        mesh.node_coordinates = 'node_x node_y'
+                        mesh.face_coordinates = 'face_x face_y'
+                    else:
+                        mesh.node_coordinates = 'node_lon node_lat'
+
+                    conn = nc.createVariable('face_node_connectivity', 'i4', ('face', 'nmax_face_nodes'))
+                    conn[:] = explicit_grid['face_node_connectivity'].astype('i4')
+                    conn.cf_role = 'face_node_connectivity'
+                    conn.start_index = 0
+
+                    node_lon = nc.createVariable('node_lon', 'f8', ('node',))
+                    node_lat = nc.createVariable('node_lat', 'f8', ('node',))
+                    node_lon[:] = explicit_grid['node_lon']
+                    node_lat[:] = explicit_grid['node_lat']
+                    node_lon.standard_name = 'longitude'; node_lon.units = 'degrees_east'
+                    node_lat.standard_name = 'latitude'; node_lat.units = 'degrees_north'
+
+                    face_lon = nc.createVariable('face_lon', 'f8', ('face',))
+                    face_lat = nc.createVariable('face_lat', 'f8', ('face',))
+                    face_lon[:] = explicit_grid['face_lon_center']
+                    face_lat[:] = explicit_grid['face_lat_center']
+                    face_lon.standard_name = 'longitude'; face_lon.units = 'degrees_east'
+                    face_lat.standard_name = 'latitude'; face_lat.units = 'degrees_north'
+
+                    if explicit_grid['binning_coords'] == 'projected':
+                        node_x = nc.createVariable('node_x', 'f8', ('node',))
+                        node_y = nc.createVariable('node_y', 'f8', ('node',))
+                        node_x[:] = explicit_grid['node_x']
+                        node_y[:] = explicit_grid['node_y']
+                        node_x.standard_name = 'projection_x_coordinate'; node_x.units = explicit_grid.get('native_x_units', 'm') or 'm'
+                        node_y.standard_name = 'projection_y_coordinate'; node_y.units = explicit_grid.get('native_y_units', 'm') or 'm'
+                        face_x = nc.createVariable('face_x', 'f8', ('face',))
+                        face_y = nc.createVariable('face_y', 'f8', ('face',))
+                        face_x[:] = explicit_grid['face_x_center']
+                        face_y[:] = explicit_grid['face_y_center']
+                        face_x.standard_name = 'projection_x_coordinate'; face_x.units = explicit_grid.get('native_x_units', 'm') or 'm'
+                        face_y.standard_name = 'projection_y_coordinate'; face_y.units = explicit_grid.get('native_y_units', 'm') or 'm'
+
+                    volume = nc.createVariable('volume', 'f8', ('depth', 'face'), fill_value=0)
+                    volume[:] = np.ma.masked_array(pixel_volume_out, mask=np.broadcast_to(combined_mask_face[None, :], pixel_volume_out.shape), copy=False)
+                    volume.long_name = 'Water volume of grid cell'; volume.units = 'm3'; volume.mesh = 'mesh'; volume.location = 'face'; volume.grid_mapping = 'crs'; volume.coordinates = 'face_lon face_lat'
+
+                    topo = nc.createVariable('topo', 'f8', ('face',), fill_value=0)
+                    topo[:] = np.ma.array(pixel_mean_depth, mask=combined_mask_face | ~np.isfinite(pixel_mean_depth), copy=False)
+                    topo.long_name = 'Water depth at face center'; topo.standard_name = 'sea_floor_depth_below_sea_level'; topo.units = 'm'; topo.mesh = 'mesh'; topo.location = 'face'; topo.grid_mapping = 'crs'; topo.coordinates = 'face_lon face_lat'
+
+                    if pixel_active_sediment_layer_thickness is not None:
+                        aslt = nc.createVariable('active_sediment_layer_thickness', 'f8', ('face',), fill_value=0)
+                        aslt[:] = np.ma.array(pixel_active_sediment_layer_thickness, mask=combined_mask_face | ~np.isfinite(pixel_active_sediment_layer_thickness), copy=False)
+                        aslt.units = 'm'; aslt.mesh = 'mesh'; aslt.location = 'face'; aslt.grid_mapping = 'crs'; aslt.coordinates = 'face_lon face_lat'
+
+                    if pixel_area is not None:
+                        area = nc.createVariable('area', 'f8', ('face',), fill_value=0)
+                        area[:] = np.ma.array(pixel_area, mask=combined_mask_face, copy=False)
+                        area.long_name = 'Horizontal area of face'; area.units = 'm2'; area.mesh = 'mesh'; area.location = 'face'; area.grid_mapping = 'crs'; area.coordinates = 'face_lon face_lat'
+
+                    land = nc.createVariable('land', 'i4', ('face',), fill_value=-1)
+                    land[:] = landmask_face.astype('i4', copy=False)
+                    land.flag_values = np.array([0, 1], dtype='i4'); land.flag_meanings = 'water land'; land.units = '1'; land.mesh = 'mesh'; land.location = 'face'; land.grid_mapping = 'crs'; land.coordinates = 'face_lon face_lat'
+                    domain_invalid = nc.createVariable('domain_invalid', 'i4', ('face',), fill_value=-1)
+                    domain_invalid[:] = domain_invalid_face.astype('i4', copy=False)
+                    domain_invalid.flag_values = np.array([0, 1], dtype='i4'); domain_invalid.flag_meanings = 'valid invalid'; domain_invalid.units = '1'; domain_invalid.mesh = 'mesh'; domain_invalid.location = 'face'; domain_invalid.grid_mapping = 'crs'; domain_invalid.coordinates = 'face_lon face_lat'
+
+                    def _write_masked_4d(var_nc, arr_4d, mask_f, fill_value):
+                        marr = np.ma.array(arr_4d, mask=np.broadcast_to(mask_f[None, None, None, :], arr_4d.shape), copy=False)
+                        try:
+                            marr.set_fill_value(fill_value)
+                        except Exception:
+                            pass
+                        var_nc[:] = marr
+
+                    if write_density:
+                        if not time_avg_conc:
+                            dname = nc.createVariable('density', 'i4', ('time', 'specie', 'depth', 'face'), fill_value=99999)
+                            _write_masked_4d(dname, np.nan_to_num(H_count_out, nan=0, posinf=0, neginf=0).astype('i4', copy=False), combined_mask_face, 99999)
+                            dname.long_name = 'Number of elements in face'; dname.units = '1'; dname.mesh = 'mesh'; dname.location = 'face'; dname.grid_mapping = 'crs'; dname.coordinates = 'face_lon face_lat'
+                        else:
+                            dname = nc.createVariable('density_avg', 'f4', ('avg_time', 'specie', 'depth', 'face'), fill_value=np.float32(1.0e36))
+                            _write_masked_4d(dname, mean_dens_out.astype(np.float32, copy=False), combined_mask_face, np.float32(1.0e36))
+                            dname.long_name = 'Mean number of elements per snapshot in averaging block'; dname.units = '1'; dname.mesh = 'mesh'; dname.location = 'face'; dname.grid_mapping = 'crs'; dname.coordinates = 'face_lon face_lat'
+
+                    if weight_mode == 'extensive':
+                        if not time_avg_conc:
+                            cname = nc.createVariable('concentration', 'f8', ('time', 'specie', 'depth', 'face'), fill_value=1.e36)
+                            _write_masked_4d(cname, H_out, combined_mask_face, 1.e36)
+                            cname.long_name = f'{compound} concentration from weight={weight}\nspecie {species_str}'
+                        else:
+                            cname = nc.createVariable('concentration_avg', 'f8', ('avg_time', 'specie', 'depth', 'face'), fill_value=1.e36)
+                            _write_masked_4d(cname, mean_field_out, combined_mask_face, 1.e36)
+                            cname.long_name = f'{compound} snapshot-block mean concentration from weight={weight}\nspecie {species_str}'
+                        cname.units = f'{units_water} | {units_sediment}'
+                        cname.units_water = units_water
+                        cname.units_sediment = units_sediment
+                        cname.mesh = 'mesh'; cname.location = 'face'; cname.grid_mapping = 'crs'; cname.coordinates = 'face_lon face_lat'
+                    else:
+                        if not time_avg_conc:
+                            pname = nc.createVariable('property_mean', 'f8', ('time', 'specie', 'depth', 'face'), fill_value=1.e36)
+                            _write_masked_4d(pname, H_out, combined_mask_face, 1.e36)
+                        else:
+                            pname = nc.createVariable('property_mean_avg', 'f8', ('avg_time', 'specie', 'depth', 'face'), fill_value=1.e36)
+                            _write_masked_4d(pname, mean_field_out, combined_mask_face, 1.e36)
+                        pname.units = resolved_weight_unit; pname.mesh = 'mesh'; pname.location = 'face'; pname.grid_mapping = 'crs'; pname.coordinates = 'face_lon face_lat'
+
+                logger.info('Wrote to %s', filename)
+                return
+
+            # ------------------------------------------------------------------
+            # Structured writer (existing behavior)
+            # ------------------------------------------------------------------
+            with Dataset(filename, 'w') as nc:
+                nc.Conventions = 'CF-1.10'
+                nc.title = 'ChemicalDrift gridded chemical field'
+                nc.source = 'OpenDrift ChemicalDrift'
+                nc.history = 'Created by write_netcdf_chemical_density_map'
+                nc.actual_density_proj_str = density_proj_str
+                nc.weight_name = str(weight)
+                nc.weight_mode = weight_mode
+                if weight_mode == 'extensive':
+                    nc.phase_units_metadata_mode = 'compatibility'
+                if weight_mode == 'extensive':
+                    nc.comment = 'Depth is written as a CF-style positive-down coordinate derived from model z coordinates. Auxiliary-reader interpolation is linear first, then nearest-neighbour fill for remaining NaNs; this is not conservative. For concentration outputs in compatibility mode, use units_water, units_sediment and specie_phase to interpret phase-specific units.'
                 else:
-                    raise ValueError(
-                        f"mask_yx shape {mm.shape} not compatible with data YX {arr_5d_tsd_yx.shape[-2:]}")
-            m = mm[None, None, None, :, :]
-            return np.broadcast_to(m, arr_5d_tsd_yx.shape)
+                    nc.comment = 'Depth is written as a CF-style positive-down coordinate derived from model z coordinates. Auxiliary-reader interpolation is linear first, then nearest-neighbour fill for remaining NaNs; this is not conservative. This file stores per-cell mean property fields; no mixed-phase compatibility-unit interpretation is required.'
 
-        def _mask3d(arr_3d_d_yx, mask_yx):
-            mm = np.asarray(mask_yx, dtype=bool)
-            if mm.shape != arr_3d_d_yx.shape[-2:]:
-                if mm.T.shape == arr_3d_d_yx.shape[-2:]:
-                    mm = mm.T
-                else:
-                    raise ValueError(
-                        f"mask_yx shape {mm.shape} not compatible with data YX {arr_3d_d_yx.shape[-2:]}")
-            m = mm[None, :, :]
-            return np.broadcast_to(m, arr_3d_d_yx.shape)
-
-        def _write_masked_5d(var_nc, arr_5d_tsdxy, *, mask_yx, fill_value):
-            arr = np.swapaxes(arr_5d_tsdxy, 3, 4)
-            mask = _mask5d(arr, mask_yx)
-            marr = np.ma.MaskedArray(arr, mask=mask, copy=False)
-            if fill_value is not None:
-                try:
-                    marr.set_fill_value(fill_value)
-                except Exception as e:
-                    logger.debug("Could not set masked-array fill_value=%r: %s", fill_value, e, exc_info=True)
-            var_nc[:] = marr
-
-        def _write_masked_3d(var_nc, arr_3d_dxy, *, mask_yx, fill_value):
-            arr = np.swapaxes(arr_3d_dxy, 1, 2)
-            mask = _mask3d(arr, mask_yx)
-            marr = np.ma.MaskedArray(arr, mask=mask, copy=False)
-            if fill_value is not None:
-                try:
-                    marr.set_fill_value(fill_value)
-                except Exception as e:
-                    logger.debug("Could not set masked-array fill_value=%r: %s", fill_value, e, exc_info=True)
-                    pass
-            var_nc[:] = marr
-
-        if write_density:
-            if not time_avg_conc:
-                nc.createVariable('density', 'i4', ('time', 'specie', 'depth', 'y', 'x'), fill_value=99999)
-                H_count_i4 = np.nan_to_num(H_count_out, nan=0, posinf=0, neginf=0).astype('i4', copy=False)
-                _write_masked_5d(nc.variables['density'], H_count_i4, mask_yx=combined_mask_yx, fill_value=99999)
-                nc.variables['density'].long_name = 'Number of elements in grid cell'
-                nc.variables['density'].grid_mapping = 'crs'
-                nc.variables['density'].coordinates = 'lat lon'
-                nc.variables['density'].units = '1'
-                if sim_description is not None:
-                    nc.variables['density'].sim_description = str(sim_description)
-
-                if horizontal_smoothing and Hcount_sm_out is not None:
-                    nc.createVariable('density_smooth', 'f4', ('time', 'specie', 'depth', 'y', 'x'),
-                                      fill_value=np.float32(1.0e36))
-                    _write_masked_5d(
-                        nc.variables['density_smooth'],
-                        Hcount_sm_out.astype(np.float32, copy=False),
-                        mask_yx=combined_mask_yx,
-                        fill_value=np.float32(1.0e36),)
-                    nc.variables['density_smooth'].long_name = 'Horizontally smoothed number of elements in grid cell'
-                    nc.variables['density_smooth'].grid_mapping = 'crs'
-                    nc.variables['density_smooth'].coordinates = 'lat lon'
-                    nc.variables['density_smooth'].units = '1'
-                    if sim_description is not None:
-                        nc.variables['density_smooth'].sim_description = str(sim_description)
-            else:
-                nc.createVariable('density_avg', 'f4', ('avg_time', 'specie', 'depth', 'y', 'x'),
-                                  fill_value=np.float32(1.0e36))
-                _write_masked_5d(
-                    nc.variables['density_avg'],
-                    mean_dens_out.astype(np.float32, copy=False),
-                    mask_yx=combined_mask_yx,
-                    fill_value=np.float32(1.0e36),)
-                nc.variables['density_avg'].long_name = 'Mean number of elements per snapshot in averaging block'
-                nc.variables['density_avg'].grid_mapping = 'crs'
-                nc.variables['density_avg'].coordinates = 'lat lon'
-                nc.variables['density_avg'].units = '1'
-                if sim_description is not None:
-                    nc.variables['density_avg'].sim_description = str(sim_description)
-
-                if horizontal_smoothing and mean_dens_sm_out is not None:
-                    nc.createVariable('density_smooth_avg', 'f4', ('avg_time', 'specie', 'depth', 'y', 'x'),
-                                      fill_value=np.float32(1.0e36))
-                    _write_masked_5d(
-                        nc.variables['density_smooth_avg'],
-                        mean_dens_sm_out.astype(np.float32, copy=False),
-                        mask_yx=combined_mask_yx,
-                        fill_value=np.float32(1.0e36),)
-                    nc.variables['density_smooth_avg'].long_name = (
-                        'Horizontally smoothed mean number of elements per snapshot in averaging block')
-                    nc.variables['density_smooth_avg'].grid_mapping = 'crs'
-                    nc.variables['density_smooth_avg'].coordinates = 'lat lon'
-                    nc.variables['density_smooth_avg'].units = '1'
-                    if sim_description is not None:
-                        nc.variables['density_smooth_avg'].sim_description = str(sim_description)
-
-        if weight_mode == "extensive":
-            units_water = f"{resolved_weight_unit} m-3"
-            units_sediment = f"{resolved_weight_unit} kg-1 dry_weight"
-
-            if not time_avg_conc:
-                nc.createVariable('concentration', 'f8', ('time', 'specie', 'depth', 'y', 'x'), fill_value=1.e36)
-                _write_masked_5d(nc.variables['concentration'], H_out, mask_yx=combined_mask_yx, fill_value=1.e36)
-                nc.variables['concentration'].long_name = f"{compound} concentration from weight={weight}\nspecie {species_str}"
-                nc.variables['concentration'].grid_mapping = 'crs'
-                nc.variables['concentration'].coordinates = 'lat lon'
-                nc.variables['concentration'].units = f"{units_water} | {units_sediment}"
-                nc.variables['concentration'].units_water = units_water
-                nc.variables['concentration'].units_sediment = units_sediment
-                nc.variables['concentration'].comment = (
-                    "Compatibility mode: one variable stores both water-like and sediment-like species. "
-                    "Use units_water, units_sediment and specie_phase.")
-                if sim_description is not None:
-                    nc.variables['concentration'].sim_description = str(sim_description)
-            else:
-                nc.createVariable('concentration_avg', 'f8', ('avg_time', 'specie', 'depth', 'y', 'x'), fill_value=1.e36)
-                _write_masked_5d(nc.variables['concentration_avg'], mean_field_out, mask_yx=combined_mask_yx, fill_value=1.e36)
-                nc.variables['concentration_avg'].long_name = f"{compound} snapshot-block mean concentration from weight={weight}\nspecie {species_str}"
-                nc.variables['concentration_avg'].grid_mapping = 'crs'
-                nc.variables['concentration_avg'].coordinates = 'lat lon'
-                nc.variables['concentration_avg'].units = f"{units_water} | {units_sediment}"
-                nc.variables['concentration_avg'].units_water = units_water
-                nc.variables['concentration_avg'].units_sediment = units_sediment
-                nc.variables['concentration_avg'].comment = (
-                    "Compatibility mode block mean. Use units_water, units_sediment and specie_phase.")
-                if sim_description is not None:
-                    nc.variables['concentration_avg'].sim_description = str(sim_description)
-        else:
-            if not time_avg_conc:
-                nc.createVariable('property_mean', 'f8', ('time', 'specie', 'depth', 'y', 'x'), fill_value=1.e36)
-                _write_masked_5d(nc.variables['property_mean'], H_out, mask_yx=combined_mask_yx, fill_value=1.e36)
-                nc.variables['property_mean'].long_name = f"Per-snapshot mean particle property {weight!r} in grid cell\nspecie {species_str}"
-                nc.variables['property_mean'].grid_mapping = 'crs'
-                nc.variables['property_mean'].coordinates = 'lat lon'
-                nc.variables['property_mean'].units = resolved_weight_unit
-                if sim_description is not None:
-                    nc.variables['property_mean'].sim_description = str(sim_description)
-            else:
-                nc.createVariable('property_mean_avg', 'f8', ('avg_time', 'specie', 'depth', 'y', 'x'), fill_value=1.e36)
-                _write_masked_5d(nc.variables['property_mean_avg'], mean_field_out, mask_yx=combined_mask_yx, fill_value=1.e36)
-                nc.variables['property_mean_avg'].long_name = f"Block mean of per-snapshot mean particle property {weight!r}\nspecie {species_str}"
-                nc.variables['property_mean_avg'].grid_mapping = 'crs'
-                nc.variables['property_mean_avg'].coordinates = 'lat lon'
-                nc.variables['property_mean_avg'].units = resolved_weight_unit
-                if sim_description is not None:
-                    nc.variables['property_mean_avg'].sim_description = str(sim_description)
-
-        if horizontal_smoothing:
-            if weight_mode == "extensive":
+                nc.createDimension('x', x_centers.size)
+                nc.createDimension('y', y_centers.size)
+                nc.createDimension('depth', len(depth_cf))
+                nc.createDimension('depth_bounds_dim', 2)
+                nc.createDimension('specie', nspecies_out)
+                nc.species_axis_compressed = int(bool(compress_species))
+                nc.createVariable('specie_original_id', 'i4', ('specie',))[:] = keep_species.astype('i4')
+                sp_phase = nc.createVariable('specie_phase', 'i4', ('specie',))
+                sp_phase[:] = sediment_mask_out.astype('i4')
+                sp_phase.long_name = 'Species phase class'
+                sp_phase.flag_values = np.array([0, 1], dtype='i4')
+                sp_phase.flag_meanings = 'water_like sediment_like'
+                maxlen = max(len(s) for s in name_species_out) if name_species_out else 1
+                nc.createDimension('name_strlen', maxlen)
+                specie_name_var = nc.createVariable('specie_name', 'S1', ('specie', 'name_strlen'))
+                specie_name_bytes = np.array([list(s.ljust(maxlen)) for s in name_species_out], dtype='S1')
+                specie_name_var[:] = specie_name_bytes
+                timestr = 'seconds since 1970-01-01 00:00:00'
                 if not time_avg_conc:
-                    nc.createVariable('concentration_smooth', 'f8', ('time', 'specie', 'depth', 'y', 'x'), fill_value=1.e36)
-                    _write_masked_5d(nc.variables['concentration_smooth'], Hsm_out, mask_yx=combined_mask_yx, fill_value=1.e36)
-                    nc.variables['concentration_smooth'].long_name = f"Horizontally smoothed concentration from weight={weight}\nspecie {species_str}"
-                    nc.variables['concentration_smooth'].grid_mapping = 'crs'
-                    nc.variables['concentration_smooth'].coordinates = 'lat lon'
-                    nc.variables['concentration_smooth'].units = nc.variables['concentration'].units
-                    nc.variables['concentration_smooth'].units_water = units_water
-                    nc.variables['concentration_smooth'].units_sediment = units_sediment
-                    if sim_description is not None:
-                        nc.variables['concentration_smooth'].sim_description = str(sim_description)
+                    nc.createDimension('time', H_out.shape[0])
+                    nc.createVariable('time', 'f8', ('time',))[:] = date2num(filtered_times, timestr)
+                    nc.variables['time'].units = timestr
+                    nc.variables['time'].standard_name = 'time'
                 else:
-                    nc.createVariable('concentration_smooth_avg', 'f8', ('avg_time', 'specie', 'depth', 'y', 'x'), fill_value=1.e36)
-                    _write_masked_5d(nc.variables['concentration_smooth_avg'], mean_field_sm_out, mask_yx=combined_mask_yx, fill_value=1.e36)
-                    nc.variables['concentration_smooth_avg'].long_name = f"Horizontally smoothed block-mean concentration from weight={weight}\nspecie {species_str}"
-                    nc.variables['concentration_smooth_avg'].grid_mapping = 'crs'
-                    nc.variables['concentration_smooth_avg'].coordinates = 'lat lon'
-                    nc.variables['concentration_smooth_avg'].units = nc.variables['concentration_avg'].units
-                    nc.variables['concentration_smooth_avg'].units_water = units_water
-                    nc.variables['concentration_smooth_avg'].units_sediment = units_sediment
-                    if sim_description is not None:
-                        nc.variables['concentration_smooth_avg'].sim_description = str(sim_description)
-            else:
-                if not time_avg_conc:
-                    nc.createVariable('property_mean_smooth', 'f8', ('time', 'specie', 'depth', 'y', 'x'), fill_value=1.e36)
-                    _write_masked_5d(nc.variables['property_mean_smooth'], Hsm_out, mask_yx=combined_mask_yx, fill_value=1.e36)
-                    nc.variables['property_mean_smooth'].long_name = f"Horizontally smoothed per-snapshot mean particle property {weight!r}\nspecie {species_str}"
-                    nc.variables['property_mean_smooth'].grid_mapping = 'crs'
-                    nc.variables['property_mean_smooth'].coordinates = 'lat lon'
-                    nc.variables['property_mean_smooth'].units = resolved_weight_unit
-                    if sim_description is not None:
-                        nc.variables['property_mean_smooth'].sim_description = str(sim_description)
+                    nc.createDimension('avg_time', mean_field_out.shape[0])
+                    nc.createVariable('avg_time', 'f8', ('avg_time',))[:] = date2num(avg_times, timestr)
+                    nc.variables['avg_time'].units = timestr
+                    nc.variables['avg_time'].standard_name = 'time'
+                _crs_obj, _ = _write_cf_crs_variable(nc, density_proj_str)
+                x_is_index = bool(explicit_grid['x_is_index']) if explicit_grid is not None else False
+                y_is_index = bool(explicit_grid['y_is_index']) if explicit_grid is not None else False
+                nc.createVariable('x', 'f8', ('x',))[:] = x_centers
+                nc.createVariable('y', 'f8', ('y',))[:] = y_centers
+                if x_is_index or y_is_index:
+                    nc.variables['x'].long_name = 'grid x index'; nc.variables['x'].units = '1'; nc.variables['x'].axis = 'X'
+                    nc.variables['y'].long_name = 'grid y index'; nc.variables['y'].units = '1'; nc.variables['y'].axis = 'Y'
+                elif crs_obj.is_geographic:
+                    nc.variables['x'].standard_name = 'longitude'; nc.variables['x'].long_name = 'longitude of cell center'; nc.variables['x'].units = 'degrees_east'; nc.variables['x'].axis = 'X'
+                    nc.variables['y'].standard_name = 'latitude'; nc.variables['y'].long_name = 'latitude of cell center'; nc.variables['y'].units = 'degrees_north'; nc.variables['y'].axis = 'Y'
                 else:
-                    nc.createVariable('property_mean_smooth_avg', 'f8', ('avg_time', 'specie', 'depth', 'y', 'x'), fill_value=1.e36)
-                    _write_masked_5d(nc.variables['property_mean_smooth_avg'], mean_field_sm_out, mask_yx=combined_mask_yx, fill_value=1.e36)
-                    nc.variables['property_mean_smooth_avg'].long_name = f"Horizontally smoothed block-mean particle property {weight!r}\nspecie {species_str}"
-                    nc.variables['property_mean_smooth_avg'].grid_mapping = 'crs'
-                    nc.variables['property_mean_smooth_avg'].coordinates = 'lat lon'
-                    nc.variables['property_mean_smooth_avg'].units = resolved_weight_unit
-                    if sim_description is not None:
-                        nc.variables['property_mean_smooth_avg'].sim_description = str(sim_description)
+                    nc.variables['x'].standard_name = 'projection_x_coordinate'; nc.variables['x'].long_name = 'x coordinate of cell center in target CRS'; nc.variables['x'].units = 'm'; nc.variables['x'].axis = 'X'
+                    nc.variables['y'].standard_name = 'projection_y_coordinate'; nc.variables['y'].long_name = 'y coordinate of cell center in target CRS'; nc.variables['y'].units = 'm'; nc.variables['y'].axis = 'Y'
+                nc.createVariable('lon', 'f8', ('y', 'x'))[:] = lon_center_2d.T
+                nc.createVariable('lat', 'f8', ('y', 'x'))[:] = lat_center_2d.T
+                nc.variables['lon'].standard_name = 'longitude'; nc.variables['lon'].units = 'degrees_east'
+                nc.variables['lat'].standard_name = 'latitude'; nc.variables['lat'].units = 'degrees_north'
+                if explicit_grid is not None and explicit_grid.get('lon_corners_4') is not None and explicit_grid.get('lat_corners_4') is not None:
+                    if 'nv' not in nc.dimensions:
+                        nc.createDimension('nv', 4)
+                    nc.createVariable('lon_bounds', 'f8', ('y', 'x', 'nv'))[:] = np.transpose(explicit_grid['lon_corners_4'], (1, 0, 2))
+                    nc.createVariable('lat_bounds', 'f8', ('y', 'x', 'nv'))[:] = np.transpose(explicit_grid['lat_corners_4'], (1, 0, 2))
+                    nc.variables['lon'].bounds = 'lon_bounds'; nc.variables['lat'].bounds = 'lat_bounds'
+                if explicit_grid is not None and explicit_grid.get('x_is_index', False) and explicit_grid.get('x_center_2d') is not None and explicit_grid.get('y_center_2d') is not None:
+                    nc.createVariable('x_center', 'f8', ('y', 'x'))[:] = explicit_grid['x_center_2d'].T
+                    nc.createVariable('y_center', 'f8', ('y', 'x'))[:] = explicit_grid['y_center_2d'].T
+                    nc.variables['x_center'].units = explicit_grid.get('native_x_units', 'm') or 'm'
+                    nc.variables['y_center'].units = explicit_grid.get('native_y_units', 'm') or 'm'
+                    if explicit_grid.get('x_corners_4') is not None and explicit_grid.get('y_corners_4') is not None:
+                        if 'nv' not in nc.dimensions:
+                            nc.createDimension('nv', 4)
+                        nc.createVariable('x_bounds', 'f8', ('y', 'x', 'nv'))[:] = np.transpose(explicit_grid['x_corners_4'], (1, 0, 2))
+                        nc.createVariable('y_bounds', 'f8', ('y', 'x', 'nv'))[:] = np.transpose(explicit_grid['y_corners_4'], (1, 0, 2))
+                        nc.variables['x_center'].bounds = 'x_bounds'; nc.variables['y_center'].bounds = 'y_bounds'
+                nc.createVariable('depth', 'f8', ('depth',))[:] = depth_cf
+                nc.variables['depth'].standard_name = 'depth'; nc.variables['depth'].positive = 'down'; nc.variables['depth'].bounds = 'depth_bounds'
+                nc.createVariable('depth_bounds', 'f8', ('depth', 'depth_bounds_dim'))[:] = depth_bounds_cf
+                nc.createVariable('depth_model_top', 'f8', ('depth',))[:] = depth_model_top
+                nc.createVariable('depth_model_bounds', 'f8', ('depth', 'depth_bounds_dim'))[:] = depth_model_bounds
+                nc.createVariable('specie', 'i4', ('specie',))[:] = np.arange(nspecies_out)
+                if explicit_grid is None:
+                    if pixelsize_m is not None:
+                        nc.createVariable('cell_size', 'f8')[:] = pixelsize_m
+                        nc.variables['cell_size'].units = 'm'
+                    else:
+                        if crs_obj.is_geographic:
+                            nc.createVariable('lat_resol', 'f8')[:] = lat_resol
+                            nc.createVariable('lon_resol', 'f8')[:] = lon_resol
+                        else:
+                            nc.createVariable('dy', 'f8')[:] = lat_resol
+                            nc.createVariable('dx', 'f8')[:] = lon_resol
+                            if input_lat_resol_deg is not None:
+                                nc.createVariable('input_lat_resol_deg', 'f8')[:] = input_lat_resol_deg
+                            if input_lon_resol_deg is not None:
+                                nc.createVariable('input_lon_resol_deg', 'f8')[:] = input_lon_resol_deg
+                else:
+                    nc.explicit_output_grid = 1
+                    nc.output_grid_mode = explicit_grid['binning_mode']
+                    nc.output_grid_coords = explicit_grid['binning_coords']
+                if horizontal_smoothing:
+                    nc.createVariable('smoothing_cells', 'i8')[:] = smoothing_cells
 
-        nc.createVariable('volume', 'f8', ('depth', 'y', 'x'), fill_value=0)
-        pv = np.ma.masked_invalid(pixel_volume_out)
-        _write_masked_3d(nc.variables['volume'], pv, mask_yx=combined_mask_yx, fill_value=0)
-        nc.variables['volume'].long_name = 'Water volume of grid cell'
-        nc.variables['volume'].grid_mapping = 'crs'
-        nc.variables['volume'].coordinates = 'lat lon'
-        nc.variables['volume'].units = 'm3'
+                def _mask5d(arr_5d_tsd_yx, mask_yx):
+                    mm = np.asarray(mask_yx, dtype=bool)
+                    if mm.shape != arr_5d_tsd_yx.shape[-2:]:
+                        if mm.T.shape == arr_5d_tsd_yx.shape[-2:]:
+                            mm = mm.T
+                        else:
+                            raise ValueError(f'mask_yx shape {mm.shape} not compatible with data YX {arr_5d_tsd_yx.shape[-2:]}')
+                    m = mm[None, None, None, :, :]
+                    return np.broadcast_to(m, arr_5d_tsd_yx.shape)
+                def _mask3d(arr_3d_d_yx, mask_yx):
+                    mm = np.asarray(mask_yx, dtype=bool)
+                    if mm.shape != arr_3d_d_yx.shape[-2:]:
+                        if mm.T.shape == arr_3d_d_yx.shape[-2:]:
+                            mm = mm.T
+                        else:
+                            raise ValueError(f'mask_yx shape {mm.shape} not compatible with data YX {arr_3d_d_yx.shape[-2:]}')
+                    m = mm[None, :, :]
+                    return np.broadcast_to(m, arr_3d_d_yx.shape)
+                def _write_masked_5d(var_nc, arr_5d_tsdxy, *, mask_yx, fill_value):
+                    arr = np.swapaxes(arr_5d_tsdxy, 3, 4)
+                    mask = _mask5d(arr, mask_yx)
+                    marr = np.ma.MaskedArray(arr, mask=mask, copy=False)
+                    try:
+                        marr.set_fill_value(fill_value)
+                    except Exception:
+                        pass
+                    var_nc[:] = marr
+                def _write_masked_3d(var_nc, arr_3d_dxy, *, mask_yx, fill_value):
+                    arr = np.swapaxes(arr_3d_dxy, 1, 2)
+                    mask = _mask3d(arr, mask_yx)
+                    marr = np.ma.MaskedArray(arr, mask=mask, copy=False)
+                    try:
+                        marr.set_fill_value(fill_value)
+                    except Exception:
+                        pass
+                    var_nc[:] = marr
 
-        nc.createVariable('topo', 'f8', ('y', 'x'), fill_value=0)
-        topo_mask = combined_mask_yx | ~np.isfinite(pixel_mean_depth.T)
-        topo_ma = np.ma.array(pixel_mean_depth.T, mask=topo_mask, copy=False)
-        nc.variables['topo'][:] = topo_ma
-        nc.variables['topo'].long_name = 'Water depth at grid-cell center'
-        nc.variables['topo'].standard_name = 'sea_floor_depth_below_sea_level'
-        nc.variables['topo'].grid_mapping = 'crs'
-        nc.variables['topo'].coordinates = 'lat lon'
-        nc.variables['topo'].units = 'm'
+                if write_density:
+                    if not time_avg_conc:
+                        nc.createVariable('density', 'i4', ('time', 'specie', 'depth', 'y', 'x'), fill_value=99999)
+                        H_count_i4 = np.nan_to_num(H_count_out, nan=0, posinf=0, neginf=0).astype('i4', copy=False)
+                        _write_masked_5d(nc.variables['density'], H_count_i4, mask_yx=combined_mask_yx, fill_value=99999)
+                        if horizontal_smoothing and Hcount_sm_out is not None:
+                            nc.createVariable('density_smooth', 'f4', ('time', 'specie', 'depth', 'y', 'x'), fill_value=np.float32(1.0e36))
+                            _write_masked_5d(nc.variables['density_smooth'], Hcount_sm_out.astype(np.float32, copy=False), mask_yx=combined_mask_yx, fill_value=np.float32(1.0e36))
+                    else:
+                        nc.createVariable('density_avg', 'f4', ('avg_time', 'specie', 'depth', 'y', 'x'), fill_value=np.float32(1.0e36))
+                        _write_masked_5d(nc.variables['density_avg'], mean_dens_out.astype(np.float32, copy=False), mask_yx=combined_mask_yx, fill_value=np.float32(1.0e36))
+                        if horizontal_smoothing and mean_dens_sm_out is not None:
+                            nc.createVariable('density_smooth_avg', 'f4', ('avg_time', 'specie', 'depth', 'y', 'x'), fill_value=np.float32(1.0e36))
+                            _write_masked_5d(nc.variables['density_smooth_avg'], mean_dens_sm_out.astype(np.float32, copy=False), mask_yx=combined_mask_yx, fill_value=np.float32(1.0e36))
 
-        if pixel_active_sediment_layer_thickness is not None:
-            nc.createVariable('active_sediment_layer_thickness', 'f8', ('y', 'x'), fill_value=0)
-            aslt_mask = combined_mask_yx | ~np.isfinite(pixel_active_sediment_layer_thickness.T)
-            aslt_ma = np.ma.array(pixel_active_sediment_layer_thickness.T, mask=aslt_mask, copy=False)
-            nc.variables['active_sediment_layer_thickness'][:] = aslt_ma
-            nc.variables['active_sediment_layer_thickness'].long_name = 'Thickness of active sediment layer'
-            nc.variables['active_sediment_layer_thickness'].grid_mapping = 'crs'
-            nc.variables['active_sediment_layer_thickness'].coordinates = 'lat lon'
-            nc.variables['active_sediment_layer_thickness'].units = 'm'
+                if weight_mode == 'extensive':
+                    if not time_avg_conc:
+                        nc.createVariable('concentration', 'f8', ('time', 'specie', 'depth', 'y', 'x'), fill_value=1.e36)
+                        _write_masked_5d(nc.variables['concentration'], H_out, mask_yx=combined_mask_yx, fill_value=1.e36)
+                        nc.variables['concentration'].units = f'{units_water} | {units_sediment}'
+                        nc.variables['concentration'].units_water = units_water
+                        nc.variables['concentration'].units_sediment = units_sediment
+                    else:
+                        nc.createVariable('concentration_avg', 'f8', ('avg_time', 'specie', 'depth', 'y', 'x'), fill_value=1.e36)
+                        _write_masked_5d(nc.variables['concentration_avg'], mean_field_out, mask_yx=combined_mask_yx, fill_value=1.e36)
+                        nc.variables['concentration_avg'].units = f'{units_water} | {units_sediment}'
+                        nc.variables['concentration_avg'].units_water = units_water
+                        nc.variables['concentration_avg'].units_sediment = units_sediment
+                else:
+                    if not time_avg_conc:
+                        nc.createVariable('property_mean', 'f8', ('time', 'specie', 'depth', 'y', 'x'), fill_value=1.e36)
+                        _write_masked_5d(nc.variables['property_mean'], H_out, mask_yx=combined_mask_yx, fill_value=1.e36)
+                        nc.variables['property_mean'].units = resolved_weight_unit
+                    else:
+                        nc.createVariable('property_mean_avg', 'f8', ('avg_time', 'specie', 'depth', 'y', 'x'), fill_value=1.e36)
+                        _write_masked_5d(nc.variables['property_mean_avg'], mean_field_out, mask_yx=combined_mask_yx, fill_value=1.e36)
+                        nc.variables['property_mean_avg'].units = resolved_weight_unit
 
-        if pixel_area is not None:
-            nc.createVariable('area', 'f8', ('y', 'x'), fill_value=0)
-            area_ma = np.ma.array(pixel_area.T, mask=combined_mask_yx, copy=False)
-            nc.variables['area'][:] = area_ma
-            nc.variables['area'].long_name = 'Horizontal area of grid cell'
-            nc.variables['area'].grid_mapping = 'crs'
-            nc.variables['area'].coordinates = 'lat lon'
-            nc.variables['area'].units = 'm2'
+                if horizontal_smoothing:
+                    if weight_mode == 'extensive':
+                        if not time_avg_conc:
+                            nc.createVariable('concentration_smooth', 'f8', ('time', 'specie', 'depth', 'y', 'x'), fill_value=1.e36)
+                            _write_masked_5d(nc.variables['concentration_smooth'], Hsm_out, mask_yx=combined_mask_yx, fill_value=1.e36)
+                            nc.variables['concentration_smooth'].units = nc.variables['concentration'].units
+                            nc.variables['concentration_smooth'].units_water = units_water
+                            nc.variables['concentration_smooth'].units_sediment = units_sediment
+                        else:
+                            nc.createVariable('concentration_smooth_avg', 'f8', ('avg_time', 'specie', 'depth', 'y', 'x'), fill_value=1.e36)
+                            _write_masked_5d(nc.variables['concentration_smooth_avg'], mean_field_sm_out, mask_yx=combined_mask_yx, fill_value=1.e36)
+                            nc.variables['concentration_smooth_avg'].units = nc.variables['concentration_avg'].units
+                            nc.variables['concentration_smooth_avg'].units_water = units_water
+                            nc.variables['concentration_smooth_avg'].units_sediment = units_sediment
+                    else:
+                        if not time_avg_conc:
+                            nc.createVariable('property_mean_smooth', 'f8', ('time', 'specie', 'depth', 'y', 'x'), fill_value=1.e36)
+                            _write_masked_5d(nc.variables['property_mean_smooth'], Hsm_out, mask_yx=combined_mask_yx, fill_value=1.e36)
+                            nc.variables['property_mean_smooth'].units = resolved_weight_unit
+                        else:
+                            nc.createVariable('property_mean_smooth_avg', 'f8', ('avg_time', 'specie', 'depth', 'y', 'x'), fill_value=1.e36)
+                            _write_masked_5d(nc.variables['property_mean_smooth_avg'], mean_field_sm_out, mask_yx=combined_mask_yx, fill_value=1.e36)
+                            nc.variables['property_mean_smooth_avg'].units = resolved_weight_unit
 
-        nc.createVariable('land', 'i4', ('y', 'x'), fill_value=-1)
-        nc.variables['land'][:] = landmask_yx.astype('i4', copy=False)
-        nc.variables['land'].long_name = 'Binary land mask'
-        nc.variables['land'].grid_mapping = 'crs'
-        nc.variables['land'].coordinates = 'lat lon'
-        nc.variables['land'].units = '1'
-        nc.variables['land'].flag_values = np.array([0, 1], dtype='i4')
-        nc.variables['land'].flag_meanings = 'water land'
+                nc.createVariable('volume', 'f8', ('depth', 'y', 'x'), fill_value=0)
+                pv = np.ma.masked_invalid(pixel_volume_out)
+                _write_masked_3d(nc.variables['volume'], pv, mask_yx=combined_mask_yx, fill_value=0)
+                nc.createVariable('topo', 'f8', ('y', 'x'), fill_value=0)
+                topo_mask = combined_mask_yx | ~np.isfinite(pixel_mean_depth.T)
+                topo_ma = np.ma.array(pixel_mean_depth.T, mask=topo_mask, copy=False)
+                nc.variables['topo'][:] = topo_ma
+                if pixel_active_sediment_layer_thickness is not None:
+                    nc.createVariable('active_sediment_layer_thickness', 'f8', ('y', 'x'), fill_value=0)
+                    aslt_mask = combined_mask_yx | ~np.isfinite(pixel_active_sediment_layer_thickness.T)
+                    aslt_ma = np.ma.array(pixel_active_sediment_layer_thickness.T, mask=aslt_mask, copy=False)
+                    nc.variables['active_sediment_layer_thickness'][:] = aslt_ma
+                if pixel_area is not None:
+                    nc.createVariable('area', 'f8', ('y', 'x'), fill_value=0)
+                    area_ma = np.ma.array(pixel_area.T, mask=combined_mask_yx, copy=False)
+                    nc.variables['area'][:] = area_ma
+                nc.createVariable('land', 'i4', ('y', 'x'), fill_value=-1)[:] = landmask_yx.astype('i4', copy=False)
+                nc.createVariable('domain_invalid', 'i4', ('y', 'x'), fill_value=-1)[:] = domain_invalid_yx.astype('i4', copy=False)
 
-        nc.createVariable('domain_invalid', 'i4', ('y', 'x'), fill_value=-1)
-        nc.variables['domain_invalid'][:] = domain_invalid_yx.astype('i4', copy=False)
-        nc.variables['domain_invalid'].long_name = 'Mask of cells outside the valid auxiliary-data domain'
-        nc.variables['domain_invalid'].grid_mapping = 'crs'
-        nc.variables['domain_invalid'].coordinates = 'lat lon'
-        nc.variables['domain_invalid'].units = '1'
-        nc.variables['domain_invalid'].flag_values = np.array([0, 1], dtype='i4')
-        nc.variables['domain_invalid'].flag_meanings = 'valid invalid'
+                logger.info('Wrote to %s', filename)
+        finally:
+            # Close/remove env readers even on exceptions
+            if added_shape_reader:
+                _remove_reader_by_key(self, 'shape')
+            if added_global_landmask:
+                _remove_reader_by_key(self, 'global_landmask')
 
-        nc.close()
-        logger.info('Wrote to %s', filename)
+            # Close explicit reader objects if they were opened
+            _close_if_possible(reader_sea_depth_obj, 'reader_sea_depth_obj')
+            _close_if_possible(active_sediment_layer_thickness_reader, 'active_sediment_layer_thickness_reader')
 
-        del H, H_out, pixel_volume, pixel_volume_out, pixel_mean_depth, x_centers, y_centers, lon_center_2d, lat_center_2d
-        del landmask, landmask_yx, combined_mask, combined_mask_yx, bathy_invalid_mask, domain_invalid_yx
-        if pixel_active_sediment_layer_thickness is not None:
-            del pixel_active_sediment_layer_thickness
-        if H_count is not None:
-            del H_count
-        if H_count_out is not None:
-            del H_count_out
-        if mean_dens is not None:
-            del mean_dens
-        if mean_dens_out is not None:
-            del mean_dens_out
-        if Hsm is not None:
-            del Hsm
-        if Hsm_out is not None:
-            del Hsm_out
-        if mean_field is not None:
-            del mean_field
-        if mean_field_out is not None:
-            del mean_field_out
-        if mean_field_sm is not None:
-            del mean_field_sm
-        if mean_field_sm_out is not None:
-            del mean_field_sm_out
-        if Hcount_sm is not None:
-            del Hcount_sm
-        if Hcount_sm_out is not None:
-            del Hcount_sm_out
-        if mean_dens_sm is not None:
-            del mean_dens_sm
-        if mean_dens_sm_out is not None:
-            del mean_dens_sm_out
-        gc.collect()
+            # Clear cached interpolation fields kept on self
+            for attr in (
+                'conc_lon', 'conc_lat', 'conc_topo', 'conc_topo_source_invalid',
+                'conc_active_sediment_layer_thickness',
+                'conc_active_sediment_layer_thickness_source_invalid'
+            ):
+                if hasattr(self, attr):
+                    setattr(self, attr, None)
+
+            # Drop big local arrays explicitly
+            del H, H_count, Hsm, Hcount_sm
+            del mean_field, mean_dens, mean_field_sm, mean_dens_sm
+            del H_out, Hsm_out, mean_field_out, mean_field_sm_out
+            del H_count_out, mean_dens_out, Hcount_sm_out, mean_dens_sm_out
+            del pixel_volume, pixel_volume_out, pixel_sed_mass
+            del pixel_mean_depth, pixel_area, pixel_active_sediment_layer_thickness
+            del bathy_invalid_mask
+            del landmask_raw, landmask, combined_mask
+            del landmask_yx, domain_invalid_yx, combined_mask_yx
+            del landmask_face, domain_invalid_face, combined_mask_face
+            del lon_center_2d, lat_center_2d
+            del topo_raw, aslt_raw, grid
+            del avg_times, filtered_times
+
+            gc.collect()
+
 
     ##### Helpers for calculate_water_sediment_conc
     @staticmethod
     def _property_weight_var(variable):
-        """
-        Return the density/count variable to use as weights for property_mean-like variables.
-        """
         variable = str(variable)
         mapping = {
-            "property_mean": "density",
-            "property_mean_smooth": "density_smooth",
-            "property_mean_avg": "density_avg",
-            "property_mean_smooth_avg": "density_smooth_avg",
+            'property_mean': 'density',
+            'property_mean_smooth': 'density_smooth',
+            'property_mean_avg': 'density_avg',
+            'property_mean_smooth_avg': 'density_smooth_avg',
         }
         return mapping.get(variable, None)
 
     @staticmethod
-    def _water_units(src_da, variable, default="unknown"):
-        """
-        Tolerant reader for water-like units.
-        Priority:
-          1) src_da.attrs["units_water"]
-          2) new compatibility format: "<water> | <sediment>"
-          3) legacy format where water-like units are the text before "(sed ...)"
-          4) plain src_da.attrs["units"] for property-like variables
-        """
+    def _water_units(src_da, variable, default='unknown'):
         import re
-
         variable = str(variable)
-
-        if "density" in variable:
-            return "1"
-
-        if "property_mean" in variable:
-            units_raw = src_da.attrs.get("units", None)
+        if 'density' in variable:
+            return '1'
+        if 'property_mean' in variable:
+            units_raw = src_da.attrs.get('units', None)
             return str(units_raw).strip() if units_raw else default
-
-        units_water = src_da.attrs.get("units_water", None)
+        units_water = src_da.attrs.get('units_water', None)
         if units_water:
             return str(units_water).strip()
-
-        units_raw = src_da.attrs.get("units", None)
+        units_raw = src_da.attrs.get('units', None)
         if not units_raw:
             return default
-
         s = str(units_raw).strip()
-
-        if "|" in s:
-            return s.split("|", 1)[0].strip() or default
-
-        # legacy style: water-like units before "(sed ...)"
-        s = re.sub(r"\s*/\s*", "/", s)
-        s = s.split("(", 1)[0].strip()
+        if '|' in s:
+            return s.split('|', 1)[0].strip() or default
+        s = re.sub(r'\s*/\s*', '/', s)
+        s = s.split('(', 1)[0].strip()
         return s or default
 
     @staticmethod
-    def _sed_units(src_da, variable, default="unknown"):
-        """
-        Tolerant reader for sediment-like units.
-        Priority:
-          1) src_da.attrs["units_sediment"]
-          2) new compatibility format: "<water> | <sediment>"
-          3) legacy format "(sed <units>)"
-          4) plain src_da.attrs["units"] for property-like variables
-        """
+    def _sed_units(src_da, variable, default='unknown'):
         import re
-
         variable = str(variable)
-
-        if "density" in variable:
-            return "1"
-
-        if "property_mean" in variable:
-            units_raw = src_da.attrs.get("units", None)
+        if 'density' in variable:
+            return '1'
+        if 'property_mean' in variable:
+            units_raw = src_da.attrs.get('units', None)
             return str(units_raw).strip() if units_raw else default
-
-        units_sed = src_da.attrs.get("units_sediment", None)
+        units_sed = src_da.attrs.get('units_sediment', None)
         if units_sed:
             return str(units_sed).strip()
-
-        units_raw = src_da.attrs.get("units", None)
+        units_raw = src_da.attrs.get('units', None)
         if not units_raw:
             return default
-
         s = str(units_raw).strip()
-
-        if "|" in s:
-            return s.split("|", 1)[1].strip() or default
-
-        m = re.search(r"\(\s*sed\s*([^)]+)\)", s, flags=re.IGNORECASE)
+        if '|' in s:
+            return s.split('|', 1)[1].strip() or default
+        m = re.search(r'\(\s*sed\s*([^)]+)\)', s, flags=re.IGNORECASE)
         if m:
             return m.group(1).strip() or default
-
         return default
 
     @staticmethod
-    def _apply_common_attrs(out_da, Sim_description,
-                            projection_proj4=None, grid_mapping=None,
-                            longitude=None, latitude=None,
-                            x=None, y=None,
-                            x_units=None, y_units=None):
-        """
-        Apply common metadata to a derived DataArray.
-        - sim_description
-        - projection
-        - grid_mapping
-        - lon_resol / lat_resol only for 1D geographic coords
-        - dx / dy only for 1D projected x/y coords
-        """
-        import numpy as np
-
-        if Sim_description is not None:
-            out_da.attrs["sim_description"] = str(Sim_description)
-
-        if projection_proj4 is not None:
-            out_da.attrs["projection"] = str(projection_proj4)
-
-        if grid_mapping is not None:
-            out_da.attrs["grid_mapping"] = str(grid_mapping)
-
-        if longitude is not None:
-            lon_arr = np.asarray(longitude)
-            if lon_arr.ndim == 1 and lon_arr.size > 1:
-                out_da.attrs["lon_resol"] = f"{np.around(abs(lon_arr[1] - lon_arr[0]), decimals=8)} degrees_east"
-
-        if latitude is not None:
-            lat_arr = np.asarray(latitude)
-            if lat_arr.ndim == 1 and lat_arr.size > 1:
-                out_da.attrs["lat_resol"] = f"{np.around(abs(lat_arr[1] - lat_arr[0]), decimals=8)} degrees_north"
-
-        if x is not None:
-            x_arr = np.asarray(x)
-            if x_arr.ndim == 1 and x_arr.size > 1:
-                xu = str(x_units) if x_units is not None else "m"
-                out_da.attrs["dx"] = f"{np.around(abs(x_arr[1] - x_arr[0]), decimals=8)} {xu}"
-
-        if y is not None:
-            y_arr = np.asarray(y)
-            if y_arr.ndim == 1 and y_arr.size > 1:
-                yu = str(y_units) if y_units is not None else "m"
-                out_da.attrs["dy"] = f"{np.around(abs(y_arr[1] - y_arr[0]), decimals=8)} {yu}"
-
-        return out_da
-
-    @staticmethod
-    def _rename_common_dims(da, time_name=None):
-        """
-        Normalize only non-spatial/common dimensions.
-
-        Current behavior:
-          - avg_time -> time
-          - preserve provenance via attrs["source_time_coordinate"] = "avg_time"
-        """
-        out = da.copy()
-
-        renamed_avg_time = False
-        if time_name == "avg_time" and "avg_time" in out.dims:
-            out = out.rename({"avg_time": "time"})
-            renamed_avg_time = True
-        if renamed_avg_time:
-            out.attrs["source_time_coordinate"] = "avg_time"
-
-        return out
-
-    @staticmethod
-    def _build_unique_rename_map(dims, pairs, context="dimension rename"):
-        rename_pairs = [(old, new) for old, new in pairs if old in dims]
-
-        target_to_sources = {}
-        for old, new in rename_pairs:
-            target_to_sources.setdefault(new, []).append(old)
-
-        duplicate_targets = {
-            new: olds for new, olds in target_to_sources.items()
-            if len(olds) > 1
-        }
-        if duplicate_targets:
-            raise ValueError(
-                f"Ambiguous {context}: multiple source dims map to the same "
-                f"target {duplicate_targets}. Input dims are {tuple(dims)}")
-
-        rename_map = dict(rename_pairs)
-
-        for old, new in rename_pairs:
-            if new in dims and old != new:
-                raise ValueError(
-                    f"Cannot rename {old!r} -> {new!r}: "
-                    f"{new!r} already exists in dims {tuple(dims)}"
-                )
-        return rename_map
-
-    def _prepare_rectilinear_output_da(self, da,
-                                       lat_var=None, lon_var=None,
-                                       lat1d_from_2d=None, lon1d_from_2d=None):
-        """
-        Prepare a rectilinear geographic output:
-          - dimensions: latitude, longitude
-          - coordinates: 1D latitude, 1D longitude
-
-        Accepts either:
-          1) native 1D lat/lon source coordinates
-          2) separable 2D lon/lat converted to 1D vectors
-          3) existing 1D geographic coordinates already present on `da`
-
-        Any pre-existing geographic coords named
-        ('lat', 'lon', 'latitude', 'longitude') are removed before the final
-        canonical 1D coordinates are attached.
-        """
-        import numpy as np
-
-        out = da.copy()
-
-        def _coord_attrs_or_default(coord, defaults):
-            attrs = {}
-            if coord is not None and hasattr(coord, "attrs"):
-                attrs.update(dict(coord.attrs))
-            for k, v in defaults.items():
-                attrs.setdefault(k, v)
-            return attrs
-
-        def _maybe_get_existing_1d_coord(out_da, names):
-            for nm in names:
-                if nm in out_da.coords and getattr(out_da.coords[nm], "ndim", 0) == 1:
-                    return out_da.coords[nm]
-            return None
-
-        # Preserve existing 1D geographic coords as fallback before dropping them
-        existing_lat_1d = _maybe_get_existing_1d_coord(out, ("latitude", "lat"))
-        existing_lon_1d = _maybe_get_existing_1d_coord(out, ("longitude", "lon"))
-
-        # Remove all existing geographic coords so the output naming is rebuilt cleanly
-        stale_geo_coords = [nm for nm in ("lat", "lon", "latitude", "longitude") if nm in out.coords]
-        if stale_geo_coords:
-            out = out.drop_vars(stale_geo_coords)
-
-        # Rename spatial dims explicitly to rectilinear geographic names
-        rename_map = self._build_unique_rename_map(
-            out.dims,
-            (
-                ("lat", "latitude"),
-                ("lon", "longitude"),
-                ("y", "latitude"),
-                ("x", "longitude"),
-            ),
-            context="rectilinear spatial dimension rename",
-        )
-        if rename_map:
-            out = out.rename(rename_map)
-
-        if "latitude" not in out.dims or "longitude" not in out.dims:
-            raise ValueError(
-                "Rectilinear geographic output requires dimensions that can be mapped "
-                "to ('latitude', 'longitude')."
-            )
-
-        lat_vals = None
-        lon_vals = None
-        lat_attrs = None
-        lon_attrs = None
-
-        # Case A: native 1D source coords
-        if (lat_var is not None and getattr(lat_var, "ndim", 0) == 1 and
-                lon_var is not None and getattr(lon_var, "ndim", 0) == 1):
-            lat_vals = np.asarray(lat_var.values)
-            lon_vals = np.asarray(lon_var.values)
-            lat_attrs = _coord_attrs_or_default(
-                lat_var,
-                {"standard_name": "latitude", "long_name": "latitude",
-                 "units": "degrees_north", "axis": "Y"}
-            )
-            lon_attrs = _coord_attrs_or_default(
-                lon_var,
-                {"standard_name": "longitude", "long_name": "longitude",
-                 "units": "degrees_east", "axis": "X"}
-            )
-
-        # Case B: separable 2D promoted to 1D
-        elif lat1d_from_2d is not None and lon1d_from_2d is not None:
-            lat_vals = np.asarray(lat1d_from_2d, dtype=float)
-            lon_vals = np.asarray(lon1d_from_2d, dtype=float)
-            lat_attrs = {
-                "standard_name": "latitude",
-                "long_name": "latitude",
-                "units": "degrees_north",
-                "axis": "Y",
-            }
-            lon_attrs = {
-                "standard_name": "longitude",
-                "long_name": "longitude",
-                "units": "degrees_east",
-                "axis": "X",
-            }
-
-        # Case C: fallback to existing 1D coords that were already on the input DA
-        elif existing_lat_1d is not None and existing_lon_1d is not None:
-            lat_vals = np.asarray(existing_lat_1d.values)
-            lon_vals = np.asarray(existing_lon_1d.values)
-            lat_attrs = _coord_attrs_or_default(
-                existing_lat_1d,
-                {"standard_name": "latitude", "long_name": "latitude",
-                 "units": "degrees_north", "axis": "Y"}
-            )
-            lon_attrs = _coord_attrs_or_default(
-                existing_lon_1d,
-                {"standard_name": "longitude", "long_name": "longitude",
-                 "units": "degrees_east", "axis": "X"}
-            )
-
-        else:
-            raise ValueError(
-                "Could not build rectilinear geographic output: need either "
-                "1D latitude/longitude source coordinates, separable 2D lon/lat, "
-                "or existing 1D geographic coordinates on the input DataArray."
-            )
-
-        if out.sizes["latitude"] != lat_vals.size:
-            raise ValueError(
-                f"Latitude size mismatch: data has {out.sizes['latitude']} rows, "
-                f"but derived latitude has {lat_vals.size} values."
-            )
-        if out.sizes["longitude"] != lon_vals.size:
-            raise ValueError(
-                f"Longitude size mismatch: data has {out.sizes['longitude']} cols, "
-                f"but derived longitude has {lon_vals.size} values."
-            )
-
-        out = out.assign_coords(
-            latitude=("latitude", lat_vals),
-            longitude=("longitude", lon_vals),
-        )
-        out.coords["latitude"].attrs = lat_attrs
-        out.coords["longitude"].attrs = lon_attrs
-
-        return out
-
-
-    @staticmethod
-    def _prepare_curvilinear_output_da(da,
-                                       y_var=None, x_var=None,
-                                       lon2d=None, lat2d=None,
-                                       separable=False,
-                                       Verbose=True):
-        """
-        Prepare a projected/curvilinear output:
-          - dimensions: y, x
-          - coordinates: 1D y, 1D x when available
-          - optional auxiliary coordinates: 2D lon, 2D lat
-
-        Any pre-existing geographic coords named
-        ('lat', 'lon', 'latitude', 'longitude') are removed before the intended
-        auxiliary 2D lon/lat coordinates are attached.
-        """
-        import numpy as np
-        import xarray as xr
-
-        out = da.copy()
-
-        def _coord_attrs_or_default(coord, defaults):
-            attrs = {}
-            if coord is not None and hasattr(coord, "attrs"):
-                attrs.update(dict(coord.attrs))
-            for k, v in defaults.items():
-                attrs.setdefault(k, v)
-            return attrs
-
-        if "lat" in out.dims or "lon" in out.dims or "latitude" in out.dims or "longitude" in out.dims:
-            raise ValueError(
-                "Curvilinear/projected output helper expects y/x dimensions. "
-                "Rectilinear geographic inputs should be handled by _prepare_rectilinear_output_da(...)."
-            )
-
-        if "y" not in out.dims or "x" not in out.dims:
-            raise ValueError(
-                "Curvilinear/projected mode requires data dimensions containing both 'y' and 'x'."
-            )
-
-        stale_geo_coords = [nm for nm in ("lat", "lon", "latitude", "longitude") if nm in out.coords]
-        if stale_geo_coords:
-            out = out.drop_vars(stale_geo_coords)
-
-        if y_var is not None and getattr(y_var, "ndim", 0) == 1:
-            y_vals = np.asarray(y_var.values)
-            if out.sizes["y"] != y_vals.size:
-                raise ValueError(
-                    f"y size mismatch: data has {out.sizes['y']} rows, "
-                    f"but source y has {y_vals.size} values."
-                )
-            out = out.assign_coords(y=("y", y_vals))
-            out.coords["y"].attrs = _coord_attrs_or_default(
-                y_var,
-                {"standard_name": "projection_y_coordinate",
-                 "long_name": "y", "units": "m", "axis": "Y"}
-            )
-
-        if x_var is not None and getattr(x_var, "ndim", 0) == 1:
-            x_vals = np.asarray(x_var.values)
-            if out.sizes["x"] != x_vals.size:
-                raise ValueError(
-                    f"x size mismatch: data has {out.sizes['x']} cols, "
-                    f"but source x has {x_vals.size} values."
-                )
-            out = out.assign_coords(x=("x", x_vals))
-            out.coords["x"].attrs = _coord_attrs_or_default(
-                x_var,
-                {"standard_name": "projection_x_coordinate",
-                 "long_name": "x", "units": "m", "axis": "X"}
-            )
-
-        if lon2d is not None and lat2d is not None:
-            if lon2d.shape != lat2d.shape:
-                raise ValueError(f"lon2d/lat2d shape mismatch: {lon2d.shape} vs {lat2d.shape}")
-
-            if tuple(lon2d.dims) != tuple(lat2d.dims):
-                raise ValueError(f"lon2d/lat2d dims mismatch: {lon2d.dims} vs {lat2d.dims}")
-
-            if tuple(lon2d.dims) != ("y", "x"):
-                raise ValueError(
-                    f"Expected 2D lon/lat auxiliary coords on dims ('y', 'x'), got {lon2d.dims}"
-                )
-
-            if lon2d.shape != (out.sizes["y"], out.sizes["x"]):
-                raise ValueError(
-                    f"2D longitude shape mismatch: expected {(out.sizes['y'], out.sizes['x'])}, "
-                    f"got {lon2d.shape}"
-                )
-
-            lon_aux = xr.DataArray(
-                np.asarray(lon2d.values),
-                dims=("y", "x"),
-                attrs={
-                    "standard_name": "longitude",
-                    "long_name": "longitude of cell center",
-                    "units": "degrees_east",
-                    **dict(getattr(lon2d, "attrs", {})),
-                },
-            )
-            lat_aux = xr.DataArray(
-                np.asarray(lat2d.values),
-                dims=("y", "x"),
-                attrs={
-                    "standard_name": "latitude",
-                    "long_name": "latitude of cell center",
-                    "units": "degrees_north",
-                    **dict(getattr(lat2d, "attrs", {})),
-                },
-            )
-            out = out.assign_coords(lon=lon_aux, lat=lat_aux)
-
-        if Verbose and lon2d is not None and lat2d is not None and not separable:
-            print("Preserving projected/curvilinear y/x grid with 2D lon/lat auxiliary coordinates")
-
-        return out
-
-    def prepare_derived_output_da(self, da, src_ds, time_name=None,
-                                  spatial_mode="auto",
-                                  rectilinear_tol=1e-10,
-                                  Verbose=True):
-        """
-        Prepare a derived output DataArray with explicit handling of 3 spatial cases.
-
-        spatial_mode:
-          - "auto": choose rectilinear when possible, otherwise curvilinear/projected
-          - "rectilinear": require a true/separable geographic lon/lat grid
-          - "curvilinear": preserve y/x and attach 2D lon/lat auxiliaries when available
-
-        Cases handled:
-          1) Rectilinear geographic: 1D latitude/longitude
-          2) Projected/curvilinear: y/x with optional 2D lon/lat
-          3) Legacy 2D lon/lat that are separable into 1D vectors
-        """
-        import numpy as np
-
-        spatial_mode = str(spatial_mode).lower()
-        if spatial_mode not in {"auto", "rectilinear", "curvilinear"}:
-            raise ValueError("spatial_mode must be one of: 'auto', 'rectilinear', 'curvilinear'")
-
-        out = self._rename_common_dims(da, time_name=time_name)
-
-        def _get_src_var(names):
-            for name in names:
-                if name in src_ds.coords:
-                    return src_ds.coords[name]
-                if name in src_ds.data_vars:
-                    return src_ds[name]
-                if name in src_ds.variables:
-                    return src_ds[name]
-            return None
-
-        def _is_separable_2d(lon_da, lat_da, tol):
-            lon2d = np.asarray(lon_da.values, dtype=float)
-            lat2d = np.asarray(lat_da.values, dtype=float)
-
-            if lon2d.ndim != 2 or lat2d.ndim != 2 or lon2d.shape != lat2d.shape:
-                return False, None, None
-
-            lon1d = lon2d[0, :]
-            lat1d = lat2d[:, 0]
-
-            lon_ok = np.allclose(
-                lon2d,
-                np.broadcast_to(lon1d[None, :], lon2d.shape),
-                rtol=0.0, atol=tol, equal_nan=True
-            )
-            lat_ok = np.allclose(
-                lat2d,
-                np.broadcast_to(lat1d[:, None], lat2d.shape),
-                rtol=0.0, atol=tol, equal_nan=True
-            )
-            return bool(lon_ok and lat_ok), lon1d, lat1d
-
-        lat_var = _get_src_var(["latitude", "lat"])
-        lon_var = _get_src_var(["longitude", "lon"])
-        y_var = _get_src_var(["y"])
-        x_var = _get_src_var(["x"])
-
-        lon2d = lon_var if (lon_var is not None and getattr(lon_var, "ndim", 0) == 2) else None
-        lat2d = lat_var if (lat_var is not None and getattr(lat_var, "ndim", 0) == 2) else None
-
-        separable = False
-        lon1d_from_2d = None
-        lat1d_from_2d = None
-        if lon2d is not None and lat2d is not None:
-            separable, lon1d_from_2d, lat1d_from_2d = _is_separable_2d(
-                lon2d, lat2d, rectilinear_tol
-            )
-
-        has_native_1d_geo = (
-            lat_var is not None and getattr(lat_var, "ndim", 0) == 1 and
-            lon_var is not None and getattr(lon_var, "ndim", 0) == 1
-        )
-
-        already_rectilinear_geo_dims = (
-            ("latitude" in out.dims or "lat" in out.dims) and
-            ("longitude" in out.dims or "lon" in out.dims)
-        )
-
-        if spatial_mode == "auto":
-            if has_native_1d_geo or separable:
-                target_mode = "rectilinear"
-            else:
-                target_mode = "curvilinear"
-        else:
-            target_mode = spatial_mode
-
-        if target_mode == "rectilinear":
-            return self._prepare_rectilinear_output_da(
-                out,
-                lat_var=lat_var,
-                lon_var=lon_var,
-                lat1d_from_2d=lat1d_from_2d if separable else None,
-                lon1d_from_2d=lon1d_from_2d if separable else None,
-            )
-
-        # target_mode == "curvilinear"
-        # Preserve already-rectilinear geographic inputs as rectilinear rather than
-        # forcing them into y/x.
-        if already_rectilinear_geo_dims:
-            return self._prepare_rectilinear_output_da(
-                out,
-                lat_var=lat_var,
-                lon_var=lon_var,
-            )
-
-        return self._prepare_curvilinear_output_da(
-            out,
-            y_var=y_var,
-            x_var=x_var,
-            lon2d=lon2d,
-            lat2d=lat2d,
-            separable=separable,
-            Verbose=Verbose,
-        )
-
-    @staticmethod
     def _species_dict(string, allowed=None):
-        """
-        Parse "...\\nspecie 0:LMM 1:Humic colloid 2:Particle reversible ..."
-        into {"LMM": 0, "Humic colloid": 1, ...}
-
-        If allowed is provided (list/set), names are validated against it.
-        """
         import re
         if allowed is None:
-             allowed = ["LMM", "LMMcation", "LMManion",
-                        "Colloid", "Humic colloid",
-                        "Polymer", "Particle reversible",
-                        "Particle slowly reversible",
-                        "Particle irreversible",
-                        "dissolved", "DOC", "SPM",
-                        "Sediment reversible",
-                        "Sediment slowly reversible",
-                     	"Sediment buried",
-                        "Sediment irreversible",
-                        "sediment", "buried"]
-
+             allowed = ["LMM", "LMMcation", "LMManion", "Colloid", "Humic colloid", "Polymer", "Particle reversible", "Particle slowly reversible", "Particle irreversible", "dissolved", "DOC", "SPM", "Sediment reversible", "Sediment slowly reversible", "Sediment buried", "Sediment irreversible", "sediment", "buried"]
         tail = string.split("\n", 1)[1] if "\n" in string else string
         pairs = re.findall(r'(\d+)\s*:\s*(.*?)(?=\s+\d+\s*:|$)', tail)
-
         out = {}
         allowed_set = set(a.strip() for a in allowed) if allowed is not None else None
-
         for idx_str, raw_name in pairs:
             name = raw_name.strip()
             if allowed_set is not None and name not in allowed_set:
                 raise ValueError("Unknown species name: {!r}".format(name))
             out[name] = int(idx_str)
-
         return out
 
     @staticmethod
     def _format_species_pairs(pairs):
-        # pairs is list of (name, idx)
-        return ", ".join(f'"{name}": {idx}' for name, idx in pairs)
+        return ', '.join(f'"{name}": {idx}' for name, idx in pairs)
 
     @staticmethod
     def _excluded_pairs(specie_ids_num, excluded_names, TOT_Conc=None):
-        """
-        Return [(name, idx), ...] for excluded species that are present in specie_ids_num
-        and (if TOT_Conc provided) whose idx exists in TOT_Conc.specie coords.
-        """
         coord_vals = None
-        if TOT_Conc is not None and "specie" in TOT_Conc.coords:
-            coord_vals = set(TOT_Conc["specie"].values)
-
+        if TOT_Conc is not None and 'specie' in TOT_Conc.coords:
+            coord_vals = set(TOT_Conc['specie'].values)
         pairs = []
         for name in excluded_names:
             idx = specie_ids_num.get(name)
@@ -9218,240 +8877,157 @@ class ChemicalDrift(OceanDrift):
 
     @staticmethod
     def _water_column_conc(TOT_Conc, specie_ids_num, water_species, Verbose=False):
-        """
-        Compute the concentration in the water column as sum of all species listed in `water_species` if:
-          - the name exists in `specie_ids_num` (name -> index), and
-          - that index is present in TOT_Conc.specie coordinate.
-        Returns an xarray DataArray (or None if nothing matched), and the list of included species.
-        """
-
         out = None
         included = []
-        specie_coord_vals = set(TOT_Conc["specie"].values) if "specie" in TOT_Conc.coords else None
-
+        specie_coord_vals = set(TOT_Conc['specie'].values) if 'specie' in TOT_Conc.coords else None
         for name in water_species:
             idx = specie_ids_num.get(name)
             if idx is None:
                 if Verbose:
                     print(f"Skipping {name!r}: not found in specie_ids_num")
                 continue
-
             if specie_coord_vals is not None and idx not in specie_coord_vals:
                 if Verbose:
                     print(f"Skipping {name!r}: specie index {idx} not in TOT_Conc.specie")
                 continue
-
             da = TOT_Conc.sel(specie=idx)
             out = da if out is None else (out + da)
             included.append((name, idx))
-
         if out is None:
             if Verbose:
-                print("No water species matched; returning None.")
+                print('No water species matched; returning None.')
             return None, []
         if Verbose:
-            print("Included water species:", ", ".join(name for name, _ in included))
-        # Drop singleton depth if present
-        if "depth" in out.dims and out.sizes.get("depth", 0) == 1:
+            print('Included water species:', ', '.join(name for name, _ in included))
+        if 'depth' in out.dims and out.sizes.get('depth', 0) == 1:
             out = out.isel(depth=0, drop=True)
-
         return out, included
 
     @staticmethod
-    def _sediment_conc_sum(TOT_Conc, specie_ids_num, sed_species,
-                           Verbose=False,
-                           debug_check_single_depth=False,
-                           nonzero_tol=0.0):
-        """
-        Compute a depth-collapsed sediment concentration as the sum of sediment species.
-
-        Assumption:
-          sediment concentration occupies only one depth bin for each horizontal cell.
-        If debug_check_single_depth=True, an assertion is performed before the depth collapse.
-
-        Returns:
-          (DataArray or None, included_species_list)
-        """
+    def _sediment_conc_sum(TOT_Conc, specie_ids_num, sed_species, Verbose=False, debug_check_single_depth=False, nonzero_tol=0.0):
         import xarray as xr
-        import numpy as np
-
-        specie_coord_vals = set(TOT_Conc["specie"].values) if "specie" in TOT_Conc.coords else None
-
+        specie_coord_vals = set(TOT_Conc['specie'].values) if 'specie' in TOT_Conc.coords else None
         da_sed = None
         included = []
-
         for name in sed_species:
             idx = specie_ids_num.get(name)
             if idx is None:
                 if Verbose:
                     print(f"Skipping {name!r}: not found in specie_ids_num")
                 continue
-
             if specie_coord_vals is not None and idx not in specie_coord_vals:
                 if Verbose:
                     print(f"Skipping {name!r}: specie index {idx} not in TOT_Conc.specie")
                 continue
-
             part = TOT_Conc.sel(specie=idx)
             da_sed = part if da_sed is None else (da_sed + part)
             included.append((name, idx))
-
         if da_sed is None:
             if Verbose:
-                print("No sediment species matched; returning None.")
+                print('No sediment species matched; returning None.')
             return None, []
-
         if Verbose:
-            print("Included sediment species:", ", ".join(name for name, _ in included))
-
+            print('Included sediment species:', ', '.join(name for name, _ in included))
         mask = np.isnan(TOT_Conc)
-
-        if "depth" in da_sed.dims and debug_check_single_depth:
-            occupied = xr.where(
-                np.isfinite(da_sed) & (np.abs(da_sed) > float(nonzero_tol)),
-                1, 0
-            ).sum(dim="depth")
+        if 'depth' in da_sed.dims and debug_check_single_depth:
+            occupied = xr.where(np.isfinite(da_sed) & (np.abs(da_sed) > float(nonzero_tol)), 1, 0).sum(dim='depth')
             if bool((occupied > 1).any()):
-                raise AssertionError(
-                    "Sediment concentration occupies more than one depth bin in at least one horizontal cell.")
-
-        if "depth" in da_sed.dims:
+                raise AssertionError('Sediment concentration occupies more than one depth bin in at least one horizontal cell.')
+        if 'depth' in da_sed.dims:
             if Verbose:
-                print("depth included in sediment DA -> summing over depth")
-            da_sed = da_sed.sum(dim="depth")
+                print('depth included in sediment DA -> summing over depth')
+            da_sed = da_sed.sum(dim='depth')
             da_sed = xr.where(mask.isel(specie=0, depth=0), np.nan, da_sed)
         else:
             da_sed = xr.where(mask.isel(specie=0), np.nan, da_sed)
-
         return da_sed, included
 
     @staticmethod
     def _sim_description_attr(src_da, Sim_description):
-        """
-        Resolve the simulation description string to attach to derived outputs.
-          1) If `src_da` (typically an xarray DataArray from the concentration file)
-             has attribute `sim_description`, return it.
-          2) Else, if `Sim_description` argument is provided, return it as `str(...)`.
-          3) Else return None.
-
-        src_da : xarray.DataArray, Source data array from which metadata may be inherited.
-        Sim_description : Any, User-provided simulation description.
-        """
-        sim_desc = src_da.attrs.get("sim_description", None)
+        sim_desc = src_da.attrs.get('sim_description', None)
         if sim_desc is not None:
             return sim_desc
         if Sim_description is not None:
             return str(Sim_description)
         return None
 
+
     @staticmethod
     def _base_long_name(src_da, Chemical_name, variable):
-        """
-        Build a base `long_name` prefix for derived water/sediment products using the `long_name` attribute,
-        otherwise, it constructs a fallback base name using the provided chemical name and  and variable label: "<Chemical_name> <variable>".
-
-        src_da:         xarray.DataArray, Source data array from which metadata may be inherited.
-        Chemical_name:  str or None, Chemical name used in fallback naming.
-        variable:       str, variable name (e.g., "concentration", "density", ...).
-        """
-        long_name = src_da.attrs.get("long_name", None)
+        long_name = src_da.attrs.get('long_name', None)
         if long_name is not None:
-            return str(long_name).split("specie")[0].strip()
-        return (Chemical_name or "") + f" {variable}"
+            return str(long_name).split('specie')[0].strip()
+        return (Chemical_name or '') + f' {variable}'
+
 
     def specie_ids_num_from_ds(self, DS, TOT_Conc=None, legacy_alias=None):
-        """
-        Build {species_name: specie_coord_value} from a dataset.
-
-        Normalization is applied consistently to dataset-derived names using legacy_alias.
-        Both the original and canonical names are accepted as lookup keys when possible.
-        """
-        import numpy as np
-
         if legacy_alias is None:
             legacy_alias = {}
-
-        def _clean_name(x) -> str:
+        def _clean_name(x):
             if isinstance(x, (bytes, bytearray, np.bytes_)):
-                s = bytes(x).decode("utf-8", errors="ignore")
+                s = bytes(x).decode('utf-8', errors='ignore')
             else:
                 s = str(x)
-            s = s.replace("\x00", "").strip()
+            s = s.replace('\x00', '').strip()
             if (s.startswith("b'") and s.endswith("'")) or (s.startswith('b"') and s.endswith('"')):
-                s = s[2:-1].replace("\x00", "").strip()
+                s = s[2:-1].replace('\x00', '').strip()
             return s
-
         def _decode_specie_name_array(a):
             if np.ma.isMaskedArray(a):
                 a = a.filled(0)
-
             names = []
-
             if a.ndim == 1:
-                if a.dtype.kind == "S":
-                    names = [_clean_name(s) for s in a.tolist()]
-                elif a.dtype.kind == "U":
+                if a.dtype.kind in ('S', 'U'):
                     names = [_clean_name(s) for s in a.tolist()]
                 else:
                     names = [_clean_name(x) for x in a.tolist()]
-
             elif a.ndim == 2:
-                if a.dtype.kind == "S":
+                if a.dtype.kind == 'S':
                     for row in a:
                         names.append(_clean_name(row.tobytes()))
-                elif a.dtype.kind == "U":
+                elif a.dtype.kind == 'U':
                     for row in a:
-                        names.append(_clean_name("".join(row)))
-                elif a.dtype.kind in ("i", "u"):
+                        names.append(_clean_name(''.join(row)))
+                elif a.dtype.kind in ('i', 'u'):
                     a8 = a.astype(np.uint8, copy=False)
                     for row in a8:
                         names.append(_clean_name(bytes(row.tolist())))
                 else:
                     for row in a:
                         if len(row) == 0:
-                            names.append("")
+                            names.append('')
                         else:
                             first = row[0]
                             if isinstance(first, (bytes, np.bytes_)):
-                                b = b"".join([x if isinstance(x, (bytes, np.bytes_)) else bytes([int(x)]) for x in row])
+                                b = b''.join([x if isinstance(x, (bytes, np.bytes_)) else bytes([int(x)]) for x in row])
                                 names.append(_clean_name(b))
                             elif isinstance(first, (int, np.integer)):
                                 names.append(_clean_name(bytes([int(x) & 0xFF for x in row])))
                             else:
-                                names.append(_clean_name("".join([str(x) for x in row])))
+                                names.append(_clean_name(''.join([str(x) for x in row])))
             else:
                 names = [_clean_name(x) for x in a.reshape(-1).tolist()]
-
             return names
-
-        if "specie_name" in DS.variables:
-            a = np.asarray(DS["specie_name"].values)
+        if 'specie_name' in DS.variables:
+            a = np.asarray(DS['specie_name'].values)
             names = _decode_specie_name_array(a)
-
-            if "specie" in DS.coords:
-                specie_vals = np.asarray(DS["specie"].values)
+            if 'specie' in DS.coords:
+                specie_vals = np.asarray(DS['specie'].values)
             else:
                 specie_vals = np.arange(len(names), dtype=int)
-
             if len(names) != len(specie_vals):
-                raise ValueError(
-                    f"Length mismatch between specie_name ({len(names)}) and specie coord ({len(specie_vals)})")
-
+                raise ValueError(f'Length mismatch between specie_name ({len(names)}) and specie coord ({len(specie_vals)})')
             out = {}
             for coord_val, raw_name in zip(specie_vals, names):
                 if not raw_name:
                     continue
-
                 canonical = legacy_alias.get(raw_name, raw_name)
                 for key in {raw_name, canonical}:
                     if key in out and out[key] != int(coord_val):
-                        raise ValueError(
-                            f"Species alias collision for {key!r}: {out[key]} vs {int(coord_val)}")
+                        raise ValueError(f'Species alias collision for {key!r}: {out[key]} vs {int(coord_val)}')
                     out[key] = int(coord_val)
-
             return out
-
-        long_name = TOT_Conc.attrs.get("long_name", None) if TOT_Conc is not None else None
+        long_name = TOT_Conc.attrs.get('long_name', None) if TOT_Conc is not None else None
         if long_name is not None:
             raw = self._species_dict(long_name)
             out = {}
@@ -9460,93 +9036,40 @@ class ChemicalDrift(OceanDrift):
                 canonical = legacy_alias.get(name_clean, name_clean)
                 for key in {name_clean, canonical}:
                     if key in out and out[key] != int(idx):
-                        raise ValueError(
-                            f"Species alias collision in long_name parsing for {key!r}: {out[key]} vs {int(idx)}")
+                        raise ValueError(f'Species alias collision in long_name parsing for {key!r}: {out[key]} vs {int(idx)}')
                     out[key] = int(idx)
             return out
+        raise ValueError('Cannot build species mapping: missing specie_name and long_name.')
 
-        raise ValueError("Cannot build species mapping: missing specie_name and long_name.")
 
     def fallback_specie_ids_num_from_flags(self):
-        """
-        Build fallback specie_ids_num using ONLY:
-          - transfer_setup = self.get_config('chemical:transfer_setup')
-          - slowly_fraction flag (chemical:slowly_fraction)
-          - irreversible_fraction flag (chemical:irreversible_fraction)
-        Returns:
-            dict: {species_name: idx} matching the canonical build order
-        """
-        transfer_setup = self.get_config("chemical:transfer_setup")
-        slowly = bool(self.get_config("chemical:slowly_fraction"))
-        irrev  = bool(self.get_config("chemical:irreversible_fraction"))
-
-        # Canonical order (must match self.name_species builder)
-        order = [
-            "LMM", "LMMcation", "LMManion",
-            "Colloid", "Humic colloid",
-            "Polymer",
-            "Particle reversible", "Particle slowly reversible", "Particle irreversible",
-            "Sediment reversible", "Sediment slowly reversible", "Sediment buried",
-            "Sediment irreversible",]
-        # Base sets per transfer_setup (minimum guaranteed pools)
+        transfer_setup = self.get_config('chemical:transfer_setup')
+        slowly = bool(self.get_config('chemical:slowly_fraction'))
+        irrev = bool(self.get_config('chemical:irreversible_fraction'))
+        order = ['LMM', 'LMMcation', 'LMManion', 'Colloid', 'Humic colloid', 'Polymer', 'Particle reversible', 'Particle slowly reversible', 'Particle irreversible', 'Sediment reversible', 'Sediment slowly reversible', 'Sediment buried', 'Sediment irreversible']
         base = {
-            "metals": {
-                "LMM",
-                "Particle reversible",
-                "Sediment reversible",
-                "Sediment buried",},
-            "organics": {
-                "LMM",
-                "Humic colloid",
-                "Particle reversible",
-                "Sediment reversible",
-                "Sediment buried",},
-            "137Cs_rev": {
-                "LMM",
-                "Particle reversible",
-                "Sediment reversible",},
-            "Sandnesfj_Al": {
-                "LMMcation",
-                "LMManion",
-                "Humic colloid",
-                "Polymer",
-                "Particle reversible",
-                "Sediment reversible",
-            },}
-
-        if transfer_setup == "custom":
+            'metals': {'LMM', 'Particle reversible', 'Sediment reversible', 'Sediment buried'},
+            'organics': {'LMM', 'Humic colloid', 'Particle reversible', 'Sediment reversible', 'Sediment buried'},
+            '137Cs_rev': {'LMM', 'Particle reversible', 'Sediment reversible'},
+            'Sandnesfj_Al': {'LMMcation', 'LMManion', 'Humic colloid', 'Polymer', 'Particle reversible', 'Sediment reversible'},
+        }
+        if transfer_setup == 'custom':
             raise ValueError("Cannot build fallback for transfer_setup='custom' from flags alone.")
         if transfer_setup not in base:
-            raise ValueError(f"Unknown transfer_setup: {transfer_setup!r}")
-
+            raise ValueError(f'Unknown transfer_setup: {transfer_setup!r}')
         species = set(base[transfer_setup])
-        # Slowly pools exist only for metals/organics setups and require BOTH particle+sediment slow
-        if slowly and transfer_setup in ("metals", "organics"):
-            species.add("Particle slowly reversible")
-            species.add("Sediment slowly reversible")
-        # Irreversible pools require both particle+sediment irreversible
-        if irrev and transfer_setup in ("metals", "organics"):
-            species.add("Particle irreversible")
-            species.add("Sediment irreversible")
-
-        # Build list+mapping in canonical order
+        if slowly and transfer_setup in ('metals', 'organics'):
+            species.add('Particle slowly reversible'); species.add('Sediment slowly reversible')
+        if irrev and transfer_setup in ('metals', 'organics'):
+            species.add('Particle irreversible'); species.add('Sediment irreversible')
         name_species_out = [s for s in order if s in species]
-        specie_ids_num = {name: i for i, name in enumerate(name_species_out)}
-        return specie_ids_num
+        return {name: i for i, name in enumerate(name_species_out)}
+
 
     @staticmethod
     def _normalize_species_names(names, legacy_alias=None):
-        """
-        Normalize a list of species names:
-          - drop None
-          - strip whitespace
-          - map legacy aliases to canonical names
-          - preserve order
-          - deduplicate
-        """
         if legacy_alias is None:
             legacy_alias = {}
-
         if names is None:
             return []
         out = []
@@ -9564,96 +9087,50 @@ class ChemicalDrift(OceanDrift):
         return out
 
     @staticmethod
-    def _species_weighted_mean(TOT_Value, TOT_Count, specie_ids_num, species_names,
-                               Verbose=False,
-                               collapse_depth=False,
-                               debug_check_single_depth=False):
-        """
-        Count-weighted aggregation across species:
-            out = sum(value_i * count_i) / sum(count_i)
-
-        Only species present both in specie_ids_num and in the specie coordinate are used.
-        Cells with zero total count are returned as NaN.
-
-        Parameters
-        ----------
-        TOT_Value : xarray.DataArray
-            Value field with a specie dimension, e.g. property_mean*
-        TOT_Count : xarray.DataArray
-            Count field with the same specie axis, e.g. density or density_avg
-        specie_ids_num : dict
-            Mapping {species_name: specie_index}
-        species_names : list
-            Species names to aggregate
-        collapse_depth : bool
-            If True, collapse depth after weighted aggregation. Intended for sediment.
-        debug_check_single_depth : bool
-            If True and collapse_depth=True, assert that the aggregated count support
-            occupies at most one depth bin per horizontal cell.
-        """
-        import numpy as np
+    def _species_weighted_mean(TOT_Value, TOT_Count, specie_ids_num, species_names, Verbose=False, collapse_depth=False, debug_check_single_depth=False):
         import xarray as xr
-
-        value_specie_vals = set(TOT_Value["specie"].values) if "specie" in TOT_Value.coords else None
-        count_specie_vals = set(TOT_Count["specie"].values) if "specie" in TOT_Count.coords else None
-
-        num = None
-        den = None
+        value_specie_vals = set(TOT_Value['specie'].values) if 'specie' in TOT_Value.coords else None
+        count_specie_vals = set(TOT_Count['specie'].values) if 'specie' in TOT_Count.coords else None
+        num = den = None
         included = []
-
         for name in species_names:
             idx = specie_ids_num.get(name)
             if idx is None:
                 if Verbose:
                     print(f"Skipping {name!r}: not found in specie_ids_num")
                 continue
-
             if value_specie_vals is not None and idx not in value_specie_vals:
                 if Verbose:
                     print(f"Skipping {name!r}: specie index {idx} not in TOT_Value.specie")
                 continue
-
             if count_specie_vals is not None and idx not in count_specie_vals:
                 if Verbose:
                     print(f"Skipping {name!r}: specie index {idx} not in TOT_Count.specie")
                 continue
-
             val = TOT_Value.sel(specie=idx)
             cnt = TOT_Count.sel(specie=idx)
-
             valid = np.isfinite(val) & np.isfinite(cnt) & (cnt > 0)
             num_i = xr.where(valid, val * cnt, 0.0)
             den_i = xr.where(valid, cnt, 0.0)
-
             num = num_i if num is None else (num + num_i)
             den = den_i if den is None else (den + den_i)
             included.append((name, idx))
-
         if num is None or den is None:
             if Verbose:
-                print("No weighted species matched; returning None.")
+                print('No weighted species matched; returning None.')
             return None, []
-
         if Verbose:
-            print("Included weighted species:", ", ".join(name for name, _ in included))
-
-        if collapse_depth and "depth" in den.dims:
+            print('Included weighted species:', ', '.join(name for name, _ in included))
+        if collapse_depth and 'depth' in den.dims:
             if debug_check_single_depth:
-                occupied = xr.where(den > 0, 1, 0).sum(dim="depth")
+                occupied = xr.where(den > 0, 1, 0).sum(dim='depth')
                 if bool((occupied > 1).any()):
-                    raise AssertionError(
-                        "Weighted sediment support occupies more than one depth bin "
-                        "in at least one horizontal cell."
-                    )
-
-            num = num.sum(dim="depth")
-            den = den.sum(dim="depth")
-
+                    raise AssertionError('Weighted sediment support occupies more than one depth bin in at least one horizontal cell.')
+            num = num.sum(dim='depth')
+            den = den.sum(dim='depth')
         out = xr.where(den > 0, num / den, np.nan)
-
-        if (not collapse_depth) and "depth" in out.dims and out.sizes.get("depth", 0) == 1:
+        if (not collapse_depth) and 'depth' in out.dims and out.sizes.get('depth', 0) == 1:
             out = out.isel(depth=0, drop=True)
-
         return out, included
 
     def calculate_water_sediment_conc(self,
@@ -9662,501 +9139,310 @@ class ChemicalDrift(OceanDrift):
                                    File_Path_out,
                                    Chemical_name,
                                    Origin_marker_name,
-                                   File_Name_out = None,
-                                   variables = None,
-                                   Concentration_file = None,
-                                   Excluded_species = None,
+                                   File_Name_out=None,
+                                   variables=None,
+                                   Concentration_file=None,
+                                   Excluded_species=None,
                                    Sim_description=None,
-                                   Save_files = True,
-                                   Return_datasets = True,
-                                   spatial_mode="auto",
-                                   which_conc = "both",
+                                   Save_files=True,
+                                   Return_datasets=True,
+                                   spatial_mode='auto',
+                                   which_conc='both',
                                    debug_check_single_depth=False,
-                                   Verbose = True,):
-        """
-        Sum concentration/property/density by species into water and sediment arrays.
-
-        DataSets can be returned or saved as netCDF files.
-        Results can be used as inputs by "seed_from_NETCDF" when the chosen
-        spatial_mode is compatible with the expected target workflow.
-
-        Concentration_file:    "write_netcdf_chemical_density_map" output if already loaded (original or after regrid_conc)
-        File_Path:             string, path of "write_netcdf_chemical_density_map" output
-        File_Name:             string, name of "write_netcdf_chemical_density_map" output
-        File_Name_out:         string, suffix of wat/sed output files
-        File_Path_out:         string, path where created concentration files will be saved, must end with "/"
-        Chemical_name:         string, name of modelled chemical
-        Origin_marker_name:    string, name of source indicated by "origin_marker" parameter
-        variables:             list, variables to process. If None, all supported variables are considered.
-        Excluded_species:      dict, {"water": [...], "sediment":[...]} lists of names of species to be excluded from water column or sediment concentration
-        Sim_description:       string, description of simulation to be included in output metadata
-        Save_files:            boolean, if True saves outputs to disk, otherwise return xr.Datasets
-        Return_datasets:       boolean, if True return xr.Datasets
-        which_conc:            string, one of "water" (compute only water concentration) "sediment" compute only sediment concentration, or "both".
-        spatial_mode:          string, one of "auto", "rectilinear", "curvilinear". Passed to prepare_derived_output_da(...).
-        debug_check_single_depth: bool, If True, assert that sediment concentration occupies at most one depth
-                               bin per horizontal cell before depth collapsing.
-        Verbose:               boolean, if True prints progress messages
-
-        For property_mean-like variables, species aggregation is count-weighted using:
-          density for property_mean
-          density_smooth for property_mean_smooth
-          density_avg for property_mean_avg
-          density_smooth_avg for property_mean_smooth_avg
-        """
+                                   Verbose=True):
         from datetime import datetime
-        import numpy as np
-        import xarray as xr
         import time
+        import xarray as xr
+        DS = None
+        ds_opened_here = False
+        DS_wat_fin = None
+        DS_sed_fin = None
 
         processed_variables = []
         which_conc = str(which_conc).lower()
-        if which_conc not in {"water", "sediment", "both"}:
+        if which_conc not in {'water', 'sediment', 'both'}:
             raise ValueError("which_conc must be one of: 'water', 'sediment', 'both'")
+        do_water = which_conc in {'water', 'both'}
+        do_sediment = which_conc in {'sediment', 'both'}
 
-        do_water = which_conc in {"water", "both"}
-        do_sediment = which_conc in {"sediment", "both"}
-
-        water_species = [
-            "LMM", "LMMcation", "LMManion",
-            "Colloid", "Humic colloid",
-            "Polymer", "Particle reversible",
-            "Particle slowly reversible",
-            "Particle irreversible",
-        ]
-        sed_species = [
-            "Sediment reversible",
-            "Sediment slowly reversible",
-            "Sediment buried",
-            "Sediment irreversible",
-        ]
-        legacy_alias = {
-            "dissolved": "LMM",
-            "DOC": "Humic colloid",
-            "SPM": "Particle reversible",
-            "sediment": "Sediment reversible",
-            "buried": "Sediment buried",
-        }
+        water_species = ['LMM', 'LMMcation', 'LMManion', 'Colloid', 'Humic colloid', 'Polymer', 'Particle reversible', 'Particle slowly reversible', 'Particle irreversible']
+        sed_species = ['Sediment reversible', 'Sediment slowly reversible', 'Sediment buried', 'Sediment irreversible']
+        legacy_alias = {'dissolved': 'LMM', 'DOC': 'Humic colloid', 'SPM': 'Particle reversible', 'sediment': 'Sediment reversible', 'buried': 'Sediment buried'}
 
         if Excluded_species is None:
-            Excluded_species = {"water": [None], "sediment": [None]}
-
-        excluded_water_names = self._normalize_species_names(
-            Excluded_species.get("water", []),
-            legacy_alias=legacy_alias,
-        )
-        excluded_sed_names = self._normalize_species_names(
-            Excluded_species.get("sediment", Excluded_species.get("sed", [])),
-            legacy_alias=legacy_alias,
-        )
-
+            Excluded_species = {'water': [None], 'sediment': [None]}
+        excluded_water_names = self._normalize_species_names(Excluded_species.get('water', []), legacy_alias=legacy_alias)
+        excluded_sed_names = self._normalize_species_names(Excluded_species.get('sediment', Excluded_species.get('sed', [])), legacy_alias=legacy_alias)
         excluded_set_w = set(excluded_water_names)
-        removed_water = [sp for sp in water_species if sp in excluded_set_w]
         water_species = [sp for sp in water_species if sp not in excluded_set_w]
-
         excluded_set_s = set(excluded_sed_names)
-        removed_sed = [sp for sp in sed_species if sp in excluded_set_s]
         sed_species = [sp for sp in sed_species if sp not in excluded_set_s]
-
-        if Verbose and removed_water:
-            print("Excluded water species:", ", ".join(removed_water))
-        if Verbose and removed_sed:
-            print("Excluded sediment species:", ", ".join(removed_sed))
 
         _t0 = time.perf_counter()
         _start_wall = datetime.now()
-
         def log(msg: str) -> None:
             elapsed_s = time.perf_counter() - _t0
             h, rem = divmod(int(elapsed_s), 3600)
             m, s = divmod(rem, 60)
-            print(
-                f"{msg} | elapsed {h:02d}:{m:02d}:{s:02d} "
-                f"(started {_start_wall.strftime('%Y-%m-%d %H:%M:%S')})"
-            )
+            print(f"{msg} | elapsed {h:02d}:{m:02d}:{s:02d} (started {_start_wall.strftime('%Y-%m-%d %H:%M:%S')})")
 
-        if Concentration_file is None and File_Path is not None and File_Name is not None:
-            if Verbose:
-                log("Loading Concentration_file from File_Path")
-            DS = xr.open_dataset(File_Path + File_Name)
-        elif Concentration_file is not None:
-            DS = Concentration_file
-        else:
-            raise ValueError("Incorrect file or file/path not specified")
-
-        if not Save_files and not Return_datasets:
-            raise ValueError("Nothing to do: set Save_files=True and/or Return_datasets=True.")
-
-        supported_vars = [
-            "concentration", "concentration_avg",
-            "concentration_smooth", "concentration_smooth_avg",
-            "density", "density_avg",
-            "density_smooth", "density_smooth_avg",
-            "property_mean", "property_mean_avg",
-            "property_mean_smooth", "property_mean_smooth_avg",]
-
-        if not any(var in DS.data_vars for var in supported_vars):
-            raise ValueError("No valid variables found in dataset")
-
-        if "time" in DS.dims:
-            time_name = "time"
-        elif "avg_time" in DS.dims:
-            time_name = "avg_time"
-        else:
-            raise ValueError("No time or avg_time dimension found in dataset")
-
-        variable_ls = supported_vars if variables is None else list(variables)
-
-        sum_vars_wat_dict = {}
-        sum_vars_sed_dict = {}
-        first_var = True
-
-        def _alias_and_filter(species_list, specie_ids_num, legacy_alias_map):
-            out = []
-            seen = set()
-            for s in species_list:
-                s2 = legacy_alias_map.get(s, s)
-                if s2 in specie_ids_num and s2 not in seen:
-                    out.append(s2)
-                    seen.add(s2)
-            return out
-
-        def _copy_source_metadata(dst_ds, src_ds):
-            for attr_name in (
-                "Conventions", "title", "source", "history",
-                "actual_density_proj_str", "weight_name", "weight_mode",
-                "comment", "phase_units_metadata_mode",):
-                if attr_name in src_ds.attrs:
-                    dst_ds.attrs[attr_name] = src_ds.attrs[attr_name]
-
-        def _copy_support_vars(dst_ds, src_ds, extra_grid_mapping_names=None):
-            support_vars = {
-                "crs", "topo", "land", "domain_invalid",
-                "active_sediment_layer_thickness", "area", "volume",
-                "depth", "depth_bounds", "depth_model_top", "depth_model_bounds",
-                "specie_name", "specie_original_id", "specie_phase",
-                "x", "y", "lon", "lat",
-                "x_center", "y_center", "x_bounds", "y_bounds",
-                "lon_bounds", "lat_bounds",
-            }
-            if extra_grid_mapping_names:
-                support_vars |= {gm for gm in extra_grid_mapping_names if gm}
-
-            for name in support_vars:
-                if name in src_ds.variables and name not in dst_ds.variables and name not in dst_ds.coords:
-                    dst_ds[name] = src_ds[name]
-
-        def _coord_getter(da_obj, name):
-            if name in da_obj.coords:
-                return da_obj.coords[name]
-            return None
-
-        for variable in variable_ls:
-            if variable not in DS.data_vars or variable == "topo":
-                continue
-
-            if Verbose:
-                print(variable)
-
-            var_wat_name = variable + "_wat"
-            var_sed_name = variable + "_sed"
-
-            TOT_Conc = DS[variable]
-            weight_var = self._property_weight_var(variable)
-            TOT_Weights = None
-
-            if weight_var is not None:
-                if weight_var not in DS.data_vars:
-                    raise ValueError(
-                        f"Variable {variable!r} requires weight/count variable {weight_var!r}, "
-                        "but it is not present in the dataset."
-                    )
-                TOT_Weights = DS[weight_var]
-
-            try:
-                specie_ids_num = self.specie_ids_num_from_ds(
-                    DS, TOT_Conc, legacy_alias=legacy_alias
-                )
-            except (ValueError, KeyError, AttributeError) as e:
+        try:
+            if Concentration_file is None and File_Path is not None and File_Name is not None:
                 if Verbose:
-                    print(f"Could not derive species mapping from dataset metadata: {e}")
-                    print("Trying config-derived fallback species mapping.")
+                    log('Loading Concentration_file from File_Path')
+                DS = xr.open_dataset(File_Path + File_Name)
+                ds_opened_here = True
+            elif Concentration_file is not None:
+                DS = Concentration_file
+            else:
+                raise ValueError('Incorrect file or file/path not specified')
+
+            if not Save_files and not Return_datasets:
+                raise ValueError('Nothing to do: set Save_files=True and/or Return_datasets=True.')
+
+            supported_vars = ['concentration', 'concentration_avg', 'concentration_smooth', 'concentration_smooth_avg', 'density', 'density_avg', 'density_smooth', 'density_smooth_avg', 'property_mean', 'property_mean_avg', 'property_mean_smooth', 'property_mean_smooth_avg']
+            if not any(var in DS.data_vars for var in supported_vars):
+                raise ValueError('No valid variables found in dataset')
+
+            if 'time' in DS.dims:
+                time_name = 'time'
+            elif 'avg_time' in DS.dims:
+                time_name = 'avg_time'
+            else:
+                raise ValueError('No time or avg_time dimension found in dataset')
+
+            variable_ls = supported_vars if variables is None else list(variables)
+            sum_vars_wat_dict = {}
+            sum_vars_sed_dict = {}
+            first_var = True
+
+            def _alias_and_filter(species_list, specie_ids_num, legacy_alias_map):
+                out = []
+                seen = set()
+                for s in species_list:
+                    s2 = legacy_alias_map.get(s, s)
+                    if s2 in specie_ids_num and s2 not in seen:
+                        out.append(s2)
+                        seen.add(s2)
+                return out
+
+            def _copy_source_metadata(dst_ds, src_ds):
+                for attr_name in ('Conventions', 'title', 'source', 'history', 'actual_density_proj_str', 'weight_name', 'weight_mode', 'comment', 'phase_units_metadata_mode'):
+                    if attr_name in src_ds.attrs:
+                        dst_ds.attrs[attr_name] = src_ds.attrs[attr_name]
+
+            def _copy_support_vars(dst_ds, src_ds, extra_grid_mapping_names=None):
+                support_vars = {
+                    'crs', 'mesh', 'face_node_connectivity', 'node_lon', 'node_lat', 'node_x', 'node_y', 'face_lon', 'face_lat', 'face_x', 'face_y',
+                    'topo', 'land', 'domain_invalid', 'active_sediment_layer_thickness', 'area', 'volume',
+                    'depth', 'depth_bounds', 'depth_model_top', 'depth_model_bounds',
+                    'specie_name', 'specie_original_id', 'specie_phase',
+                    'x', 'y', 'lon', 'lat', 'x_center', 'y_center', 'x_bounds', 'y_bounds', 'lon_bounds', 'lat_bounds'
+                }
+                if extra_grid_mapping_names:
+                    support_vars |= {gm for gm in extra_grid_mapping_names if gm}
+                for name in support_vars:
+                    if name in src_ds.variables and name not in dst_ds.variables and name not in dst_ds.coords:
+                        dst_ds[name] = src_ds[name]
+
+            def _coord_getter(da_obj, name):
+                if name in da_obj.coords:
+                    return da_obj.coords[name]
+                return None
+
+            for variable in variable_ls:
+                if variable not in DS.data_vars or variable == 'topo':
+                    continue
+                if Verbose:
+                    print(variable)
+                var_wat_name = variable + '_wat'
+                var_sed_name = variable + '_sed'
+                TOT_Conc = DS[variable]
+                weight_var = self._property_weight_var(variable)
+                TOT_Weights = None
+                if weight_var is not None:
+                    if weight_var not in DS.data_vars:
+                        raise ValueError(f"Variable {variable!r} requires weight/count variable {weight_var!r}, but it is not present in the dataset.")
+                    TOT_Weights = DS[weight_var]
+
                 try:
-                    specie_ids_num = self.fallback_specie_ids_num_from_flags()
-                except ValueError as e2:
-                    raise ValueError(
-                        f"Species mapping failed from dataset metadata ({e}) "
-                        f"and fallback mapping also failed ({e2})."
-                    ) from e2
-
-            water_species_eff = _alias_and_filter(water_species, specie_ids_num, legacy_alias)
-            sed_species_eff = _alias_and_filter(sed_species, specie_ids_num, legacy_alias)
-
-            DA_Conc_array_wat = None
-            DA_Conc_array_sed = None
-            included_wat = []
-            included_sed = []
-
-            if weight_var is None:
-                if do_water:
+                    specie_ids_num = self.specie_ids_num_from_ds(DS, TOT_Conc, legacy_alias=legacy_alias)
+                except (ValueError, KeyError, AttributeError) as e:
                     if Verbose:
-                        log("Running sum of water concentration/density")
-                    DA_Conc_array_wat, included_wat = self._water_column_conc(
-                        TOT_Conc=TOT_Conc,
-                        specie_ids_num=specie_ids_num,
-                        water_species=water_species_eff,
-                        Verbose=Verbose,
-                    )
+                        print(f'Could not derive species mapping from dataset metadata: {e}')
+                        print('Trying config-derived fallback species mapping.')
+                    try:
+                        specie_ids_num = self.fallback_specie_ids_num_from_flags()
+                    except ValueError as e2:
+                        raise ValueError(f'Species mapping failed from dataset metadata ({e}) and fallback mapping also failed ({e2}).') from e2
 
-                if do_sediment:
-                    if Verbose:
-                        log("Running sum of sediment concentration/density")
-                    DA_Conc_array_sed, included_sed = self._sediment_conc_sum(
-                        TOT_Conc=TOT_Conc,
-                        specie_ids_num=specie_ids_num,
-                        sed_species=sed_species_eff,
-                        Verbose=Verbose,
-                        debug_check_single_depth=debug_check_single_depth,
-                    )
+                water_species_eff = _alias_and_filter(water_species, specie_ids_num, legacy_alias)
+                sed_species_eff = _alias_and_filter(sed_species, specie_ids_num, legacy_alias)
+                DA_Conc_array_wat = DA_Conc_array_sed = None
+                included_wat = []
+                included_sed = []
 
-                aggregation_kind = "sum"
-            else:
-                if do_water:
-                    if Verbose:
-                        log(f"Running count-weighted water aggregation using {weight_var}")
-                    DA_Conc_array_wat, included_wat = self._species_weighted_mean(
-                        TOT_Value=TOT_Conc,
-                        TOT_Count=TOT_Weights,
-                        specie_ids_num=specie_ids_num,
-                        species_names=water_species_eff,
-                        Verbose=Verbose,
-                        collapse_depth=False,
-                        debug_check_single_depth=False,
-                    )
-
-                if do_sediment:
-                    if Verbose:
-                        log(f"Running count-weighted sediment aggregation using {weight_var}")
-                    DA_Conc_array_sed, included_sed = self._species_weighted_mean(
-                        TOT_Value=TOT_Conc,
-                        TOT_Count=TOT_Weights,
-                        specie_ids_num=specie_ids_num,
-                        species_names=sed_species_eff,
-                        Verbose=Verbose,
-                        collapse_depth=True,
-                        debug_check_single_depth=debug_check_single_depth,
-                    )
-
-                aggregation_kind = "count_weighted_mean"
-
-            missing = []
-            if do_water and DA_Conc_array_wat is None:
-                missing.append(f"DA_Conc_array_wat (water_species={water_species_eff})")
-            if do_sediment and DA_Conc_array_sed is None:
-                missing.append(f"DA_Conc_array_sed (sed_species={sed_species_eff})")
-
-            if missing:
-                raise ValueError(
-                    "Missing: " + " | ".join(missing) +
-                    ". Reason: no correspondence between TOT_Conc.specie and specie_ids_num "
-                    "or all matching species were excluded.")
-
-            if do_water:
-                DA_Conc_array_wat.attrs["species_included"] = self._format_species_pairs(included_wat)
-                excluded_wat_pairs = self._excluded_pairs(
-                    specie_ids_num, excluded_water_names, TOT_Conc=TOT_Conc
-                )
-                DA_Conc_array_wat.attrs["species_excluded"] = self._format_species_pairs(excluded_wat_pairs)
-                DA_Conc_array_wat.attrs["species_aggregation"] = aggregation_kind
-                if weight_var is not None:
-                    DA_Conc_array_wat.attrs["species_aggregation_weights"] = weight_var
-                    DA_Conc_array_wat.attrs["species_aggregation_note"] = (
-                            f"Species aggregated with count-weighted mean using {weight_var}.")
-                DA_Conc_array_wat.attrs.pop("coordinates", None)
-
-            if do_sediment:
-                DA_Conc_array_sed.attrs["species_included"] = self._format_species_pairs(included_sed)
-                excluded_sed_pairs = self._excluded_pairs(
-                    specie_ids_num, excluded_sed_names, TOT_Conc=TOT_Conc
-                )
-                DA_Conc_array_sed.attrs["species_excluded"] = self._format_species_pairs(excluded_sed_pairs)
-                DA_Conc_array_sed.attrs["species_aggregation"] = aggregation_kind
-                if weight_var is not None:
-                    DA_Conc_array_sed.attrs["species_aggregation_weights"] = weight_var
-                    DA_Conc_array_sed.attrs["species_aggregation_note"] = (
-                            f"Species aggregated with count-weighted mean using {weight_var}.")
-                DA_Conc_array_sed.attrs.pop("coordinates", None)
-
-            if Verbose:
-                log("Preparing coordinates/metadata")
-
-            if do_water:
-                DA_Conc_array_wat = self.prepare_derived_output_da(
-                    DA_Conc_array_wat,
-                    src_ds=DS,
-                    time_name=time_name,
-                    spatial_mode=spatial_mode,
-                    Verbose=Verbose,
-                )
-
-            if do_sediment:
-                DA_Conc_array_sed = self.prepare_derived_output_da(
-                    DA_Conc_array_sed,
-                    src_ds=DS,
-                    time_name=time_name,
-                    spatial_mode=spatial_mode,
-                    Verbose=Verbose,
-                )
-
-            if ("topo" in DS.data_vars) and first_var:
-                DC_topo = self.prepare_derived_output_da(
-                    DS["topo"],
-                    src_ds=DS,
-                    time_name=time_name,
-                    spatial_mode=spatial_mode,
-                    Verbose=Verbose,
-                )
-                first_var = False
-                if do_water:
-                    sum_vars_wat_dict["topo"] = DC_topo
-                if do_sediment:
-                    sum_vars_sed_dict["topo"] = DC_topo
-
-            src_da = TOT_Conc
-            sim_desc = self._sim_description_attr(src_da, Sim_description)
-            base_ln = self._base_long_name(src_da, Chemical_name, variable)
-
-            projection_proj4 = DS.attrs.get("actual_density_proj_str", None)
-            grid_mapping = src_da.attrs.get("grid_mapping", None)
-
-            if do_water:
-                DA_Conc_array_wat.name = var_wat_name
-                DA_Conc_array_wat.attrs["long_name"] = base_ln + " in water"
-                DA_Conc_array_wat.attrs["units"] = self._water_units(src_da, variable)
-
-                lon_coord = _coord_getter(DA_Conc_array_wat, "longitude")
-                lat_coord = _coord_getter(DA_Conc_array_wat, "latitude")
-                x_coord = _coord_getter(DA_Conc_array_wat, "x")
-                y_coord = _coord_getter(DA_Conc_array_wat, "y")
-
-                x_units = x_coord.attrs.get("units", None) if x_coord is not None else None
-                y_units = y_coord.attrs.get("units", None) if y_coord is not None else None
-
-                DA_Conc_array_wat = self._apply_common_attrs(
-                    out_da=DA_Conc_array_wat,
-                    Sim_description=sim_desc,
-                    projection_proj4=projection_proj4,
-                    grid_mapping=grid_mapping,
-                    longitude=np.asarray(lon_coord.values) if (lon_coord is not None and lon_coord.ndim == 1) else None,
-                    latitude=np.asarray(lat_coord.values) if (lat_coord is not None and lat_coord.ndim == 1) else None,
-                    x=np.asarray(x_coord.values) if (x_coord is not None and x_coord.ndim == 1) else None,
-                    y=np.asarray(y_coord.values) if (y_coord is not None and y_coord.ndim == 1) else None,
-                    x_units=x_units,
-                    y_units=y_units,
-                )
-
-                sum_vars_wat_dict[var_wat_name] = DA_Conc_array_wat
-
-            if do_sediment:
-                DA_Conc_array_sed.name = var_sed_name
-                DA_Conc_array_sed.attrs["long_name"] = base_ln + " in sediments"
-                DA_Conc_array_sed.attrs["units"] = self._sed_units(src_da, variable)
-
-                lon_coord = _coord_getter(DA_Conc_array_sed, "longitude")
-                lat_coord = _coord_getter(DA_Conc_array_sed, "latitude")
-                x_coord = _coord_getter(DA_Conc_array_sed, "x")
-                y_coord = _coord_getter(DA_Conc_array_sed, "y")
-
-                x_units = x_coord.attrs.get("units", None) if x_coord is not None else None
-                y_units = y_coord.attrs.get("units", None) if y_coord is not None else None
-
-                DA_Conc_array_sed = self._apply_common_attrs(
-                    out_da=DA_Conc_array_sed,
-                    Sim_description=sim_desc,
-                    projection_proj4=projection_proj4,
-                    grid_mapping=grid_mapping,
-                    longitude=np.asarray(lon_coord.values) if (lon_coord is not None and lon_coord.ndim == 1) else None,
-                    latitude=np.asarray(lat_coord.values) if (lat_coord is not None and lat_coord.ndim == 1) else None,
-                    x=np.asarray(x_coord.values) if (x_coord is not None and x_coord.ndim == 1) else None,
-                    y=np.asarray(y_coord.values) if (y_coord is not None and y_coord.ndim == 1) else None,
-                    x_units=x_units,
-                    y_units=y_units,
-                )
-
-                sum_vars_sed_dict[var_sed_name] = DA_Conc_array_sed
-
-            processed_variables.append(variable)
-
-        if not processed_variables:
-            raise ValueError(
-                "No requested variables were processed. "
-                f"Requested={variable_ls}, available={list(DS.data_vars)}"
-            )
-        if do_water and not any(name != "topo" for name in sum_vars_wat_dict):
-            raise ValueError("No water output variables were produced.")
-        if do_sediment and not any(name != "topo" for name in sum_vars_sed_dict):
-            raise ValueError("No sediment output variables were produced.")
-
-        DS_wat_fin = xr.Dataset(sum_vars_wat_dict) if do_water else None
-        DS_sed_fin = xr.Dataset(sum_vars_sed_dict) if do_sediment else None
-
-        if do_water:
-            _copy_source_metadata(DS_wat_fin, DS)
-            gm_names = {da.attrs.get("grid_mapping") for da in DS_wat_fin.data_vars.values()}
-            _copy_support_vars(DS_wat_fin, DS, extra_grid_mapping_names=gm_names)
-
-        if do_sediment:
-            _copy_source_metadata(DS_sed_fin, DS)
-            gm_names = {da.attrs.get("grid_mapping") for da in DS_sed_fin.data_vars.values()}
-            _copy_support_vars(DS_sed_fin, DS, extra_grid_mapping_names=gm_names)
-
-        wat_file = None
-        sed_file = None
-
-        if do_water:
-            if File_Name_out is not None:
-                wat_file = File_Path_out + "wat_" + File_Name_out
-                if not wat_file.endswith(".nc"):
-                    wat_file += ".nc"
-            else:
-                wat_file = (
-                    File_Path_out + "water_conc_" +
-                    (Chemical_name or "") + "_" +
-                    (Origin_marker_name or "") + ".nc"
-                )
-
-        if do_sediment:
-            if File_Name_out is not None:
-                sed_file = File_Path_out + "sed_" + File_Name_out
-                if not sed_file.endswith(".nc"):
-                    sed_file += ".nc"
-            else:
-                sed_file = (
-                    File_Path_out + "sediments_conc_" +
-                    (Chemical_name or "") + "_" +
-                    (Origin_marker_name or "") + ".nc"
-                )
-
-        if Save_files:
-            if do_water:
-                if Verbose:
-                    log("Saving water concentration file")
-                DS_wat_fin.to_netcdf(wat_file)
-
-            if do_sediment:
-                if Verbose:
-                    log("Saving sediment concentration file")
-                DS_sed_fin.to_netcdf(sed_file)
-
-        if Return_datasets:
-            if Verbose:
-                if do_water and do_sediment:
-                    log("Returning water and sediment DS")
-                elif do_water:
-                    log("Returning water DS")
+                if weight_var is None:
+                    if do_water:
+                        if Verbose:
+                            log('Running sum of water concentration/density')
+                        DA_Conc_array_wat, included_wat = self._water_column_conc(TOT_Conc=TOT_Conc, specie_ids_num=specie_ids_num, water_species=water_species_eff, Verbose=Verbose)
+                    if do_sediment:
+                        if Verbose:
+                            log('Running sum of sediment concentration/density')
+                        DA_Conc_array_sed, included_sed = self._sediment_conc_sum(TOT_Conc=TOT_Conc, specie_ids_num=specie_ids_num, sed_species=sed_species_eff, Verbose=Verbose, debug_check_single_depth=debug_check_single_depth)
+                    aggregation_kind = 'sum'
                 else:
-                    log("Returning sediment DS")
-            return DS_wat_fin, DS_sed_fin
+                    if do_water:
+                        if Verbose:
+                            log(f'Running count-weighted water aggregation using {weight_var}')
+                        DA_Conc_array_wat, included_wat = self._species_weighted_mean(TOT_Value=TOT_Conc, TOT_Count=TOT_Weights, specie_ids_num=specie_ids_num, species_names=water_species_eff, Verbose=Verbose, collapse_depth=False, debug_check_single_depth=False)
+                    if do_sediment:
+                        if Verbose:
+                            log(f'Running count-weighted sediment aggregation using {weight_var}')
+                        DA_Conc_array_sed, included_sed = self._species_weighted_mean(TOT_Value=TOT_Conc, TOT_Count=TOT_Weights, specie_ids_num=specie_ids_num, species_names=sed_species_eff, Verbose=Verbose, collapse_depth=True, debug_check_single_depth=debug_check_single_depth)
+                    aggregation_kind = 'count_weighted_mean'
+
+                missing = []
+                if do_water and DA_Conc_array_wat is None:
+                    missing.append(f'DA_Conc_array_wat (water_species={water_species_eff})')
+                if do_sediment and DA_Conc_array_sed is None:
+                    missing.append(f'DA_Conc_array_sed (sed_species={sed_species_eff})')
+                if missing:
+                    raise ValueError('Missing: ' + ' | '.join(missing) + '. Reason: no correspondence between TOT_Conc.specie and specie_ids_num or all matching species were excluded.')
+
+                if do_water:
+                    DA_Conc_array_wat.attrs['species_included'] = self._format_species_pairs(included_wat)
+                    excluded_wat_pairs = self._excluded_pairs(specie_ids_num, excluded_water_names, TOT_Conc=TOT_Conc)
+                    DA_Conc_array_wat.attrs['species_excluded'] = self._format_species_pairs(excluded_wat_pairs)
+                    DA_Conc_array_wat.attrs['species_aggregation'] = aggregation_kind
+                    if weight_var is not None:
+                        DA_Conc_array_wat.attrs['species_aggregation_weights'] = weight_var
+                        DA_Conc_array_wat.attrs['species_aggregation_note'] = f'Species aggregated with count-weighted mean using {weight_var}.'
+                    DA_Conc_array_wat.attrs.pop('coordinates', None)
+                if do_sediment:
+                    DA_Conc_array_sed.attrs['species_included'] = self._format_species_pairs(included_sed)
+                    excluded_sed_pairs = self._excluded_pairs(specie_ids_num, excluded_sed_names, TOT_Conc=TOT_Conc)
+                    DA_Conc_array_sed.attrs['species_excluded'] = self._format_species_pairs(excluded_sed_pairs)
+                    DA_Conc_array_sed.attrs['species_aggregation'] = aggregation_kind
+                    if weight_var is not None:
+                        DA_Conc_array_sed.attrs['species_aggregation_weights'] = weight_var
+                        DA_Conc_array_sed.attrs['species_aggregation_note'] = f'Species aggregated with count-weighted mean using {weight_var}.'
+                    DA_Conc_array_sed.attrs.pop('coordinates', None)
+
+                if Verbose:
+                    log('Preparing coordinates/metadata')
+                if do_water:
+                    DA_Conc_array_wat = self.prepare_derived_output_da(DA_Conc_array_wat, src_ds=DS, time_name=time_name, spatial_mode=spatial_mode, Verbose=Verbose)
+                if do_sediment:
+                    DA_Conc_array_sed = self.prepare_derived_output_da(DA_Conc_array_sed, src_ds=DS, time_name=time_name, spatial_mode=spatial_mode, Verbose=Verbose)
+
+                if ('topo' in DS.data_vars) and first_var:
+                    DC_topo = self.prepare_derived_output_da(DS['topo'], src_ds=DS, time_name=time_name, spatial_mode=spatial_mode, Verbose=Verbose)
+                    first_var = False
+                    if do_water:
+                        sum_vars_wat_dict['topo'] = DC_topo
+                    if do_sediment:
+                        sum_vars_sed_dict['topo'] = DC_topo
+
+                src_da = TOT_Conc
+                sim_desc = self._sim_description_attr(src_da, Sim_description)
+                base_ln = self._base_long_name(src_da, Chemical_name, variable)
+                projection_proj4 = DS.attrs.get('actual_density_proj_str', None)
+                grid_mapping = src_da.attrs.get('grid_mapping', None)
+
+                if do_water:
+                    DA_Conc_array_wat.name = var_wat_name
+                    DA_Conc_array_wat.attrs['long_name'] = base_ln + ' in water'
+                    DA_Conc_array_wat.attrs['units'] = self._water_units(src_da, variable)
+                    lon_coord = _coord_getter(DA_Conc_array_wat, 'longitude')
+                    lat_coord = _coord_getter(DA_Conc_array_wat, 'latitude')
+                    x_coord = _coord_getter(DA_Conc_array_wat, 'x')
+                    y_coord = _coord_getter(DA_Conc_array_wat, 'y')
+                    x_units = x_coord.attrs.get('units', None) if x_coord is not None else None
+                    y_units = y_coord.attrs.get('units', None) if y_coord is not None else None
+                    DA_Conc_array_wat = self._apply_common_attrs(out_da=DA_Conc_array_wat, Sim_description=sim_desc, projection_proj4=projection_proj4, grid_mapping=grid_mapping, longitude=np.asarray(lon_coord.values) if (lon_coord is not None and lon_coord.ndim == 1) else None, latitude=np.asarray(lat_coord.values) if (lat_coord is not None and lat_coord.ndim == 1) else None, x=np.asarray(x_coord.values) if (x_coord is not None and x_coord.ndim == 1) else None, y=np.asarray(y_coord.values) if (y_coord is not None and y_coord.ndim == 1) else None, x_units=x_units, y_units=y_units)
+                    sum_vars_wat_dict[var_wat_name] = DA_Conc_array_wat
+
+                if do_sediment:
+                    DA_Conc_array_sed.name = var_sed_name
+                    DA_Conc_array_sed.attrs['long_name'] = base_ln + ' in sediments'
+                    DA_Conc_array_sed.attrs['units'] = self._sed_units(src_da, variable)
+                    lon_coord = _coord_getter(DA_Conc_array_sed, 'longitude')
+                    lat_coord = _coord_getter(DA_Conc_array_sed, 'latitude')
+                    x_coord = _coord_getter(DA_Conc_array_sed, 'x')
+                    y_coord = _coord_getter(DA_Conc_array_sed, 'y')
+                    x_units = x_coord.attrs.get('units', None) if x_coord is not None else None
+                    y_units = y_coord.attrs.get('units', None) if y_coord is not None else None
+                    DA_Conc_array_sed = self._apply_common_attrs(out_da=DA_Conc_array_sed, Sim_description=sim_desc, projection_proj4=projection_proj4, grid_mapping=grid_mapping, longitude=np.asarray(lon_coord.values) if (lon_coord is not None and lon_coord.ndim == 1) else None, latitude=np.asarray(lat_coord.values) if (lat_coord is not None and lat_coord.ndim == 1) else None, x=np.asarray(x_coord.values) if (x_coord is not None and x_coord.ndim == 1) else None, y=np.asarray(y_coord.values) if (y_coord is not None and y_coord.ndim == 1) else None, x_units=x_units, y_units=y_units)
+                    sum_vars_sed_dict[var_sed_name] = DA_Conc_array_sed
+
+                processed_variables.append(variable)
+
+            if not processed_variables:
+                raise ValueError(f'No requested variables were processed. Requested={variable_ls}, available={list(DS.data_vars)}')
+            if do_water and not any(name != 'topo' for name in sum_vars_wat_dict):
+                raise ValueError('No water output variables were produced.')
+            if do_sediment and not any(name != 'topo' for name in sum_vars_sed_dict):
+                raise ValueError('No sediment output variables were produced.')
+
+            DS_wat_fin = xr.Dataset(sum_vars_wat_dict) if do_water else None
+            DS_sed_fin = xr.Dataset(sum_vars_sed_dict) if do_sediment else None
+            if do_water:
+                _copy_source_metadata(DS_wat_fin, DS)
+                gm_names = {da.attrs.get('grid_mapping') for da in DS_wat_fin.data_vars.values()}
+                _copy_support_vars(DS_wat_fin, DS, extra_grid_mapping_names=gm_names)
+            if do_sediment:
+                _copy_source_metadata(DS_sed_fin, DS)
+                gm_names = {da.attrs.get('grid_mapping') for da in DS_sed_fin.data_vars.values()}
+                _copy_support_vars(DS_sed_fin, DS, extra_grid_mapping_names=gm_names)
+
+            wat_file = sed_file = None
+            if do_water:
+                if File_Name_out is not None:
+                    wat_file = File_Path_out + 'wat_' + File_Name_out
+                    if not wat_file.endswith('.nc'):
+                        wat_file += '.nc'
+                else:
+                    wat_file = File_Path_out + 'water_conc_' + (Chemical_name or '') + '_' + (Origin_marker_name or '') + '.nc'
+            if do_sediment:
+                if File_Name_out is not None:
+                    sed_file = File_Path_out + 'sed_' + File_Name_out
+                    if not sed_file.endswith('.nc'):
+                        sed_file += '.nc'
+                else:
+                    sed_file = File_Path_out + 'sediments_conc_' + (Chemical_name or '') + '_' + (Origin_marker_name or '') + '.nc'
+
+            if Save_files:
+                if do_water:
+                    if Verbose:
+                        log('Saving water concentration file')
+                    DS_wat_fin.to_netcdf(wat_file)
+                if do_sediment:
+                    if Verbose:
+                        log('Saving sediment concentration file')
+                    DS_sed_fin.to_netcdf(sed_file)
+
+            if ds_opened_here and Return_datasets:
+                if do_water:
+                    DS_wat_fin.load()
+                if do_sediment:
+                    DS_sed_fin.load()
+
+            if Return_datasets:
+                if Verbose:
+                    if do_water and do_sediment:
+                        log('Returning water and sediment DS')
+                    elif do_water:
+                        log('Returning water DS')
+                    else:
+                        log('Returning sediment DS')
+                return DS_wat_fin, DS_sed_fin
+        finally:
+            if ds_opened_here and DS is not None:
+                DS.close()
+
+
 
     ##### Seeding of elements
     def emission_factors(self, scrubber_type, chemical_compound):
