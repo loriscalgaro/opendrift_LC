@@ -143,7 +143,7 @@ class ChemicalDrift(OceanDrift):
     ElementType = Chemical
 
     required_variables = {
-         # Hydodinamics
+         # Hydrodynamics
         'x_sea_water_velocity': {'fallback': None},                            # m/s
         'y_sea_water_velocity': {'fallback': None},                            # m/s
         'upward_sea_water_velocity': {'fallback': 0},                          # m/s
@@ -164,7 +164,7 @@ class ChemicalDrift(OceanDrift):
         'ocean_mixed_layer_thickness': {'fallback': 50},                       # m
         'sea_water_ph_reported_on_total_scale':{'fallback': 8.1, 'profiles': True}, # pH units (dimensionless)
         'pH_sediment':{'fallback': 6.9, 'profiles': False},
-         # # Hydodinamics for sediment interaction
+         # Hydrodynamics for sediment interaction
         'x_bottom_sea_water_velocity': {'fallback': 0, 'important': False},    # m/s
         'y_bottom_sea_water_velocity': {'fallback': 0, 'important': False},    # m/s
         'bottom_layer_thickness': {'fallback': 0.0, 'important': False},       # m
@@ -176,6 +176,8 @@ class ChemicalDrift(OceanDrift):
         'sea_floor_wave_orbital_velocity': {'fallback': 0, 'important': False},# m/s
         'sea_surface_wave_period_at_variance_spectral_density_maximum': {'fallback': 0, 'important': False}, # s
         'sea_surface_wave_to_direction': {'fallback': 0, 'important': False},  # degrees clockwise from north, “to” direction
+        'sea_surface_wave_from_direction': {'fallback': 0, 'important': False}, # degrees clockwise from north, "from" direction
+
         # Bulk-flow inputs for Manning/Chezy/White-Colebrook modes
         'x_depth_averaged_sea_water_velocity': {'fallback': 0, 'important': False}, # m/s
         'y_depth_averaged_sea_water_velocity': {'fallback': 0, 'important': False}, # m/s
@@ -226,7 +228,7 @@ class ChemicalDrift(OceanDrift):
                 'min': 0, 'max': 100, 'units': 'm',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:doc_concentration_half_depth': {'type': 'float', 'default': 1000, # TODO: check better
-                'min': 0, 'max': 1200, 'units': 'm',                                    # Vertical conc drops more slowly slower than for SPM
+                'min': 0, 'max': 3000, 'units': 'm',                                    # Vertical conc drops more slowly slower than for SPM
                 'level': CONFIG_LEVEL_ADVANCED, 'description': ''},                     # example: 10.3389/fmars.2017.00436. lower limit around 40 umol/L
             'chemical:particle_diameter_uncertainty': {'type': 'float', 'default': 0.35,# https://www.hec.usace.army.mil/confluence/rasdocs/d2sd/ras2dsedtr/latest/model-description/water-and-sediment-properties/sediment-properties
                 'min': 0, 'max': 5, 'units': '',
@@ -304,7 +306,7 @@ class ChemicalDrift(OceanDrift):
                 'level': CONFIG_LEVEL_BASIC},
             # Sorption/desorption
             'chemical:transformations:dissociation': {'type': 'enum',
-                'enum': ['nondiss','acid', 'base', 'amphoter'], 'default': 'nondiss',
+                'enum': ['nondiss','acid', 'base', 'amphotericic'], 'default': 'nondiss',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Select dissociation mode'},
             'chemical:transformations:LogKOW': {'type': 'float', 'default': 3.361,           # Naphthalene
                 'min': -3, 'max': 10, 'units': '',
@@ -350,7 +352,7 @@ class ChemicalDrift(OceanDrift):
                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Organic carbon fraction of SPM'},
             'chemical:transformations:fOC_sed': {'type': 'float', 'default': 0.05,
                 'min': 0.01, 'max': 0.1, 'units': 'gOC/g',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Organic carbon fration of sediments'},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Organic carbon fraction of sediments'},
             'chemical:transformations:aggregation_rate': {'type': 'float', 'default': 0,
                 'min': 0, 'max': 1, 'units': 's-1',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Aggregation rate of DOM in marine water'},
@@ -363,7 +365,7 @@ class ChemicalDrift(OceanDrift):
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Reference temperature of t12_W_tot'},
             'chemical:transformations:DeltaH_kWt': {'type': 'float', 'default': 50000.,      # Generic
                 'min': -100000., 'max': 100000., 'units': 'J/mol',
-                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Entalpy of t12_W_tot'},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Enthalpy of t12_W_tot'},
             # Degradation in sediment layer
             'chemical:transformations:t12_S_tot': {'type': 'float', 'default': 5012.4,       # Naphthalene
                 'min': 1, 'max': None, 'units': 'hours',
@@ -376,7 +378,7 @@ class ChemicalDrift(OceanDrift):
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Reference temperature of t12_S_tot'},
             'chemical:transformations:DeltaH_kSt': {'type': 'float', 'default': 50000.,       # Generic
                 'min': -100000., 'max': 100000., 'units': 'J/mol',
-                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Entalpy of t12_S_tot'},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Enthalpy of t12_S_tot'},
             # Volatilization
             'chemical:transformations:MolWt': {'type': 'float', 'default': 128.1705,          # Naphthalene
                 'min': 50, 'max': 1000, 'units': 'g/mol',
@@ -541,9 +543,6 @@ class ChemicalDrift(OceanDrift):
             'chemical:sediment:resuspension_critustar': {'type': 'float', 'default': -1.0,
                 'min': -1.0, 'max': 100.0, 'units': 'm/s', 'level': CONFIG_LEVEL_ADVANCED,
                 'description': 'Critical shear velocity for resuspension. If >= 0, override resuspension_critstress using tau_cr = rho * ustar^2. If < 0, use resuspension_critstress directly.'},
-            'chemical:sediment:bed_interaction_thickness': {'type': 'float', 'default': 1.0,
-                'min': 0, 'max': 100, 'units': 'm', 'level': CONFIG_LEVEL_ADVANCED,
-                'description': 'Near-bed water-layer thickness used in deposition probability.'},
             # D50-based critical stress
             'chemical:sediment:resuspension_critstress_mode': {'type': 'enum',
                 'enum': ['USER', 'FROM_D50'], 'default': 'USER',
@@ -664,6 +663,35 @@ class ChemicalDrift(OceanDrift):
         self._set_config_default('drift:vertical_mixing', True)
         self._set_config_default('drift:vertical_mixing_at_surface', True)
         self._set_config_default('drift:vertical_advection_at_surface', True)
+
+    # def _dbg_arr(self, name, arr, idx=None, max_items=20):
+    #     '''
+    #     Print an array for debug
+    #     '''
+    #     import numpy as np
+
+    #     a = np.asarray(arr)
+    #     if idx is not None:
+    #         a = a[idx]
+
+    #     flat = a.ravel()
+    #     n = flat.size
+    #     if n == 0:
+    #         print(f"[DEBUG {name}: shape={a.shape}, n=0, sample=[]")
+    #         logger.debug(f"[DEBUG {name}: shape={a.shape}, n=0, sample=[]")
+    #         return
+
+    #     finite = np.isfinite(flat)
+    #     if finite.any():
+    #         vmin = np.nanmin(flat[finite])
+    #         vmax = np.nanmax(flat[finite])
+    #     else:
+    #         vmin = "all_nonfinite"
+    #         vmax = "all_nonfinite"
+
+    #     head = flat[:max_items]
+    #     logger.debug(f"[DEBUG {name}: shape={a.shape}, n={n}, min={vmin}, max={vmax}, sample={head}")
+    #     print(f"[DEBUG {name}: shape={a.shape}, n={n}, min={vmin}, max={vmax}, sample={head}")
 
     def prepare_run(self):
         if not hasattr(self, "name_species"):
@@ -1217,7 +1245,7 @@ class ChemicalDrift(OceanDrift):
 
           - acid: HA (neutral) <-> A- + H+      pKa_acid = pKa(HA)
           - base: BH+ (cation) <-> B + H+       pKa_base = pKa(BH+)  (conjugate-acid pKa)
-          - amphoter: one acidic site + one basic site, ignoring zwitterion:
+          - amphoteric: one acidic site + one basic site, ignoring zwitterion:
                 phi_neutral corresponds to the uncharged form (e.g. HA/B)
                 phi_anion corresponds to deprotonated acid site (A-)
                 phi_cation corresponds to protonated base site (BH+)
@@ -1244,7 +1272,7 @@ class ChemicalDrift(OceanDrift):
             phi_anion   = np.zeros_like(pH)
             return phi_neutral, phi_anion, phi_cation
 
-        if diss == "amphoter":
+        if diss == "amphoteric":
             # Ignoring zwitterion: neutral + anion + cation = 1
             denom = 1.0 + 10.0 ** (pH - pKa_acid) + 10.0 ** (pKa_base - pH)
             phi_neutral = 1.0 / denom
@@ -1266,7 +1294,7 @@ class ChemicalDrift(OceanDrift):
         KOC_initial:                        Baseline KOC used as reference.
         KOC_neutral, KOC_anion, KOC_cation: Species-specific KOC values for neutral, anionic, and cationic forms.
         pH:                                 Ambient pH controlling speciation.
-        diss:                               Dissociation model {'nondiss', 'acid', 'base', 'amphoter'}.
+        diss:                               Dissociation model {'nondiss', 'acid', 'base', 'amphoteric'}.
         pKa_acid, pKa_base :                Acid/base dissociation constants.
         eps:                                Small positive floor to avoid division by zero.
         """
@@ -1961,11 +1989,11 @@ class ChemicalDrift(OceanDrift):
             diss       = self.get_config('chemical:transformations:dissociation')
             pKa_acid   = self.get_config('chemical:transformations:pKa_acid')
             pKa_base   = self.get_config('chemical:transformations:pKa_base')
-            if diss in ["acid", "amphoter"] and pKa_acid < 0:
+            if diss in ["acid", "amphoteric"] and pKa_acid < 0:
                 raise ValueError("pKa_acid must be positive")
-            if diss in ["base", "amphoter"] and pKa_base < 0:
+            if diss in ["base", "amphoteric"] and pKa_base < 0:
                 raise ValueError("pKa_base must be positive")
-            if diss == "amphoter" and abs(pKa_acid - pKa_base) < 2:
+            if diss == "amphoteric" and abs(pKa_acid - pKa_base) < 2:
                 raise ValueError("pKa_base and pKa_acid must differ of at least two units")
 
             # NOTE: pKa_base is pKa of conjugate acid BH+ (base speciation: BH+ <-> B + H+)
@@ -2014,7 +2042,7 @@ class ChemicalDrift(OceanDrift):
                         KOC_sed_n = 10 ** ((0.54 * np.log10(KOW)) + 1.11)
                     elif diss == 'base':
                         KOC_sed_n = 10 ** ((0.37 * np.log10(KOW)) + 1.70)
-                    elif diss == 'amphoter':
+                    elif diss == 'amphoteric':
                         KOC_sed_n = 10 ** ((0.50 * np.log10(KOW)) + 1.13)
 
                 # anion / cation KOC (keep as neutral if not needed)
@@ -2447,6 +2475,104 @@ class ChemicalDrift(OceanDrift):
         self.elements.terminal_velocity = W
         self.elements.terminal_velocity = W * self.elements.moving
 
+    def _has_reader_variable(self, name):
+        """
+        Return True if an environment variable is actually provided by at least one reader.
+        This checks the cached set of reader variables collected in prepare_run().
+        """
+        return name in getattr(self, '_reader_variables', set())
+
+    def _optional_env_array(self, name, idx=None):
+        """
+        Return an environment array only if the variable is truly supplied by a reader.
+        1) If the variable is not present in any reader:
+               return None
+        2) Otherwise:
+               return _env_array(name, fallback=None, idx=idx)
+        This prevents silent use of fallback values when the caller needs to know
+        whether a field is genuinely available.
+        """
+        if not self._has_reader_variable(name):
+            return None
+        return self._env_array(name, fallback=None, idx=idx)
+
+    def _env_array(self, name, fallback=None, idx=None):
+        """Return an environment variable as a float array.
+        1) Read:
+               val = self.environment.<name>
+        2) If missing, use fallback
+        3) Convert to ndarray(dtype=float)
+        4) If idx is None:
+               - scalar values are broadcast to all active elements
+               - arrays are returned as-is
+        5) If idx is provided:
+               - scalar values are broadcast to len(idx)
+               - arrays are indexed by idx
+       """
+        val = getattr(self.environment, name, None)
+        if val is None:
+            val = fallback
+        if val is None:
+            return None
+
+        arr = np.asarray(val, dtype=float)
+
+        if idx is None:
+            if arr.ndim == 0:
+                return np.full(self.num_elements_active(), float(arr), dtype=float)
+            return arr
+
+        idx = np.asarray(idx, dtype=np.int64).ravel()
+        if arr.ndim == 0:
+            return np.full(idx.size, float(arr), dtype=float)
+        return arr[idx]
+
+    def _wave_to_direction_array(self, idx = None):
+        """
+        Return wave propagation direction as a geographic bearing in the "to"
+        convention (degrees clockwise from north).
+
+        Accepted inputs, in priority order:
+          1) sea_surface_wave_to_direction
+          2) sea_surface_wave_from_direction
+        If a "from"-direction field is used, it is converted internally using:
+            to_direction = (from_direction + 180) % 360
+        """
+        to_candidates = (
+            "sea_surface_wave_to_direction",
+        )
+        from_candidates = (
+            "sea_surface_wave_from_direction",
+        )
+
+        self._wave_direction_source_name = None
+        self._wave_direction_source_convention = None
+
+        def _get_candidate(name):
+            arr = self._optional_env_array(name, idx=idx)
+            if arr is not None:
+                return arr
+            # Fallback: if the environment object already carries the raw name, use it.
+            if getattr(self.environment, name, None) is not None:
+                return self._env_array(name, fallback=None, idx=idx)
+            return None
+
+        for name in to_candidates:
+            arr = _get_candidate(name)
+            if arr is not None:
+                self._wave_direction_source_name = name
+                self._wave_direction_source_convention = "to"
+                return np.mod(np.asarray(arr, dtype=float), 360.0)
+
+        for name in from_candidates:
+            arr = _get_candidate(name)
+            if arr is not None:
+                self._wave_direction_source_name = name
+                self._wave_direction_source_convention = "from"
+                return np.mod(np.asarray(arr, dtype=float) + 180.0, 360.0)
+
+        return None
+
     def _sanitize_foc(self, values, fallback):
         """
         Return finite local f_OC values, replacing invalid entries with a fallback.
@@ -2658,14 +2784,20 @@ class ChemicalDrift(OceanDrift):
             water_depth = self._env_array('sea_floor_depth_below_sea_level', 10000.0, idx=idx)
             mld = self._env_array('ocean_mixed_layer_thickness', 0.0, idx=idx)
 
-            # Physical near-bed interaction layer used for geometric cutoff
-            Sed_H_int = np.where(Sed_H_env > 0, Sed_H_env, Sed_H_0).astype(np.float32, copy=False)
+            water_depth = np.asarray(water_depth, dtype=np.float32)
+            water_depth = np.maximum(water_depth, 0.0)
+
+            mld = np.asarray(mld, dtype=np.float32)
+            mld = np.maximum(mld, 0.0)
+
+            # Physical near-bed interaction layer used for geometric cutoff.
+            # Use reader-provided interaction thickness when available, otherwise
+            # fall back to the configured value, but never let it exceed local depth.
+            Sed_H_nominal = np.where(Sed_H_env > 0, Sed_H_env, Sed_H_0).astype(np.float32, copy=False)
+            Sed_H_int = np.minimum(Sed_H_nominal, water_depth).astype(np.float32, copy=False)
 
             # Active sediment layer thickness used in k14 numerator
             Sed_L_eff = np.where(Sed_L_env > 0, Sed_L_env, Sed_L_0).astype(np.float32, copy=False)
-
-            water_depth = np.asarray(water_depth, dtype=np.float32)
-            mld = np.asarray(mld, dtype=np.float32)
 
             return Sed_H_int, Sed_L_eff, water_depth, mld
 
@@ -2691,8 +2823,10 @@ class ChemicalDrift(OceanDrift):
             k14_corr = np.zeros_like(Sed_L_eff, dtype=np.float32)
             if Sed_L_0 > 0 and Sed_H_0 > 0:
                 valid = (Sed_L_eff > 0) & (H_rate_eff > 0)
-                k14_corr[valid] = ((Sed_L_eff[valid] / H_rate_eff[valid]) /
-                    (Sed_L_0 / Sed_H_0))
+                k14_corr[valid] = (
+                    (Sed_L_eff[valid] / H_rate_eff[valid]) /
+                    (Sed_L_0 / Sed_H_0)
+                )
 
             return k14_corr, interaction_cutoff, Sed_H_int, Sed_L_eff, H_rate_eff, water_depth
 
@@ -2833,11 +2967,11 @@ class ChemicalDrift(OceanDrift):
 
             else:
                 pKa_acid = self.get_config('chemical:transformations:pKa_acid')
-                if pKa_acid < 0 and diss in ['acid', 'amphoter']:
+                if pKa_acid < 0 and diss in ['acid', 'amphoteric']:
                     raise ValueError("pKa_acid must be positive")
 
                 pKa_base = self.get_config('chemical:transformations:pKa_base')
-                if pKa_base < 0 and diss in ['base', 'amphoter']:
+                if pKa_base < 0 and diss in ['base', 'amphoteric']:
                     raise ValueError("pKa_base must be positive")
 
                 KOC_sed_n = self.get_config('chemical:transformations:KOC_sed')
@@ -2846,7 +2980,7 @@ class ChemicalDrift(OceanDrift):
                         KOC_sed_n = 10 ** ((0.54 * np.log10(KOW)) + 1.11)
                     elif diss == 'base':
                         KOC_sed_n = 10 ** ((0.37 * np.log10(KOW)) + 1.70)
-                    elif diss == 'amphoter':
+                    elif diss == 'amphoteric':
                         KOC_sed_n = 10 ** ((0.50 * np.log10(KOW)) + 1.13)
 
                 KOC_sed_acid = self.get_config('chemical:transformations:KOC_sed_acid')
@@ -3186,6 +3320,7 @@ class ChemicalDrift(OceanDrift):
 
         # If sediment reversible compartment is not present, nothing to do
         if not hasattr(self, 'num_srev'):
+            logger.debug("No sediment reversible specie initiated, sorption_to_sediments was skipped")
             return
 
         # Set z to local sea depth for particles that have sorbed to sediments
@@ -3222,6 +3357,7 @@ class ChemicalDrift(OceanDrift):
         """
         # If sediment reversible compartment is not present, nothing to do
         if not hasattr(self, 'num_srev'):
+            logger.debug("No sediment reversible specie initiated, desorption_from_sediments was skipped")
             return
 
         desorption_depth = self.get_config('chemical:sediment:desorption_depth')
@@ -3230,26 +3366,38 @@ class ChemicalDrift(OceanDrift):
         if self.get_config('chemical:species:LMM') and hasattr(self, 'num_lmm'):
             idx = np.flatnonzero((sp_out == self.num_lmm) & (sp_in == self.num_srev))
             if idx.size:
-                depth = self._env_array('sea_floor_depth_below_sea_level', 10000.0, idx=idx)
-                self.elements.z[idx] = -depth + desorption_depth
+                depth = np.asarray(
+                    self._env_array('sea_floor_depth_below_sea_level', 10000.0, idx=idx),
+                    dtype=float)
+                depth = np.maximum(depth, 0.0)
+                # In shallow water, do not release above a distance larger than the local depth
+                desorption_depth_eff = np.minimum(desorption_depth, depth)
+                self.elements.z[idx] = -depth + desorption_depth_eff
                 self.elements.moving[idx] = 1
                 if std > 0:
                     logger.debug('Adding uncertainty for desorption from sediments: %s m' % std)
                     self.elements.z[idx] += np.random.normal(0, std, idx.size)
-                    self.elements.z[idx] = np.maximum(self.elements.z[idx], -depth)
-                    self.elements.z[idx] = np.minimum(self.elements.z[idx], 0.0)
+                # Keep desorbed elements inside the local water column
+                self.elements.z[idx] = np.maximum(self.elements.z[idx], -depth)
+                self.elements.z[idx] = np.minimum(self.elements.z[idx], 0.0)
 
         if self.get_config('chemical:species:LMMcation') and hasattr(self, 'num_lmmcation'):
             idx = np.flatnonzero((sp_out == self.num_lmmcation) & (sp_in == self.num_srev))
             if idx.size:
-                depth = self._env_array('sea_floor_depth_below_sea_level', 10000.0, idx=idx)
-                self.elements.z[idx] = -depth + desorption_depth
+                depth = np.asarray(
+                    self._env_array('sea_floor_depth_below_sea_level', 10000.0, idx=idx),
+                    dtype=float)
+                depth = np.maximum(depth, 0.0)
+                # In shallow water, do not release above a distance larger than the local depth
+                desorption_depth_eff = np.minimum(desorption_depth, depth)
+                self.elements.z[idx] = -depth + desorption_depth_eff
                 self.elements.moving[idx] = 1
                 if std > 0:
                     logger.debug('Adding uncertainty for desorption from sediments: %s m' % std)
                     self.elements.z[idx] += np.random.normal(0, std, idx.size)
-                    self.elements.z[idx] = np.maximum(self.elements.z[idx], -depth)
-                    self.elements.z[idx] = np.minimum(self.elements.z[idx], 0.0)
+                # Keep desorbed elements inside the local water column
+                self.elements.z[idx] = np.maximum(self.elements.z[idx], -depth)
+                self.elements.z[idx] = np.minimum(self.elements.z[idx], 0.0)
 
         # avoid setting positive z values
         if np.nansum(self.elements.z > 0):
@@ -3367,58 +3515,6 @@ class ChemicalDrift(OceanDrift):
         if self.get_config('chemical:species:Polymer') and hasattr(self, 'num_polymer'):
             mask = (sp_out == self.num_polymer) & (sp_in != self.num_polymer)
             _assign_lognormal(mask, dia_doc, sigma_doc_ln, 'polymer')
-
-    def _has_reader_variable(self, name):
-        """
-        Return True if an environment variable is actually provided by at least one reader.
-        This checks the cached set of reader variables collected in prepare_run().
-        """
-        return name in getattr(self, '_reader_variables', set())
-
-    def _optional_env_array(self, name, idx=None):
-        """
-        Return an environment array only if the variable is truly supplied by a reader.
-        1) If the variable is not present in any reader:
-               return None
-        2) Otherwise:
-               return _env_array(name, fallback=None, idx=idx)
-        This prevents silent use of fallback values when the caller needs to know
-        whether a field is genuinely available.
-        """
-        if not self._has_reader_variable(name):
-            return None
-        return self._env_array(name, fallback=None, idx=idx)
-
-    def _env_array(self, name, fallback=None, idx=None):
-        """Return an environment variable as a float array.
-        1) Read:
-               val = self.environment.<name>
-        2) If missing, use fallback
-        3) Convert to ndarray(dtype=float)
-        4) If idx is None:
-               - scalar values are broadcast to all active elements
-               - arrays are returned as-is
-        5) If idx is provided:
-               - scalar values are broadcast to len(idx)
-               - arrays are indexed by idx
-       """
-        val = getattr(self.environment, name, None)
-        if val is None:
-            val = fallback
-        if val is None:
-            return None
-
-        arr = np.asarray(val, dtype=float)
-
-        if idx is None:
-            if arr.ndim == 0:
-                return np.full(self.num_elements_active(), float(arr), dtype=float)
-            return arr
-
-        idx = np.asarray(idx, dtype=np.int64).ravel()
-        if arr.ndim == 0:
-            return np.full(idx.size, float(arr), dtype=float)
-        return arr[idx]
 
     def _z_array(self, idx=None):
         """
@@ -3628,7 +3724,7 @@ class ChemicalDrift(OceanDrift):
             g     = gravity [m/s2]
 
         D* is used in empirical Shields-type threshold relations.
-"""
+        """
         d_m = np.asarray(d_m, dtype=float)
         rho_w = np.asarray(rho_w, dtype=float)
         if np.any(d_m <= 0):
@@ -3723,7 +3819,7 @@ class ChemicalDrift(OceanDrift):
         If enabled:
             tau_cr <- tau_cr * critstress_factor
         This lets each bed element carry a persistent multiplicative modifier.
-"""
+        """
         if idx is None:
             n = self.num_elements_active()
         else:
@@ -3843,7 +3939,6 @@ class ChemicalDrift(OceanDrift):
                p_dep = 1 - exp(-k_dep * dt)
         """
         tau_cr_dep = float(self.get_config('chemical:sediment:deposition_critstress'))
-
         h_b = np.maximum(np.asarray(h_b, dtype=float), 1e-30)
         ws = np.maximum(np.asarray(ws, dtype=float), 0.0)
 
@@ -3854,7 +3949,8 @@ class ChemicalDrift(OceanDrift):
             alpha_d = self.krone_deposition_reduction(tau, tau_cr_dep)
 
         k_dep = ws * alpha_d / h_b
-        p_dep = 1.0 - np.exp(-k_dep * dt)
+        p_dep = (1.0 - np.exp(-k_dep * dt))
+
         return np.clip(p_dep, 0.0, 1.0)
 
     def _local_erodible_mass_per_area(self, idx=None):
@@ -4137,6 +4233,13 @@ class ChemicalDrift(OceanDrift):
         S = self._env_array('sea_water_salinity', 34.0, idx=idx)
         rho = self.sea_water_density(T=T, S=S)
 
+        # Local water depth [m], capped at >= 0
+        depth = np.asarray(
+            self._env_array('sea_floor_depth_below_sea_level', 10000.0, idx=idx),
+            dtype=float
+        )
+        depth = np.maximum(depth, 0.0)
+
         dz_env = self._env_array('bottom_layer_thickness', 0.0, idx=idx)
         # z0_env = self._env_array('sea_floor_roughness_length', 0.0, idx=idx)
 
@@ -4149,8 +4252,11 @@ class ChemicalDrift(OceanDrift):
         cd_min = float(self.get_config('chemical:sediment:cd_min'))
         cd_max = float(self.get_config('chemical:sediment:cd_max'))
 
+        # Bottom-layer thickness for LOG_Z0 / GRAIN_D50 fallback.
+        # Use reader if provided, otherwise config fallback, but never let it exceed local depth.
         dz_bot = np.where(np.asarray(dz_env, dtype=float) > 0.0, dz_env, dz_cfg)
-        dz_bot = np.maximum(np.asarray(dz_bot, dtype=float), eps)
+        dz_bot = np.asarray(dz_bot, dtype=float)
+        dz_bot = np.minimum(np.maximum(dz_bot, eps), np.maximum(depth, eps))
 
         z0_default = None
 
@@ -4221,7 +4327,11 @@ class ChemicalDrift(OceanDrift):
                         f"y_depth_averaged_sea_water_velocity when sea_floor_current_stress is unavailable.")
 
                 speed = np.hypot(u_da, v_da)
-                Rh = self._hydraulic_radius_array(idx=idx)
+
+                # Hydraulic radius for MANNING / CHEZY / WHITE_COLEBROOK.
+                # Use helper, but never let it exceed local depth.
+                Rh = np.asarray(self._hydraulic_radius_array(idx=idx), dtype=float)
+                Rh = np.minimum(np.maximum(Rh, eps), np.maximum(depth, eps))
 
                 z_ref = np.full(n, np.nan, dtype=float)
                 z0 = np.full(n, np.nan, dtype=float)
@@ -4286,7 +4396,9 @@ class ChemicalDrift(OceanDrift):
 
             tau_wave = self._wave_stress_from_orbital(rho=rho, z0=z0_wave, idx=idx)
 
-            wave_to_dir = self._optional_env_array('sea_surface_wave_to_direction', idx=idx)
+            # accept either a true "to" direction or a "from" direction that is
+            # converted internally to the propagation convention expected below.
+            wave_to_dir = self._wave_to_direction_array(idx=idx)
             if wave_to_dir is not None:
                 ew_x, ew_y = self._bearing_to_unit_vector(wave_to_dir)
                 has_wave_dir[:] = True
@@ -4330,9 +4442,11 @@ class ChemicalDrift(OceanDrift):
             if tau_wave is not None:
                 need_wave_dir = tau_wave > eps
                 if np.any(need_wave_dir & (~has_wave_dir)):
-                    raise ValueError(
-                        "SOULSBY_CLARKE requires sea_surface_wave_to_direction for all elements "
-                        "where wave stress is used.")
+                raise ValueError(
+                    "SOULSBY_CLARKE requires a usable wave-direction field for all "
+                    "elements where wave stress is used. Supported inputs are "
+                    "sea_surface_wave_to_direction or sea_surface_wave_from_direction "
+                    "(converted internally to the propagation convention).")
 
                 denom = np.maximum(tau_c + tau_wave, eps)
                 tau_m = tau_c * (1.0 + 1.2 * (tau_wave / denom) ** 3.2)
@@ -4428,6 +4542,7 @@ class ChemicalDrift(OceanDrift):
         has_slow = hasattr(self, 'num_psrev') and hasattr(self, 'num_ssrev')
         has_irrev = hasattr(self, 'num_pirrev') and hasattr(self, 'num_sirrev')
         if not (has_rev or has_slow or has_irrev):
+            logger.debug('No particle elements initiated, deposition was skipped')
             return
 
         susp_mask0 = np.zeros(self.num_elements_active(), dtype=bool)
@@ -4439,21 +4554,31 @@ class ChemicalDrift(OceanDrift):
             susp_mask0 |= (specie0 == self.num_pirrev)
 
         if not np.any(susp_mask0):
+            logger.debug('No particle elements present, deposition was skipped')
             return
 
         idx_susp = np.flatnonzero(susp_mask0)
-
         z_susp = np.asarray(z0[idx_susp], dtype=float)
         Zmin_susp = -self._env_array('sea_floor_depth_below_sea_level', 10000.0, idx=idx_susp)
 
+        # Near-bed interaction thickness
         h_env = self._env_array('interaction_sediment_layer_thickness', 0.0, idx=idx_susp)
-        h_cfg = float(self.get_config('chemical:sediment:bed_interaction_thickness'))
-        h_b_susp = np.where(h_env > 0.0, h_env, h_cfg)
+        h_cfg = float(self.get_config('chemical:sediment:layer_thickness'))
+        # Use reader value if available, otherwise config fallback
+        h_b_nominal = np.where(h_env > 0.0, h_env, h_cfg)
+        # Local bathymetry / water-column thickness limit
+        depth_susp = np.asarray(self._env_array('sea_floor_depth_below_sea_level', 10000.0, idx=idx_susp),
+            dtype=float)
+        depth_susp = np.maximum(depth_susp, 0.0)
+        # Effective near-bed interaction thickness cannot exceed local depth
+        h_b_susp = np.minimum(h_b_nominal, depth_susp)
+        h_b_susp = np.maximum(h_b_susp, 1e-12)
 
         dist_above_bed = z_susp - Zmin_susp
         near_bed_local = (dist_above_bed >= 0.0) & (dist_above_bed <= h_b_susp)
 
         if not np.any(near_bed_local):
+            logger.debug('No particle elements present near seabed, deposition was skipped')
             return
 
         idx_dep = idx_susp[near_bed_local]
@@ -4478,12 +4603,15 @@ class ChemicalDrift(OceanDrift):
         self.elements.Cd[idx_dep] = stress_dep['Cd']
         self.elements.speed[idx_dep] = stress_dep['speed']
         self.elements.z_ref[idx_dep] = stress_dep['z_ref']
-        self.elements.z0[idx_dep] = stress_dep['z0']
+        if stress_dep.get('z0', None) is not None:
+            self.elements.z0[idx_dep] = stress_dep['z0']
         self.elements.tau_wave[idx_dep] = stress_dep['tau_wave']
         self.elements.p_dep[idx_dep] = p_dep
 
-        hit_dep_local = np.random.rand(idx_dep.size) < p_dep
+        rand_dep = np.random.rand(idx_dep.size)
+        hit_dep_local = rand_dep < p_dep
         if not np.any(hit_dep_local):
+            logger.debug('No particle elements hit deposition probability, deposition was skipped')
             return
 
         ii = idx_dep[hit_dep_local]
@@ -4551,6 +4679,7 @@ class ChemicalDrift(OceanDrift):
         has_slow = hasattr(self, 'num_psrev') and hasattr(self, 'num_ssrev')
         has_irrev = hasattr(self, 'num_pirrev') and hasattr(self, 'num_sirrev')
         if not (has_rev or has_slow or has_irrev):
+            logger.debug('No sediment species initiated, resuspension was skipped')
             return
 
         bed_mask0 = np.zeros(self.num_elements_active(), dtype=bool)
@@ -4562,6 +4691,7 @@ class ChemicalDrift(OceanDrift):
             bed_mask0 |= (specie0 == self.num_sirrev)
 
         if not np.any(bed_mask0):
+            logger.debug('No sediment elements present, resuspension was skipped')
             return
 
         idx_bed = np.flatnonzero(bed_mask0)
@@ -4584,7 +4714,8 @@ class ChemicalDrift(OceanDrift):
             tau=tau_res,
             tau_cr_res=tau_cr_res,
             dt=dt,
-            idx=idx_res,)
+            idx=idx_res,
+        )
 
         # Save variable related to seabed interaction for debug
         self.elements.tau_bx[idx_res] = stress_res['tau_bx']
@@ -4598,7 +4729,8 @@ class ChemicalDrift(OceanDrift):
         self.elements.Cd[idx_res] = stress_res['Cd']
         self.elements.speed[idx_res] = stress_res['speed']
         self.elements.z_ref[idx_res] = stress_res['z_ref']
-        self.elements.z0[idx_res] = stress_res['z0']
+        if stress_res.get('z0', None) is not None:
+            self.elements.z0[idx_res] = stress_res['z0']
         self.elements.tau_wave[idx_res] = stress_res['tau_wave']
         self.elements.p_res[idx_res] = p_res
         self.elements.tau_cr_res[idx_res] = tau_cr_res
@@ -4610,16 +4742,33 @@ class ChemicalDrift(OceanDrift):
         ii = idx_res[hit_res_local]
         Zhit = Zmin_res[hit_res_local]
 
-        resusp_depth = float(self.get_config('chemical:sediment:resuspension_depth'))
+        resuspension_depth = float(self.get_config('chemical:sediment:resuspension_depth'))
         std = float(self.get_config('chemical:sediment:resuspension_depth_uncert'))
 
         if has_rev:
             loc = (specie0[ii] == self.num_srev)
             if np.any(loc):
                 jj = ii[loc]
+
+                # Local water depth for the resuspended subset
+                depth_jj = -Zhit[loc]
+                depth_jj = np.maximum(depth_jj, 0.0)
+
+                # In shallow water, do not release above a distance larger than the local depth
+                resuspension_depth_eff = np.minimum(resuspension_depth, depth_jj)
+
                 specie_new[jj] = self.num_prev
+                z_new[jj] = -depth_jj + resuspension_depth_eff
                 moving_new[jj] = 1
-                z_new[jj] = Zhit[loc] + resusp_depth
+
+                if std > 0:
+                    logger.debug('Adding uncertainty for resuspension from sediments: %s m' % std)
+                    z_new[jj] += np.random.normal(0.0, std, jj.size)
+
+                # Keep resuspended elements inside the local water column
+                z_new[jj] = np.maximum(z_new[jj], -depth_jj)
+                z_new[jj] = np.minimum(z_new[jj], 0.0)
+
                 crit_new[jj] = 1.0
                 self.ntransformations[self.num_srev, self.num_prev] += jj.size
 
@@ -4627,9 +4776,23 @@ class ChemicalDrift(OceanDrift):
             loc = (specie0[ii] == self.num_ssrev)
             if np.any(loc):
                 jj = ii[loc]
+
+                depth_jj = -Zhit[loc]
+                depth_jj = np.maximum(depth_jj, 0.0)
+
+                resuspension_depth_eff = np.minimum(resuspension_depth, depth_jj)
+
                 specie_new[jj] = self.num_psrev
+                z_new[jj] = -depth_jj + resuspension_depth_eff
                 moving_new[jj] = 1
-                z_new[jj] = Zhit[loc] + resusp_depth
+
+                if std > 0:
+                    logger.debug('Adding uncertainty for resuspension from sediments: %s m' % std)
+                    z_new[jj] += np.random.normal(0.0, std, jj.size)
+
+                z_new[jj] = np.maximum(z_new[jj], -depth_jj)
+                z_new[jj] = np.minimum(z_new[jj], 0.0)
+
                 crit_new[jj] = 1.0
                 self.ntransformations[self.num_ssrev, self.num_psrev] += jj.size
 
@@ -4637,16 +4800,25 @@ class ChemicalDrift(OceanDrift):
             loc = (specie0[ii] == self.num_sirrev)
             if np.any(loc):
                 jj = ii[loc]
+
+                depth_jj = -Zhit[loc]
+                depth_jj = np.maximum(depth_jj, 0.0)
+
+                resuspension_depth_eff = np.minimum(resuspension_depth, depth_jj)
+
                 specie_new[jj] = self.num_pirrev
+                z_new[jj] = -depth_jj + resuspension_depth_eff
                 moving_new[jj] = 1
-                z_new[jj] = Zhit[loc] + resusp_depth
+
+                if std > 0:
+                    logger.debug('Adding uncertainty for resuspension from sediments: %s m' % std)
+                    z_new[jj] += np.random.normal(0.0, std, jj.size)
+
+                z_new[jj] = np.maximum(z_new[jj], -depth_jj)
+                z_new[jj] = np.minimum(z_new[jj], 0.0)
+
                 crit_new[jj] = 1.0
                 self.ntransformations[self.num_sirrev, self.num_pirrev] += jj.size
-
-        if std > 0.0:
-            z_new[ii] += np.random.normal(0.0, std, ii.size)
-            z_new[ii] = np.maximum(z_new[ii], Zhit)
-            z_new[ii] = np.minimum(z_new[ii], 0.0)
 
     def bed_exchange(self):
         """
@@ -4735,22 +4907,22 @@ class ChemicalDrift(OceanDrift):
         crit_new = crit0.copy()
 
         # Save variable related to seabed interaction for debug
-        self.elements.tau_bx = np.zeros(self.num_elements_active(), dtype=np.float32)
-        self.elements.tau_by = np.zeros(self.num_elements_active(), dtype=np.float32)
-        self.elements.tau_current = np.zeros(self.num_elements_active(), dtype=np.float32)
-        self.elements.tau_effective = np.zeros(self.num_elements_active(), dtype=np.float32)
-        self.elements.tau_effective_x = np.zeros(self.num_elements_active(), dtype=np.float32)
-        self.elements.tau_effective_y = np.zeros(self.num_elements_active(), dtype=np.float32)
-        self.elements.ustar_effective = np.zeros(self.num_elements_active(), dtype=np.float32)
-        self.elements.rho = np.zeros(self.num_elements_active(), dtype=np.float32)
-        self.elements.Cd = np.zeros(self.num_elements_active(), dtype=np.float32)
-        self.elements.speed = np.zeros(self.num_elements_active(), dtype=np.float32)
-        self.elements.z_ref = np.zeros(self.num_elements_active(), dtype=np.float32)
-        self.elements.z0 = np.zeros(self.num_elements_active(), dtype=np.float32)
-        self.elements.tau_wave = np.zeros(self.num_elements_active(), dtype=np.float32)
-        self.elements.p_res = np.zeros(self.num_elements_active(), dtype=np.float32)
-        self.elements.p_dep = np.zeros(self.num_elements_active(), dtype=np.float32)
-        self.elements.tau_cr_res  = np.zeros(self.num_elements_active(), dtype=np.float32)
+        self.elements.tau_bx = np.full(self.num_elements_active(), np.nan, dtype=np.float32)
+        self.elements.tau_by = np.full(self.num_elements_active(), np.nan, dtype=np.float32)
+        self.elements.tau_current = np.full(self.num_elements_active(), np.nan, dtype=np.float32)
+        self.elements.tau_effective = np.full(self.num_elements_active(), np.nan, dtype=np.float32)
+        self.elements.tau_effective_x = np.full(self.num_elements_active(), np.nan, dtype=np.float32)
+        self.elements.tau_effective_y = np.full(self.num_elements_active(), np.nan, dtype=np.float32)
+        self.elements.ustar_effective = np.full(self.num_elements_active(), np.nan, dtype=np.float32)
+        self.elements.rho = np.full(self.num_elements_active(), np.nan, dtype=np.float32)
+        self.elements.Cd = np.full(self.num_elements_active(), np.nan, dtype=np.float32)
+        self.elements.speed = np.full(self.num_elements_active(), np.nan, dtype=np.float32)
+        self.elements.z_ref = np.full(self.num_elements_active(), np.nan, dtype=np.float32)
+        self.elements.z0 = np.full(self.num_elements_active(), np.nan, dtype=np.float32)
+        self.elements.tau_wave = np.full(self.num_elements_active(), np.nan, dtype=np.float32)
+        self.elements.p_res = np.full(self.num_elements_active(), np.nan, dtype=np.float32)
+        self.elements.p_dep = np.full(self.num_elements_active(), np.nan, dtype=np.float32)
+        self.elements.tau_cr_res  = np.full(self.num_elements_active(), np.nan, dtype=np.float32)
 
         # Both helpers use the same snapshot
         self.deposition(specie0=specie0, z0=z0,
@@ -5232,7 +5404,7 @@ class ChemicalDrift(OceanDrift):
                    nondiss   -> 1
                    acid      -> fraction of neutral HA
                    base      -> fraction of neutral B
-                   amphoter  -> neutral fraction only
+                   amphoteric  -> neutral fraction only
             4) Compute water-side transfer coefficient:
                    MTCw = (9e-4 + 7.2e-6 * wind^3) * (MolWtCO2 / MolWt)^0.25 * Undiss_n
             5) Compute air-side transfer coefficient:
@@ -5285,14 +5457,14 @@ class ChemicalDrift(OceanDrift):
         diss = self.get_config('chemical:transformations:dissociation')
 
         pKa_acid = self.get_config('chemical:transformations:pKa_acid')
-        if pKa_acid < 0 and diss in ['amphoter', 'acid']:
+        if pKa_acid < 0 and diss in ['amphoteric', 'acid']:
             raise ValueError("pKa_acid must be positive")
 
         pKa_base = self.get_config('chemical:transformations:pKa_base')
-        if pKa_base < 0 and diss in ['amphoter', 'base']:
+        if pKa_base < 0 and diss in ['amphoteric', 'base']:
             raise ValueError("pKa_base must be positive")
 
-        if diss == 'amphoter' and abs(pKa_acid - pKa_base) < 2:
+        if diss == 'amphoteric' and abs(pKa_acid - pKa_base) < 2:
             raise ValueError("pKa_base and pKa_acid must differ of at least two units")
 
         Vp = self.get_config('chemical:transformations:Vpress')
@@ -5330,7 +5502,7 @@ class ChemicalDrift(OceanDrift):
         elif diss == 'base':
             # Neutral base B is the volatilizing form; pKa_base is pKa of BH+
             Undiss_n = 1.0 - (1.0 / (1.0 + 10.0 ** (pH_water - pKa_base)))
-        elif diss == 'amphoter':
+        elif diss == 'amphoteric':
             # Neutral fraction only; zwitterion ignored as in the original implementation
             Undiss_n = 1.0 / (1.0 + 10.0 ** (pH_water - pKa_acid) + 10.0 ** (pKa_base - pH_water))
         else:
@@ -5689,7 +5861,6 @@ class ChemicalDrift(OceanDrift):
             )
         )
 
-
     def _build_curvilinear_locator(self, grid_spec):
         import matplotlib.tri as mtri
 
@@ -5809,9 +5980,7 @@ class ChemicalDrift(OceanDrift):
             "bbox": bbox,
         }
 
-# -----------------------------------------------------------------------------
-# Triangular unstructured mesh helpers and overrides
-# -----------------------------------------------------------------------------
+    ### Triangular unstructured mesh helpers and overrides
     @staticmethod
     def _triangle_area_plane(x0, y0, x1, y1, x2, y2):
         return 0.5 * np.abs((x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0))
@@ -5876,6 +6045,172 @@ class ChemicalDrift(OceanDrift):
         }
 
     def _normalize_output_grid(self, output_grid, density_proj=None):
+        """
+    Recommended `output_grid` layouts for `write_netcdf_chemical_density_map()`
+    General rules
+    -------------
+    - `output_grid` is spatial only. Do NOT include a time dimension.
+      The output time coordinate is always taken from `self.result.time`.
+    - Supported layouts:
+        1) 1D lon/lat           (regular geographic rectilinear grid)
+        2) 2D lon/lat           (curvilinear geographic grid)
+        3) 1D x/y               (regular projected rectilinear grid)
+        4) 2D x_center/y_center (curvilinear projected grid)
+        5) triangular mesh      (face-node connectivity + node coords)
+    - If the grid is defined only in projected coordinates (`x/y`, `x_center/y_center`,
+      `node_x/node_y`), `density_proj` must be provided.
+    - If the grid is defined only in geographic coordinates (`lon/lat`, `node_lon/node_lat`),
+      `density_proj` should be omitted or geographic.
+    - Longitudes must follow the ChemicalDrift convention [-180, 180].
+    - Explicit dateline-crossing grids are not supported.
+
+    Best recommended layouts by case
+    --------------------------------
+    1) Regular geographic grid (best for simple lat/lon products)
+       Use 1D `lon` and 1D `lat`.
+       Optional bounds: `lon_bounds`, `lat_bounds`.
+
+       Example xarray print:
+       <xarray.Dataset>
+       Dimensions:     (lon: NX, lat: NY)
+       Coordinates:
+         * lon         (lon) float64 ...
+         * lat         (lat) float64 ...
+       Data variables:
+           lon_bounds  (lon, 2) float64 ...   # optional
+           lat_bounds  (lat, 2) float64 ...   # optional
+
+       Recommended constructor:
+           grid = xr.Dataset(
+               coords={
+                   "lon": ("lon", lon_1d),
+                   "lat": ("lat", lat_1d),
+               }
+           )
+       This is the cleanest and most robust choice when the target density map
+       should be written on a regular lon/lat grid.
+
+    2) Curvilinear geographic grid (best for ocean-model lon/lat meshes)
+       Use 2D `lon` and 2D `lat` with matching shape.
+       Optional bounds may be supplied either as node arrays or 4-corner arrays.
+
+       Example xarray print:
+       <xarray.Dataset>
+       Dimensions:     (y: NY, x: NX)
+       Coordinates:
+           lon         (y, x) float64 ...
+           lat         (y, x) float64 ...
+       Data variables:
+           lon_bounds  (y, x, 4) float64 ...  # optional
+           lat_bounds  (y, x, 4) float64 ...  # optional
+
+       Recommended constructor:
+           grid = xr.Dataset(
+               coords={
+                   "lon": (("y", "x"), lon2d),
+                   "lat": (("y", "x"), lat2d),
+               }
+           )
+       Use this for structured but non-rectilinear geographic grids, e.g. ROMS-like
+       or curvilinear model output already defined in lon/lat space.
+
+    3) Regular projected grid (best for equal-area or metric binning)
+       Use 1D `x` and 1D `y`.
+       `density_proj` is required.
+       Optional bounds: `x_bounds`, `y_bounds`.
+
+       Example xarray print:
+       <xarray.Dataset>
+       Dimensions:    (x: NX, y: NY)
+       Coordinates:
+         * x          (x) float64 ...
+         * y          (y) float64 ...
+       Data variables:
+           x_bounds   (x, 2) float64 ...   # optional
+           y_bounds   (y, 2) float64 ...   # optional
+
+       Recommended constructor:
+           grid = xr.Dataset(
+               coords={
+                   "x": ("x", x_1d, {"units": "m"}),
+                   "y": ("y", y_1d, {"units": "m"}),
+               }
+           )
+       This is the preferred projected layout when the target density map should be
+       accumulated on a regular metric grid in a known CRS.
+
+    4) Curvilinear projected grid (best for structured projected model grids)
+       Use 2D `x_center` and 2D `y_center` with matching shape.
+       `density_proj` is required.
+       Optional auxiliary geographic coordinates `lon` and `lat` may also be supplied.
+       Optional bounds may be supplied as node arrays or 4-corner arrays.
+
+       Example xarray print:
+       <xarray.Dataset>
+       Dimensions:    (y: NY, x: NX)
+       Coordinates:
+           x_center   (y, x) float64 ...
+           y_center   (y, x) float64 ...
+           lon        (y, x) float64 ...   # optional
+           lat        (y, x) float64 ...   # optional
+       Data variables:
+           x_bounds   (y, x, 4) float64 ...   # optional
+           y_bounds   (y, x, 4) float64 ...   # optional
+
+       Recommended constructor:
+           grid = xr.Dataset(
+               coords={
+                   "x_center": (("y", "x"), x2d, {"units": "m"}),
+                   "y_center": (("y", "x"), y2d, {"units": "m"}),
+                   "lon": (("y", "x"), lon2d),   # optional but useful
+                   "lat": (("y", "x"), lat2d),   # optional but useful
+               }
+           )
+       Use this for structured curvilinear grids defined in projected coordinates,
+       especially when cell centers are known but a simple 1D x/y axis does not exist.
+
+    5) Triangular unstructured mesh (best for FVCOM/SHYFEM-like triangular grids)
+       Use `face_node_connectivity` plus either:
+         - `node_lon` and `node_lat`, or
+         - `node_x` and `node_y` (then `density_proj` is required).
+
+       Example xarray print using geographic node coordinates:
+       <xarray.Dataset>
+       Dimensions:                 (face: NF, node: NN, nmax_face_nodes: 3)
+       Data variables:
+           face_node_connectivity  (face, nmax_face_nodes) int64 ...
+           node_lon                (node) float64 ...
+           node_lat                (node) float64 ...
+
+       Example xarray print using projected node coordinates:
+       <xarray.Dataset>
+       Dimensions:                 (face: NF, node: NN, nmax_face_nodes: 3)
+       Data variables:
+           face_node_connectivity  (face, nmax_face_nodes) int64 ...
+           node_x                  (node) float64 ...
+           node_y                  (node) float64 ...
+
+       Recommended constructor (geographic nodes):
+           grid = xr.Dataset(
+               data_vars={
+                   "face_node_connectivity": (("face", "nmax_face_nodes"), conn),
+                   "node_lon": ("node", node_lon),
+                   "node_lat": ("node", node_lat),
+               }
+           )
+
+       Recommended constructor (projected nodes):
+           grid = xr.Dataset(
+               data_vars={
+                   "face_node_connectivity": (("face", "nmax_face_nodes"), conn),
+                   "node_x": ("node", node_x),
+                   "node_y": ("node", node_y),
+               }
+           )
+       This is the recommended layout for unstructured triangular meshes. Connectivity
+       must define triangles, i.e. 3 node indices per face.
+
+    """
         from pyproj import CRS, Proj, Geod
 
         if output_grid is None:
@@ -7287,9 +7622,8 @@ class ChemicalDrift(OceanDrift):
         area = np.full_like(lats, abs(lat_resol * lon_resol), dtype=np.float64)
         return h, area, active_sediment_layer_thickness, bathy_invalid_mask
 
-# -----------------------------------------------------------------------------
-# Additional writer / derived-output helpers
-# -----------------------------------------------------------------------------
+
+    ### Additional writer / derived-output helpers
     @staticmethod
     def _normalize_landmask(mask, policy='auto', thr=0.5):
         m_ma = np.ma.asarray(mask)
@@ -7372,6 +7706,7 @@ class ChemicalDrift(OceanDrift):
         if lm is not None:
             out[lm] = land_value
         return out
+
     @staticmethod
     def _reorder_depth_for_output(arr, depth_order):
         if arr is None:
@@ -7445,7 +7780,6 @@ class ChemicalDrift(OceanDrift):
                 out_da.attrs['dy'] = f"{np.around(abs(y_arr[1] - y_arr[0]), decimals=8)} {yu}"
         return out_da
 
-
     def _prepare_unstructured_output_da(self, da, src_ds):
         out = da.copy()
         if 'face' not in out.dims:
@@ -7457,7 +7791,6 @@ class ChemicalDrift(OceanDrift):
                     out = out.assign_coords({nm: ('face', np.asarray(var.values))})
                     out.coords[nm].attrs = dict(getattr(var, 'attrs', {}))
         return out
-
 
     def _prepare_rectilinear_output_da(self, da, lat_var=None, lon_var=None, lat1d_from_2d=None, lon1d_from_2d=None):
         out = da.copy()
@@ -7563,6 +7896,7 @@ class ChemicalDrift(OceanDrift):
         out = self._rename_common_dims(da, time_name=time_name)
         if 'face' in out.dims:
             return self._prepare_unstructured_output_da(out, src_ds)
+
         def _get_src_var(names):
             for name in names:
                 if name in src_ds.coords:
@@ -7572,6 +7906,7 @@ class ChemicalDrift(OceanDrift):
                 if name in src_ds.variables:
                     return src_ds[name]
             return None
+
         def _is_separable_2d(lon_da, lat_da, tol):
             lon2d = np.asarray(lon_da.values, dtype=float)
             lat2d = np.asarray(lat_da.values, dtype=float)
@@ -9758,7 +10093,7 @@ class ChemicalDrift(OceanDrift):
     ''' Alias of seed_from_DataArray method for backward compatibility
     '''
 
-    ### Helpers for seed_from_NETCDF ###
+    ##### Helpers for seed_from_NETCDF ###
     @staticmethod
     def _get_number_of_elements(g_mode, mass_element_ug=None, data_point=None, n_elements=None):
         """
@@ -10328,6 +10663,7 @@ class ChemicalDrift(OceanDrift):
             * latitude        (latitude) float32
             * longitude       (longitude) float32
             * time            (time) datetime64[ns]
+            * depth           (depth) float32 (optional)
         Bathimetry_data:      dataarray with bathimetry data to calcuate volume of gridcells for water_conc
                               MUST have the same grid of NETCDF_data, no time dimension, and positive values
             * latitude        (latitude) float32
@@ -13220,7 +13556,7 @@ class ChemicalDrift(OceanDrift):
         if filename is not None:
             plt.savefig(filename, format=filename[-3:], transparent=True, bbox_inches="tight", dpi=300)
 
-    ### Helpers for extract_summary_timeseries
+    ##### Helpers for extract_summary_timeseries
     def calc_mass_conversion_factor(self, mass_unit):
         """
         Returns factor f such that:
@@ -13626,17 +13962,24 @@ class ChemicalDrift(OceanDrift):
                                          (e.g. hours if time_unit='h').
                                          Takes precedence over start_date, end_date.
         extra_fields:        dict, optional Extra 2D fields from self.result to aggregate over ALL elements
-                             in the selected period, with no active/in/out/species masks.
-                             Format: { "field1": {"Name": "AAA","Unit": "UM", "mode": "mean"},}
-                             where:
-                               - dict key = variable name in self.result
-                               - "Name" = output column label
-                               - "Unit" = output unit label
-                               - "mode" can be:
-                                   * "mean" -> per-timestep nanmean across elements
-                                              <Name> [Unit] = per-timestep mean over valid elements
-                                              <Name> [Unit]__n_valid = number of valid elements used in that mean
-                                   * "sum"  -> per-timestep nansum across elements
+                     in the selected period, with no active/in/out/species masks.
+                     Format: { "field1": {"Name": "AAA","Unit": "UM", "mode": "mean"},}
+                     where:
+                       - dict key = variable name in self.result
+                       - "Name" = output column label
+                       - "Unit" = output unit label
+                       - "mode" can be:
+                           * "mean" -> per-timestep nanmean across elements
+                                      <Name> [Unit] = per-timestep mean over finite values
+                                      <Name> [Unit]__n_valid = number of finite elements used
+                           * "sum"  -> per-timestep nansum across elements
+                           * "mean_nonzero" -> per-timestep mean over finite, non-zero values only
+                                               <Name> [Unit]__n_valid = number of finite, non-zero
+                                               elements used
+                           * "mean_abs_nonzero" -> per-timestep mean of abs(value) over finite,
+                                                   non-zero values only
+                                                   <Name> [Unit]__n_valid = number of finite,
+                                                   non-zero elements used
         save_files:           bool, If True, export the resulting DataFrame to timeseries_file_path and return None.
                                     If False, return the DataFrame and do not write files.
         verbose:              bool, Print progress information.
@@ -14324,7 +14667,7 @@ class ChemicalDrift(OceanDrift):
             perc_elim_dict_1d[perc_key] = perc.astype(np.float32, copy=False)
 
         # 9) Extra user-requested fields aggregated over all elements (no masks)
-        # For mode="mean", also export a companion count series:
+        # For mean-like modes, also export a companion count series:
         #   <value_col>__n_valid
         for field, spec in (extra_fields or {}).items():
             if not hasattr(result_ds, field):
@@ -14334,13 +14677,23 @@ class ChemicalDrift(OceanDrift):
             if set(da.dims) != {"trajectory", "time"}:
                 raise ValueError(
                     f"Requested extra field {field!r} must have dims "
-                    f"('trajectory','time') in any order, got {da.dims}")
+                    f"('trajectory','time') in any order, got {da.dims}"
+                )
 
             spec = {} if spec is None else dict(spec)
 
             out_name = spec.get("Name", field)
             out_um = spec.get("Unit of measure", spec.get("Unit", getattr(da, "units", "")))
             mode = str(spec.get("mode", "mean")).strip().lower()
+
+            # optional aliases
+            mode_aliases = {
+                "mean_non_zero": "mean_nonzero",
+                "mean_non0": "mean_nonzero",
+                "mean_abs_non_zero": "mean_abs_nonzero",
+                "mean_abs_non0": "mean_abs_nonzero",
+            }
+            mode = mode_aliases.get(mode, mode)
 
             arr2d = da.transpose("time", "trajectory").values  # (T, N)
 
@@ -14350,9 +14703,23 @@ class ChemicalDrift(OceanDrift):
                 ts = np.nansum(arr2d, axis=1).astype(np.float64, copy=False)
                 extra_fields_dict_1d[col_name] = ts
 
-            elif mode == "mean":
-                valid_count = np.isfinite(arr2d).sum(axis=1).astype(np.float64, copy=False)
-                ts_sum = np.nansum(arr2d, axis=1).astype(np.float64, copy=False)
+            elif mode in ("mean", "mean_nonzero", "mean_abs_nonzero"):
+                finite = np.isfinite(arr2d)
+
+                if mode == "mean":
+                    used = finite
+                    values = np.where(used, arr2d, 0.0)
+
+                elif mode == "mean_nonzero":
+                    used = finite & (arr2d != 0)
+                    values = np.where(used, arr2d, 0.0)
+
+                elif mode == "mean_abs_nonzero":
+                    used = finite & (arr2d != 0)
+                    values = np.where(used, np.abs(arr2d), 0.0)
+
+                valid_count = used.sum(axis=1).astype(np.float64, copy=False)
+                ts_sum = values.sum(axis=1, dtype=np.float64)
 
                 ts = np.divide(
                     ts_sum,
@@ -14362,10 +14729,11 @@ class ChemicalDrift(OceanDrift):
 
                 extra_fields_dict_1d[col_name] = ts
                 extra_fields_count_dict_1d[f"{col_name}__n_valid"] = valid_count
+
             else:
                 raise ValueError(
                     f"Incorrect mode for extra field {field!r}: {mode!r}. "
-                    "Allowed: 'mean', 'sum'")
+                    "Allowed: 'mean', 'sum', 'mean_nonzero', 'mean_abs_nonzero'")
 
         # Drop padding row (if used) and recompute window cumulatives
         if pad_rows:
@@ -14419,12 +14787,19 @@ class ChemicalDrift(OceanDrift):
                 out_um = spec.get("Unit of measure", spec.get("Unit", ""))
                 mode = str(spec.get("mode", "mean")).strip().lower()
 
+                mode_aliases = {
+                    "mean_non_zero": "mean_nonzero",
+                    "mean_non0": "mean_nonzero",
+                    "mean_abs_non_zero": "mean_abs_nonzero",
+                    "mean_abs_non0": "mean_abs_nonzero",
+                }
+                mode = mode_aliases.get(mode, mode)
                 if str(out_um).strip():
                     msg = f"{field} -> {out_name}: mode={mode}, UM={out_um}"
                 else:
                     msg = f"{field} -> {out_name}: mode={mode}"
 
-                if mode == "mean":
+                if mode in ("mean", "mean_nonzero", "mean_abs_nonzero"):
                     col_name = f"{out_name} [{out_um}]" if str(out_um).strip() else out_name
                     msg += f", count_col={col_name}__n_valid"
 
@@ -14461,7 +14836,7 @@ class ChemicalDrift(OceanDrift):
         else:
             return df
 
-    ### Helpers for plot_summary_timeseries
+    ##### Helpers for plot_summary_timeseries
     @staticmethod
     def _existing(df, cols):
         return [c for c in cols if c in df.columns]
@@ -14972,7 +15347,11 @@ class ChemicalDrift(OceanDrift):
         font_scale=1.0,
         split_a4=False,
         pdf_path=None,
-        row_mode="double"
+        row_mode="double",
+        page_output="pdf",
+        png_dir=None,
+        png_dpi=200,
+        png_prefix=None,
     ):
         """
             Plot summary time-series panels for mass balance, elimination pathways, and speciation.
@@ -15001,7 +15380,23 @@ class ChemicalDrift(OceanDrift):
                                     to a multi-page PDF.
             row_mode:               {"double", "single"}, Panel layout mode.
                                     `"double"`: two panels per row, `"single"`: one wide panel per row
+            page_output: {'pdf', 'png', 'both', 'none'}
+                Used only when split_a4=True.
+                - 'pdf' : save pages to a multi-page PDF
+                - 'png' : save each page as a PNG image
+                - 'both': save both PDF and PNG pages
+                - 'none': do not write page files; just return figure objects
+            png_dir: str or path-like, optional
+                Directory where page PNG files are written when page_output is 'png' or 'both'.
+                If None, a directory is inferred from pdf_path or timeseries_file_path.
+            png_dpi: int
+                DPI used for saved PNG pages.
+            png_prefix: str, optional
+                Prefix used for PNG filenames. If None, a prefix is inferred.
         """
+        import re
+        from pathlib import Path
+
         import matplotlib.pyplot as plt
         from matplotlib.backends.backend_pdf import PdfPages
         from matplotlib.ticker import FuncFormatter
@@ -15010,6 +15405,13 @@ class ChemicalDrift(OceanDrift):
 
         if row_mode not in ("double", "single"):
             raise ValueError(f"Unsupported row_mode: {row_mode!r}. Use 'double' or 'single'.")
+
+        page_output = str(page_output).lower()
+        if page_output not in {"pdf", "png", "both", "none"}:
+            raise ValueError(
+                f"Unsupported page_output: {page_output!r}. "
+                "Use 'pdf', 'png', 'both', or 'none'."
+            )
 
         if df is None:
             if timeseries_file_path is not None:
@@ -15143,8 +15545,12 @@ class ChemicalDrift(OceanDrift):
             for sp in ax_xlab.spines.values():
                 sp.set_visible(False)
             ax_xlab.set_facecolor("none")
+
+            # More clearance in single mode
+            y_text = 0.10 if row_mode == "single" else 0.25
+
             ax_xlab.text(
-                0.5, 0.25, str(text),
+                0.5, y_text, str(text),
                 ha="center", va="center",
                 fontsize=fs["xlabel"],
                 transform=ax_xlab.transAxes
@@ -15375,13 +15781,7 @@ class ChemicalDrift(OceanDrift):
                 continue
             if c.startswith("time [") and c.endswith("]"):
                 continue
-            if c.startswith("mass_"):
-                continue
-            if c.startswith("perc_"):
-                continue
-            if c.startswith("qc_"):
-                continue
-            if c.endswith("__n_valid"):
+            if c.startswith("mass_") or c.startswith("perc_") or c.startswith("qc_") or c.endswith("__n_valid"):
                 continue
             if not pd.api.types.is_numeric_dtype(dfc[c]):
                 continue
@@ -15454,6 +15854,40 @@ class ChemicalDrift(OceanDrift):
         # Pagination + rendering on A4 portrait with fixed panel sizes
         A4_PORTRAIT = (8.27, 11.69)  # inches
         ROWS_PER_PAGE = 2 if row_mode == "double" else 4
+
+        def _slugify_filename(text):
+            text = str(text).strip().lower()
+            text = re.sub(r"[^a-z0-9._-]+", "_", text)
+            text = re.sub(r"_+", "_", text).strip("._-")
+            return text or "page"
+
+        def _resolve_png_dir_and_prefix():
+            resolved_prefix = png_prefix
+            resolved_dir = png_dir
+
+            if resolved_prefix is None:
+                if fig_title:
+                    resolved_prefix = _slugify_filename(fig_title)
+                elif pdf_path:
+                    resolved_prefix = _slugify_filename(Path(pdf_path).stem)
+                elif timeseries_file_path:
+                    resolved_prefix = _slugify_filename(Path(timeseries_file_path).stem)
+                else:
+                    resolved_prefix = "plot_summary_timeseries"
+
+            if resolved_dir is None:
+                if pdf_path:
+                    resolved_dir = Path(pdf_path).with_suffix("")
+                elif timeseries_file_path:
+                    base = Path(timeseries_file_path)
+                    resolved_dir = base.parent / f"{base.stem}_pages_png"
+                else:
+                    resolved_dir = Path.cwd() / f"{resolved_prefix}_pages_png"
+            else:
+                resolved_dir = Path(resolved_dir)
+
+            resolved_dir.mkdir(parents=True, exist_ok=True)
+            return resolved_dir, resolved_prefix
 
         def _place_legend_in_axis(ax_plot, ax_leg, max_cols, fontsize, legend_lw=3.0):
             """Put legend into a dedicated axis below the xlabel strip (never overlaps)."""
@@ -15849,16 +16283,19 @@ class ChemicalDrift(OceanDrift):
 
                     if row_mode == "double":
                         hr = [0.72, 0.11, 0.29]
+                        sub_hspace = 0.03
                     else:
                         if spec.get("kind") == "bar_elim_summary":
-                            hr = [0.42, 0.18, 0.24]
+                            hr = [0.40, 0.20, 0.24]
                         else:
-                            hr = [0.50, 0.08, 0.16]
+                            # more room for tick labels + xlabel strip + legend in single mode
+                            hr = [0.46, 0.14, 0.18]
+                        sub_hspace = 0.08
 
                     sub = outer[rr, cc].subgridspec(
                         nrows=3, ncols=1,
                         height_ratios=hr,
-                        hspace=0.03)
+                        hspace=sub_hspace)
 
                     ax = fig.add_subplot(sub[0])
                     ax_xlab = fig.add_subplot(sub[1])
@@ -15985,16 +16422,19 @@ class ChemicalDrift(OceanDrift):
 
                     if row_mode == "double":
                         hr = [0.72, 0.11, 0.29]
+                        sub_hspace = 0.03
                     else:
                         if spec.get("kind") == "bar_elim_summary":
-                            hr = [0.42, 0.18, 0.24]
+                            hr = [0.40, 0.20, 0.24]
                         else:
-                            hr = [0.50, 0.08, 0.16]
+                            # more room for tick labels + xlabel strip + legend in single mode
+                            hr = [0.46, 0.14, 0.18]
+                        sub_hspace = 0.08
 
                     sub = outer[rr, cc].subgridspec(
                         nrows=3, ncols=1,
                         height_ratios=hr,
-                        hspace=0.03)
+                        hspace=sub_hspace)
 
                     ax = fig.add_subplot(sub[0])
                     ax_xlab = fig.add_subplot(sub[1])
@@ -16026,8 +16466,27 @@ class ChemicalDrift(OceanDrift):
                 yield row_list[i:i + n]
 
         figs = []
-        pdf = PdfPages(pdf_path) if pdf_path else None
+        saved_png_paths = []
+
+        pdf_output_enabled = page_output in {"pdf", "both"}
+        png_output_enabled = page_output in {"png", "both"}
+
+        if pdf_output_enabled and pdf_path is None:
+            if timeseries_file_path:
+                base = Path(timeseries_file_path)
+                pdf_path = base.parent / f"{base.stem}_summary_pages.pdf"
+            else:
+                pdf_path = Path.cwd() / "plot_summary_timeseries_pages.pdf"
+
+        pdf = PdfPages(pdf_path) if pdf_output_enabled else None
+
+        png_output_dir = None
+        png_output_prefix = None
+        if png_output_enabled:
+            png_output_dir, png_output_prefix = _resolve_png_dir_and_prefix()
+
         blank = dict(kind="blank", cols=[], title="", legend={"max_cols": 1})
+        page_counter = 0
 
         for topic, topic_rows in topic_pages:
             chunks = list(chunk_rows(topic_rows, ROWS_PER_PAGE))
@@ -16039,17 +16498,32 @@ class ChemicalDrift(OceanDrift):
                 page_title = f"{topic} - {idx}" if len(chunks) > 1 else topic
                 fig, _ = _render_fixed_page(chunk, page_title=page_title)
                 figs.append(fig)
+                page_counter += 1
 
-                if pdf:
+                if pdf is not None:
                     pdf.savefig(fig)
+
+                if png_output_enabled:
+                    safe_title = _slugify_filename(page_title)
+                    png_name = f"{png_output_prefix}_{page_counter:03d}_{safe_title}.png"
+                    png_path = png_output_dir / png_name
+                    fig.savefig(
+                        png_path,
+                        dpi=int(png_dpi),
+                        bbox_inches="tight",
+                        facecolor="white",
+                    )
+                    saved_png_paths.append(png_path)
+
+                if pdf_output_enabled or png_output_enabled:
                     plt.close(fig)
 
-        if pdf:
+        if pdf is not None:
             pdf.close()
 
-        return figs, dfc
+        return figs, dfc, saved_png_paths, pdf_path
 
-    ### Helpers for sum_summary_timeseries
+    ##### Helpers for sum_summary_timeseries
     @staticmethod
     def _as_timedelta64(x):
         '''
@@ -16831,7 +17305,7 @@ class ChemicalDrift(OceanDrift):
 
         return (out, qc_report) if return_qc_report else out
 
-    ### Helpers for sum_DataArray_list
+    ##### Helpers for sum_DataArray_list
     @staticmethod
     def _reindex_da(
         DataArray,
