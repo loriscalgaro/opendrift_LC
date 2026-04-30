@@ -40,6 +40,9 @@ class Chemical(Lagrangian3DArray):
         ('diameter', {'dtype': np.float32,
                       'units': 'm',
                       'default': 0.}),
+        ('d50', {'dtype': np.float32,
+                 'units': 'm',
+                 'default': 0.}),
         #('neutral_buoyancy_salinity', {'dtype': np.float32,
         #                               'units': '[]',
         #                               'default': 31.25}),  # for NEA Cod
@@ -169,6 +172,9 @@ class ChemicalDrift(OceanDrift):
         'y_bottom_sea_water_velocity': {'fallback': 0, 'important': False},    # m/s
         'bottom_layer_thickness': {'fallback': 0.0, 'important': False},       # m
         'sea_floor_roughness_length': {'fallback': 0.0, 'important': False},   # m
+        'sea_floor_d50': {'fallback': 0, 'important': False},               # m, optional mapped bed median grain size
+        'sea_floor_erodibility_M': {'fallback': 0, 'important': False},     # kg m-2 s-1 Pa-1, optional mapped cohesive erodibility coefficient
+        'sea_floor_resuspension_critstress': {'fallback': 0, 'important': False}, # Pa, optional mapped resuspension critical shear stress
         # Direct bed stresses from hydro model (preferred if available)
         'sea_floor_current_stress': {'fallback': 0, 'important': False},       # Pa
         'sea_floor_wave_stress': {'fallback': 0, 'important': False},          # Pa
@@ -177,7 +183,6 @@ class ChemicalDrift(OceanDrift):
         'sea_surface_wave_period_at_variance_spectral_density_maximum': {'fallback': 0, 'important': False}, # s
         'sea_surface_wave_to_direction': {'fallback': 0, 'important': False},  # degrees clockwise from north, “to” direction
         'sea_surface_wave_from_direction': {'fallback': 0, 'important': False}, # degrees clockwise from north, "from" direction
-
         # Bulk-flow inputs for Manning/Chezy/White-Colebrook modes
         'x_depth_averaged_sea_water_velocity': {'fallback': 0, 'important': False}, # m/s
         'y_depth_averaged_sea_water_velocity': {'fallback': 0, 'important': False}, # m/s
@@ -481,7 +486,7 @@ class ChemicalDrift(OceanDrift):
                 'description': 'Nikuradse roughness for WHITE_COLEBROOK mode, used with depth-averaged velocity and hydraulic radius/depth.'},
             'chemical:sediment:d50': {'type': 'float', 'default': 2.0e-4,
                 'min': 1e-8, 'max': 1, 'units': 'm', 'level': CONFIG_LEVEL_ADVANCED,
-                'description': 'Median grain size for GRAIN_D50 mode and d50-based critical stress.'},
+                'description': 'Median grain size for GRAIN_D50 mode and d50-based critical stress. The per-element d50 is initialized from particle diameter at seeding and is then used for d50-based critical-stress calculations, while diameter continues to control terminal velocity. In USER mode, mapped sea_floor_d50 is rejected and chemical:sediment:d50 must equal chemical:particle_diameter so that carrier size remains uniform without hidden d50-driven jumps.'},
             'chemical:sediment:cd_min': {'type': 'float', 'default': 0.0,
                 'min': 0, 'max': 1, 'units': '', 'level': CONFIG_LEVEL_ADVANCED,
                 'description': 'Lower bound for drag coefficient.'},
@@ -509,7 +514,7 @@ class ChemicalDrift(OceanDrift):
             # Probabilistic exchange scheme
             'chemical:sediment:erodibility_M': {'type': 'float', 'default': 1.0e-4,
                 'min': 0.0, 'max': 1.0, 'units': 'kg m-2 s-1 Pa-1', 'level': CONFIG_LEVEL_ADVANCED,
-                'description': 'Partheniades erodibility coefficient for cohesive resuspension.'},
+                'description': 'Partheniades erodibility coefficient for cohesive resuspension. Used as a uniform fallback when no sea_floor_erodibility_M reader is supplied; a mapped erodibility field is preferred when available.'},
             'chemical:sediment:noncohesive_resuspension_timescale': {'type': 'float', 'default': 3600.0,
                 'min': 1e-6, 'max': 1e9, 'units': 's', 'level': CONFIG_LEVEL_ADVANCED,
                 'description': 'Characteristic timescale for noncohesive excess-shear pickup probability.'},
@@ -539,7 +544,7 @@ class ChemicalDrift(OceanDrift):
                 'description': 'Critical shear stress for deposition/sedimentation.'},
             'chemical:sediment:resuspension_critstress': {'type': 'float', 'default': 0.5,
                 'min': 0, 'max': 1e6, 'units': 'Pa', 'level': CONFIG_LEVEL_ESSENTIAL,
-                'description': 'Critical shear stress for resuspension/erosion.'},
+                'description': 'Critical shear stress for resuspension/erosion. If a mapped sea_floor_resuspension_critstress reader is supplied, that mapped value is preferred locally; otherwise this configured value or the d50-based calculation is used.'},
             'chemical:sediment:resuspension_critustar': {'type': 'float', 'default': -1.0,
                 'min': -1.0, 'max': 100.0, 'units': 'm/s', 'level': CONFIG_LEVEL_ADVANCED,
                 'description': 'Critical shear velocity for resuspension. If >= 0, override resuspension_critstress using tau_cr = rho * ustar^2. If < 0, use resuspension_critstress directly.'},
@@ -723,6 +728,26 @@ class ChemicalDrift(OceanDrift):
         self._reader_variables = set()
         for _, reader in self.env.readers.items():
             self._reader_variables.update(getattr(reader, 'variables', []))
+
+        if self._user_resuspension_threshold_overrides_d50() and self._d50_map_reader_present():
+            raise ValueError(
+                'A mapped sea_floor_d50 reader cannot be supplied when '
+                'chemical:sediment:resuspension_critstress_mode == USER. In USER mode '
+                'critical stress is user-prescribed, so the d50 map would be unused and '
+                'chemical:sediment:d50 is required to remain uniform and equal to '
+                'chemical:particle_diameter. Remove the d50 reader or switch to FROM_D50.'
+            )
+
+        if self._user_resuspension_threshold_overrides_d50():
+            sed_d50 = float(self.get_config('chemical:sediment:d50'))
+            part_diam = float(self.get_config('chemical:particle_diameter'))
+            if not np.isclose(sed_d50, part_diam, rtol=0.0, atol=0.0):
+                raise ValueError(
+                    'chemical:sediment:d50 must equal chemical:particle_diameter when '
+                    'chemical:sediment:resuspension_critstress_mode == USER, because '
+                    'USER mode forbids mapped d50 and assumes one uniform carrier/bed size. '
+                    f'Got chemical:sediment:d50={sed_d50} and chemical:particle_diameter={part_diam}.'
+                )
 
         # List of additional custom variables to be saved in self.result
         # TODO: These could now be moved to post_run() which should be
@@ -988,6 +1013,40 @@ class ChemicalDrift(OceanDrift):
 
             return crit_default
 
+
+        def _default_d50_from_specie(specie_arr, diameter_arr, sediment_d50_arr=None):
+            specie_arr = np.asarray(specie_arr, dtype=int).ravel()
+            diameter_arr = np.asarray(diameter_arr, dtype=float).ravel()
+            d50_default = np.zeros(specie_arr.size, dtype=float)
+            name_to_idx = {name: i for i, name in enumerate(self.name_species)}
+
+            particle_names = {
+                "Particle reversible", "Particle slowly reversible", "Particle irreversible",
+            }
+            sediment_names = {
+                "Sediment reversible", "Sediment slowly reversible", "Sediment buried", "Sediment irreversible",
+            }
+            particle_idx = {name_to_idx[n] for n in particle_names if n in name_to_idx}
+            sediment_idx = {name_to_idx[n] for n in sediment_names if n in name_to_idx}
+
+            if particle_idx:
+                mask_part = np.isin(specie_arr, list(particle_idx))
+                d50_default[mask_part] = np.maximum(diameter_arr[mask_part], 0.0)
+
+            if sediment_idx:
+                mask_sed = np.isin(specie_arr, list(sediment_idx))
+                if np.any(mask_sed):
+                    if sediment_d50_arr is None:
+                        sedvals = np.full(int(np.sum(mask_sed)), float(self.get_config('chemical:sediment:d50')), dtype=float)
+                    else:
+                        sedvals = np.asarray(sediment_d50_arr, dtype=float).ravel()
+                        if sedvals.size != int(np.sum(mask_sed)):
+                            raise ValueError(
+                                f"sediment_d50_arr has size {sedvals.size}, expected {int(np.sum(mask_sed))}")
+                    d50_default[mask_sed] = np.maximum(sedvals, 0.0)
+
+            return d50_default
+
         # Speciation handling
         if 'specie' in kwargs and kwargs['specie'] is not None:
             sp = kwargs['specie']
@@ -1064,6 +1123,7 @@ class ChemicalDrift(OceanDrift):
         diam_in = kwargs.get("diameter", None)
 
         arr = _as_per_element_array(diam_in, num_elements, "diameter")
+        sediment_seed_d50 = None
         if arr is not None:
             kwargs["diameter"] = np.maximum(arr, 0.0)
         else:
@@ -1077,23 +1137,26 @@ class ChemicalDrift(OceanDrift):
 
             name_to_idx = {name: i for i, name in enumerate(self.name_species)}
 
-            particle_like_names = {
+            particle_names = {
                 "Particle reversible",
                 "Particle slowly reversible",
                 "Particle irreversible",
+            }
+            sediment_names = {
                 "Sediment reversible",
                 "Sediment slowly reversible",
                 "Sediment buried",
                 "Sediment irreversible",
             }
-            particle_like_idx = {name_to_idx[n] for n in particle_like_names if n in name_to_idx}
+            particle_idx = {name_to_idx[n] for n in particle_names if n in name_to_idx}
+            sediment_idx = {name_to_idx[n] for n in sediment_names if n in name_to_idx}
 
             humic_idx = name_to_idx.get("Humic colloid", None)
             polymer_idx = name_to_idx.get("Polymer", None)
             colloid_idx = name_to_idx.get("Colloid", None)
 
-            if particle_like_idx:
-                mask_part = np.isin(init_specie, list(particle_like_idx))
+            if particle_idx:
+                mask_part = np.isin(init_specie, list(particle_idx))
                 nmask = int(mask_part.sum())
                 if nmask > 0:
                     if diam_in is not None and np.isscalar(diam_in):
@@ -1104,6 +1167,20 @@ class ChemicalDrift(OceanDrift):
                         median_diameter=dia_seed,
                         sigma_ln=sigma_part_ln,
                         n=nmask)
+
+            if sediment_idx:
+                mask_sed = np.isin(init_specie, list(sediment_idx))
+                nsed = int(mask_sed.sum())
+                if nsed > 0:
+                    # During seeding, self.environment may not exist yet.
+                    # Therefore sediment-seeded elements use the configured fallback d50,
+                    # while mapped/local bed d50 can still be used later during runtime.
+                    sediment_seed_d50 = np.full(
+                        nsed,
+                        float(self.get_config('chemical:sediment:d50')),
+                        dtype=float
+                    )
+                    init_diam[mask_sed] = np.maximum(sediment_seed_d50, 0.0)
 
             if humic_idx is not None:
                 mask = init_specie == humic_idx
@@ -1127,6 +1204,28 @@ class ChemicalDrift(OceanDrift):
                     init_diam[mask] = dia_diss
 
             kwargs["diameter"] = np.maximum(init_diam, 0.0)
+
+
+        # d50 assignment (respect explicit per-element values; default: particles use current diameter, sediments use local bed d50, dissolved/doc-like species use 0)
+        d50_in = kwargs.get("d50", None)
+        d50_default = _default_d50_from_specie(init_specie, kwargs["diameter"], sediment_d50_arr=sediment_seed_d50)
+        d50_arr = _as_per_element_array(d50_in, num_elements, "d50")
+        if d50_arr is not None:
+            d50_arr = np.asarray(d50_arr, dtype=float).copy()
+            bad = (~np.isfinite(d50_arr)) | (d50_arr < 0.0)
+            if np.any(bad):
+                logger.warning("Replacing %s negative/non-finite d50 values during seeding with species-based defaults.", int(np.sum(bad)))
+                d50_arr[bad] = d50_default[bad]
+            kwargs["d50"] = d50_arr
+        elif d50_in is not None and np.isscalar(d50_in):
+            d50_scalar = float(d50_in)
+            if (not np.isfinite(d50_scalar)) or (d50_scalar < 0.0):
+                logger.warning("Received scalar d50=%s during seeding; replacing with species-based defaults.", d50_scalar)
+                kwargs["d50"] = d50_default
+            else:
+                kwargs["d50"] = np.full(num_elements, d50_scalar, dtype=float)
+        else:
+            kwargs["d50"] = d50_default
 
         # f_OC assignment (respect explicit per-element values, but never keep <= 0)
         foc_in = kwargs.get("f_OC", None)
@@ -2478,9 +2577,20 @@ class ChemicalDrift(OceanDrift):
     def _has_reader_variable(self, name):
         """
         Return True if an environment variable is actually provided by at least one reader.
-        This checks the cached set of reader variables collected in prepare_run().
+
+        Prefer the cached set collected in prepare_run(), but also allow direct
+        inspection of attached readers so the check works during seeding before
+        prepare_run() has populated _reader_variables.
         """
-        return name in getattr(self, '_reader_variables', set())
+        reader_vars = getattr(self, '_reader_variables', None)
+        if reader_vars is None:
+            reader_vars = set()
+            env = getattr(self, 'env', None)
+            if env is not None:
+                for _, reader in getattr(env, 'readers', {}).items():
+                    reader_vars.update(getattr(reader, 'variables', []))
+            self._reader_variables = reader_vars
+        return name in reader_vars
 
     def _optional_env_array(self, name, idx=None):
         """
@@ -2508,8 +2618,21 @@ class ChemicalDrift(OceanDrift):
         5) If idx is provided:
                - scalar values are broadcast to len(idx)
                - arrays are indexed by idx
-       """
-        val = getattr(self.environment, name, None)
+        """
+        # Determine requested output length early, so we can still return a sensible
+        # fallback even when self.environment does not yet exist (e.g. during seeding).
+        if idx is None:
+            try:
+                n = int(self.num_elements_active())
+            except Exception:
+                n = 0
+        else:
+            idx = np.asarray(idx, dtype=np.int64).ravel()
+            n = idx.size
+
+        env = getattr(self, 'environment', None)
+        val = getattr(env, name, None) if env is not None else None
+
         if val is None:
             val = fallback
         if val is None:
@@ -2519,13 +2642,168 @@ class ChemicalDrift(OceanDrift):
 
         if idx is None:
             if arr.ndim == 0:
-                return np.full(self.num_elements_active(), float(arr), dtype=float)
+                return np.full(n, float(arr), dtype=float)
             return arr
 
-        idx = np.asarray(idx, dtype=np.int64).ravel()
         if arr.ndim == 0:
             return np.full(idx.size, float(arr), dtype=float)
         return arr[idx]
+
+
+    def _sanitize_positive_with_fallback(self, values, fallback):
+        """Return finite positive values, replacing non-finite or <=0 with fallback."""
+        values = np.asarray(values, dtype=float)
+        out = values.copy()
+        invalid = (~np.isfinite(out)) | (out <= 0.0)
+        if np.any(invalid):
+            out[invalid] = fallback
+        return out
+
+    def _user_resuspension_threshold_overrides_d50(self):
+        """Return True when USER mode is selected for resuspension critical stress."""
+        mode = self.get_config('chemical:sediment:resuspension_critstress_mode')
+        return mode == 'USER'
+
+    def _d50_map_reader_present(self):
+        """Return True if any active reader advertises a mapped bed-d50 variable."""
+        return 'sea_floor_d50' in getattr(self, '_reader_variables', set())
+
+    def _local_bed_d50(self, idx=None):
+        """
+        Return local bed median grain size d50 [m].
+
+        If USER mode is active, mapped d50 is intentionally ignored and a spatially
+        uniform value from chemical:sediment:d50 is returned. In that mode critical
+        stress is user-prescribed, mapped d50 is forbidden, and the uniform fallback
+        is used wherever a local bed d50 is queried.
+
+        Otherwise the priority is:
+          1) environment.sea_floor_d50 if supplied by a reader
+          2) config fallback chemical:sediment:d50
+        """
+        fallback = float(self.get_config('chemical:sediment:d50'))
+        if idx is None:
+            try:
+                n = self.num_elements_active()
+            except Exception:
+                n = 0
+        else:
+            idx = np.asarray(idx, dtype=np.int64).ravel()
+            n = idx.size
+        if self._user_resuspension_threshold_overrides_d50():
+            return np.full(n, fallback, dtype=float)
+        if not hasattr(self, 'environment'):
+            return np.full(n, fallback, dtype=float)
+        d50 = self._optional_env_array('sea_floor_d50', idx=idx)
+        if d50 is None:
+            return np.full(n, fallback, dtype=float)
+        return self._sanitize_positive_with_fallback(d50, fallback)
+
+    def _local_erodibility_M(self, idx=None):
+        """
+        Return local cohesive erodibility coefficient M [kg m-2 s-1 Pa-1].
+
+        Priority:
+          1) environment.sea_floor_erodibility_M if supplied by a reader
+          2) config fallback chemical:sediment:erodibility_M
+
+        Negative or non-finite mapped values are replaced by the config fallback.
+        Zero is allowed and locally disables cohesive erosion.
+        """
+        fallback = float(self.get_config('chemical:sediment:erodibility_M'))
+        n = self.num_elements_active() if idx is None else np.asarray(idx, dtype=np.int64).ravel().size
+        M = self._optional_env_array('sea_floor_erodibility_M', idx=idx)
+        if M is None:
+            return np.full(n, fallback, dtype=float)
+        out = np.asarray(M, dtype=float).copy()
+        invalid = (~np.isfinite(out)) | (out < 0.0)
+        if np.any(invalid):
+            out[invalid] = fallback
+        return out
+
+    def _local_resuspension_critstress_map(self, idx=None):
+        """
+        Return an optional local mapped resuspension critical shear stress [Pa].
+
+        Priority:
+          1) environment.sea_floor_resuspension_critstress
+
+        Returns None if no mapped critical-stress reader is available.
+        Invalid mapped values (non-finite or <= 0) are left as NaN so the caller can
+        fall back element-wise to the configured / computed threshold.
+        """
+        tau = self._optional_env_array('sea_floor_resuspension_critstress', idx=idx)
+        if tau is None:
+            return None
+        out = np.asarray(tau, dtype=float).copy()
+        invalid = (~np.isfinite(out)) | (out <= 0.0)
+        if np.any(invalid):
+            out[invalid] = np.nan
+        return out
+
+    def _element_or_local_d50(self, idx=None):
+        """
+        Return per-element d50 [m] for bed-physics calculations.
+        Priority:
+          1) self.elements.d50 if > 0
+          2) local mapped bed d50 from reader
+          3) config fallback chemical:sediment:d50
+        """
+        if idx is None:
+            elem = np.asarray(self.elements.d50, dtype=float)
+            n = self.num_elements_active()
+        else:
+            idx = np.asarray(idx, dtype=np.int64).ravel()
+            elem = np.asarray(self.elements.d50[idx], dtype=float)
+            n = idx.size
+        out = np.asarray(elem, dtype=float).copy()
+        invalid = (~np.isfinite(out)) | (out <= 0.0)
+        if np.any(invalid):
+            fallback = self._local_bed_d50(idx=idx)
+            if np.asarray(fallback).ndim == 0:
+                fallback = np.full(n, float(fallback), dtype=float)
+            out[invalid] = np.asarray(fallback, dtype=float)[invalid]
+        return out
+
+    def _assign_d50_to_elements(self, idx, particle_d50=None, sediment_d50=None, dissolved_value=0.0):
+        """Assign per-element d50 values after seeding or species reassignment."""
+        idx = np.asarray(idx, dtype=np.int64).ravel()
+        if idx.size == 0:
+            return
+        specie = np.asarray(self.elements.specie[idx], dtype=int)
+        particle_species = []
+        if hasattr(self, 'num_prev'):
+            particle_species.append(self.num_prev)
+        if hasattr(self, 'num_psrev'):
+            particle_species.append(self.num_psrev)
+        if hasattr(self, 'num_pirrev'):
+            particle_species.append(self.num_pirrev)
+        sediment_species = []
+        if hasattr(self, 'num_srev'):
+            sediment_species.append(self.num_srev)
+        if hasattr(self, 'num_ssrev'):
+            sediment_species.append(self.num_ssrev)
+        if hasattr(self, 'num_sirrev'):
+            sediment_species.append(self.num_sirrev)
+        if hasattr(self, 'num_sburied'):
+            sediment_species.append(self.num_sburied)
+        particle_mask = np.isin(specie, particle_species) if len(particle_species) > 0 else np.zeros(idx.size, dtype=bool)
+        sediment_mask = np.isin(specie, sediment_species) if len(sediment_species) > 0 else np.zeros(idx.size, dtype=bool)
+        other_mask = ~(particle_mask | sediment_mask)
+        if particle_d50 is not None and np.any(particle_mask):
+            pd = np.asarray(particle_d50, dtype=float)
+            if pd.ndim == 0:
+                self.elements.d50[idx[particle_mask]] = float(pd)
+            else:
+                self.elements.d50[idx[particle_mask]] = pd[particle_mask]
+        if sediment_d50 is not None and np.any(sediment_mask):
+            sd = np.asarray(sediment_d50, dtype=float)
+            if sd.ndim == 0:
+                self.elements.d50[idx[sediment_mask]] = float(sd)
+            else:
+                self.elements.d50[idx[sediment_mask]] = sd[sediment_mask]
+        if np.any(other_mask):
+            self.elements.d50[idx[other_mask]] = float(dissolved_value)
 
     def _wave_to_direction_array(self, idx = None):
         """
@@ -2689,7 +2967,9 @@ class ChemicalDrift(OceanDrift):
                sediment -> sediment    : unchanged
         4) Dissolved / DOM-like species do not receive a new f_OC
 
-        Deposition/resuspension preserve carrier f_OC.
+        Deposition/resuspension preserve carrier f_OC. In the d50 workflow,
+        deposition and resuspension also preserve diameter and d50; only direct
+        sediment association rewrites them to local bed d50.
         """
         if sp_in is None or sp_out is None:
             return
@@ -3303,6 +3583,7 @@ class ChemicalDrift(OceanDrift):
 
         # Update Chemical properties after transformations
         self.update_chemical_diameter(specie_in, specie_out)
+        self.update_chemical_d50(specie_in, specie_out)
         self.update_chemical_fOC(specie_in, specie_out)
         self.sorption_to_sediments(specie_in, specie_out)
         self.desorption_from_sediments(specie_in, specie_out)
@@ -3408,20 +3689,36 @@ class ChemicalDrift(OceanDrift):
     def update_chemical_diameter(self, sp_in=None, sp_out=None):
         """
         Update particle diameter when an element changes species.
-        1) Particle-family species:
-               diameter ~ lognormal(median=particle_diameter, sigma=sigma_part_ln)
-        2) Sediment-family species:
-               diameter ~ lognormal(median=particle_diameter, sigma=sigma_part_ln)
-        3) DOC-like carrier species:
+
+        Carrier-diameter behavior
+        -------------------------
+        1) Seeded elements start with d50 = diameter.
+        2) Suspended-particle phase:
+               terminal velocity uses diameter.
+        3) Particle -> sediment transitions interpreted as deposition:
+               keep the previous diameter unchanged.
+        4) Direct non-particle -> sediment association:
+               diameter <- local bed d50 (mapped sea_floor_d50 if available,
+               otherwise config chemical:sediment:d50)
+        5) Sediment -> particle transitions interpreted as resuspension:
+               keep the previous diameter unchanged.
+        6) Entering DOC-like carrier species:
                diameter ~ lognormal(median=doc_particle_diameter, sigma=sigma_doc_ln)
-        4) Dissolved / colloid species:
-               diameter = dissolved_diameter
+        7) Entering dissolved / colloid species:
+               diameter = dissolved_diameter.
 
-        If Humic colloid -> Particle reversible,
-        the DOC-derived carrier size is preserved by sampling from the DOC-size
-        distribution rather than the particle-size distribution.
+        Note
+        ----
+        Diameter controls terminal velocity, while per-element d50 controls any
+        d50-based bed-threshold calculation. Deposition and resuspension preserve the
+        current diameter. Only direct bed-associated sorption / direct sediment
+        association rewrites diameter to the local sediment d50. In USER mode,
+        mapped sea_floor_d50 is rejected and chemical:sediment:d50 must equal
+        chemical:particle_diameter, so these sediment-association updates remain
+        spatially uniform and consistent.
 
-        Updated:
+        Updated families
+        ----------------
         Particle family:            prev, psrev, pirrev
         Sediment family:            srev, ssrev, sirrev, sburied
         Dissolved family:           lmm, lmmanion, lmmcation, colloid
@@ -3430,6 +3727,10 @@ class ChemicalDrift(OceanDrift):
         if sp_in is None or sp_out is None:
             return
 
+        sp_in = np.asarray(sp_in, dtype=int)
+        sp_out = np.asarray(sp_out, dtype=int)
+        idx_all = np.arange(self.num_elements_active(), dtype=np.int64)
+
         dia_part = float(self.get_config('chemical:particle_diameter'))
         dia_doc = float(self.get_config('chemical:doc_particle_diameter'))
         dia_diss = float(self.get_config('chemical:dissolved_diameter'))
@@ -3437,84 +3738,193 @@ class ChemicalDrift(OceanDrift):
         sigma_part_ln = float(self.get_config('chemical:particle_diameter_uncertainty'))
         sigma_doc_ln = float(self.get_config('chemical:doc_particle_diameter_uncertainty'))
 
-        def _assign_lognormal(mask, median_diameter, sigma_ln, label):
-            nmask = int(np.sum(mask))
+        particle_species = []
+        if hasattr(self, 'num_prev'):
+            particle_species.append(self.num_prev)
+        if hasattr(self, 'num_psrev'):
+            particle_species.append(self.num_psrev)
+        if hasattr(self, 'num_pirrev'):
+            particle_species.append(self.num_pirrev)
+
+        sediment_species = []
+        if hasattr(self, 'num_srev'):
+            sediment_species.append(self.num_srev)
+        if hasattr(self, 'num_ssrev'):
+            sediment_species.append(self.num_ssrev)
+        if hasattr(self, 'num_sirrev'):
+            sediment_species.append(self.num_sirrev)
+        if hasattr(self, 'num_sburied'):
+            sediment_species.append(self.num_sburied)
+
+        dissolved_species = []
+        if hasattr(self, 'num_lmm'):
+            dissolved_species.append(self.num_lmm)
+        if hasattr(self, 'num_lmmanion'):
+            dissolved_species.append(self.num_lmmanion)
+        if hasattr(self, 'num_lmmcation'):
+            dissolved_species.append(self.num_lmmcation)
+        if hasattr(self, 'num_col'):
+            dissolved_species.append(self.num_col)
+
+        doclike_species = []
+        if hasattr(self, 'num_humcol'):
+            doclike_species.append(self.num_humcol)
+        if hasattr(self, 'num_polymer'):
+            doclike_species.append(self.num_polymer)
+
+        def _assign_lognormal(idx, median_diameter, sigma_ln, label):
+            idx = np.asarray(idx, dtype=np.int64).ravel()
+            nmask = idx.size
             if nmask > 0:
-                self.elements.diameter[mask] = self._sample_lognormal_diameter(
+                self.elements.diameter[idx] = self._sample_lognormal_diameter(
                     median_diameter=median_diameter,
                     sigma_ln=sigma_ln,
                     n=nmask)
                 logger.debug('Updated %s diameter for %s elements', label, nmask)
 
-        def _assign_constant(mask, value, label):
-            nmask = int(np.sum(mask))
-            if nmask > 0:
-                self.elements.diameter[mask] = value
-                logger.debug('Updated %s diameter for %s elements', label, nmask)
-
-        # Particle-bound species
-        if hasattr(self, 'num_prev'):
-            mask = (sp_out == self.num_prev) & (sp_in != self.num_prev)
-            # Preserve diameter of DOC aggregates
-            if self.get_config('chemical:species:Humic_colloid') and hasattr(self, 'num_humcol'):
-                mask_from_humic = mask & (sp_in == self.num_humcol)
-                _assign_lognormal(mask_from_humic, dia_doc, sigma_doc_ln, 'particle-from-humic')
-
-                mask_other = mask & (sp_in != self.num_humcol)
-                _assign_lognormal(mask_other, dia_part, sigma_part_ln, 'particle')
+        def _assign_constant_or_array(idx, values, label):
+            idx = np.asarray(idx, dtype=np.int64).ravel()
+            nmask = idx.size
+            if nmask == 0:
+                return
+            arr = np.asarray(values, dtype=float)
+            if arr.ndim == 0:
+                self.elements.diameter[idx] = float(arr)
             else:
-                _assign_lognormal(mask, dia_part, sigma_part_ln, 'particle')
+                if arr.size != nmask:
+                    raise ValueError(f"{label} diameter array has size {arr.size}, expected {nmask}")
+                self.elements.diameter[idx] = arr
+            logger.debug('Updated %s diameter for %s elements', label, nmask)
 
+        was_particle = np.isin(sp_in, particle_species) if particle_species else np.zeros_like(sp_in, dtype=bool)
+        is_particle = np.isin(sp_out, particle_species) if particle_species else np.zeros_like(sp_out, dtype=bool)
+        was_sediment = np.isin(sp_in, sediment_species) if sediment_species else np.zeros_like(sp_in, dtype=bool)
+        is_sediment = np.isin(sp_out, sediment_species) if sediment_species else np.zeros_like(sp_out, dtype=bool)
+        was_dissolved = np.isin(sp_in, dissolved_species) if dissolved_species else np.zeros_like(sp_in, dtype=bool)
+        is_dissolved = np.isin(sp_out, dissolved_species) if dissolved_species else np.zeros_like(sp_out, dtype=bool)
+        was_doclike = np.isin(sp_in, doclike_species) if doclike_species else np.zeros_like(sp_in, dtype=bool)
+        is_doclike = np.isin(sp_out, doclike_species) if doclike_species else np.zeros_like(sp_out, dtype=bool)
+
+        entered_particle = idx_all[is_particle & (~was_particle)]
+        if entered_particle.size > 0:
+            resuspended = entered_particle[was_sediment[entered_particle]]
+            if resuspended.size > 0:
+                logger.debug('Preserved diameter for %s resuspended particle elements', resuspended.size)
+
+            from_other = entered_particle[~was_sediment[entered_particle]]
+            if from_other.size > 0:
+                from_humic = np.array([], dtype=np.int64)
+                if hasattr(self, 'num_humcol'):
+                    from_humic = from_other[sp_in[from_other] == self.num_humcol]
+                other = from_other if from_humic.size == 0 else from_other[sp_in[from_other] != self.num_humcol]
+                if from_humic.size > 0:
+                    _assign_lognormal(from_humic, dia_doc, sigma_doc_ln, 'particle-from-humic')
+                if other.size > 0:
+                    _assign_lognormal(other, dia_part, sigma_part_ln, 'particle')
+
+        entered_sediment = idx_all[is_sediment & (~was_sediment)]
+        if entered_sediment.size > 0:
+            deposited = entered_sediment[was_particle[entered_sediment]]
+            if deposited.size > 0:
+                logger.debug('Preserved diameter for %s deposited sediment elements', deposited.size)
+
+            direct_assoc = entered_sediment[~was_particle[entered_sediment]]
+            if direct_assoc.size > 0:
+                local_bed_d50 = self._local_bed_d50(idx=direct_assoc)
+                _assign_constant_or_array(direct_assoc, local_bed_d50, 'sediment-local-bed-d50')
+
+        entered_dissolved = idx_all[is_dissolved & (~was_dissolved)]
+        if entered_dissolved.size > 0:
+            _assign_constant_or_array(entered_dissolved, dia_diss, 'dissolved')
+
+        entered_doclike = idx_all[is_doclike & (~was_doclike)]
+        if entered_doclike.size > 0:
+            humic = np.array([], dtype=np.int64)
+            polymer = np.array([], dtype=np.int64)
+            if hasattr(self, 'num_humcol'):
+                humic = entered_doclike[sp_out[entered_doclike] == self.num_humcol]
+            if hasattr(self, 'num_polymer'):
+                polymer = entered_doclike[sp_out[entered_doclike] == self.num_polymer]
+            if humic.size > 0:
+                _assign_lognormal(humic, dia_doc, sigma_doc_ln, 'humic colloid')
+            if polymer.size > 0:
+                _assign_lognormal(polymer, dia_doc, sigma_doc_ln, 'polymer')
+
+    def update_chemical_d50(self, sp_in=None, sp_out=None):
+        """Update per-element d50 when an element changes carrier family."""
+        if sp_in is None or sp_out is None:
+            return
+        sp_in = np.asarray(sp_in, dtype=int)
+        sp_out = np.asarray(sp_out, dtype=int)
+        idx_all = np.arange(self.num_elements_active(), dtype=np.int64)
+
+        particle_species = []
+        if hasattr(self, 'num_prev'):
+            particle_species.append(self.num_prev)
         if hasattr(self, 'num_psrev'):
-            mask = (sp_out == self.num_psrev) & (sp_in != self.num_psrev)
-            _assign_lognormal(mask, dia_part, sigma_part_ln, 'slowly reversible particle')
-
+            particle_species.append(self.num_psrev)
         if hasattr(self, 'num_pirrev'):
-            mask = (sp_out == self.num_pirrev) & (sp_in != self.num_pirrev)
-            _assign_lognormal(mask, dia_part, sigma_part_ln, 'irreversible particle')
+            particle_species.append(self.num_pirrev)
 
-        # Sediment-bound species
+        sediment_species = []
         if hasattr(self, 'num_srev'):
-            mask = (sp_out == self.num_srev) & (sp_in != self.num_srev)
-            _assign_lognormal(mask, dia_part, sigma_part_ln, 'sediment reversible')
-
+            sediment_species.append(self.num_srev)
         if hasattr(self, 'num_ssrev'):
-            mask = (sp_out == self.num_ssrev) & (sp_in != self.num_ssrev)
-            _assign_lognormal(mask, dia_part, sigma_part_ln, 'sediment slowly reversible')
-
+            sediment_species.append(self.num_ssrev)
         if hasattr(self, 'num_sirrev'):
-            mask = (sp_out == self.num_sirrev) & (sp_in != self.num_sirrev)
-            _assign_lognormal(mask, dia_part, sigma_part_ln, 'sediment irreversible')
-
+            sediment_species.append(self.num_sirrev)
         if hasattr(self, 'num_sburied'):
-            mask = (sp_out == self.num_sburied) & (sp_in != self.num_sburied)
-            _assign_lognormal(mask, dia_part, sigma_part_ln, 'sediment buried')
+            sediment_species.append(self.num_sburied)
 
-        # Dissolved species
-        if self.get_config('chemical:species:LMM') and hasattr(self, 'num_lmm'):
-            mask = (sp_out == self.num_lmm) & (sp_in != self.num_lmm)
-            _assign_constant(mask, dia_diss, 'dissolved')
+        dissolved_like_species = []
+        if hasattr(self, 'num_lmm'):
+            dissolved_like_species.append(self.num_lmm)
+        if hasattr(self, 'num_lmmanion'):
+            dissolved_like_species.append(self.num_lmmanion)
+        if hasattr(self, 'num_lmmcation'):
+            dissolved_like_species.append(self.num_lmmcation)
+        if hasattr(self, 'num_col'):
+            dissolved_like_species.append(self.num_col)
+        if hasattr(self, 'num_humcol'):
+            dissolved_like_species.append(self.num_humcol)
+        if hasattr(self, 'num_polymer'):
+            dissolved_like_species.append(self.num_polymer)
 
-        if self.get_config('chemical:species:LMManion') and hasattr(self, 'num_lmmanion'):
-            mask = (sp_out == self.num_lmmanion) & (sp_in != self.num_lmmanion)
-            _assign_constant(mask, dia_diss, 'dissolved anion')
+        was_particle = np.isin(sp_in, particle_species) if particle_species else np.zeros_like(sp_in, dtype=bool)
+        is_particle = np.isin(sp_out, particle_species) if particle_species else np.zeros_like(sp_out, dtype=bool)
+        was_sediment = np.isin(sp_in, sediment_species) if sediment_species else np.zeros_like(sp_in, dtype=bool)
+        is_sediment = np.isin(sp_out, sediment_species) if sediment_species else np.zeros_like(sp_out, dtype=bool)
+        was_dissolved = np.isin(sp_in, dissolved_like_species) if dissolved_like_species else np.zeros_like(sp_in, dtype=bool)
+        is_dissolved = np.isin(sp_out, dissolved_like_species) if dissolved_like_species else np.zeros_like(sp_out, dtype=bool)
 
-        if self.get_config('chemical:species:LMMcation') and hasattr(self, 'num_lmmcation'):
-            mask = (sp_out == self.num_lmmcation) & (sp_in != self.num_lmmcation)
-            _assign_constant(mask, dia_diss, 'dissolved cation')
+        entered_particle = idx_all[is_particle & (~was_particle)]
+        if entered_particle.size > 0:
+            # Resuspended particles preserve the bed-associated d50.
+            from_other = entered_particle[~was_sediment[entered_particle]]
+            if from_other.size > 0:
+                self._assign_d50_to_elements(
+                    from_other,
+                    particle_d50=float(self.get_config('chemical:particle_diameter')),
+                    dissolved_value=0.0,
+                )
 
-        # Colloids / DOM-like species
-        if self.get_config('chemical:species:Colloid') and hasattr(self, 'num_col'):
-            mask = (sp_out == self.num_col) & (sp_in != self.num_col)
-            _assign_constant(mask, dia_diss, 'colloid')
+        entered_sediment = idx_all[is_sediment & (~was_sediment)]
+        if entered_sediment.size > 0:
+            deposited = entered_sediment[was_particle[entered_sediment]]
+            if deposited.size > 0:
+                logger.debug('Preserved d50 for %s deposited sediment elements', deposited.size)
 
-        if self.get_config('chemical:species:Humic_colloid') and hasattr(self, 'num_humcol'):
-            mask = (sp_out == self.num_humcol) & (sp_in != self.num_humcol)
-            _assign_lognormal(mask, dia_doc, sigma_doc_ln, 'humic colloid')
+            direct_assoc = entered_sediment[~was_particle[entered_sediment]]
+            if direct_assoc.size > 0:
+                self._assign_d50_to_elements(
+                    direct_assoc,
+                    sediment_d50=self._local_bed_d50(idx=direct_assoc),
+                    dissolved_value=0.0,
+                )
 
-        if self.get_config('chemical:species:Polymer') and hasattr(self, 'num_polymer'):
-            mask = (sp_out == self.num_polymer) & (sp_in != self.num_polymer)
-            _assign_lognormal(mask, dia_doc, sigma_doc_ln, 'polymer')
+        entered_dissolved = idx_all[is_dissolved & (~was_dissolved)]
+        if entered_dissolved.size > 0:
+            self.elements.d50[entered_dissolved] = 0.0
 
     def _z_array(self, idx=None):
         """
@@ -3660,35 +4070,30 @@ class ChemicalDrift(OceanDrift):
         tau = np.where(np.isfinite(tau), tau, 0.0)
         return np.maximum(tau, 0.0)
 
-    def _resuspension_branch(self):
+    def _resuspension_branch(self, idx=None):
         """
         Return the resuspension branch used by the timestep-dependent erosion model.
-        1) If branch is explicitly configured as:
-               'NONCOHESIVE' or 'COHESIVE'
-           use it directly
-        2) If branch == 'AUTO' and d50 is available:
-               classify sediment from d50
-               sand/gravel -> NONCOHESIVE
-               clay/silt   -> COHESIVE
-        3) If AUTO and no usable d50:
-               erodibility_M > 0 -> COHESIVE
-               otherwise         -> NONCOHESIVE
+        Explicit NONCOHESIVE/COHESIVE settings are returned directly.
+        For AUTO, d50 >= 0.0625 mm is treated as NONCOHESIVE, finer material as COHESIVE.
+        If no usable d50 exists, erodibility_M > 0 implies COHESIVE, else NONCOHESIVE.
+        Returns either a scalar branch string or an array of branch strings.
         """
         branch_cfg = self.get_config('chemical:sediment:resuspension_critstress_branch')
         if branch_cfg in ('NONCOHESIVE', 'COHESIVE'):
             return branch_cfg
-
-        d50_m = float(self.get_config('chemical:sediment:d50'))
-        if d50_m > 0.0:
-            grain_class = self.classify_sediment(d50_m * 1e3)
-            if grain_class in {'sand', 'gravel'}:
-                return 'NONCOHESIVE'
-            return 'COHESIVE'
-
-        if float(self.get_config('chemical:sediment:erodibility_M')) > 0.0:
-            return 'COHESIVE'
-
-        return 'NONCOHESIVE'
+        d50_m = self._element_or_local_d50(idx=idx)
+        d50_m = np.asarray(d50_m, dtype=float)
+        branch = np.full(d50_m.shape, '', dtype='<U12')
+        valid = np.isfinite(d50_m) & (d50_m > 0.0)
+        if np.any(valid):
+            d50_mm = d50_m[valid] * 1e3
+            branch[valid] = np.where(d50_mm >= 0.0625, 'NONCOHESIVE', 'COHESIVE')
+        if np.any(~valid):
+            M_loc = np.asarray(self._local_erodibility_M(idx=idx), dtype=float)
+            if M_loc.ndim == 0:
+                M_loc = np.full(d50_m.shape, float(M_loc), dtype=float)
+            branch[~valid] = np.where(M_loc[~valid] > 0.0, 'COHESIVE', 'NONCOHESIVE')
+        return branch if branch.ndim > 0 else str(branch)
 
     def classify_sediment(self, d50_mm: float) -> str:
         """
@@ -3843,54 +4248,60 @@ class ChemicalDrift(OceanDrift):
                     dtype=float)
 
         elif mode == 'FROM_D50':
-            d50_m = float(self.get_config('chemical:sediment:d50'))
-            if d50_m <= 0.0:
-                raise ValueError('chemical:sediment:d50 must be > 0 when '
-                                 'resuspension_critstress_mode == FROM_D50')
-
-            branch_cfg = self.get_config('chemical:sediment:resuspension_critstress_branch')
-            if branch_cfg == 'AUTO':
-                grain_class = self.classify_sediment(d50_m * 1e3)
-                branch = 'NONCOHESIVE' if grain_class in {'sand', 'gravel'} else 'COHESIVE'
+            d50_m = self._element_or_local_d50(idx=idx)
+            d50_m = np.asarray(d50_m, dtype=float)
+            if np.any(d50_m <= 0.0):
+                raise ValueError('A positive element/local d50 is required when resuspension_critstress_mode == FROM_D50')
+            branch = self._resuspension_branch(idx=idx)
+            if isinstance(branch, str):
+                branch_arr = np.full(n, branch, dtype='<U12')
             else:
-                branch = branch_cfg
-
-            if branch == 'NONCOHESIVE':
+                branch_arr = np.asarray(branch, dtype='<U12')
+                if branch_arr.size != n:
+                    raise ValueError('Local resuspension branch array has wrong size')
+            tau_cr = np.zeros(n, dtype=float)
+            rho_s = float(self.get_config('chemical:sediment:critstress_rho_s'))
+            nu = float(self.get_config('chemical:sediment:critstress_nu'))
+            T = self._env_array('sea_water_temperature', 10.0, idx=idx)
+            S = self._env_array('sea_water_salinity', 34.0, idx=idx)
+            rho_w = self.sea_water_density(T=T, S=S)
+            mask_non = branch_arr == 'NONCOHESIVE'
+            if np.any(mask_non):
                 method = self.get_config('chemical:sediment:resuspension_critstress_method')
-                rho_s = float(self.get_config('chemical:sediment:critstress_rho_s'))
-                nu = float(self.get_config('chemical:sediment:critstress_nu'))
-                T = self._env_array('sea_water_temperature', 10.0, idx=idx)
-                S = self._env_array('sea_water_salinity', 34.0, idx=idx)
-                rho_w = self.sea_water_density(T=T, S=S)
-
+                d50_non = d50_m[mask_non]
+                rho_w_non = rho_w[mask_non]
                 if method == 'soulsby_whitehouse':
-                    theta = self.theta_cr_soulsby_whitehouse(
-                        d50_m, rho_s=rho_s, rho_w=rho_w, nu=nu, g=9.81)
+                    theta = self.theta_cr_soulsby_whitehouse(d50_non, rho_s=rho_s, rho_w=rho_w_non, nu=nu, g=9.81)
                 elif method == 'van_rijn':
-                    theta = self.theta_cr_van_rijn(
-                        d50_m, rho_s=rho_s, rho_w=rho_w, nu=nu, g=9.81)
+                    theta = self.theta_cr_van_rijn(d50_non, rho_s=rho_s, rho_w=rho_w_non, nu=nu, g=9.81)
                 elif method in {'laursen', 'mpm', 'wu'}:
-                    theta = np.full(n, self.theta_cr_constant(method), dtype=float)
+                    theta = np.full(np.sum(mask_non), self.theta_cr_constant(method), dtype=float)
                 else:
                     raise ValueError(f'Unknown noncohesive method: {method!r}')
-
-                tau_cr = np.maximum(theta * (rho_s - rho_w) * 9.81 * d50_m, 0.0)
-
-            elif branch == 'COHESIVE':
+                tau_cr[mask_non] = np.maximum(theta * (rho_s - rho_w_non) * 9.81 * d50_non, 0.0)
+            mask_coh = branch_arr == 'COHESIVE'
+            if np.any(mask_coh):
                 rho_d = float(self.get_config('chemical:sediment:critstress_owen_rho_d'))
                 a = float(self.get_config('chemical:sediment:critstress_owen_a'))
                 b = float(self.get_config('chemical:sediment:critstress_owen_b'))
                 if rho_d <= 0 or a <= 0 or b <= 0:
-                    raise ValueError('Cohesive resuspension_critstress requires positive '
-                        'critstress_owen_rho_d, critstress_owen_a, and critstress_owen_b')
+                    raise ValueError('Cohesive resuspension_critstress requires positive critstress_owen_rho_d, critstress_owen_a, and critstress_owen_b')
                 tau0 = self.tau_ce_owen(rho_d=rho_d, a=a, b=b)
-                tau_cr = np.full(n, tau0, dtype=float)
-
-            else:
-                raise ValueError(f'Unknown resuspension_critstress_branch: {branch!r}')
+                tau_cr[mask_coh] = tau0
 
         else:
             raise ValueError(f'Unknown resuspension_critstress_mode: {mode!r}')
+
+        tau_cr_map = self._local_resuspension_critstress_map(idx=idx)
+        if tau_cr_map is not None:
+            tau_cr_map = np.asarray(tau_cr_map, dtype=float)
+            if tau_cr_map.ndim == 0:
+                tau_cr_map = np.full(n, float(tau_cr_map), dtype=float)
+            elif tau_cr_map.size != n:
+                raise ValueError('Local resuspension critical-stress map has wrong size')
+            valid_map = np.isfinite(tau_cr_map) & (tau_cr_map > 0.0)
+            if np.any(valid_map):
+                tau_cr = np.where(valid_map, tau_cr_map, tau_cr)
 
         if self.get_config('chemical:sediment:use_critstress_heterogeneity'):
             if idx is None:
@@ -4027,34 +4438,46 @@ class ChemicalDrift(OceanDrift):
             dt = self.time_step.total_seconds()
         dt = float(dt)
 
-        branch = self._resuspension_branch()
+        branch = self._resuspension_branch(idx=idx)
+        if isinstance(branch, str):
+            branch_arr = np.full(tau.shape, branch, dtype='<U12')
+        else:
+            branch_arr = np.asarray(branch, dtype='<U12')
+            if branch_arr.shape != tau.shape:
+                branch_arr = np.asarray(branch_arr).reshape(tau.shape)
 
-        if branch == 'COHESIVE':
-            M = float(self.get_config('chemical:sediment:erodibility_M'))  # kg m-2 s-1 Pa-1
+        hazard = np.zeros_like(tau, dtype=float)
 
-            if M <= 0.0:
-                return np.zeros_like(tau, dtype=float)
-
+        mask_coh = branch_arr == 'COHESIVE'
+        if np.any(mask_coh):
+            M = np.asarray(self._local_erodibility_M(idx=idx), dtype=float)
+            if M.ndim == 0:
+                M = np.full(tau.shape, float(M), dtype=float)
             m_erodible = self._local_erodible_mass_per_area(idx=idx)
+            m_erodible = np.asarray(m_erodible, dtype=float)
+            if m_erodible.ndim == 0:
+                m_erodible = np.full(tau.shape, float(m_erodible), dtype=float)
+            erosion_flux = np.maximum(M[mask_coh], 0.0) * np.maximum(tau[mask_coh] - tau_cr_res[mask_coh], 0.0)
+            hazard[mask_coh] = np.where(
+                m_erodible[mask_coh] > 0.0,
+                erosion_flux / np.maximum(m_erodible[mask_coh], 1e-30),
+                0.0,
+            )
 
-            if np.all(m_erodible <= 0.0):
-                return np.zeros_like(tau, dtype=float)
-
-            erosion_flux = M * np.maximum(tau - tau_cr_res, 0.0)   # kg m-2 s-1
-            hazard = erosion_flux / np.maximum(m_erodible, 1e-30)  # 1/s
-
-        elif branch == 'NONCOHESIVE':
+        mask_non = branch_arr == 'NONCOHESIVE'
+        if np.any(mask_non):
             T_pickup = float(self.get_config('chemical:sediment:noncohesive_resuspension_timescale'))
             expo = float(self.get_config('chemical:sediment:noncohesive_excess_shear_exponent'))
 
             T_pickup = max(T_pickup, 1e-12)
             expo = max(expo, 1e-12)
 
-            excess = np.maximum(tau / np.maximum(tau_cr_res, 1e-30) - 1.0, 0.0)
-            hazard = (excess ** expo) / T_pickup                   # 1/s
+            excess = np.maximum(tau[mask_non] / np.maximum(tau_cr_res[mask_non], 1e-30) - 1.0, 0.0)
+            hazard[mask_non] = (excess ** expo) / T_pickup                   # 1/s
 
-        else:
-            raise ValueError(f'Unknown resuspension branch: {branch!r}')
+        unknown = ~(mask_coh | mask_non)
+        if np.any(unknown):
+            raise ValueError(f'Unknown resuspension branch values: {np.unique(branch_arr[unknown]).tolist()}')
 
         p_res = 1.0 - np.exp(-hazard * dt)
         return np.clip(p_res, 0.0, 1.0)
@@ -4248,7 +4671,7 @@ class ChemicalDrift(OceanDrift):
         n_cfg = float(self.get_config('chemical:sediment:manning_n'))
         C_cfg = float(self.get_config('chemical:sediment:chezy_C'))
         ks_cfg = float(self.get_config('chemical:sediment:nikuradse_ks'))
-        d50_cfg = float(self.get_config('chemical:sediment:d50'))
+        d50_local = self._local_bed_d50(idx=idx)
         cd_min = float(self.get_config('chemical:sediment:cd_min'))
         cd_max = float(self.get_config('chemical:sediment:cd_max'))
 
@@ -4300,7 +4723,7 @@ class ChemicalDrift(OceanDrift):
                 z_ref = 0.5 * dz_bot
 
                 if Param_mode == 'GRAIN_D50':
-                    z0 = np.full(n, max(d50_cfg / 12.0, eps), dtype=float)
+                    z0 = np.maximum(np.asarray(d50_local, dtype=float) / 12.0, eps)
                 else:
                     z0 = self._bottom_roughness_length_array(idx=idx)
 
@@ -4390,7 +4813,7 @@ class ChemicalDrift(OceanDrift):
                 if Param_mode == 'WHITE_COLEBROOK':
                     z0_wave = np.full(n, max(ks_cfg / 30.0, eps), dtype=float)
                 elif Param_mode == 'GRAIN_D50':
-                    z0_wave = np.full(n, max(d50_cfg / 12.0, eps), dtype=float)
+                    z0_wave = np.maximum(np.asarray(d50_local, dtype=float) / 12.0, eps)
                 else:
                     z0_wave = self._bottom_roughness_length_array(idx=idx)
 
@@ -4442,7 +4865,7 @@ class ChemicalDrift(OceanDrift):
             if tau_wave is not None:
                 need_wave_dir = tau_wave > eps
                 if np.any(need_wave_dir & (~has_wave_dir)):
-                raise ValueError(
+                    raise ValueError(
                     "SOULSBY_CLARKE requires a usable wave-direction field for all "
                     "elements where wave stress is used. Supported inputs are "
                     "sea_surface_wave_to_direction or sea_surface_wave_from_direction "
@@ -4947,6 +5370,7 @@ class ChemicalDrift(OceanDrift):
         self.elements.moving = moving_new
         self.elements.critstress_factor = crit_new
         self.update_chemical_diameter(specie0, specie_new)
+        self.update_chemical_d50(specie0, specie_new)
 
     def degradation(self):
         """
@@ -5544,11 +5968,150 @@ class ChemicalDrift(OceanDrift):
             (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized) / 500.0,
             reason='removed')
 
+    def _apply_mapped_bed_d50_to_new_elements(self):
+        """
+        Seeding can occur before self.environment exists, so sediment elements are
+        initially assigned the configured fallback d50 in seed_elements(). This helper
+        replaces that fallback with the local mapped/configured bed d50 as soon as
+        readers/environment are available.
+
+        The update is applied only once, using:
+            self.elements.age_seconds <= 0.0
+        as the one-shot condition for "first update after seeding".
+
+        Only sediment species are updated:
+          - Sediment reversible
+          - Sediment slowly reversible
+          - Sediment buried
+          - Sediment irreversible
+        Both:
+          - self.elements.d50
+          - self.elements.diameter
+        are updated to the same value, explicitly avoiding any mismatch between
+        particle diameter and d50 for sediment elements.
+        Values are taken from self._local_bed_d50(idx=...), which already handles:
+          - mapped bed d50 when available at runtime
+          - configured fallback chemical:sediment:d50
+          - USER-mode override behavior, if applicable
+        """
+        # Environment/readers may not exist during seeding; this helper is runtime-only
+        if not hasattr(self, 'environment'):
+            return
+        # One-shot trigger: only newly active elements at their first runtime update
+        ages = np.asarray(self.elements.age_seconds, dtype=float)
+        dt_s = float(abs(self.time_step.total_seconds()))
+
+        logger.debug(
+            "self.elements.age_seconds: mean [%s] min [%s] max [%s]",
+            ages.mean(), ages.min(), ages.max())
+        eps = 1e-9
+        newmask = np.asarray(ages <= dt_s + eps, dtype=bool)
+        if not np.any(newmask):
+            return
+        name_to_idx = {name: i for i, name in enumerate(self.name_species)}
+        sediment_names = {
+            "Sediment reversible",
+            "Sediment slowly reversible",
+            "Sediment buried",
+            "Sediment irreversible",
+        }
+        sediment_idx = {name_to_idx[n] for n in sediment_names if n in name_to_idx}
+        if not sediment_idx:
+            return
+        sedmask = newmask & np.isin(self.elements.specie, list(sediment_idx))
+        if not np.any(sedmask):
+            return
+        ii = np.flatnonzero(sedmask)
+        # _local_bed_d50 already handles map/config fallback and USER-mode logic.
+        d50_local = np.asarray(self._local_bed_d50(idx=ii), dtype=float).ravel()
+        d50_local = np.maximum(d50_local, 0.0)
+        # Keep sediment d50 and diameter explicitly identical.
+        self.elements.d50[ii] = d50_local
+        self.elements.diameter[ii] = d50_local
+
+    def _apply_mapped_fOC_to_new_elements(self):
+        """
+        Seeding can occur before self.environment exists, so elements are initially
+        assigned fallback f_OC values in seed_elements() using:
+          - chemical:transformations:fOC_SPM   for particle-family species
+          - chemical:transformations:fOC_sed   for sediment-family species
+
+        This helper replaces those fallback values with local mapped/configured values
+        as soon as readers/environment are available.
+
+        The update is applied only once, using:
+            age_seconds <= one time step
+        as the one-shot condition for "first update after seeding".
+
+        Particle family species:
+          - Particle reversible
+          - Particle slowly reversible
+          - Particle irreversible
+        Sediment family species:
+          - Sediment reversible
+          - Sediment slowly reversible
+          - Sediment buried
+          - Sediment irreversible
+
+        Values are taken from:
+          - self._local_particle_fOC(idx=...)
+          - self._local_sediment_fOC(idx=...)
+        These helpers already handle:
+          - mapped f_OC when available at runtime
+          - configured fallbacks when maps are absent/invalid
+        """
+        import numpy as np
+
+        # Environment/readers may not exist during seeding; this helper is runtime-only.
+        if not hasattr(self, 'environment'):
+            return
+        ages = np.asarray(self.elements.age_seconds, dtype=float)
+        dt_s = float(abs(self.time_step.total_seconds()))
+        eps = 1e-9
+
+        logger.debug(
+            "self.elements.age_seconds: mean [%s] min [%s] max [%s]",
+            ages.mean(), ages.min(), ages.max())
+        # One-shot trigger: elements at their first runtime update
+        newmask = np.asarray(ages <= dt_s + eps, dtype=bool)
+        if not np.any(newmask):
+            return
+
+        name_to_idx = {name: i for i, name in enumerate(self.name_species)}
+        particle_names = {
+            "Particle reversible",
+            "Particle slowly reversible",
+            "Particle irreversible",
+        }
+        sediment_names = {
+            "Sediment reversible",
+            "Sediment slowly reversible",
+            "Sediment buried",
+            "Sediment irreversible",
+        }
+        particle_idx = {name_to_idx[n] for n in particle_names if n in name_to_idx}
+        sediment_idx = {name_to_idx[n] for n in sediment_names if n in name_to_idx}
+
+        if particle_idx:
+            partmask = newmask & np.isin(self.elements.specie, list(particle_idx))
+            if np.any(partmask):
+                ii = np.flatnonzero(partmask)
+                self.elements.f_OC[ii] = self._local_particle_fOC(ii)
+        if sediment_idx:
+            sedmask = newmask & np.isin(self.elements.specie, list(sediment_idx))
+            if np.any(sedmask):
+                ii = np.flatnonzero(sedmask)
+                self.elements.f_OC[ii] = self._local_sediment_fOC(ii)
+
     def update(self):
         """Update positions and properties of Chemical particles."""
-
         # Workaround due to conversion of datatype
         self.elements.specie = self.elements.specie.astype(np.int32)
+
+        # First-step remap of sediment d50 from reader/configured local bed values
+        self._apply_mapped_bed_d50_to_new_elements()
+        # First-step remap of carrier f_OC from reader/configured local values
+        self._apply_mapped_fOC_to_new_elements()
 
         # Degradation and Volatilization
         if self.get_config('chemical:transfer_setup')=='organics' or self.get_config('chemical:transfer_setup')=='custom':
@@ -10652,8 +11215,6 @@ class ChemicalDrift(OceanDrift):
             emission_placement="upper_1m",
             emission_seafloor_eps=None,
             active_sediment_layer_thickness_data=None,
-            f_OC_particle_data=None,
-            f_OC_sediment_data=None,
     ):
         """
         Seed elements based on a dataarray with water/sediment concentration or direct emissions to water.
@@ -10673,16 +11234,6 @@ class ChemicalDrift(OceanDrift):
                               Required for "water_conc", "sed_conc", and "emission_depth".
             * latitude        (latitude) float32
             * longitude       (longitude) float32
-        f_OC_particle_data:   dataarray with local f_OC for water-column seeding.
-                              If not given, seed_elements() will build default f_OC internally.
-            * latitude        (latitude) float32
-            * longitude       (longitude) float32
-            * time            (time) datetime64[ns]
-        f_OC_sediment_data:   dataarray with local f_OC for sediment seeding.
-                              If not given, seed_elements() will build default f_OC internally.
-            * latitude        (latitude) float32
-            * longitude       (longitude) float32
-            * time            (time) datetime64[ns]
         active_sediment_layer_thickness_data: dataarray with local active sediment layer thickness [m]
                               MUST be on the same spatial grid as NETCDF_data. Used only for mode='sed_conc'.
                               If not given, or if local values are invalid, the global self.get_config('chemical:sediment:mixing_depth') is used.
@@ -10794,81 +11345,6 @@ class ChemicalDrift(OceanDrift):
 
         self.validate_speciation_input_allowed(water_speciation, WATER_ALLOWED, label="water_speciation")
         self.validate_speciation_input_allowed(sed_speciation,   SED_ALLOWED,   label="sed_speciation")
-
-        # Validate f_OC inputs
-        def _build_uniform_foc_array(n, foc_value, label):
-            foc_value = float(foc_value)
-            if not np.isfinite(foc_value) or foc_value <= 0.0:
-                raise ValueError(f"{label} must be finite and > 0, got {foc_value}")
-            return np.full(n, foc_value, dtype=float)
-
-        def _lookup_scalar_map_value(da, lat, lon, fallback, label, time=None, point_index=None):
-            if da is None:
-                return fallback
-
-            try:
-                sel_kwargs = {
-                    "latitude": float(lat),
-                    "longitude": float(lon),
-                }
-
-                has_time = ("time" in da.dims) or ("time" in da.coords)
-                if has_time:
-                    if time is None:
-                        raise ValueError(
-                            f"{label} has a time coordinate/dimension, but no time was provided.")
-                    sel_kwargs["time"] = np.datetime64(time)
-
-                value = da.sel(method='nearest', **sel_kwargs).values
-                arr = np.asarray(value)
-
-                if arr.size != 1:
-                    raise ValueError(
-                        f"{label} selection did not reduce to a scalar; remaining shape={arr.shape}")
-
-                value = float(arr.squeeze())
-                if np.isfinite(value) and value > 0.0:
-                    return value
-
-                logger.debug(
-                    "Invalid %s at lon=%s lat=%s time=%s (value=%s), using fallback=%s",
-                    label, lon, lat, _time_repr(time), value, fallback
-                )
-                return fallback
-
-            except Exception as e:
-                if point_index is not None:
-                    self._record_seed_failure(
-                        fail_records=fail_records,
-                        stage=f"{label}_lookup",
-                        point_index=point_index,
-                        exc=e,
-                        lon=float(lon),
-                        lat=float(lat),
-                        time=_time_repr(time),
-                        fallback=float(fallback),
-                    )
-                else:
-                    logger.exception(
-                        "Could not read %s at lon=%s lat=%s time=%s. Using fallback=%s",
-                        label, lon, lat, _time_repr(time), fallback
-                    )
-                return fallback
-
-        def _build_seed_foc_array(n, mode, particle_foc, sediment_foc):
-            # Only override f_OC during seeding when a local map was provided.
-            # Otherwise let seed_elements() assign defaults internally from init_specie.
-            if mode in ("water_conc", "emission", "emission_depth"):
-                if f_OC_particle_data is None:
-                    return None
-                return _build_uniform_foc_array(n, particle_foc, "water-column f_OC")
-
-            if mode == "sed_conc":
-                if f_OC_sediment_data is None:
-                    return None
-                return _build_uniform_foc_array(n, sediment_foc, "sediment f_OC")
-
-            return None
 
         # Select data
         sel = np.where((NETCDF_data > lowerbound) & (NETCDF_data < higherbound))
@@ -11033,25 +11509,9 @@ class ChemicalDrift(OceanDrift):
                         "active_sediment_layer_thickness_data must have at least "
                         "'latitude' and 'longitude' dimensions.")
 
-        if f_OC_particle_data is not None:
-            focp_dims = set(f_OC_particle_data.dims)
-            if not {'latitude', 'longitude'}.issubset(focp_dims):
-                raise ValueError("f_OC_particle_data must have at least 'latitude' and 'longitude' dimensions.")
-            if 'time' in focp_dims and ('time' not in NETCDF_data.dims and 'time' not in NETCDF_data.coords):
-                raise ValueError("f_OC_particle_data has a time dimension, but NETCDF_data has no usable time coordinate.")
-        if f_OC_sediment_data is not None:
-            focs_dims = set(f_OC_sediment_data.dims)
-            if not {'latitude', 'longitude'}.issubset(focs_dims):
-                raise ValueError("f_OC_sediment_data must have at least 'latitude' and 'longitude' dimensions.")
-            if 'time' in focs_dims and ('time' not in NETCDF_data.dims and 'time' not in NETCDF_data.coords):
-                raise ValueError("f_OC_sediment_data has a time dimension, but NETCDF_data has no usable time coordinate.")
-
         # origin markers aligned with filtered points
         if origin_marker == "single":
             origin_marker_np = np.arange(npts)
-
-        fOC_SPM_global = float(self.get_config('chemical:transformations:fOC_SPM'))
-        fOC_sed_global = float(self.get_config('chemical:transformations:fOC_sed'))
 
         FAIL_PREVIEW = 20
 
@@ -11320,23 +11780,6 @@ class ChemicalDrift(OceanDrift):
                 elem_lon = float(lon_array[i])
                 origin_marker_seed = origin_marker_np[i] if origin_marker == "single" else origin_marker
 
-                local_particle_foc = _lookup_scalar_map_value(
-                    f_OC_particle_data,
-                    elem_lat, elem_lon,
-                    fOC_SPM_global,
-                    'f_OC_particle_data',
-                    time=time,
-                    point_index=i,
-                )
-                local_sediment_foc = _lookup_scalar_map_value(
-                    f_OC_sediment_data,
-                    elem_lat, elem_lon,
-                    fOC_sed_global,
-                    'f_OC_sediment_data',
-                    time=time,
-                    point_index=i,
-                )
-
                 # main batch
                 if number > 0:
                     z = self._get_z(
@@ -11354,9 +11797,6 @@ class ChemicalDrift(OceanDrift):
                         n=number,
                         speciation=speciation_ctrl,
                         default_specie=default_specie)
-
-                    foc_seed = _build_seed_foc_array(
-                        number, mode, local_particle_foc, local_sediment_foc)
 
                     kwargs_seed = dict(
                         lon=elem_lon,
@@ -11377,12 +11817,8 @@ class ChemicalDrift(OceanDrift):
                         raise RuntimeError(
                             "sed_speciation resolved to None, which is not supported for sediment seeding.")
 
-                    if foc_seed is not None:
-                        kwargs_seed["f_OC"] = foc_seed
-
                     try:
                         self.seed_elements(**kwargs_seed)
-
                     except Exception as e_batch:
                         self._record_seed_failure(
                             fail_records=fail_records,
@@ -11419,10 +11855,6 @@ class ChemicalDrift(OceanDrift):
                                         kwargs_one["z"] = z
                                     else:
                                         kwargs_one["z"] = np.asarray(z, dtype=float).ravel()[k:k+1]
-
-                                    if "f_OC" in kwargs_seed:
-                                        kwargs_one["f_OC"] = np.asarray(
-                                            kwargs_seed["f_OC"], dtype=float).ravel()[k:k+1]
 
                                     self.seed_elements(**kwargs_one)
 
@@ -11464,9 +11896,6 @@ class ChemicalDrift(OceanDrift):
                             speciation=speciation_ctrl,
                             default_specie=default_specie)
 
-                        foc_res = _build_seed_foc_array(
-                            1, mode, local_particle_foc, local_sediment_foc)
-
                         kwargs_res = dict(
                             lon=elem_lon,
                             lat=elem_lat,
@@ -11485,9 +11914,6 @@ class ChemicalDrift(OceanDrift):
                         elif mode == "sed_conc":
                             raise RuntimeError(
                                 "sed_speciation resolved to None, which is not supported for sediment seeding.")
-
-                        if foc_res is not None:
-                            kwargs_res["f_OC"] = foc_res
 
                         try:
                             self.seed_elements(**kwargs_res)
