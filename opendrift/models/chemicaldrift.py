@@ -311,7 +311,7 @@ class ChemicalDrift(OceanDrift):
                 'level': CONFIG_LEVEL_BASIC},
             # Sorption/desorption
             'chemical:transformations:dissociation': {'type': 'enum',
-                'enum': ['nondiss','acid', 'base', 'amphotericic'], 'default': 'nondiss',
+                'enum': ['nondiss','acid', 'base', 'amphoteric'], 'default': 'nondiss',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Select dissociation mode'},
             'chemical:transformations:LogKOW': {'type': 'float', 'default': 3.361,           # Naphthalene
                 'min': -3, 'max': 10, 'units': '',
