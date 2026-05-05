@@ -463,7 +463,7 @@ class ChemicalDrift(OceanDrift):
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Name of modelled chemical' },
             # Bed shear stress / roughness
             'chemical:sediment:stress_param_mode': {'type': 'enum',
-                'enum': ['LOG_Z0', 'MANNING', 'CHEZY', 'WHITE_COLEBROOK', 'GRAIN_D50'],
+                'enum': ['LOG_Z0', 'GRAIN_D50', 'MANNING', 'CHEZY', 'WHITE_COLEBROOK'],
                 'default': 'LOG_Z0', 'level': CONFIG_LEVEL_ESSENTIAL,
                 'description': 'Bed-stress parameterization. Use direct hydro-model bed stress if available; otherwise use the selected fallback mode.'},
             'chemical:sediment:roughness_length': {'type': 'float', 'default': -1.0,
