@@ -172,8 +172,8 @@ class ChemicalDrift(OceanDrift):
         'y_bottom_sea_water_velocity': {'fallback': 0, 'important': False},    # m/s
         'bottom_layer_thickness': {'fallback': 0.0, 'important': False},       # m
         'sea_floor_roughness_length': {'fallback': 0.0, 'important': False},   # m
-        'sea_floor_d50': {'fallback': 0, 'important': False},               # m, optional mapped bed median grain size
-        'sea_floor_erodibility_M': {'fallback': 0, 'important': False},     # kg m-2 s-1 Pa-1, optional mapped cohesive erodibility coefficient
+        'sea_floor_d50': {'fallback': 0, 'important': False},                  # m, optional mapped bed median grain size
+        'sea_floor_erodibility_M': {'fallback': 0, 'important': False},        # kg m-2 s-1 Pa-1, optional mapped cohesive erodibility coefficient
         'sea_floor_resuspension_critstress': {'fallback': 0, 'important': False}, # Pa, optional mapped resuspension critical shear stress
         # Direct bed stresses from hydro model (preferred if available)
         'sea_floor_current_stress': {'fallback': 0, 'important': False},       # Pa
