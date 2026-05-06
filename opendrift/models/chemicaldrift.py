@@ -463,7 +463,7 @@ class ChemicalDrift(OceanDrift):
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Name of modelled chemical' },
             # Bed shear stress / roughness
             'chemical:sediment:stress_param_mode': {'type': 'enum',
-                'enum': ['LOG_Z0', 'GRAIN_D50', 'MANNING', 'CHEZY', 'WHITE_COLEBROOK'],
+                'enum': ['LOG_Z0', 'MANNING', 'CHEZY', 'WHITE_COLEBROOK', 'GRAIN_D50'],
                 'default': 'LOG_Z0', 'level': CONFIG_LEVEL_ESSENTIAL,
                 'description': 'Bed-stress parameterization. Use direct hydro-model bed stress if available; otherwise use the selected fallback mode.'},
             'chemical:sediment:roughness_length': {'type': 'float', 'default': -1.0,
@@ -15768,6 +15768,8 @@ class ChemicalDrift(OceanDrift):
         time_col=None,
         start_date=None,
         end_date=None,
+        x_tick_max=10,
+        x_tick_every=None,
         fig_title=None,
         font_sizes=None,
         font_scale=1.0,
@@ -15796,6 +15798,10 @@ class ChemicalDrift(OceanDrift):
                                      otherwise interpreted as a numeric lower time bound.
             end_date:               date-like str, End of the period to include in the figure. If `use_date=True`, interpreted as a date,
                                      otherwise interpreted as a numeric upper time bound.
+            x_tick_max:             int, Maximum number of x-ticks to show when `x_tick_every` is None.
+                                    Date axes use Matplotlib's ConciseDateFormatter.
+            x_tick_every:           int or None, If provided, show one x-tick every N time steps
+                                    for deterministic tick placement. The last timestep is also shown.
             fig_title:              str, Global figure title.
             font_sizes:             dict, Explicit font-size overrides.
             font_scale:             float, Global multiplicative scale applied to default
@@ -15825,7 +15831,8 @@ class ChemicalDrift(OceanDrift):
 
         import matplotlib.pyplot as plt
         from matplotlib.backends.backend_pdf import PdfPages
-        from matplotlib.ticker import FuncFormatter
+        import matplotlib.dates as mdates
+        from matplotlib.ticker import FuncFormatter, MaxNLocator
         import numpy as np
         import pandas as pd
 
@@ -15838,6 +15845,21 @@ class ChemicalDrift(OceanDrift):
                 f"Unsupported page_output: {page_output!r}. "
                 "Use 'pdf', 'png', 'both', or 'none'."
             )
+
+        try:
+            x_tick_max = int(x_tick_max)
+        except Exception:
+            raise ValueError(f"x_tick_max must be an integer, got {x_tick_max!r}.")
+        if x_tick_max < 2:
+            raise ValueError("x_tick_max must be >= 2.")
+
+        if x_tick_every is not None:
+            try:
+                x_tick_every = int(x_tick_every)
+            except Exception:
+                raise ValueError(f"x_tick_every must be None or a positive integer, got {x_tick_every!r}.")
+            if x_tick_every < 1:
+                raise ValueError("x_tick_every must be >= 1 when provided.")
 
         if df is None:
             if timeseries_file_path is not None:
@@ -15964,6 +15986,105 @@ class ChemicalDrift(OceanDrift):
                 return f"{mant:.2f}e{exp}"
             return f"{v:g}"
 
+        # x-axis tick helper
+        def _x_tick_indices(n):
+            """Return deterministic row indices for index-based bar axes."""
+            n = int(n)
+            if n <= 0:
+                return np.array([], dtype=int)
+
+            if x_tick_every is not None:
+                idx = np.arange(0, n, x_tick_every, dtype=int)
+                if idx.size == 0 or idx[-1] != n - 1:
+                    idx = np.append(idx, n - 1)
+                return np.unique(idx)
+
+            if n <= x_tick_max:
+                return np.arange(n, dtype=int)
+
+            return np.unique(np.linspace(0, n - 1, num=x_tick_max, dtype=int))
+
+        def _format_numeric_tick(v):
+            try:
+                return f"{float(v):g}"
+            except Exception:
+                return str(v)
+
+        def _format_datetime_ticks(values):
+            """Format datetime ticks using Matplotlib's ConciseDateFormatter."""
+            vals = pd.to_datetime(values, errors="coerce")
+            if hasattr(vals, "to_pydatetime"):
+                py_vals = vals.to_pydatetime()
+            else:
+                py_vals = pd.DatetimeIndex(vals).to_pydatetime()
+
+            nums = mdates.date2num(py_vals)
+            locator = mdates.AutoDateLocator(minticks=3, maxticks=x_tick_max)
+            formatter = mdates.ConciseDateFormatter(locator)
+            return formatter.format_ticks(nums)
+
+        def _apply_x_tick_label_style(ax):
+            """Apply common x-tick label size, rotation, and alignment."""
+            rotation = 45 if use_date_axis else 0
+            ha = "right" if rotation else "center"
+            for lab in ax.get_xticklabels():
+                lab.set_rotation(rotation)
+                lab.set_ha(ha)
+            ax.tick_params(axis="x", labelsize=fs["xticks"], pad=3)
+
+        def _format_x_axis(ax, is_bar_style=False):
+            """Format x-axis ticks for both datetime/numeric axes and index-based bar axes."""
+            if len(x) == 0:
+                return
+
+            if is_bar_style:
+                idx = _x_tick_indices(len(x))
+                ax.set_xticks(idx)
+                if use_date_axis:
+                    xvals = x.iloc[idx] if hasattr(x, "iloc") else [x[i] for i in idx]
+                    labels = _format_datetime_ticks(xvals)
+                else:
+                    xvals = x.iloc[idx] if hasattr(x, "iloc") else [x[i] for i in idx]
+                    labels = [_format_numeric_tick(v) for v in xvals]
+                ax.set_xticklabels(labels)
+                _apply_x_tick_label_style(ax)
+                return
+
+            if use_date_axis:
+                if x_tick_every is not None:
+                    idx = _x_tick_indices(len(x))
+                    xvals = x.iloc[idx] if hasattr(x, "iloc") else [x[i] for i in idx]
+                    ax.set_xticks(pd.to_datetime(xvals, errors="coerce"))
+                    ax.set_xticklabels(_format_datetime_ticks(xvals))
+                else:
+                    locator = mdates.AutoDateLocator(minticks=3, maxticks=x_tick_max)
+                    ax.xaxis.set_major_locator(locator)
+                    ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+                _apply_x_tick_label_style(ax)
+                return
+
+            if x_tick_every is not None:
+                idx = _x_tick_indices(len(x))
+                xvals = x.iloc[idx] if hasattr(x, "iloc") else [x[i] for i in idx]
+                ax.set_xticks(xvals)
+                ax.set_xticklabels([_format_numeric_tick(v) for v in xvals])
+            else:
+                ax.xaxis.set_major_locator(MaxNLocator(nbins=max(1, int(x_tick_max) - 1)))
+
+            _apply_x_tick_label_style(ax)
+
+        def _panel_height_ratios(kind):
+            """Return plot/xlabel/legend height ratios, with more xlabel room for rotated date ticks."""
+            rotated_ticks = bool(use_date_axis)
+            if row_mode == "double":
+                return ([0.68, 0.16, 0.30] if rotated_ticks else [0.72, 0.11, 0.29]), 0.03
+
+            if kind == "bar_elim_summary":
+                return [0.40, 0.20, 0.24], 0.08
+
+            # more room for tick labels + xlabel strip + legend in single mode
+            return ([0.42, 0.20, 0.20] if rotated_ticks else [0.46, 0.14, 0.18]), 0.08
+
         # xlabel strip helper
         def _place_xlabel_in_axis(ax_xlab, text):
             ax_xlab.set_xticks([])
@@ -15972,8 +16093,11 @@ class ChemicalDrift(OceanDrift):
                 sp.set_visible(False)
             ax_xlab.set_facecolor("none")
 
-            # More clearance in single mode
-            y_text = 0.10 if row_mode == "single" else 0.25
+            # More clearance in single mode; date tick labels are rotated and need extra room.
+            if use_date_axis:
+                y_text = 0.08
+            else:
+                y_text = 0.10 if row_mode == "single" else 0.25
 
             ax_xlab.text(
                 0.5, y_text, str(text),
@@ -16656,6 +16780,8 @@ class ChemicalDrift(OceanDrift):
                 except Exception:
                     pass
 
+            if kind != "bar_elim_summary":
+                _format_x_axis(ax, is_bar_style=is_bar_style)
             ax.set_xlabel("")
 
         def _render_fixed_page(page_rows, page_title=None):
@@ -16707,16 +16833,7 @@ class ChemicalDrift(OceanDrift):
                     legend_cfg = spec.get("legend", {}) or {}
                     legend_max_cols = legend_cfg.get("max_cols", 3)
 
-                    if row_mode == "double":
-                        hr = [0.72, 0.11, 0.29]
-                        sub_hspace = 0.03
-                    else:
-                        if spec.get("kind") == "bar_elim_summary":
-                            hr = [0.40, 0.20, 0.24]
-                        else:
-                            # more room for tick labels + xlabel strip + legend in single mode
-                            hr = [0.46, 0.14, 0.18]
-                        sub_hspace = 0.08
+                    hr, sub_hspace = _panel_height_ratios(spec.get("kind"))
 
                     sub = outer[rr, cc].subgridspec(
                         nrows=3, ncols=1,
@@ -16846,16 +16963,7 @@ class ChemicalDrift(OceanDrift):
                     legend_cfg = spec.get("legend", {}) or {}
                     legend_max_cols = legend_cfg.get("max_cols", 3)
 
-                    if row_mode == "double":
-                        hr = [0.72, 0.11, 0.29]
-                        sub_hspace = 0.03
-                    else:
-                        if spec.get("kind") == "bar_elim_summary":
-                            hr = [0.40, 0.20, 0.24]
-                        else:
-                            # more room for tick labels + xlabel strip + legend in single mode
-                            hr = [0.46, 0.14, 0.18]
-                        sub_hspace = 0.08
+                    hr, sub_hspace = _panel_height_ratios(spec.get("kind"))
 
                     sub = outer[rr, cc].subgridspec(
                         nrows=3, ncols=1,
@@ -16884,7 +16992,43 @@ class ChemicalDrift(OceanDrift):
                             fontsize=fs["legend"],
                             legend_lw=3.0)
 
-            return fig, ax_plots, dfc
+            saved_png_paths = []
+            saved_pdf_path = None
+
+            pdf_output_enabled = page_output in {"pdf", "both"}
+            png_output_enabled = page_output in {"png", "both"}
+
+            if pdf_output_enabled:
+                if pdf_path is None:
+                    if timeseries_file_path:
+                        base = Path(timeseries_file_path)
+                        saved_pdf_path = base.parent / f"{base.stem}_summary.pdf"
+                    else:
+                        saved_pdf_path = Path.cwd() / "plot_summary_timeseries.pdf"
+                else:
+                    saved_pdf_path = Path(pdf_path)
+                    if saved_pdf_path.suffix.lower() != ".pdf":
+                        saved_pdf_path = saved_pdf_path.with_suffix(".pdf")
+
+                saved_pdf_path.parent.mkdir(parents=True, exist_ok=True)
+                fig.savefig(
+                    saved_pdf_path,
+                    bbox_inches="tight",
+                    facecolor="white",
+                )
+
+            if png_output_enabled:
+                png_output_dir, png_output_prefix = _resolve_png_dir_and_prefix()
+                png_path = png_output_dir / f"{png_output_prefix}.png"
+                fig.savefig(
+                    png_path,
+                    dpi=int(png_dpi),
+                    bbox_inches="tight",
+                    facecolor="white",
+                )
+                saved_png_paths.append(png_path)
+
+            return [fig], ax_plots, dfc, saved_png_paths, saved_pdf_path
 
         # split_a4: paginate
         def chunk_rows(row_list, n=ROWS_PER_PAGE):
@@ -16892,19 +17036,29 @@ class ChemicalDrift(OceanDrift):
                 yield row_list[i:i + n]
 
         figs = []
+        ax_pages = []
         saved_png_paths = []
 
         pdf_output_enabled = page_output in {"pdf", "both"}
         png_output_enabled = page_output in {"png", "both"}
 
-        if pdf_output_enabled and pdf_path is None:
-            if timeseries_file_path:
-                base = Path(timeseries_file_path)
-                pdf_path = base.parent / f"{base.stem}_summary_pages.pdf"
-            else:
-                pdf_path = Path.cwd() / "plot_summary_timeseries_pages.pdf"
+        saved_pdf_path = None
 
-        pdf = PdfPages(pdf_path) if pdf_output_enabled else None
+        if pdf_output_enabled:
+            if pdf_path is None:
+                if timeseries_file_path:
+                    base = Path(timeseries_file_path)
+                    saved_pdf_path = base.parent / f"{base.stem}_summary_pages.pdf"
+                else:
+                    saved_pdf_path = Path.cwd() / "plot_summary_timeseries_pages.pdf"
+            else:
+                saved_pdf_path = Path(pdf_path)
+                if saved_pdf_path.suffix.lower() != ".pdf":
+                    saved_pdf_path = saved_pdf_path.with_suffix(".pdf")
+
+            saved_pdf_path.parent.mkdir(parents=True, exist_ok=True)
+
+        pdf = PdfPages(saved_pdf_path) if pdf_output_enabled else None
 
         png_output_dir = None
         png_output_prefix = None
@@ -16922,8 +17076,9 @@ class ChemicalDrift(OceanDrift):
                     chunk.append([blank, blank] if row_mode == "double" else [blank])
 
                 page_title = f"{topic} - {idx}" if len(chunks) > 1 else topic
-                fig, _ = _render_fixed_page(chunk, page_title=page_title)
+                fig, ax_page = _render_fixed_page(chunk, page_title=page_title)
                 figs.append(fig)
+                ax_pages.append(ax_page)
                 page_counter += 1
 
                 if pdf is not None:
@@ -16947,7 +17102,7 @@ class ChemicalDrift(OceanDrift):
         if pdf is not None:
             pdf.close()
 
-        return figs, dfc, saved_png_paths, pdf_path
+        return figs, ax_pages, dfc, saved_png_paths, saved_pdf_path
 
     ##### Helpers for sum_summary_timeseries
     @staticmethod
