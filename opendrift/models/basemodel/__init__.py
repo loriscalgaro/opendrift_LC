@@ -37,6 +37,7 @@ from typing import Union, List
 import traceback
 import inspect
 import psutil
+from importlib.resources import files
 
 from opendrift.models.basemodel.environment import Environment
 from opendrift.readers import reader_global_landmask
@@ -622,6 +623,13 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         '''Make readers from a file containing list of URLs or paths to netCDF datasets'''
         self.env.add_readers_from_file(*args, **kwargs)
 
+    def default_readers(self):
+        '''Return list of default readers from opendrift.scripts.data_sources.txt'''
+        with open(files('opendrift.scripts').joinpath('data_sources.txt')) as fd:
+            default_readers = fd.readlines()
+        default_readers = [r.strip() for r in default_readers if not r.startswith('#')]
+        return default_readers
+
     # To be overloaded by sublasses, but this parent method must be called
     def prepare_run(self):
         # Copy profile_depth from config
@@ -1094,6 +1102,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         lat = np.atleast_1d(lat).ravel()
         radius = np.atleast_1d(radius).ravel()
         time = np.atleast_1d(time)
+        time = pd.to_datetime(time).to_pydatetime()
 
         if lat.max() > 90 or lat.min() < -90:
             raise ValueError('Latitude must be between -90 and 90 degrees')
@@ -4922,6 +4931,15 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
     def _evaluate_key(self, key):
         # Presently assuming that key is a config key
         return self.get_config(key, 'not_implemented')
+
+    def _set_mode(self, mode):
+
+        mode = getattr(Mode, mode.capitalize(), None)
+
+        if mode is None:
+            raise ValueError(f'Available modes are {list(Mode.__members__.keys())}')
+
+        self.mode = mode
 
 def evaluate_conditional(key, operator, value, self=None):
     """Evaluate a condition as True or False
