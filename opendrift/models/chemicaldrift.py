@@ -8287,13 +8287,46 @@ class ChemicalDrift(OceanDrift):
 
     @staticmethod
     def _rename_common_dims(da, time_name=None):
+        """
+        Normalize common dimension names used by derived concentration outputs.
+
+        If time_name='avg_time', rename the avg_time dimension to time so downstream
+        summation can use a common time axis. The function is defensive against
+        arrays that already carry a scalar/auxiliary coordinate named time, which
+        would otherwise conflict with renaming avg_time -> time.
+        """
         out = da.copy()
-        renamed_avg_time = False
-        if time_name == 'avg_time' and 'avg_time' in out.dims:
-            out = out.rename({'avg_time': 'time'})
-            renamed_avg_time = True
-        if renamed_avg_time:
-            out.attrs['source_time_coordinate'] = 'avg_time'
+
+        source_time_coordinate = None
+
+        # Auto-detect if caller did not pass time_name.
+        if time_name is None:
+            if "time" in out.dims:
+                time_name = "time"
+            elif "avg_time" in out.dims:
+                time_name = "avg_time"
+            elif "time_avg" in out.dims:
+                time_name = "time_avg"
+
+        if time_name in ("avg_time", "time_avg") and time_name in out.dims:
+            # xarray cannot rename avg_time/time_avg -> time if an auxiliary
+            # coord/variable called time already exists.
+            if "time" in out.coords and "time" not in out.dims:
+                out = out.drop_vars("time", errors="ignore")
+
+            if "time" in out.dims:
+                raise ValueError(
+                    f"Cannot rename dimension {time_name!r} to 'time' because "
+                    f"the DataArray already has a dimension named 'time'. "
+                    f"dims={out.dims}, coords={list(out.coords)}"
+                )
+
+            out = out.rename({time_name: "time"})
+            source_time_coordinate = time_name
+
+        if source_time_coordinate is not None:
+            out.attrs["source_time_coordinate"] = source_time_coordinate
+
         return out
 
     @staticmethod
@@ -9416,7 +9449,7 @@ class ChemicalDrift(OceanDrift):
                 return
 
             # ------------------------------------------------------------------
-            # Structured writer (existing behavior)
+            # Structured writer
             # ------------------------------------------------------------------
             with Dataset(filename, 'w') as nc:
                 nc.Conventions = 'CF-1.10'
@@ -9533,6 +9566,7 @@ class ChemicalDrift(OceanDrift):
                             raise ValueError(f'mask_yx shape {mm.shape} not compatible with data YX {arr_5d_tsd_yx.shape[-2:]}')
                     m = mm[None, None, None, :, :]
                     return np.broadcast_to(m, arr_5d_tsd_yx.shape)
+
                 def _mask3d(arr_3d_d_yx, mask_yx):
                     mm = np.asarray(mask_yx, dtype=bool)
                     if mm.shape != arr_3d_d_yx.shape[-2:]:
@@ -9542,24 +9576,113 @@ class ChemicalDrift(OceanDrift):
                             raise ValueError(f'mask_yx shape {mm.shape} not compatible with data YX {arr_3d_d_yx.shape[-2:]}')
                     m = mm[None, :, :]
                     return np.broadcast_to(m, arr_3d_d_yx.shape)
+
                 def _write_masked_5d(var_nc, arr_5d_tsdxy, *, mask_yx, fill_value):
+                    """
+                    Write 5D array safely to NetCDF.
+                    For sparse origin_marker subsets, some arrays may contain NaN/Inf or become fully invalid, which can
+                    trigger low-level NetCDF/HDF errors during var_nc[:] assignment.
+                    This function:
+                      - swaps x/y
+                      - masks land/domain cells
+                      - also masks non-finite values
+                      - fills masked values explicitly
+                      - writes a contiguous ndarray instead of a masked array
+                    """
                     arr = np.swapaxes(arr_5d_tsdxy, 3, 4)
+
+                    arr = np.asarray(arr)
+
+                    if arr.dtype.kind not in {"f", "i", "u", "b"}:
+                        arr = arr.astype("f8", copy=False)
+
                     mask = _mask5d(arr, mask_yx)
-                    marr = np.ma.MaskedArray(arr, mask=mask, copy=False)
+
+                    if arr.dtype.kind == "f":
+                        invalid = ~np.isfinite(arr)
+                        if invalid.any():
+                            mask = mask | invalid
+
+                    out = np.array(arr, copy=True)
+
+                    if out.dtype.kind == "f":
+                        out[mask] = fill_value
+                        out = np.nan_to_num(
+                            out,
+                            nan=fill_value,
+                            posinf=fill_value,
+                            neginf=fill_value,
+                        )
+                    else:
+                        out[mask] = fill_value
+
+                    out = np.ascontiguousarray(out)
+
                     try:
-                        marr.set_fill_value(fill_value)
-                    except Exception:
-                        pass
-                    var_nc[:] = marr
+                        var_nc[:] = out
+                    except RuntimeError as e:
+                        if "HDF" not in str(e):
+                            raise
+                        # Fallback: HDF5/netCDF4 can fail on one large 5D write.
+                        # Write smaller contiguous 2D slabs instead.
+                        try:
+                            var_nc.set_auto_maskandscale(False)
+                        except Exception:
+                            pass
+
+                        for it in range(out.shape[0]):
+                            for isp in range(out.shape[1]):
+                                for iz in range(out.shape[2]):
+                                    var_nc[it, isp, iz, :, :] = np.ascontiguousarray(
+                                        out[it, isp, iz, :, :]
+                                    )
+
                 def _write_masked_3d(var_nc, arr_3d_dxy, *, mask_yx, fill_value):
+                    """
+                    Safe 3D NetCDF writer matching _write_masked_5d behavior.
+                    """
                     arr = np.swapaxes(arr_3d_dxy, 1, 2)
+
+                    arr = np.asarray(arr)
+
+                    if arr.dtype.kind not in {"f", "i", "u", "b"}:
+                        arr = arr.astype("f8", copy=False)
+
                     mask = _mask3d(arr, mask_yx)
-                    marr = np.ma.MaskedArray(arr, mask=mask, copy=False)
+
+                    if arr.dtype.kind == "f":
+                        invalid = ~np.isfinite(arr)
+                        if invalid.any():
+                            mask = mask | invalid
+
+                    out = np.array(arr, copy=True)
+
+                    if out.dtype.kind == "f":
+                        out[mask] = fill_value
+                        out = np.nan_to_num(
+                            out,
+                            nan=fill_value,
+                            posinf=fill_value,
+                            neginf=fill_value,
+                        )
+                    else:
+                        out[mask] = fill_value
+
+                    out = np.ascontiguousarray(out)
+
                     try:
-                        marr.set_fill_value(fill_value)
-                    except Exception:
-                        pass
-                    var_nc[:] = marr
+                        var_nc[:] = out
+                    except RuntimeError as e:
+                        if "HDF" not in str(e):
+                            raise
+
+                        try:
+                            var_nc.set_auto_maskandscale(False)
+                        except Exception:
+                            pass
+
+                        for iz in range(out.shape[0]):
+                            var_nc[iz, :, :] = np.ascontiguousarray(out[iz, :, :])
 
                 if write_density:
                     if not time_avg_conc:
@@ -10050,6 +10173,8 @@ class ChemicalDrift(OceanDrift):
                                    Verbose=True):
         from datetime import datetime
         import time
+        import warnings
+        import numpy as np
         import xarray as xr
         DS = None
         ds_opened_here = False
@@ -10084,6 +10209,189 @@ class ChemicalDrift(OceanDrift):
             m, s = divmod(rem, 60)
             print(f"{msg} | elapsed {h:02d}:{m:02d}:{s:02d} (started {_start_wall.strftime('%Y-%m-%d %H:%M:%S')})")
 
+        def _zero_like_concentration_template(TOT_Conc, *, name, dropped_species=True):
+            """
+            Build a zero concentration DataArray using the same non-species grid as TOT_Conc.
+
+            Used when no requested water/sediment species are present in a slice.
+            Keeps exactly one time-like axis so prepare_derived_output_da can safely
+            normalize avg_time/time without name conflicts.
+            """
+            template = TOT_Conc
+
+            # Drop only species. Keep time/avg_time and horizontal dimensions.
+            if "specie" in template.dims:
+                template = template.isel(specie=0, drop=True)
+
+            # Drop singleton depth only. Never drop time/avg_time.
+            if "depth" in template.dims and template.sizes.get("depth", 0) == 1:
+                template = template.isel(depth=0, drop=True)
+
+            out = xr.zeros_like(template).astype(np.float32)
+
+            has_time_dim = ("time" in out.dims) or ("time_avg" in out.dims) or ("avg_time" in out.dims)
+            has_time_coord = ("time" in out.coords) or ("time_avg" in out.coords) or ("avg_time" in out.coords)
+
+            # Preserve useful non-time coordinates from the source dataset.
+            # Do NOT blindly attach time/avg_time here, because that can create
+            # both avg_time and time on the same array and break _rename_common_dims().
+            for coord_name in (
+                "lat", "lon", "latitude", "longitude",
+                "x", "y",
+                "depth",
+            ):
+                if coord_name in DS and coord_name not in out.coords:
+                    try:
+                        out = out.assign_coords({coord_name: DS[coord_name]})
+                    except Exception:
+                        pass
+
+            # Add one time-like dimension only if the template has none.
+            if not has_time_dim:
+                if "time" in DS:
+                    time_values = np.asarray(DS["time"].values)
+                    if time_values.ndim == 0:
+                        time_values = time_values.reshape(1)
+                    else:
+                        time_values = time_values[:1]
+                    out = out.expand_dims(time=time_values)
+
+                elif "avg_time" in DS:
+                    time_values = np.asarray(DS["avg_time"].values)
+                    if time_values.ndim == 0:
+                        time_values = time_values.reshape(1)
+                    else:
+                        time_values = time_values[:1]
+                    out = out.expand_dims(avg_time=time_values)
+
+                elif "time_avg" in DS:
+                    time_values = np.asarray(DS["time_avg"].values)
+                    if time_values.ndim == 0:
+                        time_values = time_values.reshape(1)
+                    else:
+                        time_values = time_values[:1]
+                    out = out.expand_dims(time_avg=time_values)
+
+                else:
+                    out = out.expand_dims(time=[0])
+
+            # If there is already a time-like dimension but no coordinate values,
+            # attach values only for that same dimension name.
+            elif not has_time_coord:
+                if "time" in out.dims and "time" in DS:
+                    try:
+                        vals = np.asarray(DS["time"].values)
+                        out = out.assign_coords(time=("time", vals[:out.sizes["time"]]))
+                    except Exception:
+                        pass
+
+                elif "avg_time" in out.dims and "avg_time" in DS:
+                    try:
+                        vals = np.asarray(DS["avg_time"].values)
+                        out = out.assign_coords(avg_time=("avg_time", vals[:out.sizes["avg_time"]]))
+                    except Exception:
+                        pass
+
+                elif "time_avg" in out.dims and "time_avg" in DS:
+                    try:
+                        vals = np.asarray(DS["time_avg"].values)
+                        out = out.assign_coords(time_avg=("time_avg", vals[:out.sizes["time_avg"]]))
+                    except Exception:
+                        pass
+
+            out.name = name
+            out.attrs.update({
+                "empty_species_fallback": "true",
+                "empty_species_fallback_reason": (
+                    "No matching species remained after species selection/exclusion. "
+                    "Returned zero concentration instead of raising."
+                ),
+                "units": getattr(TOT_Conc, "units", ""),
+            })
+
+            return out
+
+        def _ensure_latlon_on_output_da(da, src_ds):
+            """
+            Ensure water/sediment concentration DataArray has horizontal coordinates
+            that sum_DataArray_list can infer.
+            """
+            import numpy as np
+            import xarray as xr
+
+            out = da.copy()
+
+            # Case 1: already usable
+            if (
+                ("latitude" in out.dims or "latitude" in out.coords or "lat" in out.dims or "lat" in out.coords)
+                and
+                ("longitude" in out.dims or "longitude" in out.coords or "lon" in out.dims or "lon" in out.coords or "long" in out.dims or "long" in out.coords)
+            ):
+                if "lat" in out.dims:
+                    out = out.rename({"lat": "latitude"})
+                if "lon" in out.dims:
+                    out = out.rename({"lon": "longitude"})
+                if "lat" in out.coords and "latitude" not in out.coords:
+                    out = out.rename({"lat": "latitude"})
+                if "lon" in out.coords and "longitude" not in out.coords:
+                    out = out.rename({"lon": "longitude"})
+                return out
+
+            # Case 2: source has 1D lat/lon coordinates/variables.
+            lat_src = None
+            lon_src = None
+            for nm in ("latitude", "lat"):
+                if nm in src_ds:
+                    lat_src = src_ds[nm]
+                    break
+            for nm in ("longitude", "lon", "long"):
+                if nm in src_ds:
+                    lon_src = src_ds[nm]
+                    break
+
+            if lat_src is not None and lon_src is not None:
+                lat_vals = np.asarray(lat_src.values)
+                lon_vals = np.asarray(lon_src.values)
+
+                # If output still has lat/lon dims under short names, rename them.
+                rename = {}
+                if "lat" in out.dims:
+                    rename["lat"] = "latitude"
+                if "lon" in out.dims:
+                    rename["lon"] = "longitude"
+                if rename:
+                    out = out.rename(rename)
+
+                # If output uses y/x dims but source lat/lon sizes match, rename y/x.
+                if "y" in out.dims and "x" in out.dims:
+                    if out.sizes["y"] == lat_vals.size and out.sizes["x"] == lon_vals.size:
+                        out = out.rename({"y": "latitude", "x": "longitude"})
+
+                # Assign 1D geographic coords if dimensions exist.
+                if "latitude" in out.dims and out.sizes["latitude"] == lat_vals.size:
+                    out = out.assign_coords(latitude=("latitude", lat_vals))
+                if "longitude" in out.dims and out.sizes["longitude"] == lon_vals.size:
+                    out = out.assign_coords(longitude=("longitude", lon_vals))
+
+                if "latitude" in out.coords:
+                    out.coords["latitude"].attrs.update({
+                        "standard_name": "latitude",
+                        "long_name": "latitude",
+                        "units": "degrees_north",
+                        "axis": "Y",
+                    })
+                if "longitude" in out.coords:
+                    out.coords["longitude"].attrs.update({
+                        "standard_name": "longitude",
+                        "long_name": "longitude",
+                        "units": "degrees_east",
+                        "axis": "X",
+                    })
+
+                return out
+
+            return out
+
         try:
             if Concentration_file is None and File_Path is not None and File_Name is not None:
                 if Verbose:
@@ -10113,6 +10421,15 @@ class ChemicalDrift(OceanDrift):
             sum_vars_wat_dict = {}
             sum_vars_sed_dict = {}
             first_var = True
+
+            def _infer_time_name_from_da_or_ds(da, src_ds):
+                for nm in ("time", "avg_time", "time_avg"):
+                    if nm in da.dims:
+                        return nm
+                for nm in ("time", "avg_time", "time_avg"):
+                    if nm in src_ds.dims or nm in src_ds.coords:
+                        return nm
+                return None
 
             def _alias_and_filter(species_list, specie_ids_num, legacy_alias_map):
                 out = []
@@ -10201,13 +10518,45 @@ class ChemicalDrift(OceanDrift):
                         DA_Conc_array_sed, included_sed = self._species_weighted_mean(TOT_Value=TOT_Conc, TOT_Count=TOT_Weights, specie_ids_num=specie_ids_num, species_names=sed_species_eff, Verbose=Verbose, collapse_depth=True, debug_check_single_depth=debug_check_single_depth)
                     aggregation_kind = 'count_weighted_mean'
 
-                missing = []
                 if do_water and DA_Conc_array_wat is None:
-                    missing.append(f'DA_Conc_array_wat (water_species={water_species_eff})')
+                    warnings.warn(
+                        "calculate_water_sediment_conc: no matching water species remained "
+                        f"for Chemical_name={Chemical_name!r}, Origin_marker_name={Origin_marker_name!r}. "
+                        "Returning zero water concentration for this slice.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    DA_Conc_array_wat = _zero_like_concentration_template(
+                        TOT_Conc,
+                        name="DA_Conc_array_wat",
+                    )
+                    included_wat = []
+
+                if DA_Conc_array_wat is not None:
+                    DA_Conc_array_wat = _ensure_latlon_on_output_da(
+                        DA_Conc_array_wat,
+                        Concentration_file,
+                    )
+
                 if do_sediment and DA_Conc_array_sed is None:
-                    missing.append(f'DA_Conc_array_sed (sed_species={sed_species_eff})')
-                if missing:
-                    raise ValueError('Missing: ' + ' | '.join(missing) + '. Reason: no correspondence between TOT_Conc.specie and specie_ids_num or all matching species were excluded.')
+                    warnings.warn(
+                        "calculate_water_sediment_conc: no matching sediment species remained "
+                        f"for Chemical_name={Chemical_name!r}, Origin_marker_name={Origin_marker_name!r}. "
+                        "Returning zero sediment concentration for this slice.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    DA_Conc_array_sed = _zero_like_concentration_template(
+                        TOT_Conc,
+                        name="DA_Conc_array_sed",
+                    )
+                    included_sed = []
+
+                if DA_Conc_array_sed is not None:
+                    DA_Conc_array_sed = _ensure_latlon_on_output_da(
+                        DA_Conc_array_sed,
+                        Concentration_file,
+                    )
 
                 if do_water:
                     DA_Conc_array_wat.attrs['species_included'] = self._format_species_pairs(included_wat)
@@ -10231,10 +10580,25 @@ class ChemicalDrift(OceanDrift):
                 if Verbose:
                     log('Preparing coordinates/metadata')
                 if do_water:
-                    DA_Conc_array_wat = self.prepare_derived_output_da(DA_Conc_array_wat, src_ds=DS, time_name=time_name, spatial_mode=spatial_mode, Verbose=Verbose)
-                if do_sediment:
-                    DA_Conc_array_sed = self.prepare_derived_output_da(DA_Conc_array_sed, src_ds=DS, time_name=time_name, spatial_mode=spatial_mode, Verbose=Verbose)
 
+                    wat_time_name = _infer_time_name_from_da_or_ds(DA_Conc_array_wat, DS)
+                    DA_Conc_array_wat = self.prepare_derived_output_da(
+                        DA_Conc_array_wat,
+                        src_ds=DS,
+                        time_name=wat_time_name,
+                        spatial_mode=spatial_mode,
+                        Verbose=Verbose,
+                    )
+
+                if do_sediment:
+                    sed_time_name = _infer_time_name_from_da_or_ds(DA_Conc_array_sed, DS)
+                    DA_Conc_array_sed = self.prepare_derived_output_da(
+                        DA_Conc_array_sed,
+                        src_ds=DS,
+                        time_name=sed_time_name,
+                        spatial_mode=spatial_mode,
+                        Verbose=Verbose,
+                    )
                 if ('topo' in DS.data_vars) and first_var:
                     DC_topo = self.prepare_derived_output_da(DS['topo'], src_ds=DS, time_name=time_name, spatial_mode=spatial_mode, Verbose=Verbose)
                     first_var = False
@@ -12707,7 +13071,10 @@ class ChemicalDrift(OceanDrift):
                       add_shp_to_figure = False,
                       variable_name = None,
                       labels_font_sizes = [30,30,30,25,25,25,25],
-                      shp_color = "black",
+                      shp_edge_color = "black",
+                      shp_face_color = "black",
+                      shp_linewidth = 0.2,
+                      shp_alpha = 1,
                       trim_images = True,
                       save_figures = True,
                       shading = None,
@@ -12761,7 +13128,10 @@ class ChemicalDrift(OceanDrift):
                                            y_ticks_font_size, cbar_label_font_size, cbar_ticks_font_size]
         width_fig:              int, lenght of the figure (inches)
         high_fig:             int, height of the figure (inches)
-        shp_color:            string, color of shapefile when plotted
+        shp_edge_color:       string, color of shapefile fill when plotted
+        shp_face_color:       string, color of shapefile line when plotted
+        shp_linewidth:        float32, width of shapefile line when plotted
+        shp_alpha:            float32, alpha of shapefile when plotted
         trim_images:          boolean,select if white borders of images is removed
         padding_r, padding_c: int, number of pixels not trimmed (_r for height, _c for width)
         shading:              string, interpolation format using plt. pcolormesh (None, 'flat', 'nearest', 'gouraud', 'auto')
@@ -12985,7 +13355,9 @@ class ChemicalDrift(OceanDrift):
 
 
                 fig, ax = plt.subplots(figsize = (width_fig, high_fig), dpi=fig_dpi)
-                shp.plot(ax = ax, zorder = 10, edgecolor = 'black', facecolor = shp_color)
+                shp.plot(ax=ax,zorder=10,
+                         edgecolor=shp_edge_color, facecolor=shp_face_color,
+                         linewidth=shp_linewidth, alpha = shp_alpha)
 
                 if shading in [None, "flat", "auto"]:
                     ax2 = Conc_DataArray_selected.plot.pcolormesh(
@@ -15780,6 +16152,7 @@ class ChemicalDrift(OceanDrift):
         png_dir=None,
         png_dpi=200,
         png_prefix=None,
+        ts_cumulative_twin_axes=False,
     ):
         """
             Plot summary time-series panels for mass balance, elimination pathways, and speciation.
@@ -15825,6 +16198,11 @@ class ChemicalDrift(OceanDrift):
                 DPI used for saved PNG pages.
             png_prefix: str, optional
                 Prefix used for PNG filenames. If None, a prefix is inferred.
+            ts_cumulative_twin_axes: bool
+                If True, line panels containing matching *_ts and *_cumulative columns
+                plot timestep values on the primary left y-axis and cumulative values
+                on a secondary right y-axis. Default False preserves the previous
+                single-axis behaviour.
         """
         import re
         from pathlib import Path
@@ -16010,6 +16388,36 @@ class ChemicalDrift(OceanDrift):
             except Exception:
                 return str(v)
 
+        def _monthly_bar_tick_positions_and_labels():
+            """Return index positions and labels for monthly ticks on index-based bar plots."""
+            dates = pd.to_datetime(x, errors="coerce")
+            valid = pd.Series(dates).dropna()
+
+            if valid.empty:
+                return np.array([], dtype=int), []
+
+            month_starts = pd.date_range(
+                valid.min().replace(day=1),
+                valid.max().replace(day=1),
+                freq="MS",
+            )
+
+            positions = []
+            labels = []
+
+            date_series = pd.Series(dates).reset_index(drop=True)
+
+            for d0 in month_starts:
+                # first available timestep on or after the month start
+                idx_candidates = date_series.index[date_series >= d0]
+                if len(idx_candidates) == 0:
+                    continue
+                idx = int(idx_candidates[0])
+                positions.append(idx)
+                labels.append(pd.Timestamp(d0).strftime("%b"))
+
+            return np.array(positions, dtype=int), labels
+
         def _format_datetime_ticks(values):
             """Format datetime ticks using Matplotlib's ConciseDateFormatter."""
             vals = pd.to_datetime(values, errors="coerce")
@@ -16038,14 +16446,79 @@ class ChemicalDrift(OceanDrift):
                 return
 
             if is_bar_style:
-                idx = _x_tick_indices(len(x))
-                ax.set_xticks(idx)
                 if use_date_axis:
-                    xvals = x.iloc[idx] if hasattr(x, "iloc") else [x[i] for i in idx]
-                    labels = _format_datetime_ticks(xvals)
+                    dates = pd.to_datetime(x, errors="coerce")
+                    valid = pd.Series(dates).dropna()
+
+                    if x_tick_every is not None:
+                        idx = _x_tick_indices(len(x))
+                        xvals = x.iloc[idx] if hasattr(x, "iloc") else [x[i] for i in idx]
+                        labels = _format_datetime_ticks(xvals)
+
+                    elif not valid.empty:
+                        span_days = (valid.max() - valid.min()).days
+
+                        date_series = pd.Series(dates).reset_index(drop=True)
+
+                        if span_days <= 550:
+                            # Short/medium windows: monthly labels are readable.
+                            tick_dates = pd.date_range(
+                                valid.min().replace(day=1),
+                                valid.max().replace(day=1),
+                                freq="MS",
+                            )
+                            fmt = "%b" if valid.min().year == valid.max().year else "%b\n%Y"
+
+                        else:
+                            # Long windows: yearly labels avoid tens of monthly ticks.
+                            tick_dates = pd.date_range(
+                                pd.Timestamp(valid.min()).replace(month=1, day=1),
+                                pd.Timestamp(valid.max()).replace(month=1, day=1),
+                                freq="YS",
+                            )
+                            fmt = "%Y"
+
+                            # If even yearly ticks exceed x_tick_max, thin them.
+                            if len(tick_dates) > x_tick_max:
+                                keep = np.unique(
+                                    np.linspace(
+                                        0,
+                                        len(tick_dates) - 1,
+                                        num=x_tick_max,
+                                        dtype=int,
+                                    )
+                                )
+                                tick_dates = tick_dates[keep]
+
+                        positions = []
+                        labels = []
+
+                        for d0 in tick_dates:
+                            idx_candidates = date_series.index[date_series >= d0]
+                            if len(idx_candidates) == 0:
+                                continue
+                            idx0 = int(idx_candidates[0])
+                            positions.append(idx0)
+                            labels.append(pd.Timestamp(d0).strftime(fmt))
+
+                        idx = np.array(positions, dtype=int)
+
+                        # Fallback if date-derived ticks failed.
+                        if len(idx) == 0:
+                            idx = _x_tick_indices(len(x))
+                            xvals = x.iloc[idx] if hasattr(x, "iloc") else [x[i] for i in idx]
+                            labels = _format_datetime_ticks(xvals)
+
+                    else:
+                        idx = _x_tick_indices(len(x))
+                        labels = [str(i) for i in idx]
+
                 else:
+                    idx = _x_tick_indices(len(x))
                     xvals = x.iloc[idx] if hasattr(x, "iloc") else [x[i] for i in idx]
                     labels = [_format_numeric_tick(v) for v in xvals]
+
+                ax.set_xticks(idx)
                 ax.set_xticklabels(labels)
                 _apply_x_tick_label_style(ax)
                 return
@@ -16060,6 +16533,7 @@ class ChemicalDrift(OceanDrift):
                     locator = mdates.AutoDateLocator(minticks=3, maxticks=x_tick_max)
                     ax.xaxis.set_major_locator(locator)
                     ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+                    # ax.xaxis.set_major_formatter(mdates.DateFormatter("%b"))
                 _apply_x_tick_label_style(ax)
                 return
 
@@ -16444,6 +16918,15 @@ class ChemicalDrift(OceanDrift):
             from matplotlib.lines import Line2D
 
             handles, labels = ax_plot.get_legend_handles_labels()
+
+            # Include labels from optional secondary y-axis created for
+            # timestep/cumulative line panels.
+            ax2 = getattr(ax_plot, "_secondary_yaxis", None)
+            if ax2 is not None:
+                h2, l2 = ax2.get_legend_handles_labels()
+                handles = handles + h2
+                labels = labels + l2
+
             if not labels:
                 ax_leg.axis("off")
                 return None
@@ -16480,6 +16963,21 @@ class ChemicalDrift(OceanDrift):
         def _set_ylabel(ax, kind, cols, ylabel=None):
             cols = cols or []
 
+            if getattr(ax, "_has_ts_cumulative_twin_axes", False):
+                ax.set_ylabel(f"Timestep mass [{UM_mass}]", fontsize=fs["ylabel"], labelpad=2)
+                ax.yaxis.set_major_formatter(FuncFormatter(_fmt_big_sci))
+                ax.tick_params(axis="x", labelsize=fs["xticks"])
+                ax.tick_params(axis="y", labelsize=fs["yticks"])
+
+                ax2 = getattr(ax, "_secondary_yaxis", None)
+                if ax2 is not None:
+                    # Keep the secondary axis compact so double-column pages do not clip
+                    # the right-side label or push it into the neighbouring panel.
+                    ax2.set_ylabel(f"Cumulative mass [{UM_mass}]", fontsize=fs["ylabel"], labelpad=1)
+                    ax2.yaxis.set_major_formatter(FuncFormatter(_fmt_big_sci))
+                    ax2.tick_params(axis="y", labelsize=fs["yticks"], pad=2)
+                return
+
             if ylabel:
                 ax.set_ylabel(str(ylabel), fontsize=fs["ylabel"], labelpad=2)
                 ax.tick_params(axis="x", labelsize=fs["xticks"])
@@ -16499,6 +16997,33 @@ class ChemicalDrift(OceanDrift):
             ax.tick_params(axis="x", labelsize=fs["xticks"])
             ax.tick_params(axis="y", labelsize=fs["yticks"])
 
+        def _split_ts_cumulative_line_columns(cols):
+            """Return (ts_cols, cumulative_cols, other_cols) preserving panel order."""
+            cols = [c for c in (cols or []) if c in dfc.columns]
+            by_key = {self._strip_units(c): c for c in cols}
+
+            ts_cols = []
+            cumulative_cols = []
+            paired = set()
+
+            for col in cols:
+                key = self._strip_units(col)
+                if not key.endswith("_ts"):
+                    continue
+
+                cum_key = key[:-3] + "_cumulative"
+                cum_col = by_key.get(cum_key)
+                if cum_col is None:
+                    continue
+
+                ts_cols.append(col)
+                cumulative_cols.append(cum_col)
+                paired.add(col)
+                paired.add(cum_col)
+
+            other_cols = [c for c in cols if c not in paired]
+            return ts_cols, cumulative_cols, other_cols
+
         def _plot_one_panel(ax, spec):
             """Plot into ax only. xlabel + legend are handled in separate strip axes."""
             kind = spec.get("kind", "blank")
@@ -16512,21 +17037,56 @@ class ChemicalDrift(OceanDrift):
             ax.set_title(title, fontsize=fs["subplot_title"])
 
             if kind == "line":
-                for col in cols:
-                    if col not in dfc.columns:
-                        continue
-                    if self._is_all_zero(dfc[col], atol=1e-12):
-                        continue
+                ts_cols, cumulative_cols, other_cols = _split_ts_cumulative_line_columns(cols)
+                use_twin = bool(ts_cumulative_twin_axes and ts_cols and cumulative_cols)
+
+                def _line_label_and_color(col):
                     key = self._strip_units(col)
                     if key.startswith(("mass_", "perc_")):
                         pretty = self._pretty_label(key)
                     else:
                         pretty = key
-                    ax.plot(
-                        x, dfc[col],
-                        label=pretty,
-                        color=color_map.get(key, None),
-                        linewidth=1.8)
+                    return key, pretty, color_map.get(key, None)
+
+                if use_twin:
+                    ax2 = ax.twinx()
+                    ax._secondary_yaxis = ax2
+                    ax._has_ts_cumulative_twin_axes = True
+
+                    for col in other_cols + ts_cols:
+                        if self._is_all_zero(dfc[col], atol=1e-12):
+                            continue
+                        key, pretty, colr = _line_label_and_color(col)
+                        ax.plot(
+                            x, dfc[col],
+                            label=pretty,
+                            color=colr,
+                            linewidth=1.8)
+
+                    for col in cumulative_cols:
+                        if self._is_all_zero(dfc[col], atol=1e-12):
+                            continue
+                        key, pretty, colr = _line_label_and_color(col)
+                        ax2.plot(
+                            x, dfc[col],
+                            label=pretty,
+                            color=colr,
+                            linewidth=1.8,
+                            linestyle="--")
+
+                    ax2.grid(False)
+                else:
+                    for col in cols:
+                        if col not in dfc.columns:
+                            continue
+                        if self._is_all_zero(dfc[col], atol=1e-12):
+                            continue
+                        key, pretty, colr = _line_label_and_color(col)
+                        ax.plot(
+                            x, dfc[col],
+                            label=pretty,
+                            color=colr,
+                            linewidth=1.8)
 
             elif kind == "stack100":
                 keep = [col for col in cols if col in dfc.columns and not self._is_all_zero(dfc[col], atol=1e-12)]
@@ -16803,12 +17363,16 @@ class ChemicalDrift(OceanDrift):
 
             ncols_page = 2 if row_mode == "double" else 1
 
+            # Use more of the A4 page but keep enough room between double-column
+            # panels for optional secondary y-axes.  The smaller left margin gives
+            # back width while the larger wspace prevents the left panel's right
+            # y-axis from overlapping the neighbouring plot.
             outer = fig.add_gridspec(
                 nrows=ROWS_PER_PAGE, ncols=ncols_page,
-                left=0.17,
-                right=0.95 if row_mode == "double" else 0.97,
+                left=0.105 if row_mode == "double" else 0.12,
+                right=0.915 if row_mode == "double" else 0.965,
                 top=top, bottom=0.06,
-                wspace=0.34 if row_mode == "double" else 0.0,
+                wspace=0.52 if row_mode == "double" else 0.0,
                 hspace=0.24)
 
             blank = dict(kind="blank", cols=[], title="", legend={"max_cols": 1})
@@ -16938,12 +17502,16 @@ class ChemicalDrift(OceanDrift):
 
             top = 0.92 if title_txt else 0.97
 
+            # Use more of the A4 page but keep enough room between double-column
+            # panels for optional secondary y-axes.  The smaller left margin gives
+            # back width while the larger wspace prevents the left panel's right
+            # y-axis from overlapping the neighbouring plot.
             outer = fig.add_gridspec(
                 nrows=nrows_local, ncols=ncols_local,
-                left=0.17,
-                right=0.95 if row_mode == "double" else 0.97,
+                left=0.105 if row_mode == "double" else 0.12,
+                right=0.915 if row_mode == "double" else 0.965,
                 top=top, bottom=0.06,
-                wspace=0.34 if row_mode == "double" else 0.0,
+                wspace=0.52 if row_mode == "double" else 0.0,
                 hspace=0.24)
 
             ax_plots = np.empty((nrows_local, ncols_local), dtype=object)
@@ -16962,7 +17530,6 @@ class ChemicalDrift(OceanDrift):
 
                     legend_cfg = spec.get("legend", {}) or {}
                     legend_max_cols = legend_cfg.get("max_cols", 3)
-
                     hr, sub_hspace = _panel_height_ratios(spec.get("kind"))
 
                     sub = outer[rr, cc].subgridspec(
@@ -18152,9 +18719,66 @@ class ChemicalDrift(OceanDrift):
         - If depth is multi-valued (length > 1), every DataArray must already have
           'depth' present, and all must match; they are left multi-depth but their
           depth coord is set to the common reference.
+        - Time-like dimensions ('time', 'avg_time', 'time_avg') are never removed.
         """
         import numpy as np
         import xarray as xr
+
+        time_like_dims = ("time", "avg_time", "time_avg")
+
+        def _time_state(aa: xr.DataArray):
+            """Capture time-like dimensions and coordinates before normalization."""
+            state = {}
+            for nm in time_like_dims:
+                if nm in aa.dims:
+                    vals = None
+                    if nm in aa.coords:
+                        vals = np.asarray(aa.coords[nm].values)
+                    state[nm] = {
+                        "is_dim": True,
+                        "size": int(aa.sizes[nm]),
+                        "values": vals,
+                    }
+                elif nm in aa.coords:
+                    vals = np.asarray(aa.coords[nm].values)
+                    state[nm] = {
+                        "is_dim": False,
+                        "size": int(np.size(vals)),
+                        "values": vals,
+                    }
+            return state
+
+        def _restore_time_if_needed(aa: xr.DataArray, state) -> xr.DataArray:
+            """
+            Restore a time-like dimension if a previous operation removed it.
+
+            This should normally not be needed, but it makes the normalizer robust
+            against xarray behavior when dropping singleton dimensions/coordinates.
+            """
+            if any(nm in aa.dims for nm in time_like_dims):
+                return aa
+
+            # Prefer restoring an original dimension, in canonical priority order.
+            for nm in time_like_dims:
+                info = state.get(nm)
+                if not info or not info.get("is_dim"):
+                    continue
+
+                vals = info.get("values")
+                size = int(info.get("size", 1))
+
+                if vals is None:
+                    vals = np.arange(size)
+                vals = np.asarray(vals)
+
+                if vals.ndim == 0:
+                    vals = vals.reshape(1)
+                if vals.size != size:
+                    vals = vals.ravel()[:size]
+
+                return aa.expand_dims({nm: vals})
+
+            return aa
 
         # find depth reference among inputs (if any)
         depth_ref = None
@@ -18167,7 +18791,11 @@ class ChemicalDrift(OceanDrift):
             if not has_depth:
                 continue
 
-            depth_vals = da.coords["depth"].values if "depth" in da.coords else da["depth"].values
+            if "depth" in da.coords:
+                depth_vals = da.coords["depth"].values
+            else:
+                depth_vals = da["depth"].values
+
             depth_arr = np.atleast_1d(np.asarray(depth_vals))
 
             if depth_ref is None:
@@ -18180,20 +18808,34 @@ class ChemicalDrift(OceanDrift):
                         f"Inconsistent depth coordinates between inputs {i} and {depth_ref_idx}:\n"
                         f"  depth[{i}] = {depth_arr}\n"
                         f"  depth[{depth_ref_idx}] = {ref_arr}\n"
-                        "All depth coordinate values must be identical.")
+                        "All depth coordinate values must be identical."
+                    )
 
         def _drop_specie(aa: xr.DataArray) -> xr.DataArray:
+            time_before = _time_state(aa)
+
             if "specie" in aa.dims:
                 if aa.sizes["specie"] != 1:
                     raise ValueError(
-                        f"'specie' dimension must be singleton to be dropped, got size {aa.sizes['specie']}")
-                aa = aa.squeeze("specie", drop=True)
+                        f"'specie' dimension must be singleton to be dropped, got size {aa.sizes['specie']}"
+                    )
+                # Explicitly select specie only; do not use broad squeeze.
+                aa = aa.isel(specie=0, drop=True)
+
             if "specie" in aa.coords:
-                aa = aa.drop_vars("specie")
+                aa = aa.drop_vars("specie", errors="ignore")
+
+            aa = _restore_time_if_needed(aa, time_before)
             return aa
 
         if depth_ref is None:
-            return [_drop_specie(da) for da in DataArray_ls]
+            normalized = []
+            for da in DataArray_ls:
+                time_before = _time_state(da)
+                aa = _drop_specie(da)
+                aa = _restore_time_if_needed(aa, time_before)
+                normalized.append(aa)
+            return normalized
 
         depth_ref = np.atleast_1d(np.asarray(depth_ref))
         n_depth = depth_ref.size
@@ -18202,11 +18844,13 @@ class ChemicalDrift(OceanDrift):
         if n_depth > 1 and any_missing_depth:
             raise ValueError(
                 "Some DataArrays have multi-layer 'depth' while others have no 'depth'. "
-                "Cannot safely normalize in this case.")
+                "Cannot safely normalize in this case."
+            )
 
         normalized = []
 
         for i, da in enumerate(DataArray_ls):
+            time_before = _time_state(da)
             aa = _drop_specie(da)
 
             if n_depth == 1:
@@ -18216,18 +18860,24 @@ class ChemicalDrift(OceanDrift):
                     if aa.sizes["depth"] != 1:
                         raise ValueError(
                             f"DataArray index {i} has 'depth' dim size {aa.sizes['depth']} "
-                            "but reference depth is single-valued.")
+                            "but reference depth is single-valued."
+                        )
+
+                    # Explicitly select depth only. This must not affect time-like dims.
                     aa = aa.isel(depth=0, drop=True)
 
                 if "depth" in aa.coords:
-                    aa = aa.drop_vars("depth")
+                    aa = aa.drop_vars("depth", errors="ignore")
+
                 aa = aa.assign_coords(depth=depth_value)
+
             else:
                 if "depth" in aa.dims:
                     aa = aa.assign_coords(depth=depth_ref)
                 elif "depth" in aa.coords:
                     aa = aa.assign_coords(depth=depth_ref)
 
+            aa = _restore_time_if_needed(aa, time_before)
             normalized.append(aa)
 
         return normalized
@@ -18235,15 +18885,63 @@ class ChemicalDrift(OceanDrift):
     def _infer_horizontal_names(self, da):
         """
         Return (lat_name, lon_name) from a DataArray using common conventions.
+
+        Accepted:
+          - latitude / longitude
+          - lat / lon
+          - lat / long
+          - y / x
+
+        The y/x fallback is needed for concentration outputs written on projected or
+        grid-index coordinates before they are normalized to latitude/longitude.
         """
-        lat_name = next((n for n in ("latitude", "lat") if n in da.dims or n in da.coords), None)
-        lon_name = next((n for n in ("longitude", "lon", "long") if n in da.dims or n in da.coords), None)
+        lat_name = next(
+            (n for n in ("latitude", "lat", "y") if n in da.dims or n in da.coords),
+            None,
+        )
+        lon_name = next(
+            (n for n in ("longitude", "lon", "long", "x") if n in da.dims or n in da.coords),
+            None,
+        )
 
         if lat_name is None or lon_name is None:
             raise ValueError(
                 "Could not infer horizontal coordinates. Expected one of "
-                "latitude/lat and longitude/lon/long.")
+                "latitude/lat/y and longitude/lon/long/x."
+            )
+
         return lat_name, lon_name
+
+    def _standardize_horizontal_names(self, da, lat_name="latitude", lon_name="longitude"):
+        """
+        Rename common horizontal coordinate names to canonical names.
+        """
+        lat0, lon0 = self._infer_horizontal_names(da)
+
+        rename_map = {}
+        if lat0 != lat_name:
+            rename_map[lat0] = lat_name
+        if lon0 != lon_name:
+            rename_map[lon0] = lon_name
+
+        out = da.rename(rename_map) if rename_map else da
+
+        if lat_name in out.coords:
+            out[lat_name] = out[lat_name].assign_attrs(
+                standard_name="latitude",
+                long_name="latitude",
+                units="degrees_north",
+                axis="Y",
+            )
+        if lon_name in out.coords:
+            out[lon_name] = out[lon_name].assign_attrs(
+                standard_name="longitude",
+                long_name="longitude",
+                units="degrees_east",
+                axis="X",
+            )
+
+        return out
 
     def _cell_areas_from_1d(self, lat, lon, lat_name="latitude", lon_name="longitude", R=6371000.0):
         """
@@ -18278,18 +18976,6 @@ class ChemicalDrift(OceanDrift):
             dims=(lat_name, lon_name),
             coords={lat_name: lat, lon_name: lon},
             name="cell_area",)
-
-    def _standardize_horizontal_names(self, da, lat_name="latitude", lon_name="longitude"):
-        """
-        Rename common horizontal coordinate names to canonical names.
-        """
-        lat0, lon0 = self._infer_horizontal_names(da)
-        rename_map = {}
-        if lat0 != lat_name:
-            rename_map[lat0] = lat_name
-        if lon0 != lon_name:
-            rename_map[lon0] = lon_name
-        return da.rename(rename_map) if rename_map else da
 
     def _extract_common_topo_from_dict(self, DataArray_dict, topo_key="topo"):
         """
@@ -18516,8 +19202,25 @@ class ChemicalDrift(OceanDrift):
 
         # Normalize inputs
         DataArray_ls, index_keys = self._normalize_inputs(DataArray_dict, DataArray_ls, variable)
+
+        if Verbose:
+            print("DEBUG after _normalize_inputs:")
+            for i, da in enumerate(DataArray_ls):
+                print(i, da.name, da.dims)
+
         DataArray_ls = self._normalize_depth_and_specie(DataArray_ls)
+
+        if Verbose:
+            print("DEBUG after _normalize_depth_and_specie:")
+            for i, da in enumerate(DataArray_ls):
+                print(i, da.name, da.dims)
+
         DataArray_ls = [self._standardize_horizontal_names(da) for da in DataArray_ls]
+
+        if Verbose:
+            print("DEBUG after _standardize_horizontal_names:")
+            for i, da in enumerate(DataArray_ls):
+                print(i, da.name, da.dims)
 
         ordered_keys = index_keys if index_keys is not None else list(range(len(DataArray_ls)))
 
@@ -19605,248 +20308,914 @@ class ChemicalDrift(OceanDrift):
         else:
             return(weighted_avg)
 
+    ##### Helpers for concat_simulation
+    @staticmethod
+    def _natural_key(value):
+        """
+        Natural sorting key so files ending in _2.nc come before _10.nc.
+        """
+        import re
+        from pathlib import Path
+
+        name = Path(str(value)).name
+
+        return [
+            int(part) if part.isdigit() else part.lower()
+            for part in re.split(r"(\d+)", name)
+        ]
 
     @staticmethod
-    def _get_dataset_size(dataset_path):
-        '''
-        Load an xarray dataset and return its size in bytes as integer.
+    def _safe_zip_members(zip_ref):
+        """
+        Return safe .nc members only.
+        Prevents path traversal from zip archives.
+        """
+        from pathlib import Path
+        import warnings
+        import re
 
-        dataset_path:      string, path to the xarray dataset file (e.g., NetCDF format)
-        '''
+        def natural_key(value):
+            name = Path(str(value)).name
+            return [
+                int(part) if part.isdigit() else part.lower()
+                for part in re.split(r"(\d+)", name)
+            ]
+
+        members = []
+
+        for name in zip_ref.namelist():
+            p = Path(name)
+
+            if p.is_absolute() or ".." in p.parts:
+                warnings.warn(f"Skipping unsafe zip member: {name}")
+                continue
+
+            if name.endswith(".nc"):
+                members.append(name)
+
+        return sorted(members, key=natural_key)
+
+
+    @classmethod
+    def _extract_zip_once(cls, zip_path, output_dir):
+        """
+        Extract missing .nc files from a zip archive, opening the archive only once.
+        """
+        import zipfile
+        from pathlib import Path
+
+        zip_path = Path(zip_path)
+        output_dir = Path(output_dir)
+
+        extracted_or_existing = []
+
+        with zipfile.ZipFile(zip_path, "r") as zip_ref:
+            members = cls._safe_zip_members(zip_ref)
+
+            missing = []
+
+            for member in members:
+                target = output_dir / member
+                extracted_or_existing.append(str(target))
+
+                if not target.exists():
+                    missing.append(member)
+
+            if missing:
+                zip_ref.extractall(output_dir, members=missing)
+
+        return extracted_or_existing
+
+    @staticmethod
+    def _safe_process_pool_context(max_workers):
+        """
+        Return a multiprocessing context that is safe to use without requiring
+        the caller script to be protected by:
+
+            if __name__ == "__main__":
+
+        On Linux/macOS where 'fork' is available, use it. This avoids the
+        spawn/forkserver re-import problem seen in Spyder and script cells.
+
+        If 'fork' is not available, return None and the caller should fall
+        back to serial execution.
+        """
+        import multiprocessing as mp
+        import warnings
+
+        if max_workers is None or max_workers <= 1:
+            return None
+
+        try:
+            methods = mp.get_all_start_methods()
+        except Exception:
+            methods = []
+
+        if "fork" in methods:
+            try:
+                return mp.get_context("fork")
+            except Exception as e:
+                warnings.warn(
+                    f"Could not use multiprocessing fork context: {e}. "
+                    "Falling back to serial execution."
+                )
+                return None
+
+        warnings.warn(
+            "Parallel execution requested, but this Python session does not "
+            "support the 'fork' multiprocessing context. To avoid unsafe "
+            "spawn/forkserver recursion, falling back to serial execution."
+        )
+
+        return None
+
+
+    # Variables commonly needed for concentration-map calculations from
+    # concatenated trajectory files. concat_simulation keeps all variables by
+    # default for backward compatibility. Pass variables_to_keep="default" or
+    # variables_to_keep=ChemicalDrift.DEFAULT_CONCAT_VARIABLES to use this list.
+    DEFAULT_CONCAT_VARIABLES = (
+        "mass",
+        "specie",
+        "z",
+        "latitude",
+        "longitude",
+        "time",
+        "origin_marker",
+        "status",
+    )
+
+    @classmethod
+    def _normalise_concat_variables_to_keep(cls, variables_to_keep):
+        """
+        Normalize concat variable filtering.
+        Returns:
+            None -> keep every variable, preserving old concat_simulation behavior.
+            tuple[str, ...] -> keep only these variables when present.
+        Accepted shortcuts:
+            variables_to_keep=None or "all"      -> keep all variables
+            variables_to_keep="default"          -> DEFAULT_CONCAT_VARIABLES
+        """
+        if variables_to_keep is None:
+            return None
+
+        if isinstance(variables_to_keep, str):
+            value = variables_to_keep.strip().lower()
+            if value in {"", "all", "none", "false"}:
+                return None
+            if value in {"default", "defaults", "conc", "concentration"}:
+                variables_to_keep = cls.DEFAULT_CONCAT_VARIABLES
+            else:
+                variables_to_keep = [variables_to_keep]
+
+        normalised = []
+        seen = set()
+        for name in variables_to_keep:
+            if name is None:
+                continue
+            name = str(name).strip()
+            if not name or name in seen:
+                continue
+            normalised.append(name)
+            seen.add(name)
+
+        return tuple(normalised) if normalised else None
+
+    @staticmethod
+    def _resolve_concat_variables_for_dataset(ds, variables_to_keep):
+        """
+        Resolve requested concat variables against the actual Dataset names.
+        The request list may contain either:
+          - actual NetCDF variable names, e.g. "lat", "lon"
+          - CF-style names, e.g. "latitude", "longitude"
+          - values matching a variable's standard_name attribute
+        Example:
+          requested "latitude"  -> keeps "lat" if lat.standard_name == "latitude"
+          requested "longitude" -> keeps "lon" if lon.standard_name == "longitude"
+        Returns:
+            keep: list of dataset variable/coordinate names to keep
+            missing: list of requested names that could not be resolved
+        """
+        if variables_to_keep is None:
+            return None, []
+
+        # ds.variables includes both data variables and coordinates.
+        available = set(ds.variables)
+
+        aliases = {
+            "latitude": ("latitude", "lat"),
+            "longitude": ("longitude", "lon"),
+        }
+        # Map standard_name -> actual variable names.
+        standard_name_to_names = {}
+        for name in ds.variables:
+            try:
+                standard_name = ds[name].attrs.get("standard_name", None)
+            except Exception:
+                standard_name = None
+
+            if standard_name:
+                standard_name = str(standard_name)
+                standard_name_to_names.setdefault(standard_name, []).append(name)
+
+        keep = []
+        missing = []
+        seen = set()
+
+        for requested in variables_to_keep:
+            requested_original = str(requested).strip()
+            requested_key = requested_original.lower()
+
+            candidates = []
+            # 1. Exact requested name.
+            candidates.append(requested_original)
+            # 2. Explicit aliases, e.g. latitude -> lat.
+            candidates.extend(aliases.get(requested_key, ()))
+            # 3. Exact standard_name match.
+            candidates.extend(standard_name_to_names.get(requested_original, ()))
+            # 4. Case-insensitive standard_name match.
+            for standard_name, names in standard_name_to_names.items():
+                if str(standard_name).lower() == requested_key:
+                    candidates.extend(names)
+            chosen = None
+            for candidate in candidates:
+                if candidate in available:
+                    chosen = candidate
+                    break
+            if chosen is None:
+                missing.append(requested_original)
+                continue
+            if chosen not in seen:
+                keep.append(chosen)
+                seen.add(chosen)
+        # Always keep trajectory when present; concat_simulation rewrites it to
+        # global trajectory IDs in the output file.
+        if "trajectory" in available and "trajectory" not in seen:
+            keep.append("trajectory")
+            seen.add("trajectory")
+
+        return keep, missing
+
+    @staticmethod
+    def _subset_dataset_for_concat(ds, variables_to_keep, *, path=None, warnings_module=None):
+        """
+        Return a view of ds containing only selected variables/coords.
+
+        If variables_to_keep is None, ds is returned unchanged. Coordinate
+        variables attached to kept variables are retained by xarray. The
+        trajectory coordinate is also retained when present because the concat
+        routine rewrites it to global trajectory IDs.
+        """
+        if variables_to_keep is None:
+            return ds
+
+        keep, missing = ChemicalDrift._resolve_concat_variables_for_dataset(
+            ds, variables_to_keep
+        )
+
+        if missing and warnings_module is not None:
+            where = f" in {path}" if path is not None else ""
+            warnings_module.warn(
+                "concat_simulation variable filter: missing variable(s)"
+                f"{where}: {missing}"
+            )
+
+        if not keep:
+            raise ValueError(
+                "variables_to_keep did not match any variable in dataset"
+                + (f": {path}" if path is not None else "")
+            )
+
+        return ds[keep]
+
+
+    @staticmethod
+    def _scan_nc_file(path, variables_to_keep=None):
+        """
+        Open one NetCDF file once and collect metadata needed for partitioning.
+
+        If variables_to_keep is provided, logical size is computed after
+        filtering so max_size_GB is based only on the variables that will be
+        written to the concatenated outputs.
+        """
+        import warnings
+        import re
+        from pathlib import Path
         import xarray as xr
 
-        # Load the dataset in xarray
-        ds = xr.open_dataset(dataset_path)
-        size_in_bytes = ds.nbytes  # Get the size in bytes
-        ds.close()  # Close the dataset to free up memory
-        return size_in_bytes
+        def natural_key(value):
+            name = Path(str(value)).name
+            return [
+                int(part) if part.isdigit() else part.lower()
+                for part in re.split(r"(\d+)", name)
+            ]
 
-    def divide_datasets_by_size(self, file_paths, max_size=16 * 1024 ** 3):
-        '''
-        Divide datasets into sub-lists, each not exceeding a specified max size.
+        try:
+            with xr.open_dataset(path) as ds:
+                if "trajectory" not in ds.sizes:
+                    warnings.warn(f"Skipping file without trajectory dimension: {path}")
+                    return None
 
-        file_paths:       list, paths to xarray dataset files. Must end with "/"
-        max_size:         int, maximum size for each sub-list in bytes (default is 16 GB)
+                ds_for_size = ds
+                if variables_to_keep is not None:
+                    keep, missing = ChemicalDrift._resolve_concat_variables_for_dataset(
+                        ds, variables_to_keep
+                    )
+                    if missing:
+                        warnings.warn(
+                            "concat_simulation variable filter: missing "
+                            f"variable(s) in {path}: {missing}"
+                        )
+                    if not keep:
+                        warnings.warn(
+                            "Skipping file because variables_to_keep matched "
+                            f"no variables: {path}"
+                        )
+                        return None
+                    ds_for_size = ds[keep]
 
-        '''
-        file_paths = sorted(file_paths, key = self._get_dataset_size)
+                if "time" in ds_for_size.sizes and ds_for_size.sizes["time"] == 0:
+                    return None
 
-        sub_lists = []     # List to store all sub-lists
-        current_sub_list = []  # Current sub-list of dataset paths
-        current_size = 0    # Track current sub-list size
+                n_trajectory = int(ds.sizes["trajectory"])
 
-        for file_path in file_paths:
-            # Get the size of the dataset
-            file_size = self._get_dataset_size(file_path)
+                if n_trajectory == 0:
+                    return None
 
-            # Check if adding this file exceeds the max size
-            if current_size + file_size > max_size:
-                # Add the current sub-list to the list of sub-lists
-                sub_lists.append(current_sub_list)
-                # Start a new sub-list and reset the current size
-                current_sub_list = []
-                current_size = 0
+                steps_exported = ds.attrs.get(
+                    "steps_exported",
+                    ds.attrs.get("steps_output", 0),
+                )
 
-            # Add the file to the current sub-list
-            current_sub_list.append(file_path)
-            current_size += file_size
+                return {
+                    "path": str(path),
+                    "logical_bytes": int(ds_for_size.nbytes),
+                    "n_trajectory": n_trajectory,
+                    "steps_exported": int(steps_exported or 0),
+                    "sort_key": natural_key(path),
+                }
 
-        # Add the last sub-list if it's not empty
-        if current_sub_list:
-            sub_lists.append(current_sub_list)
+        except Exception as e:
+            warnings.warn(f"Could not scan {path}: {e}")
+            return None
 
-        return sub_lists
+
+    @staticmethod
+    def _concat_one_global_id_range(job):
+        """
+        Worker process.
+
+        Opens files relevant to this global trajectory range, selects local
+        trajectory positions, concatenates them, and rewrites the trajectory
+        coordinate to the new global trajectory IDs.
+        """
+        from pathlib import Path
+        import numpy as np
+        import xarray as xr
+        import warnings
+
+        output_dir = Path(job["output_dir"])
+        sim_name = job["sim_name"]
+        part_index = job["part_index"]
+        compression_level = job.get("compression_level", 6)
+        variables_to_keep = job.get("variables_to_keep", None)
+
+        output_path = output_dir / f"{sim_name}_concatenated_{part_index}.nc"
+
+        opened = []
+        selected = []
+        output_global_ids = []
+        max_steps_exported = 0
+
+        try:
+            for path, selection in job["path_to_selection"].items():
+                positions = selection["positions"]
+                global_ids = selection["global_ids"]
+
+                ds = xr.open_dataset(path)
+                opened.append(ds)
+
+                ds_for_concat = ds
+                if variables_to_keep is not None:
+                    keep, missing = ChemicalDrift._resolve_concat_variables_for_dataset(
+                        ds, variables_to_keep
+                    )
+                    if missing:
+                        warnings.warn(
+                            "concat_simulation variable filter: missing "
+                            f"variable(s) in {path}: {missing}"
+                        )
+                    if not keep:
+                        warnings.warn(
+                            "Skipping dataset because variables_to_keep matched "
+                            f"no variables: {path}"
+                        )
+                        continue
+                    ds_for_concat = ds[keep]
+
+                if "time" in ds_for_concat.sizes and ds_for_concat.sizes["time"] == 0:
+                    continue
+
+                subset = ds_for_concat.isel(trajectory=positions)
+
+                selected.append(subset)
+                output_global_ids.extend(global_ids)
+
+                steps = ds.attrs.get(
+                    "steps_exported",
+                    ds.attrs.get("steps_output", 0),
+                )
+
+                max_steps_exported = max(max_steps_exported, int(steps or 0))
+
+            if not selected:
+                return None
+
+            if len(selected) == 1:
+                out = selected[0]
+            else:
+                out = xr.concat(
+                    selected,
+                    dim="trajectory",
+                    data_vars="all",
+                    coords="minimal",
+                    compat="override",
+                    join="override",
+                )
+
+            output_global_ids = np.asarray(output_global_ids, dtype="int64")
+
+            out = out.assign_coords(
+                trajectory=("trajectory", output_global_ids)
+            )
+
+            out.attrs["steps_exported"] = max_steps_exported
+
+            encoding = {}
+
+            for var_name, da in out.data_vars.items():
+                if da.ndim == 0:
+                    continue
+
+                if da.dtype.kind not in {"f", "i", "u", "b"}:
+                    continue
+
+                encoding[var_name] = {
+                    "zlib": True,
+                    "complevel": compression_level,
+                    "shuffle": True,
+                }
+
+            try:
+                out.to_netcdf(output_path, encoding=encoding)
+            except Exception as e:
+                warnings.warn(
+                    f"Compressed write failed for {output_path}: {e}. "
+                    "Retrying without explicit compression encoding."
+                )
+                out.to_netcdf(output_path)
+
+            return str(output_path)
+
+        finally:
+            for ds in opened:
+                try:
+                    ds.close()
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _partition_by_global_trajectory_position(metas, max_bytes):
+        """
+        Partition files by new global trajectory IDs.
+        This handles files where local trajectory IDs restart from 0 in every file.
+        Example:
+            file_0 has local trajectory 0-79    -> global trajectory 0-79
+            file_1 has local trajectory 0-39    -> global trajectory 80-119
+            file_2 has local trajectory 0-119   -> global trajectory 120-239
+        Returns jobs containing:
+            - part_index
+            - path_to_selection
+            - approx_bytes
+            - min_id
+            - max_id
+        """
+        import numpy as np
+
+        jobs = []
+
+        current = {}
+        current_bytes = 0
+        current_min_id = None
+        current_max_id = None
+
+        global_offset = 0
+
+        for meta in metas:
+            path = meta["path"]
+            n_trajectory = meta["n_trajectory"]
+
+            per_id_bytes = max(
+                1,
+                int(np.ceil(meta["logical_bytes"] / n_trajectory)),
+            )
+
+            for local_pos in range(n_trajectory):
+                global_id = global_offset + local_pos
+
+                if current and current_bytes + per_id_bytes > max_bytes:
+                    jobs.append({
+                        "part_index": len(jobs),
+                        "path_to_selection": current,
+                        "approx_bytes": current_bytes,
+                        "min_id": current_min_id,
+                        "max_id": current_max_id,
+                    })
+
+                    current = {}
+                    current_bytes = 0
+                    current_min_id = None
+                    current_max_id = None
+
+                if path not in current:
+                    current[path] = {
+                        "positions": [],
+                        "global_ids": [],
+                    }
+
+                current[path]["positions"].append(local_pos)
+                current[path]["global_ids"].append(global_id)
+
+                current_bytes += per_id_bytes
+
+                if current_min_id is None:
+                    current_min_id = global_id
+
+                current_max_id = global_id
+
+            global_offset += n_trajectory
+
+        if current:
+            jobs.append({
+                "part_index": len(jobs),
+                "path_to_selection": current,
+                "approx_bytes": current_bytes,
+                "min_id": current_min_id,
+                "max_id": current_max_id,
+            })
+
+        return jobs
 
     @staticmethod
     def _is_compressed_at_level_6(nc_file):
-        '''
-        Check if simulation files to be concatenated are already compressed.
-        If true, files are only stored in .zip archive
-        '''
+        """
+        Check whether non-scalar numeric NetCDF variables are gzip-compressed
+        at level 6.
+        Scalar metadata variables, strings, time, and trajectory are ignored.
+        """
         import h5py
+
         compression_status = []
-        with h5py.File(nc_file, 'r') as f:
+
+        with h5py.File(nc_file, "r") as f:
             for var_name in f.keys():
-                if var_name in ['time', 'trajectory']:
-                    continue  # Skip 'time' and 'trajectory'
+                if var_name in ["time", "trajectory"]:
+                    continue
 
                 dataset = f[var_name]
-                compression = dataset.compression
-                compression_opts = dataset.compression_opts
+                if not isinstance(dataset, h5py.Dataset):
+                    continue
+                if dataset.shape == ():
+                    continue
+                if dataset.dtype.kind in {"O", "S", "U"}:
+                    continue
+                compression_status.append(
+                    dataset.compression == "gzip"
+                    and dataset.compression_opts == 6)
 
-                if compression != 'gzip' or compression_opts != 6:
-                    compression_status.append(False)
-                else:
-                    compression_status.append(True)
-        if all(compression_status):
-            return True
-        else:
-            return False
+        return bool(compression_status) and all(compression_status)
 
+    def concat_simulation(
+        self,
+        sim_file_list,
+        simoutputpath,
+        sim_name="sim",
+        max_size_GB=16,
+        zip_files=True,
+        max_workers=None,
+        delete_original_nc=True,
+        compression_level=6,
+        variables_to_keep=None,
+    ):
+        """
+        Parallel concatenation of simulation slices.
 
-    def concat_simulation(self,
-                          sim_file_list,
-                          simoutputpath,
-                          sim_name = "sim",
-                          max_size_GB = 16,
-                          zip_files = True):
-        '''
-        Concatenate simulation slices into files not exceeding max_size_GB and compress results into a .zip file.
-        A summary file of which slices were included in each concatenated file is saved
+        This version is designed for files where local trajectory IDs restart
+        from 0 in each file. It assigns a new global trajectory coordinate in
+        file order.
 
-        sim_file_list:      list, strings with flinames of simulations files or .zip archives
-                                  files already present in simoutputpath are not extracted from
-                                 .zip archives
-        sim_name:           string, name of simulation
-        simoutputpath:      string, folder containing files to be concatenated.
-        max_size_GB:        int, max size of concatenated files in GB (Default is 16)
-        zip_files:          boolean, select if concatenated files are zipped and the originals deleted
-        '''
-        import xarray as xr
+        sim_file_list:      list of str, List of .nc files or .zip archives.
+        simoutputpath:      str, Folder containing files to concatenate.
+        sim_name:           str, Name prefix for output files.
+        max_size_GB:        float32, Approximate maximum logical size per concatenated output file.
+        zip_files:          boolean, If True, final concatenated files are placed in one zip archive.
+        max_workers:        int, Number of worker processes. Start with 2-4 for NetCDF/HDF5.
+        delete_original_nc: boolean, If True, source .nc files are deleted after all concatenations succeed.
+        compression_level:  int, NetCDF gzip compression level for output files.
+        variables_to_keep:  list/tuple of str, Optional list/tuple of variables to keep in the concatenated output.
+                Default None keeps all variables and preserves the previous behavior.
+                Use variables_to_keep="default" or
+                variables_to_keep=self.DEFAULT_CONCAT_VARIABLES to keep only:
+                specie, mass, z, origin_marker, latitude, longitude, and time.
+                The max_size_GB partitioning is based on the filtered dataset size.
+        """
         import os
         import zipfile
         import warnings
 
-        # Remove files that are not ".nc" or ".zip"
-        sim_file_list = [file for file in sim_file_list if file.endswith((".zip", ".nc"))]
-        if len(sim_file_list) == 0:
-            raise ValueError("No files to be concatenated")
-        if not simoutputpath.endswith("/"):
-            simoutputpath = simoutputpath + "/"
+        from pathlib import Path
+        from datetime import datetime
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+
+        start = datetime.now()
+        cls = type(self)
+        variables_to_keep = cls._normalise_concat_variables_to_keep(variables_to_keep)
+
+        if variables_to_keep is None:
+            print("concat_simulation: keeping all variables")
+        else:
+            print("concat_simulation: keeping variables:", list(variables_to_keep))
+
+        if max_workers is None:
+            max_workers = min(4, os.cpu_count() or 1)
+
+        mp_context = cls._safe_process_pool_context(max_workers)
+
+        if max_workers > 1 and mp_context is None:
+            warnings.warn(
+                "Running concat_simulation in serial mode because safe "
+                "multiprocessing is not available in this execution context."
+            )
+            max_workers = 1
+
+        output_dir = Path(simoutputpath)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
         if sim_name is None:
             sim_name = "sim"
 
-        # Check if any zip archive of simulation to concatenate is in sim_file_list
-        zip_ls = []
-        start=datetime.now()
-        if any([".zip" in file for file in sim_file_list]):
-            for file in sim_file_list:
-                if file.endswith(".zip"):
-                    zip_ls.append(file)
-            # Remove each zip archive from sim_file_list and extract files to concatenate
-            sim_file_list = [file for file in sim_file_list if ".zip" not in file]
+        sim_file_list = [
+            file for file in sim_file_list
+            if str(file).endswith((".zip", ".nc"))
+        ]
 
-            for index_zip, zipfilename in enumerate(zip_ls):
-                with zipfile.ZipFile((simoutputpath + zipfilename), 'r') as zip_ref:
-                    # Get a list of all files in the archive and add it to sim_file_list
-                    files_in_archive = zip_ref.namelist()
+        if len(sim_file_list) == 0:
+            raise ValueError("No .nc or .zip files to concatenate")
 
-                print(f"Extracting zip_file {index_zip + 1} out of {len(zip_ls)}")
-                # Extract each file to concatenate
-                for index_nc, nc_file in enumerate(files_in_archive):
-                    sim_file_list.append(nc_file)
-                    # Control if nc_file was already present in simoutputpath
-                    if not os.path.exists(simoutputpath + nc_file):
-                        print(f"Extracting nc_file {index_nc + 1} out of {len(files_in_archive)}")
-                        zip_file_path = (simoutputpath + zipfilename)
-                        with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
-                                zip_ref.extract(nc_file, simoutputpath)
-            end_zip = datetime.now()
-            print(f"Extracting time : {end_zip-start}")
+        max_bytes = int(max_size_GB * 1024 ** 3)
 
-            # Flatten sim_file_list in a single list
-            sim_file_list = [item for sublist in sim_file_list for item in (sublist if isinstance(sublist, list) else [sublist])]
+        resolved_files = []
 
-        file_paths = [simoutputpath + file_name for file_name in sim_file_list]
-        # Group .nc files into sublists for concatenation
-        concat_parts = []
-        concat_parts = self.divide_datasets_by_size(file_paths = file_paths,
-                                                   max_size=max_size_GB * 1024 ** 3)
+        for file in sim_file_list:
+            path = Path(file)
 
-        concat_parts = [sublist for sublist in concat_parts if sublist != []]
-        # Separate files to concatenate from files exceeding max size if concatenated
-        concat_parts_ls = []
-        files_not_concat = []
-        for sublist in concat_parts:
-            if len(sublist) == 1:
-                files_not_concat.append(sublist)
+            if not path.is_absolute():
+                path = output_dir / path
+
+            resolved_files.append(path)
+
+        resolved_files = sorted(resolved_files, key=cls._natural_key)
+
+        zip_paths = [p for p in resolved_files if p.suffix == ".zip"]
+        direct_nc_paths = [p for p in resolved_files if p.suffix == ".nc"]
+
+        nc_paths = []
+
+        for path in direct_nc_paths:
+            if path.exists():
+                nc_paths.append(str(path))
             else:
-                concat_parts_ls.append(sublist)
-        # Flatten sim_file_list in a single list
-        files_not_concat = [item for sublist in files_not_concat for item in (sublist if isinstance(sublist, list) else [sublist])]
+                warnings.warn(f"Missing NetCDF file: {path}")
 
-        # Write concat_parts_ls to a txt file
-        with open(simoutputpath + sim_name+ "_concat_parts_ls.txt", 'w') as file:
-            for i, sublist in enumerate(concat_parts_ls):
-                # Write name of concatenated file as a header
-                file.write(sim_name + f"_concatenated_{i}.nc:\n")
-                for item in sublist:
-                    item_size = "{:.2f}".format((self._get_dataset_size(item)/1024**3))
-                    file_name_size_um = "GB"
-                    if float(item_size) < 0.01:
-                        item_size = str(float(item_size)*1000)
-                        file_name_size_um = "MB"
-                    item = item.replace(simoutputpath, "")
-                    file.write(f"{item}, {item_size} {file_name_size_um}\n")
+        for index_zip, zip_path in enumerate(zip_paths, start=1):
+            if not zip_path.exists():
+                warnings.warn(f"Missing zip file: {zip_path}")
+                continue
+
+            print(f"Extracting zip file {index_zip} out of {len(zip_paths)}")
+
+            extracted = cls._extract_zip_once(
+                zip_path=zip_path,
+                output_dir=output_dir,
+            )
+
+            nc_paths.extend(extracted)
+
+        # Dedupe while preserving natural order.
+        nc_paths = sorted(set(nc_paths), key=cls._natural_key)
+
+        if len(nc_paths) == 0:
+            raise ValueError("No NetCDF files found")
+
+        print(f"Scanning {len(nc_paths)} NetCDF files with {max_workers} workers")
+
+        metas = []
+
+        if max_workers <= 1:
+            for path in nc_paths:
+                meta = cls._scan_nc_file(path, variables_to_keep)
+
+                if meta is not None:
+                    metas.append(meta)
+        else:
+            with ProcessPoolExecutor(
+                    max_workers=max_workers,
+                    mp_context=mp_context,
+                ) as executor:
+                futures = [
+                    executor.submit(cls._scan_nc_file, path, variables_to_keep)
+                    for path in nc_paths
+                ]
+
+                for future in as_completed(futures):
+                    meta = future.result()
+
+                    if meta is not None:
+                        metas.append(meta)
+
+        if len(metas) == 0:
+            raise ValueError("No usable NetCDF files found")
+
+        metas = sorted(metas, key=lambda m: m["sort_key"])
+
+        total_trajectories = sum(meta["n_trajectory"] for meta in metas)
+        total_logical_size = sum(meta["logical_bytes"] for meta in metas)
+
+        print(f"Total trajectories: {total_trajectories}")
+        if variables_to_keep is None:
+            print(f"Total logical size: {total_logical_size / 1024 ** 3:.3f} GB")
+        else:
+            print(f"Total filtered logical size: {total_logical_size / 1024 ** 3:.3f} GB")
+
+        concat_jobs = cls._partition_by_global_trajectory_position(
+            metas=metas,
+            max_bytes=max_bytes,
+        )
+
+        print(f"Created {len(concat_jobs)} concatenation jobs")
+
+        for job in concat_jobs:
+            job["output_dir"] = str(output_dir)
+            job["sim_name"] = sim_name
+            job["compression_level"] = compression_level
+            job["variables_to_keep"] = variables_to_keep
+
+        summary_path = output_dir / f"{sim_name}_concat_parts_ls.txt"
+
+        with open(summary_path, "w") as file:
+            file.write(f"Simulation name: {sim_name}\n")
+            file.write(f"Total trajectories: {total_trajectories}\n")
+            if variables_to_keep is None:
+                file.write("Variables kept: ALL\n")
+                file.write(
+                    f"Total logical size: {total_logical_size / 1024 ** 3:.3f} GB\n"
+                )
+            else:
+                file.write("Variables kept: " + ", ".join(variables_to_keep) + "\n")
+                file.write(
+                    f"Total filtered logical size: {total_logical_size / 1024 ** 3:.3f} GB\n"
+                )
+            file.write(f"Number of concatenated parts: {len(concat_jobs)}\n\n")
+
+            for job in concat_jobs:
+                output_name = f"{sim_name}_concatenated_{job['part_index']}.nc"
+
+                file.write(f"{output_name}:\n")
+                file.write(f"global trajectory range: {job['min_id']} - {job['max_id']}\n")
+                file.write(
+                    f"approx logical size: {job['approx_bytes'] / 1024 ** 3:.3f} GB\n"
+                )
+
+                for path, selection in job["path_to_selection"].items():
+                    try:
+                        rel_path = str(Path(path).relative_to(output_dir))
+                    except ValueError:
+                        rel_path = str(path)
+
+                    local_positions = selection["positions"]
+                    global_ids = selection["global_ids"]
+
+                    file.write(
+                        f"{rel_path}, "
+                        f"local positions {local_positions[0]}-{local_positions[-1]}, "
+                        f"global IDs {global_ids[0]}-{global_ids[-1]}, "
+                        f"n={len(global_ids)}\n"
+                    )
+
                 file.write("\n")
-            file.write("Files not concatenated:\n")
-            for file_name in files_not_concat:
-                file_name_size = "{:.2f}".format((self._get_dataset_size(file_name)/1024**3))
-                file_name_size_um = "GB"
-                if float(file_name_size) < 0.01:
-                    file_name_size = str(float(file_name_size)*1000)
-                    file_name_size_um = "MB"
-                file_name = file_name.replace(simoutputpath, "")
-                file.write(f"{file_name}, {file_name_size} {file_name_size_um}\n")
-        # Load and concatenate slices
-        if zip_files is True:
-            if os.path.exists(file_paths[0]):
-                compress_type = zipfile.ZIP_STORED if self._is_compressed_at_level_6(file_paths[0]) else zipfile.ZIP_DEFLATED
 
         concatenated_files = []
 
-        for index_concat, concat_ls in enumerate(concat_parts_ls):
-            concat_output_name = (sim_name + f"_concatenated_{index_concat}.nc")
-            ds=[]
-            print(f"Loading concat_ls {index_concat +1} out of {len(concat_parts_ls)}")
-            for nc_file in concat_ls:
-                if os.path.exists(nc_file):
-                    dsi=xr.open_dataset(nc_file)
-                    if len(dsi.time)>0:
-                        ds.append(dsi)
+        print("Starting parallel concatenation")
 
-            if len(ds) > 1:
-                print("Concatenate slices")
-                dsconc=xr.concat(ds,dim="trajectory")
-                dsconc.attrs['steps_exported'] = max([ds[i].attrs['steps_exported'] if 'steps_exported' in ds[i].attrs
-                             else ds[i].attrs.get('steps_output', 0)
-                             for i in range(len(ds))])
-                print("Save concatenated file")
-                dsconc.to_netcdf(simoutputpath+concat_output_name)
-                concatenated_files.append((simoutputpath+concat_output_name))
-                print("Remove concatenated slices")
-                for nc_file in concat_ls:
-                    try:
-                        os.remove(nc_file)
-                    except FileNotFoundError:
-                        warnings.warn(f"File not found (nothing to delete): {nc_file}")
-                    except IsADirectoryError:
-                        warnings.warn(f"Expected a file but found a directory: {nc_file}")
-                    except PermissionError as e:
-                        warnings.warn(f"Permission denied deleting {nc_file}: {e}")
-                    except Exception as e:
-                        warnings.warn(f"Could not remove {nc_file}: {e}")
-            end=datetime.now()
-            print(f"Concatenating time : {end-start}")
+        if max_workers <= 1:
+            for index_done, job in enumerate(concat_jobs, start=1):
+                output_file = cls._concat_one_global_id_range(job)
 
-        if len(files_not_concat) > 0:
-            for nc_file in files_not_concat:
-                concatenated_files.append(nc_file)
-        if zip_files is True:
+                if output_file is not None:
+                    concatenated_files.append(output_file)
+
+                print(f"Finished concat job {index_done} out of {len(concat_jobs)}")
+        else:
+            with ProcessPoolExecutor(
+                    max_workers=max_workers,
+                    mp_context=mp_context,
+                ) as executor:
+                futures = [
+                    executor.submit(cls._concat_one_global_id_range, job)
+                    for job in concat_jobs
+                ]
+
+                for index_done, future in enumerate(as_completed(futures), start=1):
+                    output_file = future.result()
+
+                    if output_file is not None:
+                        concatenated_files.append(output_file)
+                    print(f"Finished concat job {index_done} out of {len(futures)}")
+
+        concatenated_files = sorted(concatenated_files, key=cls._natural_key)
+
+        if len(concatenated_files) == 0:
+            raise RuntimeError("No concatenated files were produced")
+
+        print(f"Concatenating time: {datetime.now() - start}")
+
+        if delete_original_nc:
+            output_files_set = {
+                str(Path(path).resolve())
+                for path in concatenated_files
+            }
+
+            for path in nc_paths:
+                resolved = str(Path(path).resolve())
+
+                if resolved in output_files_set:
+                    continue
+
+                try:
+                    os.remove(path)
+                except FileNotFoundError:
+                    pass
+                except IsADirectoryError:
+                    warnings.warn(f"Expected a file but found a directory: {path}")
+                except PermissionError as e:
+                    warnings.warn(f"Permission denied deleting {path}: {e}")
+                except Exception as e:
+                    warnings.warn(f"Could not remove source file {path}: {e}")
+
+        if zip_files:
+            zip_start = datetime.now()
+
             print("Zip concatenated files")
 
+            first_output = concatenated_files[0]
 
-            zip_path = os.path.join(simoutputpath, sim_name + "_concatenated_files.zip")
+            compress_type = (
+                zipfile.ZIP_STORED
+                if cls._is_compressed_at_level_6(first_output)
+                else zipfile.ZIP_DEFLATED
+            )
 
-            with zipfile.ZipFile(zip_path, mode='w', compression=compress_type) as myzip:
-                for index_zip, f in enumerate(concatenated_files):
-                    print(f"Zipping file {index_zip + 1} out of {len(concatenated_files)}")
-                    arcname_f = f.replace(simoutputpath, "")
-                    myzip.write(f, arcname=arcname_f)
+            zip_path = output_dir / f"{sim_name}_concatenated_files.zip"
 
-            for file in os.listdir(simoutputpath):
-                if file.endswith(".nc"):
-                    os.remove(simoutputpath+"/" + file)
+            with zipfile.ZipFile(
+                zip_path,
+                mode="w",
+                compression=compress_type,
+            ) as myzip:
+                for index_zip, file_path in enumerate(concatenated_files, start=1):
+                    print(
+                        f"Zipping file {index_zip} "
+                        f"out of {len(concatenated_files)}"
+                    )
 
-        end_zip=datetime.now()
-        print(f"Zip files time :{end_zip-end}")
+                    myzip.write(
+                        file_path,
+                        arcname=Path(file_path).name,
+                    )
+
+            for file_path in concatenated_files:
+                try:
+                    os.remove(file_path)
+                except FileNotFoundError:
+                    pass
+                except Exception as e:
+                    warnings.warn(
+                        f"Could not remove concatenated file {file_path}: {e}"
+                    )
+
+            print(f"Zip files time: {datetime.now() - zip_start}")
+
+        print(f"Total time: {datetime.now() - start}")
+
+        return concatenated_files
