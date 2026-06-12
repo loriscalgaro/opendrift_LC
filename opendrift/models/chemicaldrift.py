@@ -4797,7 +4797,8 @@ class ChemicalDrift(OceanDrift):
         # Current direction
         ec_x = np.zeros(n, dtype=float)
         ec_y = np.zeros(n, dtype=float)
-        has_current = tau_c > eps
+        # has_current = tau_c > eps
+        np.hypot(tau_bx, tau_by) > eps
         ec_x[has_current] = tau_bx[has_current] / tau_c[has_current]
         ec_y[has_current] = tau_by[has_current] / tau_c[has_current]
 
