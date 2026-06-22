@@ -20601,6 +20601,8 @@ class ChemicalDrift(OceanDrift):
         """
         import warnings
         import re
+        import hashlib
+        import numpy as np
         from pathlib import Path
         import xarray as xr
 
@@ -20617,26 +20619,40 @@ class ChemicalDrift(OceanDrift):
                     warnings.warn(f"Skipping file without trajectory dimension: {path}")
                     return None
 
-                ds_for_size = ds
-                if variables_to_keep is not None:
-                    keep, missing = ChemicalDrift._resolve_concat_variables_for_dataset(
-                        ds, variables_to_keep
-                    )
-                    if missing:
-                        warnings.warn(
-                            "concat_simulation variable filter: missing "
-                            f"variable(s) in {path}: {missing}"
-                        )
-                    if not keep:
-                        warnings.warn(
-                            "Skipping file because variables_to_keep matched "
-                            f"no variables: {path}"
-                        )
-                        return None
-                    ds_for_size = ds[keep]
+                ds_for_size = ChemicalDrift._subset_dataset_for_concat(
+                    ds,
+                    variables_to_keep,
+                    path=path,
+                    warnings_module=warnings,
+                )
 
-                if "time" in ds_for_size.sizes and ds_for_size.sizes["time"] == 0:
+                time_size = int(ds_for_size.sizes.get("time", 0))
+
+                if "time" in ds_for_size.sizes and time_size == 0:
                     return None
+
+                time_first = None
+                time_last = None
+
+                if "time" in ds_for_size.variables:
+                    time_values = np.asarray(ds_for_size["time"].values)
+
+                    if time_values.size > 0:
+                        time_first = str(time_values[0])
+                        time_last = str(time_values[-1])
+
+                    h = hashlib.sha1()
+                    h.update(str(time_values.dtype).encode("utf-8", errors="ignore"))
+                    h.update(str(time_values.shape).encode("utf-8", errors="ignore"))
+
+                    try:
+                        h.update(np.ascontiguousarray(time_values).view("uint8"))
+                    except Exception:
+                        h.update(repr(time_values.tolist()).encode("utf-8", errors="ignore"))
+
+                    time_signature = h.hexdigest()
+                else:
+                    time_signature = f"no_time_dim_size_{time_size}"
 
                 n_trajectory = int(ds.sizes["trajectory"])
 
@@ -20653,6 +20669,10 @@ class ChemicalDrift(OceanDrift):
                     "logical_bytes": int(ds_for_size.nbytes),
                     "n_trajectory": n_trajectory,
                     "steps_exported": int(steps_exported or 0),
+                    "time_size": time_size,
+                    "time_first": time_first,
+                    "time_last": time_last,
+                    "time_signature": time_signature,
                     "sort_key": natural_key(path),
                 }
 
@@ -20696,23 +20716,12 @@ class ChemicalDrift(OceanDrift):
                 ds = xr.open_dataset(path)
                 opened.append(ds)
 
-                ds_for_concat = ds
-                if variables_to_keep is not None:
-                    keep, missing = ChemicalDrift._resolve_concat_variables_for_dataset(
-                        ds, variables_to_keep
-                    )
-                    if missing:
-                        warnings.warn(
-                            "concat_simulation variable filter: missing "
-                            f"variable(s) in {path}: {missing}"
-                        )
-                    if not keep:
-                        warnings.warn(
-                            "Skipping dataset because variables_to_keep matched "
-                            f"no variables: {path}"
-                        )
-                        continue
-                    ds_for_concat = ds[keep]
+                ds_for_concat = ChemicalDrift._subset_dataset_for_concat(
+                    ds,
+                    variables_to_keep,
+                    path=path,
+                    warnings_module=warnings,
+                )
 
                 if "time" in ds_for_concat.sizes and ds_for_concat.sizes["time"] == 0:
                     continue
@@ -20741,7 +20750,10 @@ class ChemicalDrift(OceanDrift):
                     data_vars="all",
                     coords="minimal",
                     compat="override",
-                    join="override",
+                    # Time axes must be identical inside each concat job.
+                    # Use exact matching so accidental time-axis mismatches are
+                    # caught here instead of silently overwriting coordinates.
+                    join="exact",
                 )
 
             output_global_ids = np.asarray(output_global_ids, dtype="int64")
@@ -20789,17 +20801,29 @@ class ChemicalDrift(OceanDrift):
     def _partition_by_global_trajectory_position(metas, max_bytes):
         """
         Partition files by new global trajectory IDs.
+
         This handles files where local trajectory IDs restart from 0 in every file.
+
+        Important:
+        Files with different time coordinate signatures are not placed in the same
+        concat job. This prevents xarray alignment errors caused by trying to
+        concatenate trajectory subsets that have unequal or different time axes.
+
         Example:
             file_0 has local trajectory 0-79    -> global trajectory 0-79
             file_1 has local trajectory 0-39    -> global trajectory 80-119
             file_2 has local trajectory 0-119   -> global trajectory 120-239
+
         Returns jobs containing:
             - part_index
             - path_to_selection
             - approx_bytes
             - min_id
             - max_id
+            - time_signature
+            - time_size
+            - time_first
+            - time_last
         """
         import numpy as np
 
@@ -20809,12 +20833,20 @@ class ChemicalDrift(OceanDrift):
         current_bytes = 0
         current_min_id = None
         current_max_id = None
+        current_time_signature = None
+        current_time_size = None
+        current_time_first = None
+        current_time_last = None
 
         global_offset = 0
 
         for meta in metas:
             path = meta["path"]
             n_trajectory = meta["n_trajectory"]
+            file_time_signature = meta.get("time_signature")
+            file_time_size = meta.get("time_size")
+            file_time_first = meta.get("time_first")
+            file_time_last = meta.get("time_last")
 
             per_id_bytes = max(
                 1,
@@ -20824,19 +20856,36 @@ class ChemicalDrift(OceanDrift):
             for local_pos in range(n_trajectory):
                 global_id = global_offset + local_pos
 
-                if current and current_bytes + per_id_bytes > max_bytes:
+                if current and (
+                    current_bytes + per_id_bytes > max_bytes
+                    or current_time_signature != file_time_signature
+                ):
                     jobs.append({
                         "part_index": len(jobs),
                         "path_to_selection": current,
                         "approx_bytes": current_bytes,
                         "min_id": current_min_id,
                         "max_id": current_max_id,
+                        "time_signature": current_time_signature,
+                        "time_size": current_time_size,
+                        "time_first": current_time_first,
+                        "time_last": current_time_last,
                     })
 
                     current = {}
                     current_bytes = 0
                     current_min_id = None
                     current_max_id = None
+                    current_time_signature = None
+                    current_time_size = None
+                    current_time_first = None
+                    current_time_last = None
+
+                if current_time_signature is None:
+                    current_time_signature = file_time_signature
+                    current_time_size = file_time_size
+                    current_time_first = file_time_first
+                    current_time_last = file_time_last
 
                 if path not in current:
                     current[path] = {
@@ -20863,6 +20912,10 @@ class ChemicalDrift(OceanDrift):
                 "approx_bytes": current_bytes,
                 "min_id": current_min_id,
                 "max_id": current_max_id,
+                "time_signature": current_time_signature,
+                "time_size": current_time_size,
+                "time_first": current_time_first,
+                "time_last": current_time_last,
             })
 
         return jobs
@@ -20927,7 +20980,7 @@ class ChemicalDrift(OceanDrift):
                 Default None keeps all variables and preserves the previous behavior.
                 Use variables_to_keep="default" or
                 variables_to_keep=self.DEFAULT_CONCAT_VARIABLES to keep only:
-                specie, mass, z, origin_marker, latitude, longitude, and time.
+                mass, specie, z, latitude, longitude, time, origin_marker, and status.
                 The max_size_GB partitioning is based on the filtered dataset size.
         """
         import os
@@ -21093,6 +21146,13 @@ class ChemicalDrift(OceanDrift):
 
                 file.write(f"{output_name}:\n")
                 file.write(f"global trajectory range: {job['min_id']} - {job['max_id']}\n")
+                if "time_size" in job:
+                    file.write(
+                        "time axis: "
+                        f"n={job.get('time_size')} "
+                        f"first={job.get('time_first')} "
+                        f"last={job.get('time_last')}\n"
+                    )
                 file.write(
                     f"approx logical size: {job['approx_bytes'] / 1024 ** 3:.3f} GB\n"
                 )
