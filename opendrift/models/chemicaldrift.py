@@ -20600,18 +20600,9 @@ class ChemicalDrift(OceanDrift):
         written to the concatenated outputs.
         """
         import warnings
-        import re
         import hashlib
         import numpy as np
-        from pathlib import Path
         import xarray as xr
-
-        def natural_key(value):
-            name = Path(str(value)).name
-            return [
-                int(part) if part.isdigit() else part.lower()
-                for part in re.split(r"(\d+)", name)
-            ]
 
         try:
             with xr.open_dataset(path) as ds:
@@ -20673,7 +20664,7 @@ class ChemicalDrift(OceanDrift):
                     "time_first": time_first,
                     "time_last": time_last,
                     "time_signature": time_signature,
-                    "sort_key": natural_key(path),
+                    "sort_key": ChemicalDrift._natural_key(path),
                 }
 
         except Exception as e:
