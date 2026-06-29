@@ -14929,7 +14929,8 @@ class ChemicalDrift(OceanDrift):
         """
         mass:   (T,N) float array with NaNs after deactivation
         adv_out:(T,N) bool array (True == outside)
-        Ignores initial outside at t=0 (only counts False->True transitions for t>0).
+        Ignores initial outside at t=0.
+        Only counts False -> True transitions for t > 0.
         Returns:
             exit_outside_at_t: (T,) float64
             cum_exit_outside:  (T,) float64
@@ -14937,163 +14938,197 @@ class ChemicalDrift(OceanDrift):
         mass = np.asarray(mass)
         adv_out = np.asarray(adv_out, dtype=bool)
 
+        if mass.ndim != 2 or adv_out.ndim != 2:
+            raise ValueError("mass and adv_out must both be 2D (T,N)")
+        if mass.shape != adv_out.shape:
+            raise ValueError(
+                f"mass and adv_out must have the same shape, got "
+                f"{mass.shape} and {adv_out.shape}"
+            )
+
         T, N = mass.shape
         exit_outside_at_t = np.zeros(T, dtype=np.float64)
-
         # No advection out
         if not adv_out.any():
-            return (exit_outside_at_t * mass_conversion_factor,
-                    exit_outside_at_t.copy() * mass_conversion_factor)
-
+            return (
+                exit_outside_at_t * mass_conversion_factor,
+                exit_outside_at_t.copy() * mass_conversion_factor,
+            )
         for start in range(0, N, chunk_cols):
             end = min(start + chunk_cols, N)
             width = end - start
 
-            prev_out = adv_out[0, start:end].copy()        # prev_out[0] == adv_out[0] -> ignore initial outside
-            prev_ff  = np.zeros(width, dtype=mass.dtype)   # last finite mass per element
-            cur_ff   = np.empty(width, dtype=mass.dtype)
-
-            # initialize prev_ff from t=0 if finite
+            prev_out = adv_out[0, start:end].copy()       # prev_out[0] == adv_out[0] -> ignore initial outside
+            prev_ff = np.zeros(width, dtype=mass.dtype)   # last finite mass per element
+            cur_ff = np.empty(width, dtype=mass.dtype)
+            # Initialize forward-filled mass from t=0
             cur0 = mass[0, start:end]
             finite0 = np.isfinite(cur0)
-            if finite0.any():
-                prev_ff[finite0] = cur0[finite0]
-
-            # t=0 contributes nothing by design (ignore initial outside), so start from t=1
+            np.copyto(prev_ff, cur0, where=finite0)
+            # t=0 contributes nothing by design
             for t in range(1, T):
                 out_now = adv_out[t, start:end]
-                became_out = (~prev_out) & out_now          # transitions only
+                became_out = (~prev_out) & out_now
+
+                cur = mass[t, start:end]
+                finite = np.isfinite(cur)
 
                 if became_out.any():
-                    cur = mass[t, start:end]
-                    finite = np.isfinite(cur)
-                    # forward-fill mass
+                    # Forward-fill mass at this timestep
                     np.copyto(cur_ff, prev_ff)
-                    if finite.any():
-                        cur_ff[finite] = cur[finite]
-                    # sum mass of those that became outside
-                    exit_outside_at_t[t] += np.nansum(cur_ff[became_out], dtype=np.float64)
-                    # update prev_ff
+                    np.copyto(cur_ff, cur, where=finite)
+                    # Sum without boolean-indexing copy
+                    exit_outside_at_t[t] += np.sum(
+                        cur_ff,
+                        where=became_out,
+                        dtype=np.float64,
+                        initial=0.0,
+                    )
                     np.copyto(prev_ff, cur_ff)
                 else:
-                    # still need to update prev_ff if mass has new finite values this step
-                    cur = mass[t, start:end]
-                    finite = np.isfinite(cur)
-                    if finite.any():
-                        prev_ff[finite] = cur[finite]
-                # update prev_out for transitions
+                    # Still update forward-fill state
+                    np.copyto(prev_ff, cur, where=finite)
+
                 prev_out = out_now
 
         exit_outside_at_t *= mass_conversion_factor
         cum_exit_outside = np.cumsum(exit_outside_at_t, dtype=np.float64)
+
         return exit_outside_at_t, cum_exit_outside
 
     @staticmethod
-    def _event_mass_ts(mass, event_mask, adv_out=None,
-                       allow_initial_event=False,
-                       require_inside_now=False,
-                       require_inside_prev=False,
-                       chunk_cols=50000,
-                       mass_conversion_factor=1.0,
-                    ):
+    def _event_mass_ts(
+        mass, event_mask,
+        adv_out=None, allow_initial_event=False,
+        require_inside_now=False, require_inside_prev=False,
+        chunk_cols=50000, mass_conversion_factor=1.0,
+    ):
         """
-        Generic event counter: sums mass (forward-filled) for elements that become event==True at each timestep.
+        Generic event counter.
+        Sums forward-filled mass for elements that become event == True
+        at each timestep.
 
         mass:       (T,N) float array with NaNs after deactivation
-        event_mask: (T,N) bool array (e.g., stranded, in_buried_sed)
+        event_mask: (T,N) bool array
         adv_out:    (T,N) bool array, used if require_inside_* is True
-
-        allow_initial_event: if True, count event at t=0 when event_mask[0]==True
-        require_inside_now:  if True, count only when ~adv_out[t]
-        require_inside_prev: if True, count only when ~adv_out[t-1] (for t>0)
+        allow_initial_event:
+            If True, count event at t=0 when event_mask[0] is True.
+        require_inside_now:
+            If True, count only when ~adv_out[t].
+        require_inside_prev:
+            If True, count only when ~adv_out[t-1] for t > 0.
 
         Returns:
-          event_ts (T,) float64 in converted units, and cumulative (T,) float64.
+            event_ts:        (T,) float64
+            event_cumulative:(T,) float64
         """
         mass = np.asarray(mass)
         event_mask = np.asarray(event_mask, dtype=bool)
-        T, N = mass.shape
 
+        if mass.ndim != 2 or event_mask.ndim != 2:
+            raise ValueError("mass and event_mask must both be 2D (T,N)")
+        if mass.shape != event_mask.shape:
+            raise ValueError(
+                f"mass and event_mask must have the same shape, got "
+                f"{mass.shape} and {event_mask.shape}"
+            )
+
+        T, N = mass.shape
         if require_inside_now or require_inside_prev:
             if adv_out is None:
                 raise ValueError("adv_out must be provided when require_inside_* is True")
             adv_out = np.asarray(adv_out, dtype=bool)
 
+            if adv_out.ndim != 2:
+                raise ValueError("adv_out must be 2D (T,N)")
+            if adv_out.shape != mass.shape:
+                raise ValueError(
+                    f"adv_out and mass must have the same shape, got "
+                    f"{adv_out.shape} and {mass.shape}"
+                )
         event_ts = np.zeros(T, dtype=np.float64)
 
         if not event_mask.any():
             event_ts *= mass_conversion_factor
-            return event_ts, np.cumsum(event_ts)
+            return event_ts, np.cumsum(event_ts, dtype=np.float64)
 
         for start in range(0, N, chunk_cols):
             end = min(start + chunk_cols, N)
             width = end - start
 
-            prev_event = event_mask[0, start:end].copy()  # used to detect transitions
+            prev_event = event_mask[0, start:end].copy()
+            # Last finite mass per element
             prev_ff = np.zeros(width, dtype=mass.dtype)
-            cur_ff  = np.empty(width, dtype=mass.dtype)
-            # initialize prev_ff from t=0 if finite
+            cur_ff = np.empty(width, dtype=mass.dtype)
+            # Initialize forward-filled mass from t=0
             cur0 = mass[0, start:end]
             finite0 = np.isfinite(cur0)
-            if finite0.any():
-                prev_ff[finite0] = cur0[finite0]
-            # t=0 event handling
+            np.copyto(prev_ff, cur0, where=finite0)
+            # Optional t=0 event handling
             if allow_initial_event:
-                ev0 = event_mask[0, start:end]
+                # copy is important: do not mutate event_mask
+                ev0 = prev_event.copy()
                 if require_inside_now:
                     ev0 &= ~adv_out[0, start:end]
-                # require_inside_prev doesn't apply at t=0
                 if ev0.any():
-                    event_ts[0] += np.nansum(prev_ff[ev0], dtype=np.float64)
-            #  t>=1
+                    event_ts[0] += np.sum(
+                        prev_ff,
+                        where=ev0,
+                        dtype=np.float64,
+                        initial=0.0,
+                    )
+            # t >= 1
             for t in range(1, T):
                 ev_now = event_mask[t, start:end]
-                became = (~prev_event) & ev_now  # False->True transitions
+                became = (~prev_event) & ev_now
 
                 if became.any():
                     if require_inside_now:
                         became &= ~adv_out[t, start:end]
                     if require_inside_prev:
-                        became &= ~adv_out[t-1, start:end]
+                        became &= ~adv_out[t - 1, start:end]
+                cur = mass[t, start:end]
+                finite = np.isfinite(cur)
                 if became.any():
-                    cur = mass[t, start:end]
-                    finite = np.isfinite(cur)
-
+                    # Forward-fill mass at this timestep
                     np.copyto(cur_ff, prev_ff)
-                    if finite.any():
-                        cur_ff[finite] = cur[finite]
-
-                    event_ts[t] += np.nansum(cur_ff[became], dtype=np.float64)
+                    np.copyto(cur_ff, cur, where=finite)
+                    # Sum without boolean-indexing copy
+                    event_ts[t] += np.sum(
+                        cur_ff,
+                        where=became,
+                        dtype=np.float64,
+                        initial=0.0,
+                    )
                     np.copyto(prev_ff, cur_ff)
                 else:
-                    # still update forward-fill state if new finite values appear
-                    cur = mass[t, start:end]
-                    finite = np.isfinite(cur)
-                    if finite.any():
-                        prev_ff[finite] = cur[finite]
-
+                    # Still update forward-fill state
+                    np.copyto(prev_ff, cur, where=finite)
                 prev_event = ev_now
 
         event_ts *= mass_conversion_factor
-        return event_ts, np.cumsum(event_ts, dtype=np.float64)
+        event_cumulative = np.cumsum(event_ts, dtype=np.float64)
+
+        return event_ts, event_cumulative
 
     @staticmethod
-    def _transition_mass_ts(mass, specie, inside_mask, src_idx, dst_idx,
-                            steps, N_elem,
-                            mass_conversion_factor=1.0,
-                            require_inside_now=True,
-                            require_inside_prev=True,
-                            chunk_cols=50000):
+    def _transition_mass_ts(
+        mass, specie, inside_mask,
+        src_idx, dst_idx,
+        steps, N_elem,
+        mass_conversion_factor=1.0,
+        require_inside_now=True, require_inside_prev=True,
+        chunk_cols=50000,
+    ):
         """
         Per-timestep mass for exact specie transitions src_idx -> dst_idx.
 
-        Only transitions inside the domain are counted:
-          - require_inside_now=True  -> element must be inside at timestep t
-          - require_inside_prev=True -> element must be inside at timestep t-1
+        Only transitions inside the domain are counted when:
+          require_inside_now=True  -> element must be inside at timestep t
+          require_inside_prev=True -> element must be inside at timestep t-1
         """
         if (src_idx is None) or (dst_idx is None):
             return np.zeros(steps, dtype=np.float32)
-
 
         mass = np.asarray(mass)
         specie = np.asarray(specie)
@@ -15101,11 +15136,20 @@ class ChemicalDrift(OceanDrift):
 
         if mass.ndim != 2 or specie.ndim != 2 or inside_mask.ndim != 2:
             raise ValueError("mass, specie, and inside_mask must all be 2D (T,N)")
+
         if mass.shape != specie.shape or mass.shape != inside_mask.shape:
-            raise ValueError("mass, specie, and inside_mask must have the same shape")
+            raise ValueError(
+                f"mass, specie, and inside_mask must have the same shape, got "
+                f"{mass.shape}, {specie.shape}, and {inside_mask.shape}"
+            )
+
+        T, N = mass.shape
+        if steps > T:
+            raise ValueError(f"steps={steps} exceeds mass.shape[0]={T}")
+        if N_elem > N:
+            raise ValueError(f"N_elem={N_elem} exceeds mass.shape[1]={N}")
 
         ts = np.zeros(steps, dtype=np.float64)
-
         if steps < 2:
             return ts.astype(np.float32, copy=False)
 
@@ -15113,37 +15157,44 @@ class ChemicalDrift(OceanDrift):
             end = min(start + chunk_cols, N_elem)
             width = end - start
 
+            # Last finite mass per element
             prev_ff = np.zeros(width, dtype=mass.dtype)
             cur_ff = np.empty(width, dtype=mass.dtype)
-
+            # Initialize forward-filled mass from t=0
             cur0 = mass[0, start:end]
             finite0 = np.isfinite(cur0)
-            if finite0.any():
-                prev_ff[finite0] = cur0[finite0]
+            np.copyto(prev_ff, cur0, where=finite0)
 
             for t in range(1, steps):
-                trans = ((specie[t-1, start:end] == src_idx) &
-                    (specie[t,   start:end] == dst_idx))
+                trans = (
+                    (specie[t - 1, start:end] == src_idx)
+                    & (specie[t, start:end] == dst_idx)
+                )
 
                 if trans.any():
                     if require_inside_now:
                         trans &= inside_mask[t, start:end]
                     if require_inside_prev:
-                        trans &= inside_mask[t-1, start:end]
+                        trans &= inside_mask[t - 1, start:end]
 
                 cur = mass[t, start:end]
                 finite = np.isfinite(cur)
 
+                # Forward-fill mass at this timestep
                 np.copyto(cur_ff, prev_ff)
-                if finite.any():
-                    cur_ff[finite] = cur[finite]
-
+                np.copyto(cur_ff, cur, where=finite)
                 if trans.any():
-                    ts[t] += np.nansum(cur_ff[trans], dtype=np.float64)
-
+                    # Sum without boolean-indexing copy
+                    ts[t] += np.sum(
+                        cur_ff,
+                        where=trans,
+                        dtype=np.float64,
+                        initial=0.0,
+                    )
                 np.copyto(prev_ff, cur_ff)
 
         ts *= mass_conversion_factor
+
         return ts.astype(np.float32, copy=False)
 
 
@@ -15424,7 +15475,7 @@ class ChemicalDrift(OceanDrift):
         required_meta = ['nspecies', 'name_species', 'transfer_rates']
         need_init = (
         (not all(hasattr(self.result, attr) for attr in required_meta)) or
-        (not hasattr(self, 'num_lmm') and not hasattr(self, 'num_lmmcation'))    )
+        (not hasattr(self, 'num_lmm') and not hasattr(self, 'num_lmmcation')))
 
         if need_init:
             if self.mode != opendrift.models.basemodel.Mode.Config:
@@ -15499,7 +15550,6 @@ class ChemicalDrift(OceanDrift):
 
         # Optional time filtering
         result_ds = self.result
-
         # Build full time axes on the *current* (cleaned) dataset
         full_time_date = pd.to_datetime(result_ds.time.values)
         full_steps = full_time_date.size
@@ -15507,7 +15557,6 @@ class ChemicalDrift(OceanDrift):
 
         mask_t = np.ones(full_steps, dtype=bool)
         use_time_window = (time_start is not None) or (time_end is not None)
-
         # Calendar-date filtering (only if no explicit time window)
         if (not use_time_window) and (start_date is not None):
             sd = pd.to_datetime(start_date)
@@ -15515,13 +15564,11 @@ class ChemicalDrift(OceanDrift):
         if (not use_time_window) and (end_date is not None):
             ed = pd.to_datetime(end_date)
             mask_t &= (full_time_date <= ed)
-
         # Time-since-start filtering (inclusive)
         if time_start is not None:
             mask_t &= (full_time_steps >= float(time_start))
         if time_end is not None:
             mask_t &= (full_time_steps <= float(time_end))
-
         # Apply slicing only if any filter was requested
         filter_requested = (start_date is not None) or (end_date is not None) or (time_start is not None) or (time_end is not None)
 
@@ -15549,48 +15596,42 @@ class ChemicalDrift(OceanDrift):
 
         # Number of timesteps (after optional filtering)
         steps = len(self.result.time)
-
         result_ds=self.result
-        attrs_ls = [
-            'lat', 'lon', 'mass',
-            'mass_degraded', 'mass_degraded_water', 'mass_degraded_sediment',
-            'mass_volatilized', 'mass_photodegraded', 'mass_biodegraded',
-            'mass_biodegraded_water', 'mass_biodegraded_sediment',
-            'mass_hydrolyzed', 'mass_hydrolyzed_water', 'mass_hydrolyzed_sediment'
+        required_fields = [
+            'lat', 'lon', 'mass', 'status', 'specie',
+            'mass_degraded', 'mass_degraded_water',
+            'mass_degraded_sediment', 'mass_volatilized',
         ]
-
         missing_attrs = [
-            field
-            for field in attrs_ls
+            field for field in required_fields
             if field not in result_ds
         ]
-
         if missing_attrs:
             raise ValueError(
                 f"Required field(s) not found in self.result: {missing_attrs}"
             )
 
         missing_extra_fields = [
-            field
-            for field in (extra_fields or {})
+            field for field in (extra_fields or {})
             if field not in result_ds
         ]
-
         if missing_extra_fields:
             raise ValueError(
                 f"Requested extra field(s) not found in self.result: {missing_extra_fields}"
             )
 
-        # Dynamically extract attributes and create dictionary
-        extracted_attrs_dict_2d = {}
-        for attr in attrs_ls:
-            extracted_attrs_dict_2d[attr] = ((getattr(result_ds, attr).T.values)
-                               if hasattr(result_ds, attr) else None)
+        def get_2d(result_ds, name, dtype=None, contiguous=False):
+            arr = result_ds[name].transpose("time", "trajectory").to_numpy()
+            if dtype is not None:
+                arr = arr.astype(dtype, copy=False)
+            if contiguous:
+                arr = np.ascontiguousarray(arr)
+            return arr
 
-        # Get mask for elements in water column and sedments for each timestep
-        N_elem = extracted_attrs_dict_2d['mass'].shape[1]
-        status = result_ds.status.T.values                     # (T,N)
-        specie = result_ds.specie.T.values                     # (T,N)
+        mass = get_2d(result_ds, "mass", dtype=np.float32, contiguous=True)
+        status = get_2d(result_ds, "status", contiguous=True)
+        specie = get_2d(result_ds, "specie", contiguous=True)
+        steps, N_elem = mass.shape
 
         in_water_column_ls = []
         in_water_column_ls = [
@@ -15599,7 +15640,17 @@ class ChemicalDrift(OceanDrift):
                              'num_prev', 'num_psrev', 'num_pirrev')
             if (val := getattr(self, name, None)) is not None
         ]
-        in_water_column = np.any([specie == value for value in in_water_column_ls], axis=0)
+
+        def isin_small(arr, values):
+            values = [v for v in values if v is not None]
+            out = np.zeros(arr.shape, dtype=bool)
+            tmp = np.empty(arr.shape, dtype=bool)
+            for v in values:
+                np.equal(arr, v, out=tmp)
+                np.logical_or(out, tmp, out=out)
+            return out
+
+        in_water_column = isin_small(specie, in_water_column_ls)
 
         # Active (mixed) sediment layer includes all sediment pools that are in the mixed layer:
         # reversible, slowly reversible, and (if enabled) irreversible.
@@ -15608,7 +15659,7 @@ class ChemicalDrift(OceanDrift):
             val for name in ('num_srev', 'num_ssrev', 'num_sirrev')
             if (val := getattr(self, name, None)) is not None
         ]
-        in_sediment_layer = np.any([specie == value for value in in_sediment_column_ls], axis=0)
+        in_sediment_layer = isin_small(specie, in_sediment_column_ls)
 
         # Buried sediment compartment (deep storage)
         in_buried_sed = (specie == self.num_sburied) if hasattr(self, 'num_sburied') else np.zeros_like(specie, dtype=bool)
@@ -15627,28 +15678,51 @@ class ChemicalDrift(OceanDrift):
         if shp_file_path is not None:
             if verbose:
                 print("shapefile used")
+            import shapely
             gdf_shapefile = gpd.read_file(shp_file_path)
-
-            ntraj = extracted_attrs_dict_2d['lon'].shape[1]
-            adv_out = np.empty((steps, ntraj), dtype=bool)
-
-            for t in range(steps):
-                lon_ = extracted_attrs_dict_2d['lon'][t]
-                lat_ = extracted_attrs_dict_2d['lat'][t]
-
-                pts = gpd.GeoDataFrame(
-                    geometry=gpd.points_from_xy(lon_, lat_, crs=gdf_shapefile.crs)
+            # lon/lat from OpenDrift are normally EPSG:4326.
+            # The geometry must be in the same CRS as lon/lat before using contains_xy.
+            if gdf_shapefile.crs is None:
+                raise ValueError(
+                    "Shapefile CRS is undefined. Please assign the correct CRS before using shp_file_path."
                 )
-                joined = gpd.sjoin(pts, gdf_shapefile, predicate='within', how='left')
-                inside = joined["index_right"].notna().to_numpy()
-                adv_out[t] = ~inside
+
+            gdf_shapefile = gdf_shapefile.to_crs("EPSG:4326")
+            # Merge all polygons into one geometry.
+            # union_all is preferred in newer GeoPandas/Shapely versions.
+            domain_geom = gdf_shapefile.geometry.union_all()
+            # Load lon/lat only here
+            lon = get_2d(result_ds, "lon", dtype=np.float64)
+            lat = get_2d(result_ds, "lat", dtype=np.float64)
+            ntraj = lon.shape[1]
+            adv_out = np.empty((steps, ntraj), dtype=bool)
+            # Chunk over trajectories to avoid very large temporary arrays.
+            geo_chunk_cols = 50000
+            for start in range(0, ntraj, geo_chunk_cols):
+                end = min(start + geo_chunk_cols, ntraj)
+
+                lon_chunk = lon[:, start:end]
+                lat_chunk = lat[:, start:end]
+                valid_xy = np.isfinite(lon_chunk) & np.isfinite(lat_chunk)
+                inside = shapely.contains_xy(
+                    domain_geom,
+                    lon_chunk,
+                    lat_chunk,
+                )
+                # Outside if not inside, or if lon/lat are invalid.
+                adv_out[:, start:end] = ~(inside & valid_xy)
+            del lon, lat
         # (ii) polygon built from (lon_min/lon_max/lat_min/lat_max)
         elif (lat_min is not None and lat_max is not None and lon_min is not None and lon_max is not None):
             if verbose:
                     print(f"lat_min {lat_min}, lat_max: {lat_max}, lon_min: {lon_min}, lon_max: {lon_max} used")
-            lon = extracted_attrs_dict_2d['lon']
-            lat = extracted_attrs_dict_2d['lat']
-            adv_out = ~( (lon >= lon_min) & (lon <= lon_max) & (lat >= lat_min) & (lat <= lat_max))
+            # Load lon/lat only here
+            lon = get_2d(result_ds, "lon", dtype=np.float64)
+            lat = get_2d(result_ds, "lat", dtype=np.float64)
+            adv_out = ~(
+                (lon >= lon_min) & (lon <= lon_max) &
+                (lat >= lat_min) & (lat <= lat_max))
+            del lon, lat
             # adv_out |= ~(np.isfinite(lon) & np.isfinite(lat))  # mark NaNs as outside if desired
         # (iii) deactivate_coords + outside status
         elif deactivate_coords:
@@ -15676,14 +15750,12 @@ class ChemicalDrift(OceanDrift):
         # Use dataset time coordinate directly
         time_date_serie = pd.to_datetime(self.result.time.values)
 
-        adv_out=adv_out.astype(bool)
-        in_water_column=in_water_column.astype(bool)
-        in_sediment_layer=in_sediment_layer.astype(bool)
-        in_buried_sed=in_buried_sed.astype(bool)
-
-        def masked_nansum(arr, mask, axis):
+        def masked_nansum(arr, mask, axis=1):
             """Sum arr over axis, only where mask==True; ignore NaNs inside mask."""
-            return np.nansum(np.where(mask, arr, np.nan), axis=axis)
+            return np.nansum(
+                arr, axis=axis,
+                where=mask, dtype=np.float64,
+                initial=0.0,)
 
         # Dynamically extract 1D timeseries
         mass_dict_1d = {}
@@ -15702,15 +15774,20 @@ class ChemicalDrift(OceanDrift):
         if stranded_idx is not None:
             inside_mask &= (status != stranded_idx)
 
-        mass_dict_1d["mass_water_ts"] = masked_nansum(extracted_attrs_dict_2d['mass'], in_water_column  & inside_mask, axis=1) * mass_conversion_factor
-        mass_dict_1d["mass_sed_ts"] = masked_nansum(extracted_attrs_dict_2d['mass'], in_sediment_layer  & inside_mask, axis=1) * mass_conversion_factor
-        mass_dict_1d["mass_actual_ts"] = mass_dict_1d["mass_water_ts"] + mass_dict_1d["mass_sed_ts"]
+        mass_dict_1d["mass_water_ts"] = (
+            masked_nansum(mass, in_water_column & inside_mask, axis=1)
+            * mass_conversion_factor)
 
-        # 2) Inside-system mass for each specie (not buried/outside/seeded_on_land/stranded elements)
-        mass = np.asarray(extracted_attrs_dict_2d['mass'])   # (T,N)
+        mass_dict_1d["mass_sed_ts"] = (
+            masked_nansum(mass, in_sediment_layer & inside_mask, axis=1)
+            * mass_conversion_factor)
+
+        mass_dict_1d["mass_actual_ts"] = (
+            mass_dict_1d["mass_water_ts"] + mass_dict_1d["mass_sed_ts"])
+
+        # 2) Inside-system mass for each specie
         T = mass.shape[0]
-        zeros_ts = np.zeros(T, dtype=float)
-
+        zeros_ts = np.zeros(T, dtype=np.float64)
         den = mass_dict_1d["mass_actual_ts"].astype(float)
         den_safe = np.where(den > 0, den, np.nan)
 
@@ -15733,7 +15810,7 @@ class ChemicalDrift(OceanDrift):
                 perc_sp_dict_1d[f"perc_sp_{key}_ts"] = np.nan_to_num((m_ts / den_safe) * 100.0, nan=0.0)
 
         # 3) Emitted mass (first timestep each element is finite)
-        valid = np.isfinite(extracted_attrs_dict_2d['mass'])
+        valid = np.isfinite(mass)
         first_seen_idx = valid.argmax(axis=0)                 # 0 if never seen; guard with has_seen
         has_seen = valid.any(axis=0)
         # weight by mass at first_seen
@@ -15746,26 +15823,33 @@ class ChemicalDrift(OceanDrift):
 
         # 4) Mass eliminated
         # Always cumulative in self.result
+        # Some eliminated fields are optional, but all should appear in the final CSV.
         attrs_ls_1d = [
             'mass_degraded', 'mass_degraded_water', 'mass_degraded_sediment',
-            'mass_volatilized',
-            'mass_photodegraded', 'mass_biodegraded',
-            'mass_biodegraded_water', 'mass_biodegraded_sediment',
-            'mass_hydrolyzed', 'mass_hydrolyzed_water', 'mass_hydrolyzed_sediment'
+            'mass_volatilized', 'mass_photodegraded',
+            'mass_biodegraded', 'mass_biodegraded_water', 'mass_biodegraded_sediment',
+            'mass_hydrolyzed', 'mass_hydrolyzed_water', 'mass_hydrolyzed_sediment',
         ]
-
         for attr in attrs_ls_1d:
-            array2d = extracted_attrs_dict_2d.get(attr)
-            if array2d is None:
-                mass_eliminated_dict_1d[f"{attr}_ts"] = zeros_ts
-                mass_eliminated_dict_1d[f"{attr}_cumulative"] = zeros_ts
+            if attr not in result_ds:
+                if verbose:
+                    print(f"Optional eliminated field {attr!r} not found; filling with zeros")
+                zero_ts = np.zeros(steps, dtype=np.float32)
+                mass_eliminated_dict_1d[f"{attr}_ts"] = zero_ts
+                mass_eliminated_dict_1d[f"{attr}_cumulative"] = zero_ts.copy()
                 continue
-            # 1D per-export-step total increment
-            m_ts = self._cumulative_to_deltas_sum_ffill(array2d, chunk_cols=50000)
-            # convert units
-            m_ts = (m_ts * mass_conversion_factor).astype(np.float32)
+
+            array2d = get_2d(result_ds, attr, dtype=np.float32)
+            m_ts = self._cumulative_to_deltas_sum_ffill(
+                array2d,
+                chunk_cols=50000,)
+            del array2d
+            m_ts = (m_ts * mass_conversion_factor).astype(np.float32, copy=False)
+
             mass_eliminated_dict_1d[f"{attr}_ts"] = m_ts
-            mass_eliminated_dict_1d[f"{attr}_cumulative"] = np.cumsum(m_ts, dtype=np.float64).astype(np.float32)
+            mass_eliminated_dict_1d[f"{attr}_cumulative"] = np.cumsum(
+                m_ts, dtype=np.float64,
+            ).astype(np.float32)
 
         # 5) Outside/advection
         # compute mass exiting by advection (ignore initial outside at t=0)
@@ -15951,22 +16035,83 @@ class ChemicalDrift(OceanDrift):
         # 9) Extra user-requested fields aggregated over all elements (no masks)
         # For mean-like modes, also export a companion count series:
         #   <value_col>__n_valid
-        for field, spec in (extra_fields or {}).items():
+        def aggregate_extra_field_chunked(da, mode, chunk_cols=50000):
+            """
+            Aggregate a 2D xarray.DataArray with dims ('time', 'trajectory')
+            in chunks over trajectory to reduce temporary RAM use.
+            Returns:
+                ts:          (T,) float64
+                valid_count: (T,) float64 or None
+            """
+            da_t = da.transpose("time", "trajectory")
+            T = da_t.sizes["time"]
+            N = da_t.sizes["trajectory"]
 
-            da = getattr(result_ds, field)
+            sums = np.zeros(T, dtype=np.float64)
+            if mode == "sum":
+                for start in range(0, N, chunk_cols):
+                    end = min(start + chunk_cols, N)
+                    chunk = da_t.isel(trajectory=slice(start, end)).to_numpy()
+                    # Same behavior as np.nansum(arr2d, axis=1), but chunked.
+                    finite = np.isfinite(chunk)
+                    sums += np.sum(
+                        chunk, axis=1,
+                        where=finite,
+                        dtype=np.float64,
+                        initial=0.0,
+                    )
+                return sums, None
+
+            if mode not in ("mean", "mean_nonzero", "mean_abs_nonzero"):
+                raise ValueError(
+                    f"Incorrect mode: {mode!r}. "
+                    "Allowed: 'mean', 'sum', 'mean_nonzero', 'mean_abs_nonzero'"
+                )
+            valid_count = np.zeros(T, dtype=np.float64)
+
+            for start in range(0, N, chunk_cols):
+                end = min(start + chunk_cols, N)
+                chunk = da_t.isel(trajectory=slice(start, end)).to_numpy()
+                finite = np.isfinite(chunk)
+
+                if mode == "mean":
+                    used = finite
+                    values = chunk
+                elif mode == "mean_nonzero":
+                    used = finite & (chunk != 0)
+                    values = chunk
+                elif mode == "mean_abs_nonzero":
+                    used = finite & (chunk != 0)
+                    # Chunk-sized temporary only, not full T x N.
+                    values = np.empty_like(chunk, dtype=np.float64)
+                    np.abs(chunk, out=values, where=finite)
+                    values[~finite] = 0.0
+
+                valid_count += used.sum(axis=1, dtype=np.float64)
+                sums += np.sum(
+                    values, axis=1,
+                    where=used, dtype=np.float64,
+                    initial=0.0,
+                )
+            ts = np.divide(
+                sums, valid_count,
+                out=np.full(T, np.nan, dtype=np.float64),
+                where=valid_count > 0,
+            )
+            return ts, valid_count
+
+        for field, spec in (extra_fields or {}).items():
+            da = result_ds[field]
             if set(da.dims) != {"trajectory", "time"}:
                 raise ValueError(
                     f"Requested extra field {field!r} must have dims "
                     f"('trajectory','time') in any order, got {da.dims}"
                 )
-
             spec = {} if spec is None else dict(spec)
-
             out_name = spec.get("Name", field)
             out_um = spec.get("Unit of measure", spec.get("Unit", getattr(da, "units", "")))
             mode = str(spec.get("mode", "mean")).strip().lower()
-
-            # optional aliases
+            # Optional aliases
             mode_aliases = {
                 "mean_non_zero": "mean_nonzero",
                 "mean_non0": "mean_nonzero",
@@ -15974,46 +16119,26 @@ class ChemicalDrift(OceanDrift):
                 "mean_abs_non0": "mean_abs_nonzero",
             }
             mode = mode_aliases.get(mode, mode)
-
-            arr2d = da.transpose("time", "trajectory").values  # (T, N)
-
             col_name = f"{out_name} [{out_um}]" if str(out_um).strip() else out_name
-
             if mode == "sum":
-                ts = np.nansum(arr2d, axis=1).astype(np.float64, copy=False)
+                ts, _ = aggregate_extra_field_chunked(
+                    da=da, mode=mode,
+                    chunk_cols=50000,
+                )
                 extra_fields_dict_1d[col_name] = ts
-
             elif mode in ("mean", "mean_nonzero", "mean_abs_nonzero"):
-                finite = np.isfinite(arr2d)
-
-                if mode == "mean":
-                    used = finite
-                    values = np.where(used, arr2d, 0.0)
-
-                elif mode == "mean_nonzero":
-                    used = finite & (arr2d != 0)
-                    values = np.where(used, arr2d, 0.0)
-
-                elif mode == "mean_abs_nonzero":
-                    used = finite & (arr2d != 0)
-                    values = np.where(used, np.abs(arr2d), 0.0)
-
-                valid_count = used.sum(axis=1).astype(np.float64, copy=False)
-                ts_sum = values.sum(axis=1, dtype=np.float64)
-
-                ts = np.divide(
-                    ts_sum,
-                    valid_count,
-                    out=np.full(arr2d.shape[0], np.nan, dtype=np.float64),
-                    where=valid_count > 0,)
-
+                ts, valid_count = aggregate_extra_field_chunked(
+                    da=da,
+                    mode=mode,
+                    chunk_cols=50000,
+                )
                 extra_fields_dict_1d[col_name] = ts
                 extra_fields_count_dict_1d[f"{col_name}__n_valid"] = valid_count
-
             else:
                 raise ValueError(
                     f"Incorrect mode for extra field {field!r}: {mode!r}. "
-                    "Allowed: 'mean', 'sum', 'mean_nonzero', 'mean_abs_nonzero'")
+                    "Allowed: 'mean', 'sum', 'mean_nonzero', 'mean_abs_nonzero'"
+                )
 
         # Drop padding row (if used) and recompute window cumulatives
         if pad_rows:
