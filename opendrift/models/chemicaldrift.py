@@ -4797,10 +4797,16 @@ class ChemicalDrift(OceanDrift):
         # Current direction
         ec_x = np.zeros(n, dtype=float)
         ec_y = np.zeros(n, dtype=float)
-        # has_current = tau_c > eps
-        np.hypot(tau_bx, tau_by) > eps
-        ec_x[has_current] = tau_bx[has_current] / tau_c[has_current]
-        ec_y[has_current] = tau_by[has_current] / tau_c[has_current]
+        # Current direction
+        # Build a true unit vector from the current-stress components.
+        # If direct bed stress exists but no usable velocity direction is available,
+        # tau_bx/tau_by remain zero and has_current stays False.
+        ec_x = np.zeros(n, dtype=float)
+        ec_y = np.zeros(n, dtype=float)
+        tau_vec = np.hypot(tau_bx, tau_by)
+        has_current = tau_vec > eps
+        ec_x[has_current] = tau_bx[has_current] / tau_vec[has_current]
+        ec_y[has_current] = tau_by[has_current] / tau_vec[has_current]
 
         # Wave magnitude and direction, if requested
         tau_wave = None
@@ -10204,6 +10210,7 @@ class ChemicalDrift(OceanDrift):
 
         _t0 = time.perf_counter()
         _start_wall = datetime.now()
+
         def log(msg: str) -> None:
             elapsed_s = time.perf_counter() - _t0
             h, rem = divmod(int(elapsed_s), 3600)
@@ -11248,6 +11255,90 @@ class ChemicalDrift(OceanDrift):
                     "strictly greater than 0.0 m.")
 
     @staticmethod
+    def _nearest_valid_wet_cell(Bathimetry_seed_data, lat0, lon0, radius_m):
+        """
+        Find nearest finite positive bathymetry cell within radius_m of lat0/lon0.
+
+        Returns:
+            dict with lat, lon, depth, distance_m
+            or None if no valid wet cell is found.
+        """
+        import numpy as np
+
+        if Bathimetry_seed_data is None:
+            return None
+
+        radius_m = float(radius_m)
+        if not np.isfinite(radius_m) or radius_m <= 0:
+            return None
+
+        lat0 = float(lat0)
+        lon0 = float(lon0)
+
+        # Convert search radius from meters to degrees.
+        lat_window = radius_m / 111_000.0
+        lon_window = radius_m / (
+            111_000.0 * max(abs(np.cos(np.deg2rad(lat0))), 1e-6)
+        )
+
+        lat_min = lat0 - lat_window
+        lat_max = lat0 + lat_window
+        lon_min = lon0 - lon_window
+        lon_max = lon0 + lon_window
+
+        lat_coord = np.asarray(Bathimetry_seed_data.latitude.values, dtype=float)
+        lon_coord = np.asarray(Bathimetry_seed_data.longitude.values, dtype=float)
+
+        # xarray slice direction must follow coordinate ordering.
+        lat_slice = slice(lat_min, lat_max) if lat_coord[0] <= lat_coord[-1] else slice(lat_max, lat_min)
+        lon_slice = slice(lon_min, lon_max) if lon_coord[0] <= lon_coord[-1] else slice(lon_max, lon_min)
+
+        nearby = Bathimetry_seed_data.sel(
+            latitude=lat_slice,
+            longitude=lon_slice,
+        )
+
+        if nearby.size == 0:
+            return None
+
+        # Ensure array order is latitude, longitude.
+        nearby = nearby.transpose("latitude", "longitude")
+
+        vals = np.asarray(nearby.values, dtype=float)
+        valid = np.isfinite(vals) & (vals > 0.0)
+
+        if not valid.any():
+            return None
+
+        lat_grid = np.asarray(nearby.latitude.values, dtype=float)
+        lon_grid = np.asarray(nearby.longitude.values, dtype=float)
+
+        yy, xx = np.where(valid)
+
+        cand_lats = lat_grid[yy]
+        cand_lons = lon_grid[xx]
+        cand_depths = vals[yy, xx]
+
+        dy = (cand_lats - lat0) * 111_000.0
+        dx = (cand_lons - lon0) * 111_000.0 * np.cos(np.deg2rad(lat0))
+        dist = np.sqrt(dx * dx + dy * dy)
+
+        inside = dist <= radius_m
+
+        if not inside.any():
+            return None
+
+        inside_idx = np.where(inside)[0]
+        best = inside_idx[np.argmin(dist[inside])]
+
+        return {
+            "lat": float(cand_lats[best]),
+            "lon": float(cand_lons[best]),
+            "depth": float(cand_depths[best]),
+            "distance_m": float(dist[best]),
+        }
+
+    @staticmethod
     def _remove_positions(items, positions):
         """
         Remove indices in `positions` from each item in `items`.
@@ -11580,6 +11671,9 @@ class ChemicalDrift(OceanDrift):
             emission_placement="upper_1m",
             emission_seafloor_eps=None,
             active_sediment_layer_thickness_data=None,
+            emission_coordinate_mode="pixel_center",
+            emission_wetcell_recovery=False,
+            emission_wetcell_diagnostic_radius=2000,
     ):
         """
         Seed elements based on a dataarray with water/sediment concentration or direct emissions to water.
@@ -11636,9 +11730,18 @@ class ChemicalDrift(OceanDrift):
                                     available layer (True) or is consedered without chemical (False)
         emission_placement:   "upper_1m" or "seafloor"
                               Controls where emission-mode particles are initialized. Used only for mode='emission'.
-        emission_seafloor_eps:                              float32, optional offset above seabed used only when
+        emission_seafloor_eps: float32, optional offset above seabed used only when
                               mode='emission' and emission_placement='seafloor'.
         origin_marker:        int, or string "single", assign a marker to seeded elements. If "single" a different origin_marker will be assigned to each datapoint
+        emission_coordinate_mode: string, "pixel_center" or "source". Controls horizontal seed location for mode='emission'. Only used for mode='emission'.
+                      "pixel_center" seds at : lon/lat + half grid cell.
+                      "source" seeds at the exact coordinates in NETCDF_data.
+        emission_wetcell_recovery: boolean, If True, direct emission points with invalid/NaN.
+                       Bathimetry_seed_data are moved to the nearest valid wet bathymetry cell within radius.
+        emission_wetcell_diagnostic_radius: flot32, Radius in meters used only for debug diagnostics when emission_wetcell_recovery is enabled but no valid wet
+                               cell is found within radius. Set to None or 0 to disable outside-radius diagnostic lookup.
+
+
         """
         import opendrift
         from datetime import datetime
@@ -11671,6 +11774,21 @@ class ChemicalDrift(OceanDrift):
             raise ValueError(
                 "emission_seafloor_eps must be provided when mode='emission' "
                 "and emission_placement='seafloor'.")
+        if emission_coordinate_mode not in ("pixel_center", "source"):
+            raise ValueError(
+                f"Invalid emission_coordinate_mode='{emission_coordinate_mode}'. "
+                "Use 'pixel_center' or 'source'."
+            )
+        if not isinstance(emission_wetcell_recovery, bool):
+            raise ValueError(
+                "emission_wetcell_recovery must be a boolean: True or False."
+            )
+        if emission_wetcell_diagnostic_radius is not None:
+            emission_wetcell_diagnostic_radius = float(emission_wetcell_diagnostic_radius)
+            if emission_wetcell_diagnostic_radius < 0.0:
+                raise ValueError(
+                    "emission_wetcell_diagnostic_radius must be >= 0 or None."
+                )
 
         # Validate speciation inputs
         if not np.all([(hasattr(self, attr)) for attr in ['nspecies', 'name_species', 'transfer_rates']]):
@@ -11795,41 +11913,102 @@ class ChemicalDrift(OceanDrift):
                 raise ValueError(
                     "Bathimetry_seed_data is required for mode='emission_depth'")
 
-        # Find center of pixel for volume of water / sediments
-        lon_array = lo + lon_resol / 2
-        lat_array = la + lat_resol / 2
+        # For gridded concentration fields, seed at pixel center.
+        # For direct emissions, keep pixel-center behavior by default,
+        # unless explicitly requested to seed at the source coordinates.
+        if mode == "emission" and emission_coordinate_mode == "source":
+            lon_array = lo
+            lat_array = la
+        else:
+            lon_array = lo + lon_resol / 2
+            lat_array = la + lat_resol / 2
+
+        seed_qc = Counter()
+        seeded_datapoints = 0
+        seeded_elements_counter = 0
 
         # Prune datapoints where Bathimetry_seed_data at the pixel-center is NaN/<=0
         if mode in ("water_conc", "sed_conc", "emission_depth"):
             if Bathimetry_seed_data is None:
                 raise ValueError(
                     "Bathimetry_seed_data is required for mode='water_conc', "
-                    "mode='sed_conc', and mode='emission_depth'")
+                    "mode='sed_conc', and mode='emission_depth'"
+                )
 
             check_bad = []
             ncheck = int(np.size(lon_array))
+
             for i in range(ncheck):
+                seed_lat = float(lat_array[i])
+                seed_lon = float(lon_array[i])
+
+                try:
+                    raw_lat = float(la[i])
+                    raw_lon = float(lo[i])
+                except Exception:
+                    raw_lat = None
+                    raw_lon = None
+
                 try:
                     Bseed = float(
                         Bathimetry_seed_data.sel(
-                            latitude=float(lat_array[i]),
-                            longitude=float(lon_array[i]),
-                            method='nearest'
+                            latitude=seed_lat,
+                            longitude=seed_lon,
+                            method="nearest",
                         ).values
                     )
+
                     if (not np.isfinite(Bseed)) or (Bseed <= 0.0):
                         check_bad.append(i)
+
+                        seed_qc["bathymetry_seed_pruned"] += 1
+                        seed_qc["bathymetry_seed_pruned_invalid"] += 1
+
+                        logger.debug(
+                            "[seed_from_NETCDF-bathymetry-seed-prune] "
+                            "mode=%s point=%s raw_lat=%s raw_lon=%s "
+                            "seed_lat=%.10f seed_lon=%.10f Bathimetry_seed=%s "
+                            "reason=invalid Bathimetry_seed_data origin_marker=%s",
+                            mode,
+                            i,
+                            raw_lat,
+                            raw_lon,
+                            seed_lat,
+                            seed_lon,
+                            Bseed,
+                            origin_marker,
+                        )
+
                 except Exception as e:
+                    check_bad.append(i)
+
+                    seed_qc["bathymetry_seed_pruned"] += 1
+                    seed_qc["bathymetry_seed_prune_lookup_error"] += 1
+
+                    logger.debug(
+                        "[seed_from_NETCDF-bathymetry-seed-prune] "
+                        "mode=%s point=%s raw_lat=%s raw_lon=%s "
+                        "seed_lat=%.10f seed_lon=%.10f "
+                        "reason=bathymetry_lookup_error error=%r origin_marker=%s",
+                        mode,
+                        i,
+                        raw_lat,
+                        raw_lon,
+                        seed_lat,
+                        seed_lon,
+                        e,
+                        origin_marker,
+                    )
+
                     self._record_seed_failure(
                         fail_records=fail_records,
                         stage="bathymetry_seed_prune",
                         point_index=i,
                         exc=e,
-                        lon=float(lon_array[i]),
-                        lat=float(lat_array[i]),
+                        lon=seed_lon,
+                        lat=seed_lat,
                         mode=mode,
                     )
-                    check_bad.append(i)
 
             if check_bad:
                 bad = np.asarray(check_bad, dtype=int)
@@ -11838,14 +12017,24 @@ class ChemicalDrift(OceanDrift):
 
                 sel, la, lo, lat_array, lon_array, depth_vec, t_vec = self._remove_positions(
                     (sel, la, lo, lat_array, lon_array, depth_vec, t_vec),
-                    bad)
+                    bad,
+                )
 
                 if depth_vec is not None:
                     depth = depth_vec
                 if t_vec is not None:
                     t = t_vec
 
-                logger.info("%s datapoints removed due to inconsistent bathymetry (seed grid)", bad.size)
+                logger.debug(
+                    "[seed_from_NETCDF-bathymetry-seed-prune-summary] "
+                    "mode=%s origin_marker=%s pruned=%s "
+                    "invalid=%s lookup_errors=%s",
+                    mode,
+                    origin_marker,
+                    int(bad.size),
+                    seed_qc.get("bathymetry_seed_pruned_invalid", 0),
+                    seed_qc.get("bathymetry_seed_prune_lookup_error", 0),
+                )
 
         if mode == 'water_conc' and Bathimetry_data is None:
             raise ValueError("Bathimetry_data is required for mode='water_conc'")
@@ -11855,8 +12044,53 @@ class ChemicalDrift(OceanDrift):
         npts = int(values.size)
 
         if npts == 0:
-            logger.info("No datapoints left after filtering/pruning; nothing to seed.")
+            self._last_seed_from_netcdf_qc = dict(seed_qc)
             self._last_seed_from_netcdf_failures = fail_records
+
+            if fail_records:
+                stage_counts = Counter(rec["stage"] for rec in fail_records)
+                logger.warning(
+                    "Seeding completed with %s recorded failures. Stage counts: %s",
+                    len(fail_records),
+                    dict(stage_counts),
+                )
+            else:
+                logger.info("Seeding completed with 0 failures.")
+
+            print(
+                f"[seed_from_NETCDF-summary] mode={mode} origin_marker={origin_marker} "
+                f"datapoints=0 seeded_datapoints=0 elements=0 radius_m={radius}",
+                flush=True,
+            )
+
+            if seed_qc.get("bathymetry_seed_pruned", 0) > 0:
+                print(
+                    f"[seed_from_NETCDF-qc] mode={mode} origin_marker={origin_marker} "
+                    f"pruned_seed_grid={seed_qc.get('bathymetry_seed_pruned', 0)} "
+                    f"pruned_invalid={seed_qc.get('bathymetry_seed_pruned_invalid', 0)} "
+                    f"prune_lookup_errors={seed_qc.get('bathymetry_seed_prune_lookup_error', 0)}",
+                    flush=True,
+                )
+
+            logger.debug(
+                "seed_from_NETCDF summary: mode=%s origin_marker=%s datapoints=0 "
+                "seeded_datapoints=0 elements=0 radius_m=%s "
+                "emission_coordinate_mode=%s qc=%s",
+                mode,
+                origin_marker,
+                radius,
+                emission_coordinate_mode,
+                dict(seed_qc),
+            )
+
+            logger.debug(
+                "No datapoints left after filtering/pruning; nothing to seed. "
+                "mode=%s origin_marker=%s qc=%s",
+                mode,
+                origin_marker,
+                dict(seed_qc),
+            )
+
             return
 
         print(f"Seeding {npts} datapoints")
@@ -11880,6 +12114,13 @@ class ChemicalDrift(OceanDrift):
 
         FAIL_PREVIEW = 20
 
+        wetcell_cache = {}
+
+        try:
+            scheduled_before_seed_from_netcdf = int(self.num_elements_scheduled())
+        except Exception:
+            scheduled_before_seed_from_netcdf = None
+
         for i in range(npts):
             lai = None
             loi = None
@@ -11890,6 +12131,9 @@ class ChemicalDrift(OceanDrift):
             number = None
             residual_to_seed = None
             emission_depth_value = None
+
+            point_seeded = False
+            point_elements_seeded = 0
 
             try:
                 if i == 0:
@@ -11926,11 +12170,150 @@ class ChemicalDrift(OceanDrift):
                     )
 
                     if (not np.isfinite(Bathimetry_seed)) or (Bathimetry_seed <= 0.0):
-                        logger.debug(
-                            "Skipping point: invalid Bathimetry_seed_data at lon %.6f, lat %.6f (value=%s)",
-                            lon_array[i], lat_array[i], Bathimetry_seed
-                        )
-                        continue
+
+                        # For direct point-source emissions, optionally move NaN/invalid
+                        # points to the nearest valid wet bathymetry cell within radius.
+                        if mode == "emission":
+                            seed_qc["invalid_bathy"] += 1
+
+                            raw_lat = float(lat_array[i])
+                            raw_lon = float(lon_array[i])
+
+                            if not emission_wetcell_recovery:
+                                seed_qc["emission_wetcell_recovery_disabled"] += 1
+
+                                logger.debug(
+                                    "[seed_from_NETCDF-emission-wetcell-recovery-disabled] "
+                                    "mode=%s point=%s raw_lat=%.10f raw_lon=%.10f "
+                                    "Bathimetry_seed=%s radius_m=%s origin_marker=%s",
+                                    mode,
+                                    i,
+                                    raw_lat,
+                                    raw_lon,
+                                    Bathimetry_seed,
+                                    radius,
+                                    origin_marker,
+                                )
+
+                                continue
+
+                            cache_key = (
+                                round(raw_lat, 10),
+                                round(raw_lon, 10),
+                                round(float(radius), 3),
+                            )
+
+                            if cache_key in wetcell_cache:
+                                wet = wetcell_cache[cache_key]
+                            else:
+                                wet = self._nearest_valid_wet_cell(
+                                    Bathimetry_seed_data=Bathimetry_seed_data,
+                                    lat0=raw_lat,
+                                    lon0=raw_lon,
+                                    radius_m=radius,
+                                )
+                                wetcell_cache[cache_key] = wet
+
+                            if wet is None:
+                                diagnostic_radius = emission_wetcell_diagnostic_radius
+
+                                if diagnostic_radius is not None and diagnostic_radius > 0.0:
+                                    wet_far = self._nearest_valid_wet_cell(
+                                        Bathimetry_seed_data=Bathimetry_seed_data,
+                                        lat0=raw_lat,
+                                        lon0=raw_lon,
+                                        radius_m=diagnostic_radius,
+                                    )
+                                else:
+                                    wet_far = None
+
+                                if wet_far is not None:
+                                    seed_qc["nearest_wet_outside_radius"] += 1
+
+                                    logger.debug(
+                                        "[seed_from_NETCDF-nearest-wet-outside-radius] "
+                                        "mode=%s point=%s raw_lat=%.10f raw_lon=%.10f "
+                                        "nearest_lat=%.10f nearest_lon=%.10f "
+                                        "distance_m=%.2f Bathimetry_seed=%s "
+                                        "requested_radius_m=%s diagnostic_radius_m=%s "
+                                        "origin_marker=%s",
+                                        mode,
+                                        i,
+                                        raw_lat,
+                                        raw_lon,
+                                        float(wet_far["lat"]),
+                                        float(wet_far["lon"]),
+                                        float(wet_far["distance_m"]),
+                                        wet_far["depth"],
+                                        radius,
+                                        diagnostic_radius,
+                                        origin_marker,
+                                    )
+                                else:
+                                    seed_qc["no_wet_cell_diagnostic_radius"] += 1
+
+                                    logger.debug(
+                                        "[seed_from_NETCDF-no-wet-cell-diagnostic-radius] "
+                                        "mode=%s point=%s raw_lat=%.10f raw_lon=%.10f "
+                                        "requested_radius_m=%s diagnostic_radius_m=%s "
+                                        "origin_marker=%s",
+                                        mode,
+                                        i,
+                                        raw_lat,
+                                        raw_lon,
+                                        radius,
+                                        diagnostic_radius,
+                                        origin_marker,
+                                    )
+
+                                continue
+
+                            seed_qc["wetcell_rescued"] += 1
+
+                            old_lat = float(lat_array[i])
+                            old_lon = float(lon_array[i])
+
+                            lat_array[i] = wet["lat"]
+                            lon_array[i] = wet["lon"]
+                            Bathimetry_seed = wet["depth"]
+
+                            logger.debug(
+                                "[seed_from_NETCDF-wetcell-fallback] "
+                                "mode=%s point=%s raw_lat=%.10f raw_lon=%.10f "
+                                "new_lat=%.10f new_lon=%.10f "
+                                "distance_m=%.2f Bathimetry_seed=%s "
+                                "radius_m=%s origin_marker=%s",
+                                mode,
+                                i,
+                                old_lat,
+                                old_lon,
+                                float(lat_array[i]),
+                                float(lon_array[i]),
+                                float(wet["distance_m"]),
+                                Bathimetry_seed,
+                                radius,
+                                origin_marker,
+                            )
+
+                        else:
+                            seed_qc["invalid_bathy_non_emission"] += 1
+
+                            logger.debug(
+                                "[seed_from_NETCDF-skip] "
+                                "mode=%s point=%s raw_lat=%s raw_lon=%s "
+                                "seed_lat=%s seed_lon=%s Bathimetry_seed=%s "
+                                "reason=invalid Bathimetry_seed_data origin_marker=%s",
+                                mode,
+                                i,
+                                lai,
+                                loi,
+                                lat_array[i],
+                                lon_array[i],
+                                Bathimetry_seed,
+                                origin_marker,
+                            )
+
+                            continue
 
                 if mode == 'water_conc':
                     Bathimetry_datapoint = float(
@@ -12184,6 +12567,9 @@ class ChemicalDrift(OceanDrift):
 
                     try:
                         self.seed_elements(**kwargs_seed)
+                        point_seeded = True
+                        point_elements_seeded += int(number)
+
                     except Exception as e_batch:
                         self._record_seed_failure(
                             fail_records=fail_records,
@@ -12222,6 +12608,8 @@ class ChemicalDrift(OceanDrift):
                                         kwargs_one["z"] = np.asarray(z, dtype=float).ravel()[k:k+1]
 
                                     self.seed_elements(**kwargs_one)
+                                    point_seeded = True
+                                    point_elements_seeded += 1
 
                                 except Exception as e_single:
                                     self._record_seed_failure(
@@ -12282,6 +12670,8 @@ class ChemicalDrift(OceanDrift):
 
                         try:
                             self.seed_elements(**kwargs_res)
+                            point_seeded = True
+                            point_elements_seeded += 1
 
                         except Exception as e_res:
                             self._record_seed_failure(
@@ -12298,6 +12688,10 @@ class ChemicalDrift(OceanDrift):
                                 origin_marker=origin_marker_seed,
                                 z_kind="string" if isinstance(z_res, str) else "array",
                             )
+
+                if point_seeded:
+                    seeded_datapoints += 1
+                    seeded_elements_counter += int(point_elements_seeded)
 
             except Exception as e_point:
                 self._record_seed_failure(
@@ -12317,6 +12711,72 @@ class ChemicalDrift(OceanDrift):
                     if residual_to_seed is not None and np.isfinite(residual_to_seed) else None,
                 )
                 continue
+
+        try:
+            scheduled_after_seed_from_netcdf = int(self.num_elements_scheduled())
+        except Exception:
+            scheduled_after_seed_from_netcdf = None
+
+        if (
+            scheduled_before_seed_from_netcdf is not None
+            and scheduled_after_seed_from_netcdf is not None
+        ):
+            elements_scheduled = scheduled_after_seed_from_netcdf - scheduled_before_seed_from_netcdf
+        else:
+            elements_scheduled = seeded_elements_counter
+
+        # Finish the dot progress line before printing summaries.
+        print("", flush=True)
+
+        print(
+            f"[seed_from_NETCDF-summary] mode={mode} origin_marker={origin_marker} "
+            f"datapoints={npts} seeded_datapoints={seeded_datapoints} "
+            f"elements={elements_scheduled} radius_m={radius}",
+            flush=True,
+        )
+
+        self._last_seed_from_netcdf_qc = dict(seed_qc)
+
+        qc_unusual = (
+            seed_qc.get("wetcell_rescued", 0) > 0
+            or seed_qc.get("nearest_wet_outside_radius", 0) > 0
+            or seed_qc.get("no_wet_cell_diagnostic_radius", 0) > 0
+            or seed_qc.get("invalid_bathy_non_emission", 0) > 0
+            or seed_qc.get("bathymetry_seed_pruned", 0) > 0
+            or seed_qc.get("emission_wetcell_recovery_disabled", 0) > 0
+        )
+
+        if qc_unusual:
+            print(
+                f"[seed_from_NETCDF-qc] mode={mode} origin_marker={origin_marker} "
+                f"rescued={seed_qc.get('wetcell_rescued', 0)} "
+                f"outside_radius={seed_qc.get('nearest_wet_outside_radius', 0)} "
+                f"no_wet_diagnostic_radius={seed_qc.get('no_wet_cell_diagnostic_radius', 0)} "
+                f"recovery_disabled={seed_qc.get('emission_wetcell_recovery_disabled', 0)} "
+                f"invalid_bathy={seed_qc.get('invalid_bathy', 0)} "
+                f"invalid_bathy_non_emission={seed_qc.get('invalid_bathy_non_emission', 0)} "
+                f"pruned_seed_grid={seed_qc.get('bathymetry_seed_pruned', 0)} "
+                f"pruned_invalid={seed_qc.get('bathymetry_seed_pruned_invalid', 0)} "
+                f"prune_lookup_errors={seed_qc.get('bathymetry_seed_prune_lookup_error', 0)}",
+                flush=True,
+            )
+
+        logger.debug(
+            "seed_from_NETCDF summary: mode=%s origin_marker=%s datapoints=%s "
+            "seeded_datapoints=%s elements=%s radius_m=%s "
+            "emission_coordinate_mode=%s emission_wetcell_recovery=%s "
+            "emission_wetcell_diagnostic_radius=%s qc=%s",
+            mode,
+            origin_marker,
+            npts,
+            seeded_datapoints,
+            elements_scheduled,
+            radius,
+            emission_coordinate_mode,
+            emission_wetcell_recovery,
+            emission_wetcell_diagnostic_radius,
+            dict(seed_qc),
+        )
 
         self._last_seed_from_netcdf_failures = fail_records
 
@@ -15090,15 +15550,38 @@ class ChemicalDrift(OceanDrift):
         # Number of timesteps (after optional filtering)
         steps = len(self.result.time)
 
-        # Dynamically extract attributes and create dictionary
-        attrs_ls = ['lat', 'lon', 'mass',
-                    'mass_degraded','mass_degraded_water', 'mass_degraded_sediment',
-                    'mass_volatilized', 'mass_photodegraded', 'mass_biodegraded',
-                    'mass_biodegraded_water', 'mass_biodegraded_sediment',
-                    'mass_hydrolyzed', 'mass_hydrolyzed_water', 'mass_hydrolyzed_sediment'
-                    ]
-
         result_ds=self.result
+        attrs_ls = [
+            'lat', 'lon', 'mass',
+            'mass_degraded', 'mass_degraded_water', 'mass_degraded_sediment',
+            'mass_volatilized', 'mass_photodegraded', 'mass_biodegraded',
+            'mass_biodegraded_water', 'mass_biodegraded_sediment',
+            'mass_hydrolyzed', 'mass_hydrolyzed_water', 'mass_hydrolyzed_sediment'
+        ]
+
+        missing_attrs = [
+            field
+            for field in attrs_ls
+            if field not in result_ds
+        ]
+
+        if missing_attrs:
+            raise ValueError(
+                f"Required field(s) not found in self.result: {missing_attrs}"
+            )
+
+        missing_extra_fields = [
+            field
+            for field in (extra_fields or {})
+            if field not in result_ds
+        ]
+
+        if missing_extra_fields:
+            raise ValueError(
+                f"Requested extra field(s) not found in self.result: {missing_extra_fields}"
+            )
+
+        # Dynamically extract attributes and create dictionary
         extracted_attrs_dict_2d = {}
         for attr in attrs_ls:
             extracted_attrs_dict_2d[attr] = ((getattr(result_ds, attr).T.values)
@@ -15469,8 +15952,6 @@ class ChemicalDrift(OceanDrift):
         # For mean-like modes, also export a companion count series:
         #   <value_col>__n_valid
         for field, spec in (extra_fields or {}).items():
-            if not hasattr(result_ds, field):
-                raise ValueError(f"Requested extra field {field!r} not found in self.result")
 
             da = getattr(result_ds, field)
             if set(da.dims) != {"trajectory", "time"}:
