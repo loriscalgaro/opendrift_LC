@@ -412,6 +412,8 @@ class OceanDrift(OpenDriftSimulation):
 
         self.timer_start('main loop:updating elements:vertical mixing')
 
+        n_active = self.num_elements_active()
+
         dt_mix = self.get_config('vertical_mixing:timestep')
         dt_mix = dt_mix * np.sign(self.time_step.total_seconds())  # negative for backward simulations
 
@@ -443,7 +445,10 @@ class OceanDrift(OpenDriftSimulation):
                 mixing_z = mixing_z_analytical
                 Kprofiles = self.get_diffusivity_profile('windspeed_Large1994', np.abs(mixing_z))
         elif diffusivity_model == 'constant':
-            logger.debug('Using constant diffusivity specified by fallback_values[''ocean_vertical_diffusivity''] = %s m2.s-1' % (diffusivity_fallback))
+            logger.debug(
+                "Using constant diffusivity specified by fallback_values['ocean_vertical_diffusivity'] = %s m2.s-1",
+                diffusivity_fallback,
+            )
             mixing_z = self.environment_profiles['z'].copy()
             Kprofiles = diffusivity_fallback*np.ones(
                     self.environment_profiles['ocean_vertical_diffusivity'].shape) # keep constant value for ocean_vertical_diffusivity
@@ -453,8 +458,12 @@ class OceanDrift(OpenDriftSimulation):
             mixing_z = mixing_z_analytical
             Kprofiles = self.get_diffusivity_profile(diffusivity_model, np.abs(mixing_z))
 
-        logger.debug('Diffusivities are in range %s to %s' %
-                      (Kprofiles.min(), Kprofiles.max()))
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                'Diffusivities are in range %s to %s',
+                Kprofiles.min(),
+                Kprofiles.max(),
+            )
 
         # get profiles of salinity and temperature
         # (to save interpolation time in the inner loop)
@@ -494,7 +503,7 @@ class OceanDrift(OpenDriftSimulation):
                       ' fast time steps of dt=' + str(dt_mix) + 's')
 
         if store_depths is not False:
-            depths = np.zeros((ntimes_mix, self.num_elements_active()))
+            depths = np.zeros((ntimes_mix, n_active))
             depths[0, :] = self.elements.z
 
         # Calculating dK/dz for all profiles before the loop
@@ -502,17 +511,16 @@ class OceanDrift(OpenDriftSimulation):
         gradK[np.abs(gradK)<1e-10] = 0
 
         for i in range(0, ntimes_mix):
+            moving_idx = np.flatnonzero(np.asarray(self.elements.moving) == 1)
+
             #remember which particles belong to the exact surface
             surface = self.elements.z == 0
 
             # Update the terminal velocity of particles
+            # NOTE: this model hook currently updates terminal velocity for all
+            # active elements. To make this strictly moving-only, update_terminal_velocity()
+            # should be extended with an optional idx/mask argument.
             self.update_terminal_velocity(Tprofiles=Tprofiles, Sprofiles=Sprofiles, z_index=z_index)
-            w = self.elements.terminal_velocity
-
-            # Diffusivity and its gradient at z
-            zi = np.round(z_index(-self.elements.z)).astype(np.uint16)
-            Kz = Kprofiles[zi, range(Kprofiles.shape[1])]
-            dKdz = gradK[zi, range(Kprofiles.shape[1])]
 
             # Visser et al. 1997 random walk mixing
             # requires an inner loop time step dt such that
@@ -521,26 +529,46 @@ class OceanDrift(OpenDriftSimulation):
             # NB: In the last term Kz is evaluated in zi, while
             # it should be evaluated in (self.elements.z - dKdz*dt_mix)
             # This is not expected have large impact on the result
-            R = 2*np.random.random(self.num_elements_active()) - 1
+            R_all = 2*np.random.random(n_active) - 1
             r = 1.0/3
-            # New position  =  old position   - up_K_flux   + random walk
-            self.elements.z = self.elements.z - self.elements.moving*(
-                dKdz*dt_mix - R*np.sqrt((Kz*np.abs(dt_mix)*2/r)))
+
+            if moving_idx.size > 0:
+            # If no elements are moving, keep running model hooks below for functional
+            # equivalence, but the expensive random-walk section inside the loop will be skipped.
+                w = self.elements.terminal_velocity[moving_idx]
+
+                # Diffusivity and its gradient at z
+                if callable(z_index):
+                    zi = np.round(z_index(-self.elements.z[moving_idx])).astype(np.uint16)
+                else:
+                    zi = np.zeros(moving_idx.size, dtype=np.uint16)
+
+                Kz = Kprofiles[zi, moving_idx]
+                dKdz = gradK[zi, moving_idx]
+                R = R_all[moving_idx]
+
+                # New position  =  old position   - up_K_flux   + random walk
+                z_moving = self.elements.z[moving_idx] - (
+                    dKdz*dt_mix - R*np.sqrt((Kz*np.abs(dt_mix)*2/r)))
+
+                self.elements.z[moving_idx] = z_moving
 
             # Reflect from surface
             reflect = np.where(self.elements.z >= 0)
             if len(reflect[0]) > 0:
                 self.elements.z[reflect] = -self.elements.z[reflect]
 
-            # Reflect elements going below seafloor
-            # Zmin accounts for sea_surface_height
-            bottom = np.where(np.logical_and(self.elements.z < Zmin, self.elements.moving == 1))
-            if len(bottom[0]) > 0:
-                logger.debug('%s elements penetrated seafloor, lifting up' % len(bottom[0]))
-                self.elements.z[bottom] = 2*Zmin[bottom] - self.elements.z[bottom]
+            if moving_idx.size > 0:
+                # Reflect elements going below seafloor
+                # Zmin accounts for sea_surface_height
+                bottom = np.where(self.elements.z[moving_idx] < Zmin[moving_idx])
+                if len(bottom[0]) > 0:
+                    logger.debug('%s elements penetrated seafloor, lifting up', len(bottom[0]))
+                    bottom_idx = moving_idx[bottom]
+                    self.elements.z[bottom_idx] = 2*Zmin[bottom_idx] - self.elements.z[bottom_idx]
 
-            # Advect due to buoyancy
-            self.elements.z = self.elements.z + w*dt_mix*self.elements.moving
+                # Advect due to buoyancy
+                self.elements.z[moving_idx] = self.elements.z[moving_idx] + w*dt_mix
 
             # Put the particles that belonged to the surface slick
             # (if present) back to the surface
@@ -556,7 +584,7 @@ class OceanDrift(OpenDriftSimulation):
             # Let particles stick to bottom
             bottom = np.where(self.elements.z < Zmin)
             if len(bottom[0]) > 0:
-                logger.debug('%s elements reached seafloor, interacting with bottom' % len(bottom[0]))
+                logger.debug('%s elements reached seafloor, interacting with bottom', len(bottom[0]))
                 self.interact_with_seafloor()
                 self.bottom_interaction(Zmin)
 
