@@ -2219,16 +2219,17 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                 logger.debug('===================================' * 2)
 
                 # Display element locations to terminal
-                for n in ['lat', 'lon', 'z']:
-                    d = getattr(self.elements, n)
-                    dmin = d.min();
-                    dmax = d.max()
-                    n = n.replace('lat', 'latitude').replace('lon', 'longitude')
-                    if dmin == dmax:
-                        logger.debug(f'\t\t{n} = {dmin}')
-                    else:
-                        logger.debug(f'\t\t{dmin} <- {n} -> {dmax}')
-                logger.debug('---------------------------------')
+                if logger.isEnabledFor(logging.DEBUG):
+                    for n in ['lat', 'lon', 'z']:
+                        d = getattr(self.elements, n)
+                        dmin = d.min();
+                        dmax = d.max()
+                        n = n.replace('lat', 'latitude').replace('lon', 'longitude')
+                        if dmin == dmax:
+                            logger.debug(f'\t\t{n} = {dmin}')
+                        else:
+                            logger.debug(f'\t\t{dmin} <- {n} -> {dmax}')
+                    logger.debug('---------------------------------')
 
                 ###############################################
                 # Get environment data for all active elements
