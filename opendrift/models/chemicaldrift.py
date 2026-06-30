@@ -246,6 +246,30 @@ class ChemicalDrift(OceanDrift):
         'spm': {'fallback': 1},                                                # g/m3
     }
 
+    # Class-level superset of all environmental variables that can be required.
+    # OpenDrift registers environment:fallback:* configuration keys during
+    # BaseModel/OceanDrift construction from the class-level required_variables.
+    # The runtime subset is still rebuilt later in prepare_run().
+    required_variables = {}
+    for _required_group in (
+        BASE_REQUIRED_VARIABLES,
+        PARTITIONING_REQUIRED_VARIABLES,
+        SEDIMENT_EXCHANGE_REQUIRED_VARIABLES,
+        SEDIMENT_BOTTOM_VELOCITY_REQUIRED_VARIABLES,
+        SEDIMENT_LOG_Z0_REQUIRED_VARIABLES,
+        SEDIMENT_GRAIN_D50_REQUIRED_VARIABLES,
+        SEDIMENT_BULK_FLOW_REQUIRED_VARIABLES,
+        SEDIMENT_RESUSPENSION_REQUIRED_VARIABLES,
+        OTHER_STRESS_REQUIRED_VARIABLES,
+        WAVE_STRESS_REQUIRED_VARIABLES,
+        VOLATILIZATION_REQUIRED_VARIABLES,
+        HYDROLYSIS_REQUIRED_VARIABLES,
+        BIODEGRADATION_REQUIRED_VARIABLES,
+        PHOTODEGRADATION_REQUIRED_VARIABLES,
+    ):
+        required_variables.update(_required_group)
+    del _required_group
+
     ###########################################################################
     # Set-up and OpenDrift lifecycle
     ###########################################################################
