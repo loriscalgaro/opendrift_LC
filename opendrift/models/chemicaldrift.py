@@ -7097,6 +7097,7 @@ class ChemicalDrift(OceanDrift):
         if edges[-1] < hi:
             edges = np.append(edges, hi)
         else:
+            # Force the final edge to match hi exactly, avoiding floating-point drift from arange.
             edges[-1] = hi
 
         return edges.astype(dtype, copy=False)
@@ -7153,6 +7154,7 @@ class ChemicalDrift(OceanDrift):
             for t in range(T):
                 cur = w_cum[t, start:end]
                 finite = np.isfinite(cur)
+                # NaNs after deactivation mean "keep last cumulative value", not zero contribution.
                 np.copyto(cur_ff, prev_ff)
                 if finite.any():
                     cur_ff[finite] = cur[finite]
@@ -7163,6 +7165,7 @@ class ChemicalDrift(OceanDrift):
                 if want_deltas:
                     out_row = out[t, start:end]
                     np.subtract(cur_ff, prev_ff, out=out_row, casting="unsafe")
+                    # Negative deltas can arise from numerical noise or resets; they are not physical increments.
                     np.maximum(out_row, 0.0, out=out_row)
                     out_row[~np.isfinite(out_row)] = 0.0
 
@@ -7202,6 +7205,7 @@ class ChemicalDrift(OceanDrift):
             )
 
         ext = np.empty((nx + 2, ny + 2), dtype=np.float64)
+        # Extrapolate a one-cell ghost border so cell-center averages can approximate node values.
         ext[1:-1, 1:-1] = c
         ext[0, 1:-1] = 2.0 * c[0, :] - c[1, :]
         ext[-1, 1:-1] = 2.0 * c[-1, :] - c[-2, :]
@@ -7239,6 +7243,7 @@ class ChemicalDrift(OceanDrift):
         X, Y, _ = c.shape
         nodes = np.full((X + 1, Y + 1), np.nan, dtype=np.float64)
 
+        # Rebuild shared nodes from 4-corner cells and reject inconsistent duplicate corners.
         def _merge(target, values, label):
             existing = nodes[target]
             same_mask = np.isfinite(existing) & np.isfinite(values)
@@ -7328,7 +7333,9 @@ class ChemicalDrift(OceanDrift):
                         continue
 
                     cell = ix * Y + iy
+                    # Split each quadrilateral into two triangles so matplotlib's trifinder can locate cells.
                     tris.append([n00, n10, n11])
+                    # Keep a map from search triangles back to the original quadrilateral cell index.
                     tri_to_cell.append(cell)
                     tris.append([n00, n11, n01])
                     tri_to_cell.append(cell)
@@ -7345,6 +7352,7 @@ class ChemicalDrift(OceanDrift):
             return {
                 "trifinder": tri.get_trifinder(),
                 "tri_to_cell": np.asarray(tri_to_cell, dtype=np.int64),
+                # This bbox is only a quick rejection envelope for locator queries, not the valid domain.
                 "bbox": bbox,
             }
 
@@ -7378,6 +7386,7 @@ class ChemicalDrift(OceanDrift):
                 cell = ix * Y + iy
 
                 tris.append([base + 0, base + 1, base + 2])
+                # Keep a map from search triangles back to the original quadrilateral cell index.
                 tri_to_cell.append(cell)
                 tris.append([base + 0, base + 2, base + 3])
                 tri_to_cell.append(cell)
@@ -7395,6 +7404,7 @@ class ChemicalDrift(OceanDrift):
         return {
             "trifinder": tri.get_trifinder(),
             "tri_to_cell": np.asarray(tri_to_cell, dtype=np.int64),
+            # This bbox is only a quick rejection envelope for locator queries, not the valid domain.
             "bbox": bbox,
         }
 
@@ -7430,6 +7440,7 @@ class ChemicalDrift(OceanDrift):
         start_index = 0
         if obj is not None and hasattr(obj, 'attrs'):
             start_index = int(obj.attrs.get('start_index', 0))
+        # Normalise CF/UGRID start_index so all connectivity is zero-based internally.
         tri = tri - start_index
         if np.any(tri < 0):
             raise ValueError(f"{name} contains negative node indices after applying start_index={start_index}")
@@ -7627,8 +7638,7 @@ class ChemicalDrift(OceanDrift):
                )
            This is the recommended layout for unstructured triangular meshes. Connectivity
            must define triangles, i.e. 3 node indices per face.
-
-    """
+        """
         from pyproj import CRS, Proj, Geod
 
         if output_grid is None:
@@ -8292,6 +8302,7 @@ class ChemicalDrift(OceanDrift):
                                    output_grid=None):
         """
         Compute a gridded species-resolved histogram from particle positions.
+
         Returns
         H : ndarray
             Raw histogram sum of `weight` in each cell, shape (T, S, D, X, Y).
@@ -8914,8 +8925,8 @@ class ChemicalDrift(OceanDrift):
         Interpolate auxiliary bathymetry and optional active sediment layer thickness
         to output cell centers.
 
-        Non-conservative branch used when
-        bathymetry_remap='interpolate'. Bathymetry and active sediment layer thickness
+        Non-conservative branch used when bathymetry_remap='interpolate'.
+        Bathymetry and active sediment layer thickness
         are interpolated linearly from the auxiliary reader grid to the output centers;
         remaining NaNs are filled by nearest-neighbour interpolation. The source
         bathymetry invalid/masked region is interpolated separately as a nearest-neighbour
@@ -9065,16 +9076,43 @@ class ChemicalDrift(OceanDrift):
         thickness, and an invalid-domain mask for write_netcdf_chemical_density_map().
 
         This function is the bathymetry dispatcher used by the concentration-map writer.
-        It supports two main modes:
+        It supports three main modes:
+
           1) bathymetry_remap='interpolate'
              Legacy behaviour. Auxiliary bathymetry fields already loaded on
              self.conc_lon/self.conc_lat are interpolated to output cell centers using
              linear interpolation followed by nearest-neighbour filling.
+
           2) bathymetry_remap='conservative'
-             Conservative polygon-overlap remapping from a source bathymetry NetCDF file
-             to the requested output grid. Local/regional maps use Shapely/STRtree
-             polygon overlap in an equal-area CRS. Basin/global maps use precomputed
-             ESMF/xESMF/SCRIP-style conservative weights.
+             Conservative bathymetry remapping from a source bathymetry NetCDF file
+             to the requested output grid.
+
+             Before using polygon-overlap or precomputed-weight remapping, the function
+             automatically checks whether the source and target cells are identical or
+             same-cell compatible. This includes the case where the target concentration
+             grid is a subset of a larger bathymetry grid. If a valid direct same-cell
+             mapping is found, bathymetry and active sediment layer thickness are copied
+             directly and layer volumes are computed from the copied depth and target
+             cell area.
+
+             If no valid direct same-cell mapping is found, local/regional maps use
+             Shapely/STRtree polygon overlap in an equal-area CRS, while basin/global
+             maps use precomputed ESMF/xESMF/SCRIP-style conservative weights.
+
+          3) bathymetry_remap='direct'
+             Strict direct same-cell mode. The source bathymetry grid must contain cells
+             that exactly match the target output-grid cells, either as the same full grid
+             or as a source grid from which the target grid is a subset.
+
+             If this check succeeds:
+               - bathymetry face/cell values are copied directly
+               - active sediment layer thickness is copied directly, if provided
+               - target area is taken from the output grid or computed from target polygons
+               - layer_volume is computed as clipped layer thickness * target cell area
+               - no interpolation, polygon overlap, or sparse-weight remapping is applied
+
+             If the check fails, the function raises an error explaining that
+             bathymetry_remap='direct' was applied with wrong files.
 
         Arguments
         ---------
@@ -9084,30 +9122,39 @@ class ChemicalDrift(OceanDrift):
                                    For structured outputs, shape is normally (x, y).
                                    For triangular unstructured outputs, shape is normally
                                    (face,).
+
             lats:                  array, latitude of output cell centers or faces,
                                    in degrees_north. Must match the shape of lons.
+
             is_moll:               boolean, True when the legacy output grid is the default
                                    Mollweide-like projected grid. In interpolate mode this
                                    means area may be returned as None because the writer can
                                    use pixelsize_m upstream for simple square-pixel volume.
+
             is_latlon:             boolean, True when the legacy output grid is geographic
                                    lon/lat. Used mainly when output_grid is None to compute
                                    spherical cell area from lat_resol/lon_resol.
+
             lat_resol:             float, output grid spacing in latitude degrees for
                                    geographic legacy grids, or projected y spacing for
-                                   projected legacy grids. Required for conservative remap
-                                   without output_grid.
+                                   projected legacy grids. Required for conservative/direct
+                                   remap without output_grid only when a legacy geographic
+                                   rectilinear target must be reconstructed.
+
             lon_resol:             float, output grid spacing in longitude degrees for
                                    geographic legacy grids, or projected x spacing for
-                                   projected legacy grids. Required for conservative remap
-                                   without output_grid.
+                                   projected legacy grids. Required for conservative/direct
+                                   remap without output_grid only when a legacy geographic
+                                   rectilinear target must be reconstructed.
+
             output_grid:           dict or None, normalized output-grid dictionary produced
                                    by _normalize_output_grid(). Recommended for all explicit
-                                   grids and required for conservative remapping to projected,
-                                   curvilinear, or unstructured targets.
+                                   grids and required for conservative/direct remapping to
+                                   projected, curvilinear, or unstructured targets.
 
-                                   For conservative remapping, output_grid must provide
-                                   target cell geometry in geographic coordinates, either as:
+                                   For conservative or direct bathymetry handling, output_grid
+                                   must provide target cell geometry in geographic coordinates,
+                                   either as:
                                      - lon_corners_4 and lat_corners_4
                                      - lon_nodes and lat_nodes
                                      - triangular_unstructured node/face geometry
@@ -9115,6 +9162,7 @@ class ChemicalDrift(OceanDrift):
                                    If output_grid contains cell_area, that area is used as the
                                    target area. Otherwise target cell area is computed from the
                                    target polygons.
+
             bathymetry_remap:      string, one of:
                                      - 'interpolate'
                                      - 'linear'
@@ -9129,68 +9177,105 @@ class ChemicalDrift(OceanDrift):
                                      - 'esmf'
                                      - 'weights'
                                      - 'conservative_scrip'
+                                     - 'direct'
+
                                    The interpolate/linear/current/legacy aliases use the
                                    non-conservative interpolation branch.
-                                   The conservative/conservative_auto aliases choose the
-                                   conservative backend from conservative_backend.
-                                   The conservative_shapely/shapely aliases force the Shapely
-                                   polygon-overlap backend.
-                                   The scrip/xesmf/esmf/weights/conservative_scrip aliases
-                                   force the precomputed-weights backend.
+
+                                   The conservative/conservative_auto aliases first attempt
+                                   automatic direct same-cell transfer. If this is not possible,
+                                   they choose the conservative backend from conservative_backend.
+
+                                   The conservative_shapely/shapely aliases first attempt
+                                   automatic direct same-cell transfer. If this is not possible,
+                                   they force the Shapely polygon-overlap backend.
+
+                                   The scrip/xesmf/esmf/weights/conservative_scrip aliases first
+                                   attempt automatic direct same-cell transfer. If this is not
+                                   possible, they force the precomputed-weights backend.
+
+                                   The direct alias requires a valid same-cell or source-subset
+                                   relationship between source and target grids. If this is not
+                                   true, an error is raised and no fallback remapping is used.
+
             bathymetry_source:     string, path to the source bathymetry NetCDF file.
-                                   Required when bathymetry_remap uses conservative remapping.
-                                   Not used by the legacy interpolation branch, where the
-                                   bathymetry field has already been loaded into self.conc_topo.
+                                   Required when bathymetry_remap uses conservative or direct
+                                   bathymetry handling. Not used by the legacy interpolation
+                                   branch, where the bathymetry field has already been loaded
+                                   into self.conc_topo.
+
             bathymetry_var:        string, bathymetry variable name or CF standard_name in
                                    bathymetry_source. Default:
                                    'sea_floor_depth_below_sea_level'.
+
             active_sediment_source:
                                    string or None, optional path to a NetCDF file containing
                                    active sediment layer thickness on the same source grid as
                                    bathymetry_source.
+
             active_sediment_var:   string, active sediment layer thickness variable name or
                                    CF standard_name in active_sediment_source. Default:
                                    'active_sediment_layer_thickness'.
+
             z_array:               1D array or None, model z-layer edges in model coordinates,
                                    with surface at 0 and negative values downward. If provided
-                                   in conservative mode, layer_volume is also computed and
-                                   returned in the metadata dictionary.
+                                   in conservative or direct mode, layer_volume is also computed
+                                   and returned in the metadata dictionary.
                                    Must be strictly increasing from bottom to surface, e.g.
                                    [-10000, -50, -10, -5, 0].
-            source_crs:            CRS definition or None. Required when a conservative source
-                                   grid is supplied only in projected node coordinates
+
+            source_crs:            CRS definition or None. Required when a conservative/direct
+                                   source grid is supplied only in projected node coordinates
                                    node_x/node_y. May be any pyproj-compatible CRS definition,
                                    such as EPSG code, PROJ string, WKT, or pyproj.CRS.
+
             remap_crs:             CRS definition or None. Optional equal-area CRS used by the
                                    Shapely backend for polygon overlap. If None, an equal-area
                                    CRS is chosen automatically from the target extent.
+                                   Not used when a direct same-cell mapping is applied.
+
             return_metadata:       boolean, if False return only:
                                        h, area, active_sediment_layer_thickness,
                                        bathy_invalid_mask
+
                                    If True, append a metadata dictionary:
                                        h, area, active_sediment_layer_thickness,
                                        bathy_invalid_mask, meta
+
             min_wet_fraction:      float, minimum fraction of target cell area that must be
                                    covered by valid source bathymetry for a conservative result
                                    to be accepted. Target cells with wet_fraction <= min_wet_fraction
                                    are marked invalid and returned as NaN.
                                    With the default min_wet_fraction=0.0, cells with no valid
                                    source overlap are masked.
+
+                                   In direct mode, valid matched cells have wet_fraction=1.
+                                   Missing or invalid copied source bathymetry cells are masked.
+
             conservative_backend:  string, one of:
                                      - 'auto'
+                                     - 'direct'
                                      - 'shapely'
                                      - 'scrip'
                                      - 'xesmf'
                                      - 'esmf'
                                      - 'weights'
-                                   In auto mode, local/regional target maps use Shapely/STRtree.
+
+                                   In auto mode, a direct same-cell mapping is attempted first.
+                                   If it fails, local/regional target maps use Shapely/STRtree.
                                    Basin/global target maps require precomputed weights and use
                                    the SCRIP/ESMF/xESMF branch.
+
+                                   If conservative_backend='direct', the same-cell check is
+                                   strict. If the source and target grids are not same-cell
+                                   compatible, an error is raised.
+
             conservative_weights:  object, path, xarray.Dataset, dict, scipy sparse matrix, or
                                    ConservativeWeightMatrix-like object containing conservative
                                    remapping weights. Required when the selected backend is
                                    'scrip' or when backend='auto' classifies the target as basin
-                                   or global.
+                                   or global and no direct same-cell mapping is available.
+
             large_domain_backend:  string, backend used by auto mode for basin/global target
                                    domains. Currently only 'scrip' is supported.
 
@@ -9200,6 +9285,10 @@ class ChemicalDrift(OceanDrift):
            Use 1D lon and 1D lat coordinates. The bathymetry variable must be aligned
            on the corresponding latitude/longitude dimensions. Bounds are optional and
            are inferred from centers if absent.
+
+           For direct mode, the source cell polygons must match the target cell polygons.
+           The source grid may be the same grid as the output grid or a larger grid
+           containing the output grid as a subset.
 
            Example xarray print:
            <xarray.Dataset>
@@ -9231,6 +9320,10 @@ class ChemicalDrift(OceanDrift):
              - lon_bounds / lat_bounds with shape (y, x, 4)
              - lon_bounds / lat_bounds with shape (4, y, x)
              - node arrays with shape (y+1, x+1)
+
+           For direct mode, each target cell polygon must be found exactly in the source
+           bathymetry grid. This supports identical grids and target subsets of a larger
+           curvilinear source grid.
 
            Example xarray print:
            <xarray.Dataset>
@@ -9284,22 +9377,29 @@ class ChemicalDrift(OceanDrift):
            a start_index attribute, it is used. If start_index is absent, zero-based
            connectivity is assumed.
 
+           For direct mode, each target triangle must be found exactly in the source
+           bathymetry mesh. This supports identical meshes and target subsets of a larger
+           source mesh.
+
         Active sediment source layouts
         ------------------------------
         active_sediment_source, when provided, must use the same source grid topology and
         cell ordering as bathymetry_source.
 
-        The active sediment variable is interpreted as active sediment layer thickness [m].
-        In conservative remapping, it is remapped as an area-weighted extensive volume
-        internally and then divided by target area, producing an effective active sediment
-        layer thickness on the target grid.
+        In direct mode, active sediment layer thickness is copied using the same matched
+        source-cell indices used for bathymetry. If the active sediment grid does not match
+        the bathymetry source grid, an error is raised.
+
+        In conservative remapping, active sediment layer thickness is remapped as an
+        area-weighted extensive volume internally and then divided by target area,
+        producing an effective active sediment layer thickness on the target grid.
 
         Recommended active sediment variables:
             active_sediment_layer_thickness
 
-        Conservative target-grid requirements
-        -------------------------------------
-        Conservative remapping needs target cell polygons.
+        Conservative/direct target-grid requirements
+        --------------------------------------------
+        Conservative and direct remapping need target cell polygons.
 
         With output_grid provided:
           - structured targets require lon_corners_4/lat_corners_4 or lon_nodes/lat_nodes
@@ -9308,10 +9408,34 @@ class ChemicalDrift(OceanDrift):
             normalized output_grid
 
         Without output_grid:
-          - conservative remapping is supported only for legacy geographic rectilinear
-            targets with 2D lon/lat centers and finite lat_resol/lon_resol
+          - conservative/direct handling is supported only for legacy geographic
+            rectilinear targets with 2D lon/lat centers and finite lat_resol/lon_resol
           - projected legacy x/y targets are not supported because their polygon corners
             are not available inside get_pixel_mean_depth()
+
+        Direct same-cell matching
+        -------------------------
+        The direct check compares source and target cell polygons after converting them
+        to rounded, order-independent lon/lat vertex keys.
+
+        A direct match is accepted when every target cell has exactly one matching source
+        cell. The source grid may contain additional cells, so a concentration output grid
+        can be a subset of a larger bathymetry grid.
+
+        If direct matching succeeds:
+          - effective_depth is copied from source bathymetry
+          - wet_mean_depth equals effective_depth
+          - wet_fraction is 1 for valid copied bathymetry cells
+          - source_valid_area equals target_area
+          - conservative_total_volume equals effective_depth * target_area
+          - active_sediment_layer_thickness is copied from the matched source cell
+          - active_sediment_layer_volume equals active_sediment_layer_thickness * target_area
+          - layer_volume is computed as clipped model-layer thickness * target_area
+
+        If direct matching fails:
+          - bathymetry_remap='direct' raises an error
+          - conservative_backend='direct' raises an error
+          - ordinary conservative modes fall back to Shapely or SCRIP remapping
 
         Precomputed conservative weights
         --------------------------------
@@ -9344,19 +9468,27 @@ class ChemicalDrift(OceanDrift):
         Conservative backend selection
         ------------------------------
         conservative_backend='auto':
-          - local/regional target maps use the Shapely/STRtree backend
-          - basin/global target maps use the SCRIP/weights backend
+          - direct same-cell transfer is attempted first
+          - if direct transfer fails, local/regional target maps use the Shapely/STRtree backend
+          - if direct transfer fails, basin/global target maps use the SCRIP/weights backend
           - if basin/global is detected and conservative_weights is None, an error is raised
 
+        conservative_backend='direct':
+          - forces direct same-cell transfer
+          - no Shapely/SCRIP fallback is allowed
+          - if source and target grids are not same-cell compatible, an error is raised
+
         conservative_backend='shapely':
-          - forces polygon overlap in an automatically chosen or user-provided
-            equal-area CRS
+          - direct same-cell transfer is attempted first
+          - if direct transfer fails, polygon overlap is forced in an automatically chosen
+            or user-provided equal-area CRS
           - intended for local/regional maps
           - not recommended for basin/global domains
-          - dateline-crossing source or target cells are not supported by the Shapely backend.
+          - dateline-crossing source or target cells are not supported by the Shapely backend
 
         conservative_backend='scrip', 'xesmf', 'esmf', or 'weights':
-          - forces the precomputed sparse-weight backend
+          - direct same-cell transfer is attempted first
+          - if direct transfer fails, the precomputed sparse-weight backend is forced
           - conservative_weights must be supplied
           - recommended for basin/global maps and large domains
 
@@ -9372,20 +9504,24 @@ class ChemicalDrift(OceanDrift):
             h:                     2D array or 1D face array, water depth on the output grid [m].
                                    In conservative mode this is the effective depth:
                                        total conservative water volume / target cell area.
+                                   In direct mode this is copied source bathymetry on the
+                                   matched target cells.
 
             area:                  2D array, 1D face array, or None, horizontal target cell area [m2].
-                                   For explicit/conservative grids, this is the target cell area.
+                                   For explicit/conservative/direct grids, this is the target cell area.
                                    For geographic interpolation grids, this is spherical cell area.
                                    For Mollweide legacy interpolation grids, this may be None.
 
             active_sediment_layer_thickness:
                                    array or None, active sediment layer thickness on the output
                                    grid [m], if an active sediment source was provided.
+                                   In direct mode this is copied from the matched source cells.
 
             bathy_invalid_mask:    boolean array, same horizontal shape as h. True means the
                                    target cell should be masked because bathymetry is invalid,
-                                   missing, outside the valid source domain, or below the
-                                   min_wet_fraction threshold.
+                                   missing, outside the valid source domain, below the
+                                   min_wet_fraction threshold, or not directly matched in
+                                   strict direct mode.
 
             meta:                  dictionary, only returned when return_metadata=True.
 
@@ -9394,10 +9530,29 @@ class ChemicalDrift(OceanDrift):
         For bathymetry_remap='interpolate', meta contains:
             bathymetry_remap:      'interpolate'
 
+        For direct same-cell transfer, meta contains:
+            bathymetry_remap:      'direct'
+            backend:               'direct'
+            extent_class:          'same_grid' or 'subset'
+            remap_crs:             None
+            weights_source:        None
+            wet_fraction:          1 for valid directly matched cells
+            wet_mean_depth:        copied source bathymetry
+            effective_depth:       copied source bathymetry
+            layer_volume:          direct water volume per model depth layer, if z_array
+                                   was provided
+            conservative_total_volume:
+                                   copied depth * target area
+            source_valid_area:     target area for valid directly matched cells
+            active_sediment_layer_volume:
+                                   copied active sediment layer thickness * target area, if
+                                   an active sediment source was provided
+
         For conservative remapping, meta contains:
             bathymetry_remap:      'conservative'
-            backend:               selected backend, usually 'shapely' or 'scrip'
-            extent_class:          target extent class: local, regional, basin, or global
+            backend:               selected backend, usually 'direct', 'shapely', or 'scrip'
+            extent_class:          target extent class: local, regional, basin, global,
+                                   same_grid, or subset
             remap_crs:             equal-area CRS used by the Shapely backend, if applicable
             weights_source:        weight source description/path, if applicable
             wet_fraction:          valid source-bathymetry area / target area
@@ -9425,10 +9580,25 @@ class ChemicalDrift(OceanDrift):
 
         This mode is not conservative.
 
+        Direct mode details
+        -------------------
+        In bathymetry_remap='direct' mode:
+          - source and target cells must be geometrically identical at the polygon level
+          - the target grid may be the full source grid or a subset of the source grid
+          - every target cell must match exactly one source cell
+          - no interpolation, polygon-overlap accumulation, or sparse-weight remapping is used
+          - copied invalid or missing bathymetry values are returned as NaN and marked invalid
+          - if z_array is provided, layer_volume is computed directly from copied depth
+            and target cell area
+
+        If the direct check fails, the function raises an error indicating that
+        bathymetry_remap='direct' was applied with wrong files.
+
         Conservative mode details
         -------------------------
         In conservative mode:
-          - source and target cells are represented as polygons
+          - direct same-cell transfer is attempted first
+          - if direct transfer is not possible, source and target cells are represented as polygons
           - valid source bathymetry contributes depth * overlap_area to each target cell
           - target effective depth is total_volume / target_area
           - wet_mean_depth is total_volume / valid_overlap_area
@@ -9579,6 +9749,7 @@ class ChemicalDrift(OceanDrift):
                     raise ValueError(f"{name} must have shape (face, 3) or (3, face).")
             tri = np.asarray(tri, dtype=np.int64)
             start_index = int(getattr(obj, "attrs", {}).get("start_index", 0)) if obj is not None else 0
+            # Normalise CF/UGRID start_index so all connectivity is zero-based internally.
             tri = tri - start_index
             if np.any(tri < 0):
                 raise ValueError(f"{name} contains negative indices after applying start_index={start_index}.")
@@ -10097,6 +10268,143 @@ class ChemicalDrift(OceanDrift):
             thick[thick < min_thickness_m] = 0.0
             return thick
 
+        def _direct_polygon_key(lonv: np.ndarray, latv: np.ndarray, *, decimals: int = 8) -> Optional[tuple[tuple[float, float], ...]]:
+            """Return an order-independent rounded polygon key for direct same-grid matching."""
+            lon = np.asarray(lonv, dtype=np.float64).reshape(-1)
+            lat = np.asarray(latv, dtype=np.float64).reshape(-1)
+            finite = np.isfinite(lon) & np.isfinite(lat)
+            if finite.sum() < 3:
+                return None
+            pts = np.column_stack((np.round(lon[finite], decimals), np.round(lat[finite], decimals)))
+            # Remove repeated vertices after rounding.  Direct mode requires unique,
+            # well-defined cell polygons but should be insensitive to clockwise/counter-
+            # clockwise ordering and starting vertex.
+            pts_unique = np.unique(pts, axis=0)
+            if pts_unique.shape[0] < 3:
+                return None
+            order = np.lexsort((pts_unique[:, 1], pts_unique[:, 0]))
+            return tuple((float(x), float(y)) for x, y in pts_unique[order])
+
+        def _build_direct_source_mapping(
+            source: _CellSet,
+            target: _CellSet,
+            *,
+            decimals: int = 8,
+        ) -> tuple[Optional[np.ndarray], str]:
+            """Map each target cell to an exactly matching source cell, or explain why not."""
+            if source.values is None:
+                return None, "source bathymetry values are missing"
+            if len(source.lon_vertices) == 0 or len(target.lon_vertices) == 0:
+                return None, "source or target grid has no cells"
+
+            source_map: dict[tuple[tuple[float, float], ...], int] = {}
+            for i, (lonv, latv) in enumerate(zip(source.lon_vertices, source.lat_vertices)):
+                key = _direct_polygon_key(lonv, latv, decimals=decimals)
+                if key is None:
+                    return None, f"source cell {i} has invalid or degenerate polygon vertices"
+                if key in source_map:
+                    return None, "source grid contains duplicate polygons after rounded direct-match normalization"
+                source_map[key] = i
+
+            mapping = np.empty(len(target.lon_vertices), dtype=np.int64)
+            for j, (lonv, latv) in enumerate(zip(target.lon_vertices, target.lat_vertices)):
+                key = _direct_polygon_key(lonv, latv, decimals=decimals)
+                if key is None:
+                    return None, f"target cell {j} has invalid or degenerate polygon vertices"
+                src_i = source_map.get(key)
+                if src_i is None:
+                    return None, f"target cell {j} does not have an identical polygon in the source bathymetry grid"
+                mapping[j] = src_i
+
+            if np.unique(mapping).size != mapping.size:
+                return None, "more than one target cell maps to the same source cell"
+            return mapping, ""
+
+        def _direct_same_grid_core(
+            source: _CellSet,
+            target: _CellSet,
+            *,
+            z_array: Optional[np.ndarray] = None,
+            source_aux: Optional[_CellSet] = None,
+            min_wet_fraction: float = 0.0,
+            min_layer_thickness_m: float = 0.1,
+            extent_class: Optional[str] = None,
+            require_direct: bool = False,
+            direct_match_decimals: int = 8,
+        ) -> Optional[ConservativeBathymetryResult]:
+            """Direct same-grid/subset bathymetry transfer, or None if not applicable."""
+            mapping, reason = _build_direct_source_mapping(
+                source,
+                target,
+                decimals=direct_match_decimals,
+            )
+            if mapping is None:
+                if require_direct:
+                    raise ValueError(
+                        "bathymetry_remap='direct' was applied with wrong files: "
+                        f"source and target grids are not identical/same-cell compatible ({reason})."
+                    )
+                return None
+
+            if source_aux is not None and source_aux.values is not None and len(source_aux.values) != len(source.values):
+                msg = "active sediment source grid does not match the bathymetry source grid"
+                if require_direct:
+                    raise ValueError(f"bathymetry_remap='direct' was applied with wrong files: {msg}.")
+                return None
+
+            n_target = mapping.size
+            if target.area is not None:
+                target_area = np.asarray(target.area, dtype=np.float64).reshape(-1).copy()
+            else:
+                target_area = _geodesic_cell_areas(target)
+            if target_area.size != n_target:
+                raise ValueError(f"Target area size {target_area.size} does not match target cell count {n_target}.")
+
+            depth_all = np.asarray(source.values, dtype=np.float64).reshape(-1)
+            source_mask = np.zeros(depth_all.shape, dtype=bool) if source.mask is None else np.asarray(source.mask, dtype=bool).reshape(-1)
+            depth = depth_all[mapping]
+            valid = np.isfinite(depth) & ~source_mask[mapping] & np.isfinite(target_area) & (target_area > 0.0)
+
+            total_volume = np.zeros(n_target, dtype=np.float64)
+            valid_overlap_area = np.zeros(n_target, dtype=np.float64)
+            total_volume[valid] = depth[valid] * target_area[valid]
+            valid_overlap_area[valid] = target_area[valid]
+
+            layer_volume = None
+            if z_array is not None:
+                z = np.asarray(z_array, dtype=np.float64)
+                if z.ndim != 1 or z.size < 2:
+                    raise ValueError("z_array must be a 1D array with at least two edges.")
+                layer_volume = np.zeros((z.size - 1, n_target), dtype=np.float64)
+                for j in np.flatnonzero(valid):
+                    layer_volume[:, j] = (
+                        _layer_thickness_from_depth(depth[j], z, min_thickness_m=min_layer_thickness_m)
+                        * target_area[j]
+                    )
+
+            aux_volume = None
+            if source_aux is not None and source_aux.values is not None:
+                aux_all = np.asarray(source_aux.values, dtype=np.float64).reshape(-1)
+                aux_mask = np.zeros(aux_all.shape, dtype=bool) if source_aux.mask is None else np.asarray(source_aux.mask, dtype=bool).reshape(-1)
+                aux = aux_all[mapping]
+                aux_valid = valid & np.isfinite(aux) & ~aux_mask[mapping]
+                aux_volume = np.full(n_target, np.nan, dtype=np.float64)
+                aux_volume[aux_valid] = np.maximum(aux[aux_valid], 0.0) * target_area[aux_valid]
+
+            return _finalize_conservative_result(
+                total_volume=total_volume,
+                valid_overlap_area=valid_overlap_area,
+                target_area=target_area,
+                target_shape=target.shape,
+                layer_volume=layer_volume,
+                aux_volume=aux_volume,
+                min_wet_fraction=min_wet_fraction,
+                remap_crs=None,
+                backend="direct",
+                extent_class=extent_class,
+                weights_source="same_grid_direct",
+            )
+
         @dataclass
         class ConservativeWeightMatrix:
             """Sparse precomputed conservative weights.
@@ -10610,8 +10918,12 @@ class ChemicalDrift(OceanDrift):
                 "esmf": "scrip",
                 "xesmf": "scrip",
                 "conservative_scrip": "scrip",
+                "same_grid": "direct",
+                "samegrid": "direct",
             }
             b = aliases.get(b, b)
+            if b == "direct":
+                return "direct", extent_class, metrics
             if b == "auto":
                 if extent_class in {"local", "regional"}:
                     return "shapely", extent_class, metrics
@@ -10624,8 +10936,8 @@ class ChemicalDrift(OceanDrift):
                         "Provide precomputed ESMF/xESMF/SCRIP conservative weights, or force backend='shapely' only for a carefully checked regional domain."
                     )
                 return "scrip", extent_class, metrics
-            if b not in {"shapely", "scrip"}:
-                raise ValueError("conservative_backend must be one of {'auto', 'shapely', 'scrip', 'xesmf', 'esmf', 'weights'}.")
+            if b not in {"shapely", "scrip", "direct"}:
+                raise ValueError("conservative_backend must be one of {'auto', 'direct', 'shapely', 'scrip', 'xesmf', 'esmf', 'weights'}.")
             if b == "scrip" and precomputed_weights is None:
                 raise ValueError("precomputed_weights must be supplied when conservative_backend='scrip'.")
             return b, extent_class, metrics
@@ -10656,6 +10968,28 @@ class ChemicalDrift(OceanDrift):
                 large_domain_backend=large_domain_backend,
                 precomputed_weights=precomputed_weights,
             )
+
+            # Fast path: if every target cell is exactly one source bathymetry cell
+            # (same grid or a subset of the source grid), use direct transfer rather
+            # than polygon overlap or sparse regridding.  Forced direct mode raises
+            # a clear error when this exact same-cell mapping is not valid.
+            direct_result = _direct_same_grid_core(
+                source,
+                target,
+                z_array=z_array,
+                source_aux=source_aux,
+                min_wet_fraction=min_wet_fraction,
+                min_layer_thickness_m=min_layer_thickness_m,
+                extent_class=extent_class,
+                require_direct=(selected_backend == "direct"),
+            )
+            if direct_result is not None:
+                return direct_result
+            if selected_backend == "direct":
+                # require_direct=True above should already have raised; keep this as
+                # a defensive guard in case the helper changes in the future.
+                raise ValueError("bathymetry_remap='direct' was applied with wrong files.")
+
             if selected_backend == "shapely":
                 return _conservative_overlap_core_shapely(
                     source,
@@ -10712,6 +11046,12 @@ class ChemicalDrift(OceanDrift):
                     source_aux = _source_cells_from_xarray(ds_aux, active_sediment_var, source_crs=source_crs)
                 if len(source_aux.lon_vertices) != len(source.lon_vertices):
                     raise ValueError("Active sediment source grid does not match bathymetry source grid.")
+                aux_mapping, aux_reason = _build_direct_source_mapping(source, source_aux)
+                if aux_mapping is None or not np.array_equal(aux_mapping, np.arange(len(source.lon_vertices), dtype=np.int64)):
+                    raise ValueError(
+                        "Active sediment source grid does not match bathymetry source grid: "
+                        f"{aux_reason or 'cell ordering/connectivity differs'}."
+                    )
 
             target = _target_cells_from_output_grid(output_grid, lons, lats, is_latlon=is_latlon, lat_resol=lat_resol, lon_resol=lon_resol)
             return _conservative_overlap_core(
@@ -10772,12 +11112,14 @@ class ChemicalDrift(OceanDrift):
                 return result4
 
             mode_backend = conservative_backend
-            if mode in {"conservative_shapely", "shapely"}:
+            if mode in {"direct", "same_grid", "samegrid"}:
+                mode_backend = "direct"
+            elif mode in {"conservative_shapely", "shapely"}:
                 mode_backend = "shapely"
             elif mode in {"scrip", "xesmf", "esmf", "weights", "conservative_scrip"}:
                 mode_backend = "scrip"
             elif mode not in {"conservative", "conservative_auto"}:
-                raise ValueError("bathymetry_remap must be 'interpolate', 'conservative', 'conservative_shapely', or 'scrip'.")
+                raise ValueError("bathymetry_remap must be 'interpolate', 'conservative', 'direct', 'conservative_shapely', or 'scrip'.")
             if bathymetry_source is None:
                 raise ValueError("bathymetry_source must be provided when bathymetry_remap uses conservative remapping.")
 
@@ -10801,7 +11143,7 @@ class ChemicalDrift(OceanDrift):
                 large_domain_backend=large_domain_backend,
             )
             meta = {
-                "bathymetry_remap": "conservative",
+                "bathymetry_remap": "direct" if cons.backend == "direct" else "conservative",
                 "backend": cons.backend,
                 "extent_class": cons.extent_class,
                 "remap_crs": cons.remap_crs,
@@ -11229,101 +11571,281 @@ class ChemicalDrift(OceanDrift):
                                           bathymetry_conservative_weights=None,
                                           bathymetry_large_domain_backend='scrip'):
         '''
+        write_netcdf_chemical_density_map
+
         Arguments:
-            pixelsize_m:           float32, lenght of gridcells in m (default mode)
-            lat_resol:             float32, latitude resolution of gricells (in degrees using EPSG 4326)
-            lon_resol:             float32, longitude resolution of gricells (in degrees using EPSG 4326)
-            zlevels:               list of float32, depth levels at which concentration will be calculated
-                           Values must be negative and ordered from the lowest depth (e.g. [-50., -10., -5.])
-                           In the .nc file "depth" value will indicate the start of the vertical slice
-                           i.e. "depth = 0" indicates slice from 0 to 5 m, and "depth = 50" indicates
-                           slice from 50m to bathimietry
-            density_proj:          None: add default projection with equal-area property (proj=moll +ellps=WGS84 +lon_0=0.0')
-                                   <proj4_string>: <longlat +datum=WGS84 +no_defs> for EPSG 4326
-                                   int, 4326 to indicate use of EPSG 4326
-            llcrnrlon:             float32, min longitude of grid (in degrees using EPSG 4326)
-            llcrnrlat:             float32, min latitude of grid (in degrees using EPSG 4326)
-            urcrnrlon:             float32, max longitude of grid (in degrees using EPSG 4326)
-            urcrnrlat:             float32, max latitude of grid (in degrees using EPSG 4326)
-            mass_unit:             string, mass unit of input, used for output concentration label(ug/mg/g/kg)
-            time_avg_conc:         boolean, calculate concentration averaged each deltat
-            time_start:            string, datetime64[ns] string for start time of concentration map
-            time_end:              string, datetime64[ns] string for end time of concentration map
-            time_chunk_size        int, number of timesteps computed per chunk
-            horizontal_smoothing:  boolean, smooth concentration horizontally
-            smoothing_cells:       int, number of cells for horizontal smoothing,
-            reader_sea_depth:      string, path of bathimethy .nc file
-            reader_active_sediment_layer_thicknes:
-                                   string, path of .nc file containing variable
-                                   'active_sediment_layer_thickness'; if not provided,
-                                   chemical:sediment:mixing_depth is used
-            landmask_shapefile:    string, path of bathimethylandmask .shp file
-            landmask_bathymetry_thr:   float32, if set the value is the threshold used to extract the landmask from reader_sea_depth
-            elements_density:      boolean, add number of elements present in each grid cell to output
-            origin_marker:         int/list/tuple/np.ndarray, only elements with these values of "origin_marker" will be considered
-            active_status:         boolean, only active elements will be considered
-            weight:                string, elements property to be extracted to produce maps
-            sim_description:       string, descrition of simulation to be included in netcdf attributes
-            timestep_values:       boolean, only active elements will be considered
-            compress_species:      boolean, only species present in self.result will be used to construct netCDF file
+            pixelsize_m:           float32 or 'auto', length of grid cells in m for the
+                                   default projected/Mollweide output mode. Cannot be used
+                                   together with output_grid.
+
+            lat_resol:             float32, latitude resolution of grid cells in degrees
+                                   using EPSG:4326. Used for legacy geographic rectilinear
+                                   outputs when output_grid is not supplied. Cannot be used
+                                   together with output_grid.
+
+            lon_resol:             float32, longitude resolution of grid cells in degrees
+                                   using EPSG:4326. Used for legacy geographic rectilinear
+                                   outputs when output_grid is not supplied. Cannot be used
+                                   together with output_grid.
+
+            zlevels:               list of float32, depth levels at which concentration will
+                                   be calculated. Values must be negative and ordered from
+                                   the lowest depth, e.g. [-50., -10., -5.].
+                                   Internally, model z is positive upward with surface at 0
+                                   and depth levels are negative downward.
+                                   In the saved NetCDF, `depth` is written positive downward
+                                   and indicates the top of each vertical slice.
+
+            density_proj:          None: use default equal-area projection
+                                   '+proj=moll +ellps=WGS84 +lon_0=0.0'.
+                                   <proj4_string>: user-defined projection.
+                                   int, e.g. 4326, to indicate EPSG:4326.
+                                   Required when output_grid is defined only in projected
+                                   x/y coordinates.
+
+            llcrnrlon:             float32, minimum longitude of legacy output grid in
+                                   degrees using EPSG:4326.
+            llcrnrlat:             float32, minimum latitude of legacy output grid in
+                                   degrees using EPSG:4326.
+            urcrnrlon:             float32, maximum longitude of legacy output grid in
+                                   degrees using EPSG:4326.
+            urcrnrlat:             float32, maximum latitude of legacy output grid in
+                                   degrees using EPSG:4326.
+
+            mass_unit:             string, mass unit of input used for output concentration
+                                   labels in weight_mode='extensive', e.g. ug, mg, g, kg.
+                                   This writer does not perform unit conversion; mass_unit
+                                   must match the source weight units when source units are
+                                   available.
+
+            time_avg_conc:         boolean, calculate block-averaged concentration or
+                                   property fields over windows of length deltat.
+
+            deltat:                float, averaging-window length in hours when
+                                   time_avg_conc=True.
+
+            time_start:            string, datetime64[ns]-compatible string for start time
+                                   of concentration map.
+
+            time_end:              string, datetime64[ns]-compatible string for end time
+                                   of concentration map.
+
+            time_chunk_size:       int, number of timesteps computed per chunk.
+
+            horizontal_smoothing:  boolean, smooth concentration horizontally.
+
+            smoothing_cells:       int, number of cells for horizontal smoothing.
+
+            reader_sea_depth:      string, path of bathymetry NetCDF file containing
+                                   sea_floor_depth_below_sea_level, or a variable with this
+                                   CF standard_name. Required.
+
+            reader_active_sediment_layer_thickness:
+                                   string, path of NetCDF file containing variable
+                                   active_sediment_layer_thickness, or a variable with this
+                                   CF standard_name. If not provided,
+                                   chemical:sediment:mixing_depth is used where needed.
+
+            landmask_shapefile:    string, path of bathymetry/landmask shapefile.
+
+            landmask_bathymetry_thr:
+                                   float32, if set, the value is the threshold used to
+                                   extract landmask from reader_sea_depth.
+
+            elements_density:      boolean, add number of elements present in each grid cell
+                                   to output.
+
+            origin_marker:         int/list/tuple/np.ndarray, only elements with these values
+                                   of origin_marker are considered.
+
+            active_status:         boolean, if True only active elements are considered.
+
+            weight:                string, element property to be extracted to produce maps.
+
+            sim_description:       string, description of simulation to be included in
+                                   NetCDF attributes.
+
+            timestep_values:       boolean, if True, interpret supported cumulative mass-like
+                                   weights as cumulative values and convert them to
+                                   per-timestep increments before binning. Only valid with
+                                   weight_mode='extensive'.
+
+            compress_species:      boolean, if True only species present in self.result after
+                                   filtering are used to construct the NetCDF file.
+
             weight_mode:           string, one of:
-                                   - "extensive": histogram is interpreted as an extensive sum and converted to concentration
-                                   - "mean": histogram is interpreted as sum(property) and divided by particle count per cell
+                                     - 'extensive': histogram is interpreted as an extensive
+                                       mass-like sum and converted to concentration
+                                     - 'mean': histogram is interpreted as sum(property) and
+                                       divided by particle count per cell
+
+            weight_unit:           string, output unit label for weight_mode='mean'. This
+                                   writer does not infer or convert units in mean mode.
+
+            output_grid:           xarray.Dataset, dict, or None. Explicit spatial output
+                                   grid passed to _normalize_output_grid(). Supported layouts:
+                                     - 1D lon/lat regular geographic grid
+                                     - 2D lon/lat curvilinear geographic grid
+                                     - 1D x/y regular projected grid
+                                     - 2D x_center/y_center projected curvilinear grid
+                                     - triangular unstructured mesh with face-node connectivity
+                                   output_grid is spatial only and must not include time.
+                                   Cannot be combined with pixelsize_m, lat_resol/lon_resol,
+                                   or llcrnrlon/llcrnrlat/urcrnrlon/urcrnrlat.
+
+            bathymetry_remap:      string, one of:
+                                     - 'interpolate'
+                                     - 'conservative'
+                                     - 'conservative_shapely'
+                                     - 'scrip'
+                                     - 'direct'
+
+                                   'interpolate' uses the legacy non-conservative auxiliary
+                                   reader branch.
+
+                                   'conservative' first attempts automatic direct same-cell
+                                   transfer. If no valid direct match is found, it falls back
+                                   to conservative remapping using bathymetry_conservative_backend.
+
+                                   'conservative_shapely' first attempts automatic direct
+                                   same-cell transfer. If no valid direct match is found, it
+                                   forces Shapely/STRtree polygon-overlap remapping.
+
+                                   'scrip' first attempts automatic direct same-cell transfer.
+                                   If no valid direct match is found, it forces precomputed
+                                   SCRIP/ESMF/xESMF sparse weights.
+
+                                   'direct' requires a valid same-cell relationship between
+                                   the source bathymetry grid and target output grid. If the
+                                   source grid is not the same grid or a larger grid containing
+                                   the output grid as a cell subset, an error is raised and no
+                                   fallback remapping is used.
+
+            bathymetry_remap_crs:  CRS definition or None. Optional equal-area CRS used by
+                                   the Shapely conservative backend. If None, an equal-area
+                                   CRS is chosen automatically from the target extent. Not
+                                   used when direct same-cell transfer is applied.
+
+            bathymetry_source_crs: CRS definition or None. Required when bathymetry or active
+                                   sediment source grids are supplied only in projected
+                                   node_x/node_y coordinates.
+
+            bathymetry_min_wet_fraction:
+                                   float, minimum fraction of target cell area that must be
+                                   covered by valid source bathymetry in conservative remap.
+                                   Cells with wet_fraction <= this value are masked. In direct
+                                   mode, valid matched cells have wet_fraction=1.
+
+            bathymetry_conservative_backend:
+                                   string, one of:
+                                     - 'auto'
+                                     - 'direct'
+                                     - 'shapely'
+                                     - 'scrip'
+                                     - 'xesmf'
+                                     - 'esmf'
+                                     - 'weights'
+
+                                   In 'auto' mode, direct same-cell transfer is attempted first.
+                                   If direct transfer fails, local/regional grids use Shapely
+                                   polygon overlap and basin/global grids use SCRIP/weights.
+
+                                   In 'direct' mode, the same-cell check is strict. If source
+                                   and target grids are not compatible, an error is raised.
+
+            bathymetry_conservative_weights:
+                                   object, path, xarray.Dataset, dict, scipy sparse matrix, or
+                                   ConservativeWeightMatrix-like object containing conservative
+                                   remapping weights. Required for SCRIP/ESMF/xESMF remapping
+                                   when direct transfer is not possible.
+
+            bathymetry_large_domain_backend:
+                                   string, backend used by auto mode for basin/global target
+                                   domains. Currently only 'scrip' is supported.
+
         Supported output modes
         ----------------------
-        weight_mode="extensive"
+        weight_mode='extensive'
             Interprets the histogrammed quantity as an extensive mass-like quantity.
             The raw per-cell sum is converted to:
               - water-column concentration using cell water volume
               - sediment concentration using dry sediment mass
-        weight_mode="mean"
+
+        weight_mode='mean'
             Interprets the histogrammed quantity as sum(property) per cell and converts
             it to a per-snapshot cell mean:
                 mean(property) = sum(property) / number_of_elements
+
             Empty cells are stored as NaN.
             When block-averaging snapshots, the already-computed per-snapshot mean field
             is averaged with nanmean; snapshots where a cell is empty remain NaN and are
             ignored in the block mean for that cell.
 
+        Explicit output grids
+        ---------------------
+        If output_grid is supplied, element binning is performed directly on the supplied
+        target grid. The grid may be:
+          - regular geographic lon/lat
+          - curvilinear geographic lon/lat
+          - regular projected x/y
+          - curvilinear projected x/y with 2D centers
+          - triangular unstructured mesh
+
+        For projected output_grid definitions, density_proj must describe the projected
+        CRS unless the grid also provides sufficient geographic node/corner geometry.
+
+        For unstructured triangular output, the saved NetCDF uses a face dimension and
+        includes mesh topology, node coordinates, face centers, and face area metadata.
+
         Auxiliary-reader limitation
         ---------------------------
-        Auxiliary bathymetry and active sediment layer thickness readers used by
-        this function are currently expected to be rectilinear lon/lat datasets
-        in the ChemicalDrift [-180, 180] longitude convention.
-        Projected auxiliary x/y readers and curvilinear 2D auxiliary coordinates
-        are not supported by the auxiliary-reader opening/subsetting helper here.
+        The legacy bathymetry interpolation branch, bathymetry_remap='interpolate',
+        uses OpenDrift CF readers and is currently expected to work with rectilinear
+        lon/lat auxiliary datasets in the ChemicalDrift [-180, 180] longitude convention.
+
+        Projected auxiliary x/y readers, curvilinear 2D auxiliary coordinates, and
+        unstructured bathymetry sources are not supported by the interpolation-reader
+        opening/subsetting helper.
+
+        Use bathymetry_remap='conservative', 'conservative_shapely', 'scrip', or
+        'direct' for explicit rectilinear, curvilinear, projected, or triangular
+        unstructured bathymetry source grids.
 
         Time averaging
         --------------
-        If `time_avg_conc=True`, the output is a block mean of discrete model snapshots,
+        If time_avg_conc=True, the output is a block mean of discrete model snapshots,
         not a continuous-time integral average.
         - Uniform model timesteps are assumed by design.
-        - The averaging window length (`deltat`, hours) does not need to be an exact
+        - The averaging window length, deltat in hours, does not need to be an exact
           multiple of the model output interval.
         - Blocks are formed with ndt = ceil(deltat / model_dt).
         - The final block may be shorter.
         - No synthetic or shifted timestamps are introduced.
-        - `avg_time` stores the timestamp of the last snapshot included in each block.
+        - avg_time stores the timestamp of the last snapshot included in each block.
 
         Depth coordinate in the saved NetCDF
         ------------------------------------
         Internally, the model uses z coordinates with surface at 0 and negative values
         downward.
+
         In the saved NetCDF:
-          - `depth` is written as a CF-style positive-down coordinate
+          - depth is written as a CF-style positive-down coordinate
           - it is monotonic increasing from 0 downward
           - it represents the top of each saved layer
-          - `depth_bounds` stores the corresponding positive-down layer bounds
-          - `depth_model_top` and `depth_model_bounds` preserve the original model-z
+          - depth_bounds stores the corresponding positive-down layer bounds
+          - depth_model_top and depth_model_bounds preserve the original model-z
             layer description explicitly
 
-        Dateline / Coordinates convention
-        -------------------------------
+        Dateline / coordinate convention
+        --------------------------------
         This writer expects ChemicalDrift longitudes in the native [-180, 180] convention.
         For geographic CRS, lat_resol/lon_resol are written in degrees.
-        For projected CRS, dx/dy are written in projected units (typically meters).
+        For projected CRS, dx/dy are written in projected units, typically meters.
+
         If geographic lat_resol/lon_resol inputs are converted internally to projected
-        dx/dy, the original inputs are also saved as input_lat_resol_deg/input_lon_resol_deg.
+        dx/dy, the original inputs are also saved as input_lat_resol_deg and
+        input_lon_resol_deg.
+
         It does not support:
           - 0..360 output corners
           - dateline-crossing output domains in this function
@@ -11331,23 +11853,105 @@ class ChemicalDrift(OceanDrift):
 
         Bathymetry remapping
         --------------------
-        bathymetry_remap='interpolate' preserves the existing behavior: bathymetry and
-        optional active sediment layer thickness are interpolated from the auxiliary
-        reader field to the output grid using linear interpolation followed by
-        nearest-neighbour fill. This is not conservative.
+        bathymetry_remap='interpolate'
+            Preserves the legacy behaviour: bathymetry and optional active sediment layer
+            thickness are interpolated from an auxiliary reader field to the output grid
+            using linear interpolation followed by nearest-neighbour fill. This is not
+            conservative.
 
-        bathymetry_remap='conservative' conservatively remaps bathymetry-derived
-        water volume to the output grid. Local/regional maps use a Shapely/STRtree
-        polygon-overlap backend in an equal-area CRS. Basin/global maps use
-        precomputed ESMF/xESMF/SCRIP conservative weights supplied through
-        bathymetry_conservative_weights.
+        bathymetry_remap='conservative'
+            Conservatively remaps bathymetry-derived water volume to the output grid.
+            Before polygon-overlap or sparse-weight remapping, the function automatically
+            checks whether the source and target cells are identical or same-cell
+            compatible. This includes target grids that are subsets of a larger
+            bathymetry grid.
 
-        Compatibility note (weight_mode="extensive" only)
-        -----------------------------------------------
+            If direct same-cell transfer is valid, bathymetry and active sediment layer
+            thickness are copied directly and layer volumes are computed from copied
+            depth and target cell area.
+
+            If direct same-cell transfer is not valid, local/regional maps use a
+            Shapely/STRtree polygon-overlap backend in an equal-area CRS. Basin/global
+            maps use precomputed ESMF/xESMF/SCRIP conservative weights supplied through
+            bathymetry_conservative_weights.
+
+        bathymetry_remap='conservative_shapely'
+            Same as conservative, but after the automatic direct check it forces the
+            Shapely/STRtree polygon-overlap backend.
+
+        bathymetry_remap='scrip'
+            Same as conservative, but after the automatic direct check it forces the
+            precomputed sparse-weight backend. bathymetry_conservative_weights must be
+            supplied if direct transfer is not possible.
+
+        bathymetry_remap='direct'
+            Strict same-cell mode. The bathymetry source grid must be the same grid as
+            the output grid, or a larger grid containing every target output cell as an
+            exact polygon match.
+
+            If the direct check succeeds:
+              - bathymetry values are copied directly
+              - active sediment layer thickness is copied directly, if provided
+              - wet_fraction is 1 for valid copied cells
+              - source_valid_area equals target area
+              - conservative_total_volume equals copied depth * target area
+              - layer_volume is computed as clipped layer thickness * target area
+
+            If the direct check fails, the function raises an error indicating that
+            bathymetry_remap='direct' was applied with wrong files. No Shapely/SCRIP
+            fallback is used.
+
+        Direct same-cell compatibility
+        ------------------------------
+        Direct same-cell transfer is available for all supported explicit grid types:
+          - regular geographic rectilinear grids
+          - curvilinear geographic grids with cell bounds
+          - projected rectilinear grids with geographic corner/node geometry
+          - projected curvilinear grids with geographic corner/node geometry
+          - triangular unstructured meshes
+
+        The direct check compares source and target cell polygons using rounded,
+        order-independent lon/lat vertex keys. A match is accepted only when every
+        target cell has exactly one matching source cell. The source grid may contain
+        additional cells, allowing concentration grids that are subsets of larger
+        bathymetry grids.
+
+        Active sediment layer thickness source
+        --------------------------------------
+        If reader_active_sediment_layer_thickness is provided:
+          - in interpolation mode, it is interpolated like bathymetry and masked by the
+            bathymetry invalid mask
+          - in direct mode, it is copied using the same matched source-cell indices as
+            bathymetry
+          - in conservative polygon/weight mode, it is remapped as an area-weighted
+            extensive layer volume and divided by target area
+
+        In direct and conservative modes, the active sediment source grid must match the
+        bathymetry source grid topology and cell ordering. If not, an error is raised.
+
+        Volume calculation
+        ------------------
+        Water-column concentration uses cell water volume.
+
+        In interpolation mode, volume is computed from remapped mean depth and cell area.
+
+        In conservative polygon/weight mode, volume is computed conservatively from
+        source bathymetry and source-target overlap area.
+
+        In direct mode, volume is computed directly from copied bathymetry, target cell
+        area, and z_array-derived layer clipping.
+
+        If conservative/direct bathymetry metadata includes layer_volume, this explicit
+        layer volume is used preferentially by the writer. Otherwise the writer falls
+        back to volume from mean depth and horizontal cell area.
+
+        Compatibility note (weight_mode='extensive' only)
+        -------------------------------------------------
         One variable stores both water-like and sediment-like species.
         Use units_water, units_sediment and specie_phase for machine-readable interpretation.
         mass_unit and weight_unit are labels only here. No unit conversion is performed.
         '''
+
         import numpy as np
         import pandas as pd
         import gc
@@ -11613,11 +12217,11 @@ class ChemicalDrift(OceanDrift):
 
             weight_mode = str(weight_mode).lower()
             bathymetry_remap = str(bathymetry_remap).lower()
-            if bathymetry_remap not in {'interpolate', 'conservative', 'conservative_shapely', 'scrip'}:
-                raise ValueError("bathymetry_remap must be one of {'interpolate', 'conservative', 'conservative_shapely', 'scrip'}")
+            if bathymetry_remap not in {'interpolate', 'conservative', 'direct', 'conservative_shapely', 'scrip'}:
+                raise ValueError("bathymetry_remap must be one of {'interpolate', 'conservative', 'direct', 'conservative_shapely', 'scrip'}")
             bathymetry_conservative_backend = str(bathymetry_conservative_backend).lower()
-            if bathymetry_conservative_backend not in {'auto', 'shapely', 'scrip', 'xesmf', 'esmf', 'weights'}:
-                raise ValueError("bathymetry_conservative_backend must be one of {'auto', 'shapely', 'scrip', 'xesmf', 'esmf', 'weights'}")
+            if bathymetry_conservative_backend not in {'auto', 'direct', 'shapely', 'scrip', 'xesmf', 'esmf', 'weights'}:
+                raise ValueError("bathymetry_conservative_backend must be one of {'auto', 'direct', 'shapely', 'scrip', 'xesmf', 'esmf', 'weights'}")
             if weight_mode not in {'extensive', 'mean'}:
                 raise ValueError("weight_mode must be one of: 'extensive', 'mean'")
             if weight is None:
