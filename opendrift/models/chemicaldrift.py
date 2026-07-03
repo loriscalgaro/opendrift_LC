@@ -11345,6 +11345,175 @@ class ChemicalDrift(OceanDrift):
         return rename_map
 
     @staticmethod
+    def _xarray_values_equal(a, b, *, rtol=0.0, atol=1e-12) -> bool:
+        """Best-effort equality check for duplicate coordinate aliases."""
+        try:
+            av = np.asarray(a.values if hasattr(a, "values") else a)
+            bv = np.asarray(b.values if hasattr(b, "values") else b)
+            if av.shape != bv.shape:
+                return False
+            if av.dtype.kind in {"f", "c"} or bv.dtype.kind in {"f", "c"}:
+                return bool(np.allclose(av, bv, rtol=rtol, atol=atol, equal_nan=True))
+            return bool(np.array_equal(av, bv))
+        except Exception:
+            return False
+
+    @staticmethod
+    def _xarray_drop_non_dim_vars(obj, names):
+        """
+        Drop variables/coords only when they are not dimensions.
+
+        This is safe for xarray Dataset and DataArray objects. It prevents xarray
+        merge ambiguity where e.g. 'lat' is a coordinate in one object but a data
+        variable in another.
+        """
+        if obj is None:
+            return obj
+
+        try:
+            dims = set(obj.dims)
+        except Exception:
+            dims = set()
+
+        drop = []
+        for nm in names:
+            try:
+                present = False
+                if hasattr(obj, "variables") and nm in obj.variables:
+                    present = True
+                if hasattr(obj, "coords") and nm in obj.coords:
+                    present = True
+                if present and nm not in dims:
+                    drop.append(nm)
+            except Exception:
+                pass
+
+        if not drop:
+            return obj
+
+        try:
+            return obj.drop_vars(drop, errors="ignore")
+        except TypeError:
+            # Older xarray compatibility.
+            for nm in drop:
+                try:
+                    obj = obj.drop_vars(nm)
+                except Exception:
+                    pass
+            return obj
+
+    @staticmethod
+    def _normalize_xarray_spatial_coordinate_roles(obj):
+        """
+        Normalize xarray spatial metadata before derived-output preparation.
+
+        Main goals:
+          - promote lon/lat/x/y variables to coordinates when they are spatial;
+          - remove duplicate short/long aliases only when they are identical;
+          - avoid the xarray error:
+              MergeError: unable to determine if these variables should be
+              coordinates or not in the merged result: {'lat'}
+
+        This function intentionally does not change numerical values.
+        """
+        if obj is None:
+            return obj
+
+        try:
+            out = obj.copy(deep=False)
+        except Exception:
+            return obj
+
+        spatial_names = (
+            "lon", "lat", "longitude", "latitude",
+            "x", "y", "x_center", "y_center",
+            "face_lon", "face_lat", "face_x", "face_y",
+            "node_lon", "node_lat", "node_x", "node_y",
+        )
+
+        # Dataset: promote spatial data variables to coordinates when their
+        # dimensions are already dataset dimensions and they are 1D/2D auxiliary coords.
+        if hasattr(out, "data_vars"):
+            promote = []
+            try:
+                ds_dims = set(out.dims)
+                for nm in spatial_names:
+                    if nm not in out.data_vars:
+                        continue
+                    v = out[nm]
+                    vdims = set(getattr(v, "dims", ()))
+                    vndim = int(getattr(v, "ndim", 0))
+                    if vndim in (1, 2) and vdims.issubset(ds_dims):
+                        promote.append(nm)
+                if promote:
+                    out = out.set_coords(promote)
+            except Exception:
+                pass
+
+            # Drop duplicate aliases only when they are truly the same coordinate.
+            # This avoids keeping both lat and latitude as competing roles.
+            alias_pairs = (
+                ("lon", "longitude"),
+                ("lat", "latitude"),
+            )
+            for short, long in alias_pairs:
+                try:
+                    if short in out.variables and long in out.variables:
+                        s = out[short]
+                        l = out[long]
+                        if (
+                            short not in out.dims
+                            and tuple(getattr(s, "dims", ())) == tuple(getattr(l, "dims", ()))
+                            and ChemicalDrift._xarray_values_equal(s, l)
+                        ):
+                            out = out.drop_vars(short, errors="ignore")
+                except Exception:
+                    pass
+
+        return out
+
+    @staticmethod
+    def _coord_attrs_or_default(coord, defaults):
+        """Return coordinate attributes with required CF defaults filled in."""
+        attrs = {}
+        if coord is not None and hasattr(coord, "attrs"):
+            attrs.update(dict(coord.attrs))
+        for k, v in defaults.items():
+            attrs.setdefault(k, v)
+        return attrs
+
+    @staticmethod
+    def _as_2d_yx_array(obj, *, y_size: int, x_size: int, name: str):
+        """
+        Return a 2D array oriented as (y, x), accepting common xarray dim orders.
+
+        This makes lon/lat auxiliary-coordinate assignment robust when source
+        arrays are stored as (x, y), (y, x), or unnamed numpy arrays.
+        """
+        arr = np.asarray(obj.values if hasattr(obj, "values") else obj)
+        if arr.ndim != 2:
+            raise ValueError(f"{name} must be 2D, got shape {arr.shape}")
+
+        dims = tuple(str(d) for d in getattr(obj, "dims", ()))
+
+        if dims == ("y", "x"):
+            out = arr
+        elif dims == ("x", "y"):
+            out = arr.T
+        elif arr.shape == (y_size, x_size):
+            out = arr
+        elif arr.shape == (x_size, y_size):
+            out = arr.T
+        else:
+            raise ValueError(
+                f"{name} shape {arr.shape} is not compatible with expected "
+                f"(y, x)=({y_size}, {x_size})"
+            )
+
+        return np.asarray(out, dtype=np.float64)
+
+
+    @staticmethod
     def _apply_common_attrs(out_da, Sim_description,
                             projection_proj4=None, grid_mapping=None,
                             longitude=None, latitude=None,
@@ -11377,165 +11546,384 @@ class ChemicalDrift(OceanDrift):
         return out_da
 
     def _prepare_unstructured_output_da(self, da, src_ds):
+        src_ds = self._normalize_xarray_spatial_coordinate_roles(src_ds)
         out = da.copy()
-        if 'face' not in out.dims:
+
+        if "face" not in out.dims:
             raise ValueError("Unstructured output requires a 'face' dimension.")
-        for nm in ('face_lon', 'face_lat', 'face_x', 'face_y', 'lon', 'lat'):
+
+        # Remove stale non-dimension spatial aliases from the DataArray before
+        # assigning clean face coordinates.
+        out = self._xarray_drop_non_dim_vars(
+            out,
+            ("lon", "lat", "longitude", "latitude", "face_lon", "face_lat", "face_x", "face_y"),
+        )
+
+        for nm in ("face_lon", "face_lat", "face_x", "face_y", "lon", "lat"):
             if nm in src_ds.variables and nm not in out.coords:
                 var = src_ds[nm]
-                if getattr(var, 'dims', ()) == ('face',):
-                    out = out.assign_coords({nm: ('face', np.asarray(var.values))})
-                    out.coords[nm].attrs = dict(getattr(var, 'attrs', {}))
+                if getattr(var, "dims", ()) == ("face",):
+                    out = out.assign_coords({nm: ("face", np.asarray(var.values))})
+                    out.coords[nm].attrs = dict(getattr(var, "attrs", {}))
+
         return out
 
-    def _prepare_rectilinear_output_da(self, da, lat_var=None, lon_var=None, lat1d_from_2d=None, lon1d_from_2d=None):
+    def _prepare_rectilinear_output_da(
+        self, da, lat_var=None, lon_var=None,
+        lat1d_from_2d=None, lon1d_from_2d=None,
+        ):
         out = da.copy()
-        def _coord_attrs_or_default(coord, defaults):
-            attrs = {}
-            if coord is not None and hasattr(coord, 'attrs'):
-                attrs.update(dict(coord.attrs))
-            for k, v in defaults.items():
-                attrs.setdefault(k, v)
-            return attrs
+
         def _maybe_get_existing_1d_coord(out_da, names):
             for nm in names:
-                if nm in out_da.coords and getattr(out_da.coords[nm], 'ndim', 0) == 1:
+                if nm in out_da.coords and getattr(out_da.coords[nm], "ndim", 0) == 1:
                     return out_da.coords[nm]
             return None
-        existing_lat_1d = _maybe_get_existing_1d_coord(out, ('latitude', 'lat'))
-        existing_lon_1d = _maybe_get_existing_1d_coord(out, ('longitude', 'lon'))
-        stale_geo_coords = [nm for nm in ('lat', 'lon', 'latitude', 'longitude') if nm in out.coords]
-        if stale_geo_coords:
-            out = out.drop_vars(stale_geo_coords)
-        rename_map = self._build_unique_rename_map(out.dims, (('lat', 'latitude'), ('lon', 'longitude'), ('y', 'latitude'), ('x', 'longitude')), context='rectilinear spatial dimension rename')
+
+        existing_lat_1d = _maybe_get_existing_1d_coord(out, ("latitude", "lat"))
+        existing_lon_1d = _maybe_get_existing_1d_coord(out, ("longitude", "lon"))
+
+        # Remove stale non-dimension spatial coords before renaming/assigning.
+        out = self._xarray_drop_non_dim_vars(
+            out,
+            ("lat", "lon", "latitude", "longitude", "x", "y"),
+        )
+
+        rename_map = self._build_unique_rename_map(
+            out.dims,
+            (
+                ("lat", "latitude"),
+                ("lon", "longitude"),
+                ("y", "latitude"),
+                ("x", "longitude"),
+            ),
+            context="rectilinear spatial dimension rename",
+        )
         if rename_map:
             out = out.rename(rename_map)
-        if 'latitude' not in out.dims or 'longitude' not in out.dims:
-            raise ValueError("Rectilinear geographic output requires dimensions that can be mapped to ('latitude', 'longitude').")
+
+        if "latitude" not in out.dims or "longitude" not in out.dims:
+            raise ValueError(
+                "Rectilinear geographic output requires dimensions that can be "
+                "mapped to ('latitude', 'longitude')."
+            )
+
         lat_vals = lon_vals = lat_attrs = lon_attrs = None
-        if (lat_var is not None and getattr(lat_var, 'ndim', 0) == 1 and lon_var is not None and getattr(lon_var, 'ndim', 0) == 1):
+
+        if (
+            lat_var is not None
+            and getattr(lat_var, "ndim", 0) == 1
+            and lon_var is not None
+            and getattr(lon_var, "ndim", 0) == 1
+        ):
             lat_vals = np.asarray(lat_var.values)
             lon_vals = np.asarray(lon_var.values)
-            lat_attrs = _coord_attrs_or_default(lat_var, {'standard_name': 'latitude', 'long_name': 'latitude', 'units': 'degrees_north', 'axis': 'Y'})
-            lon_attrs = _coord_attrs_or_default(lon_var, {'standard_name': 'longitude', 'long_name': 'longitude', 'units': 'degrees_east', 'axis': 'X'})
+            lat_attrs = self._coord_attrs_or_default(
+                lat_var,
+                {
+                    "standard_name": "latitude",
+                    "long_name": "latitude",
+                    "units": "degrees_north",
+                    "axis": "Y",
+                },
+            )
+            lon_attrs = self._coord_attrs_or_default(
+                lon_var,
+                {
+                    "standard_name": "longitude",
+                    "long_name": "longitude",
+                    "units": "degrees_east",
+                    "axis": "X",
+                },
+            )
+
         elif lat1d_from_2d is not None and lon1d_from_2d is not None:
-            lat_vals = np.asarray(lat1d_from_2d, dtype=float)
-            lon_vals = np.asarray(lon1d_from_2d, dtype=float)
-            lat_attrs = {'standard_name': 'latitude', 'long_name': 'latitude', 'units': 'degrees_north', 'axis': 'Y'}
-            lon_attrs = {'standard_name': 'longitude', 'long_name': 'longitude', 'units': 'degrees_east', 'axis': 'X'}
+            lat_vals = np.asarray(lat1d_from_2d, dtype=np.float64)
+            lon_vals = np.asarray(lon1d_from_2d, dtype=np.float64)
+            lat_attrs = {
+                "standard_name": "latitude",
+                "long_name": "latitude",
+                "units": "degrees_north",
+                "axis": "Y",
+            }
+            lon_attrs = {
+                "standard_name": "longitude",
+                "long_name": "longitude",
+                "units": "degrees_east",
+                "axis": "X",
+            }
+
         elif existing_lat_1d is not None and existing_lon_1d is not None:
             lat_vals = np.asarray(existing_lat_1d.values)
             lon_vals = np.asarray(existing_lon_1d.values)
-            lat_attrs = _coord_attrs_or_default(existing_lat_1d, {'standard_name': 'latitude', 'long_name': 'latitude', 'units': 'degrees_north', 'axis': 'Y'})
-            lon_attrs = _coord_attrs_or_default(existing_lon_1d, {'standard_name': 'longitude', 'long_name': 'longitude', 'units': 'degrees_east', 'axis': 'X'})
+            lat_attrs = self._coord_attrs_or_default(
+                existing_lat_1d,
+                {
+                    "standard_name": "latitude",
+                    "long_name": "latitude",
+                    "units": "degrees_north",
+                    "axis": "Y",
+                },
+            )
+            lon_attrs = self._coord_attrs_or_default(
+                existing_lon_1d,
+                {
+                    "standard_name": "longitude",
+                    "long_name": "longitude",
+                    "units": "degrees_east",
+                    "axis": "X",
+                },
+            )
+
         else:
-            raise ValueError('Could not build rectilinear geographic output.')
-        if out.sizes['latitude'] != lat_vals.size:
-            raise ValueError(f"Latitude size mismatch: data has {out.sizes['latitude']} rows, but derived latitude has {lat_vals.size} values.")
-        if out.sizes['longitude'] != lon_vals.size:
-            raise ValueError(f"Longitude size mismatch: data has {out.sizes['longitude']} cols, but derived longitude has {lon_vals.size} values.")
-        out = out.assign_coords(latitude=('latitude', lat_vals), longitude=('longitude', lon_vals))
-        out.coords['latitude'].attrs = lat_attrs
-        out.coords['longitude'].attrs = lon_attrs
+            raise ValueError("Could not build rectilinear geographic output.")
+
+        if out.sizes["latitude"] != lat_vals.size:
+            raise ValueError(
+                f"Latitude size mismatch: data has {out.sizes['latitude']} rows, "
+                f"but derived latitude has {lat_vals.size} values."
+            )
+        if out.sizes["longitude"] != lon_vals.size:
+            raise ValueError(
+                f"Longitude size mismatch: data has {out.sizes['longitude']} cols, "
+                f"but derived longitude has {lon_vals.size} values."
+            )
+
+        out = out.assign_coords(
+            latitude=("latitude", lat_vals),
+            longitude=("longitude", lon_vals),
+        )
+        out.coords["latitude"].attrs = lat_attrs
+        out.coords["longitude"].attrs = lon_attrs
+
         return out
 
-    @staticmethod
-    def _prepare_curvilinear_output_da(da, y_var=None, x_var=None, lon2d=None, lat2d=None, separable=False, Verbose=True):
-        out = da.copy()
+    def _prepare_curvilinear_output_da(
+        self,
+        da,
+        y_var=None,
+        x_var=None,
+        lon2d=None,
+        lat2d=None,
+        separable=False,
+        Verbose=True,
+    ):
         import xarray as xr
-        def _coord_attrs_or_default(coord, defaults):
-            attrs = {}
-            if coord is not None and hasattr(coord, 'attrs'):
-                attrs.update(dict(coord.attrs))
-            for k, v in defaults.items():
-                attrs.setdefault(k, v)
-            return attrs
-        if 'lat' in out.dims or 'lon' in out.dims or 'latitude' in out.dims or 'longitude' in out.dims:
-            raise ValueError('Curvilinear/projected output helper expects y/x dimensions.')
-        if 'y' not in out.dims or 'x' not in out.dims:
+
+        out = da.copy()
+
+        if "lat" in out.dims or "lon" in out.dims or "latitude" in out.dims or "longitude" in out.dims:
+            raise ValueError("Curvilinear/projected output helper expects y/x dimensions.")
+        if "y" not in out.dims or "x" not in out.dims:
             raise ValueError("Curvilinear/projected mode requires data dimensions containing both 'y' and 'x'.")
-        stale_geo_coords = [nm for nm in ('lat', 'lon', 'latitude', 'longitude') if nm in out.coords]
-        if stale_geo_coords:
-            out = out.drop_vars(stale_geo_coords)
-        if y_var is not None and getattr(y_var, 'ndim', 0) == 1:
+
+        # Remove stale non-dimension coordinate aliases before assigning clean
+        # 2D lon/lat auxiliary coordinates.
+        out = self._xarray_drop_non_dim_vars(
+            out,
+            ("lat", "lon", "latitude", "longitude", "x_center", "y_center"),
+        )
+
+        if y_var is not None and getattr(y_var, "ndim", 0) == 1:
             y_vals = np.asarray(y_var.values)
-            if out.sizes['y'] != y_vals.size:
-                raise ValueError(f"y size mismatch: data has {out.sizes['y']} rows, but source y has {y_vals.size} values.")
-            out = out.assign_coords(y=('y', y_vals))
-            out.coords['y'].attrs = _coord_attrs_or_default(y_var, {'standard_name': 'projection_y_coordinate', 'long_name': 'y', 'units': 'm', 'axis': 'Y'})
-        if x_var is not None and getattr(x_var, 'ndim', 0) == 1:
+            if out.sizes["y"] != y_vals.size:
+                raise ValueError(
+                    f"y size mismatch: data has {out.sizes['y']} rows, "
+                    f"but source y has {y_vals.size} values."
+                )
+            out = out.assign_coords(y=("y", y_vals))
+            out.coords["y"].attrs = self._coord_attrs_or_default(
+                y_var,
+                {
+                    "standard_name": "projection_y_coordinate",
+                    "long_name": "y",
+                    "units": "m",
+                    "axis": "Y",
+                },
+            )
+
+        if x_var is not None and getattr(x_var, "ndim", 0) == 1:
             x_vals = np.asarray(x_var.values)
-            if out.sizes['x'] != x_vals.size:
-                raise ValueError(f"x size mismatch: data has {out.sizes['x']} cols, but source x has {x_vals.size} values.")
-            out = out.assign_coords(x=('x', x_vals))
-            out.coords['x'].attrs = _coord_attrs_or_default(x_var, {'standard_name': 'projection_x_coordinate', 'long_name': 'x', 'units': 'm', 'axis': 'X'})
+            if out.sizes["x"] != x_vals.size:
+                raise ValueError(
+                    f"x size mismatch: data has {out.sizes['x']} cols, "
+                    f"but source x has {x_vals.size} values."
+                )
+            out = out.assign_coords(x=("x", x_vals))
+            out.coords["x"].attrs = self._coord_attrs_or_default(
+                x_var,
+                {
+                    "standard_name": "projection_x_coordinate",
+                    "long_name": "x",
+                    "units": "m",
+                    "axis": "X",
+                },
+            )
+
         if lon2d is not None and lat2d is not None:
-            if lon2d.shape != lat2d.shape:
-                raise ValueError(f'lon2d/lat2d shape mismatch: {lon2d.shape} vs {lat2d.shape}')
-            if tuple(lon2d.dims) != tuple(lat2d.dims):
-                raise ValueError(f'lon2d/lat2d dims mismatch: {lon2d.dims} vs {lat2d.dims}')
-            if tuple(lon2d.dims) != ('y', 'x'):
-                raise ValueError(f"Expected 2D lon/lat auxiliary coords on dims ('y', 'x'), got {lon2d.dims}")
-            if lon2d.shape != (out.sizes['y'], out.sizes['x']):
-                raise ValueError(f"2D longitude shape mismatch: expected {(out.sizes['y'], out.sizes['x'])}, got {lon2d.shape}")
-            lon_aux = xr.DataArray(np.asarray(lon2d.values), dims=('y', 'x'), attrs={'standard_name': 'longitude', 'long_name': 'longitude of cell center', 'units': 'degrees_east', **dict(getattr(lon2d, 'attrs', {}))})
-            lat_aux = xr.DataArray(np.asarray(lat2d.values), dims=('y', 'x'), attrs={'standard_name': 'latitude', 'long_name': 'latitude of cell center', 'units': 'degrees_north', **dict(getattr(lat2d, 'attrs', {}))})
+            y_size = int(out.sizes["y"])
+            x_size = int(out.sizes["x"])
+
+            lon_arr = self._as_2d_yx_array(lon2d, y_size=y_size, x_size=x_size, name="lon2d")
+            lat_arr = self._as_2d_yx_array(lat2d, y_size=y_size, x_size=x_size, name="lat2d")
+
+            if lon_arr.shape != lat_arr.shape:
+                raise ValueError(f"lon2d/lat2d shape mismatch: {lon_arr.shape} vs {lat_arr.shape}")
+            if lon_arr.shape != (y_size, x_size):
+                raise ValueError(
+                    f"2D lon/lat shape mismatch: expected {(y_size, x_size)}, got {lon_arr.shape}"
+                )
+
+            lon_attrs = self._coord_attrs_or_default(
+                lon2d,
+                {
+                    "standard_name": "longitude",
+                    "long_name": "longitude of cell center",
+                    "units": "degrees_east",
+                },
+            )
+            lat_attrs = self._coord_attrs_or_default(
+                lat2d,
+                {
+                    "standard_name": "latitude",
+                    "long_name": "latitude of cell center",
+                    "units": "degrees_north",
+                },
+            )
+
+            lon_aux = xr.DataArray(lon_arr, dims=("y", "x"), attrs=lon_attrs)
+            lat_aux = xr.DataArray(lat_arr, dims=("y", "x"), attrs=lat_attrs)
+
+            # Assign as coordinates, not data variables.
             out = out.assign_coords(lon=lon_aux, lat=lat_aux)
+
         if Verbose and lon2d is not None and lat2d is not None and not separable:
-            print('Preserving projected/curvilinear y/x grid with 2D lon/lat auxiliary coordinates')
+            print("Preserving projected/curvilinear y/x grid with 2D lon/lat auxiliary coordinates")
+
         return out
 
-    def prepare_derived_output_da(self, da, src_ds, time_name=None, spatial_mode='auto', rectilinear_tol=1e-10, Verbose=True):
+    def prepare_derived_output_da(
+        self,
+        da,
+        src_ds,
+        time_name=None,
+        spatial_mode="auto",
+        rectilinear_tol=1e-10,
+        Verbose=True,
+    ):
         spatial_mode = str(spatial_mode).lower()
-        if spatial_mode not in {'auto', 'rectilinear', 'curvilinear'}:
+        if spatial_mode not in {"auto", "rectilinear", "curvilinear"}:
             raise ValueError("spatial_mode must be one of: 'auto', 'rectilinear', 'curvilinear'")
+
+        # This is the key long-term stability step: normalize xarray coordinate
+        # roles before pulling lon/lat/x/y from the source dataset.
+        src_ds = self._normalize_xarray_spatial_coordinate_roles(src_ds)
+
         out = self._rename_common_dims(da, time_name=time_name)
-        if 'face' in out.dims:
+
+        if "face" in out.dims:
             return self._prepare_unstructured_output_da(out, src_ds)
 
         def _get_src_var(names):
             for name in names:
-                if name in src_ds.coords:
+                if hasattr(src_ds, "coords") and name in src_ds.coords:
                     return src_ds.coords[name]
-                if name in src_ds.data_vars:
+                if hasattr(src_ds, "data_vars") and name in src_ds.data_vars:
                     return src_ds[name]
-                if name in src_ds.variables:
+                if hasattr(src_ds, "variables") and name in src_ds.variables:
                     return src_ds[name]
             return None
 
         def _is_separable_2d(lon_da, lat_da, tol):
-            lon2d = np.asarray(lon_da.values, dtype=float)
-            lat2d = np.asarray(lat_da.values, dtype=float)
+            lon2d = np.asarray(lon_da.values if hasattr(lon_da, "values") else lon_da, dtype=float)
+            lat2d = np.asarray(lat_da.values if hasattr(lat_da, "values") else lat_da, dtype=float)
             if lon2d.ndim != 2 or lat2d.ndim != 2 or lon2d.shape != lat2d.shape:
                 return False, None, None
+
+            dims = tuple(str(d) for d in getattr(lon_da, "dims", ()))
+            if dims == ("x", "y"):
+                lon2d = lon2d.T
+                lat2d = lat2d.T
+
             lon1d = lon2d[0, :]
             lat1d = lat2d[:, 0]
-            lon_ok = np.allclose(lon2d, np.broadcast_to(lon1d[None, :], lon2d.shape), rtol=0.0, atol=tol, equal_nan=True)
-            lat_ok = np.allclose(lat2d, np.broadcast_to(lat1d[:, None], lat2d.shape), rtol=0.0, atol=tol, equal_nan=True)
+            lon_ok = np.allclose(
+                lon2d,
+                np.broadcast_to(lon1d[None, :], lon2d.shape),
+                rtol=0.0,
+                atol=tol,
+                equal_nan=True,
+            )
+            lat_ok = np.allclose(
+                lat2d,
+                np.broadcast_to(lat1d[:, None], lat2d.shape),
+                rtol=0.0,
+                atol=tol,
+                equal_nan=True,
+            )
             return bool(lon_ok and lat_ok), lon1d, lat1d
-        lat_var = _get_src_var(['latitude', 'lat'])
-        lon_var = _get_src_var(['longitude', 'lon'])
-        y_var = _get_src_var(['y'])
-        x_var = _get_src_var(['x'])
-        lon2d = lon_var if (lon_var is not None and getattr(lon_var, 'ndim', 0) == 2) else None
-        lat2d = lat_var if (lat_var is not None and getattr(lat_var, 'ndim', 0) == 2) else None
+
+        lat_var = _get_src_var(["latitude", "lat"])
+        lon_var = _get_src_var(["longitude", "lon"])
+        y_var = _get_src_var(["y"])
+        x_var = _get_src_var(["x"])
+
+        lon2d = lon_var if (lon_var is not None and getattr(lon_var, "ndim", 0) == 2) else None
+        lat2d = lat_var if (lat_var is not None and getattr(lat_var, "ndim", 0) == 2) else None
+
         separable = False
         lon1d_from_2d = None
         lat1d_from_2d = None
+
         if lon2d is not None and lat2d is not None:
-            separable, lon1d_from_2d, lat1d_from_2d = _is_separable_2d(lon2d, lat2d, rectilinear_tol)
-        has_native_1d_geo = (lat_var is not None and getattr(lat_var, 'ndim', 0) == 1 and lon_var is not None and getattr(lon_var, 'ndim', 0) == 1)
-        already_rectilinear_geo_dims = (('latitude' in out.dims or 'lat' in out.dims) and ('longitude' in out.dims or 'lon' in out.dims))
-        if spatial_mode == 'auto':
-            target_mode = 'rectilinear' if (has_native_1d_geo or separable) else 'curvilinear'
+            separable, lon1d_from_2d, lat1d_from_2d = _is_separable_2d(
+                lon2d,
+                lat2d,
+                rectilinear_tol,
+            )
+
+        has_native_1d_geo = (
+            lat_var is not None
+            and getattr(lat_var, "ndim", 0) == 1
+            and lon_var is not None
+            and getattr(lon_var, "ndim", 0) == 1
+        )
+
+        already_rectilinear_geo_dims = (
+            ("latitude" in out.dims or "lat" in out.dims)
+            and ("longitude" in out.dims or "lon" in out.dims)
+        )
+
+        if spatial_mode == "auto":
+            target_mode = "rectilinear" if (has_native_1d_geo or separable) else "curvilinear"
         else:
             target_mode = spatial_mode
-        if target_mode == 'rectilinear':
-            return self._prepare_rectilinear_output_da(out, lat_var=lat_var, lon_var=lon_var, lat1d_from_2d=lat1d_from_2d if separable else None, lon1d_from_2d=lon1d_from_2d if separable else None)
-        if already_rectilinear_geo_dims:
-            return self._prepare_rectilinear_output_da(out, lat_var=lat_var, lon_var=lon_var)
-        return self._prepare_curvilinear_output_da(out, y_var=y_var, x_var=x_var, lon2d=lon2d, lat2d=lat2d, separable=separable, Verbose=Verbose)
 
+        if target_mode == "rectilinear":
+            return self._prepare_rectilinear_output_da(
+                out,
+                lat_var=lat_var,
+                lon_var=lon_var,
+                lat1d_from_2d=lat1d_from_2d if separable else None,
+                lon1d_from_2d=lon1d_from_2d if separable else None,
+            )
+
+        if already_rectilinear_geo_dims:
+            return self._prepare_rectilinear_output_da(
+                out,
+                lat_var=lat_var,
+                lon_var=lon_var,
+            )
+
+        return self._prepare_curvilinear_output_da(
+            out,
+            y_var=y_var,
+            x_var=x_var,
+            lon2d=lon2d,
+            lat2d=lat2d,
+            separable=separable,
+            Verbose=Verbose,
+        )
     def write_netcdf_chemical_density_map(self, filename, pixelsize_m='auto', zlevels=None,
                                           lat_resol=None, lon_resol=None,
                                           deltat=None,
@@ -12651,17 +13039,25 @@ class ChemicalDrift(OceanDrift):
                 v.grid_mapping = 'crs'
                 v.coordinates = 'lon lat'
 
-            def _set_unstructured_face_attrs(v, *, long_name=None, units=None, standard_name=None):
-                if long_name is not None:
-                    v.long_name = long_name
-                if units is not None:
-                    v.units = units
-                if standard_name is not None:
-                    v.standard_name = standard_name
-                v.mesh = 'mesh'
-                v.location = 'face'
-                v.grid_mapping = 'crs'
-                v.coordinates = 'face_lon face_lat'
+            # def _set_unstructured_face_attrs(
+            #     v,
+            #     *,
+            #     long_name=None,
+            #     units=None,
+            #     standard_name=None,
+            #     coordinates=None,
+            # ):
+            #     if long_name is not None:
+            #         v.long_name = long_name
+            #     if units is not None:
+            #         v.units = units
+            #     if standard_name is not None:
+            #         v.standard_name = standard_name
+
+            #     v.mesh = 'mesh'
+            #     v.location = 'face'
+            #     v.grid_mapping = 'crs'
+            #     v.coordinates = coordinates or 'face_lon face_lat'
 
             def _set_time_mean_attrs(v):
                 v.cell_methods = 'time: mean'
@@ -12713,12 +13109,241 @@ class ChemicalDrift(OceanDrift):
                 v.grid_mapping = 'crs'
                 v.coordinates = coordinates
 
+            def _normalize_structured_cf_coordinate_metadata(nc):
+                """
+                Make structured-grid NetCDF output stable for xarray decoding.
+
+                This ensures that lon/lat are always treated as 2D auxiliary
+                coordinates for variables with dimensions (..., y, x), rather than
+                sometimes being interpreted as ordinary data variables.
+                """
+                if "lon" not in nc.variables or "lat" not in nc.variables:
+                    return
+
+                lonv = nc.variables["lon"]
+                latv = nc.variables["lat"]
+
+                lonv.standard_name = "longitude"
+                lonv.long_name = "longitude of cell center"
+                lonv.units = "degrees_east"
+                lonv.comment = "Two-dimensional auxiliary coordinate for variables on the y/x grid."
+
+                latv.standard_name = "latitude"
+                latv.long_name = "latitude of cell center"
+                latv.units = "degrees_north"
+                latv.comment = "Two-dimensional auxiliary coordinate for variables on the y/x grid."
+
+                # Bounds, dimensions, CRS, and pure coordinate variables should not
+                # themselves receive a coordinates='lon lat' attribute.
+                skip = {
+                    "x", "y",
+                    "lon", "lat",
+                    "lon_bounds", "lat_bounds",
+                    "x_center", "y_center",
+                    "x_bounds", "y_bounds",
+                    "crs",
+                    "time", "avg_time",
+                    "depth", "depth_bounds",
+                    "depth_model_top", "depth_model_bounds",
+                    "specie", "specie_original_id", "specie_phase", "specie_name",
+                    "cell_size", "lat_resol", "lon_resol", "dy", "dx",
+                    "input_lat_resol_deg", "input_lon_resol_deg",
+                    "smoothing_cells",
+                }
+
+                for vname, var in nc.variables.items():
+                    if vname in skip:
+                        continue
+
+                    dims = tuple(getattr(var, "dimensions", ()))
+                    if "y" not in dims or "x" not in dims:
+                        continue
+
+                    # Preserve any existing auxiliary coordinates, but ensure lon/lat
+                    # are present exactly once.
+                    existing = str(getattr(var, "coordinates", "") or "").split()
+                    for aux in ("lon", "lat"):
+                        if aux not in existing:
+                            existing.append(aux)
+                    var.coordinates = " ".join(existing)
+
+                    # Most gridded fields should also point at the CRS variable.
+                    if "crs" in nc.variables and not hasattr(var, "grid_mapping"):
+                        var.grid_mapping = "crs"
+
+            def _normalize_unstructured_cf_coordinate_metadata(nc):
+                """
+                Make triangular unstructured NetCDF output stable for xarray/UGRID decoding.
+
+                Goals:
+                  - keep node/face lon/lat as explicit mesh coordinate variables;
+                  - keep projected face_x/face_y when present;
+                  - make every face-located data variable point to a consistent
+                    coordinate list;
+                  - avoid mixed coordinate declarations between mesh topology and
+                    face variables.
+                """
+                have_geo_face = ("face_lon" in nc.variables and "face_lat" in nc.variables)
+                have_xy_face = ("face_x" in nc.variables and "face_y" in nc.variables)
+                have_geo_node = ("node_lon" in nc.variables and "node_lat" in nc.variables)
+                have_xy_node = ("node_x" in nc.variables and "node_y" in nc.variables)
+
+                if not have_geo_face:
+                    return
+
+                # Prefer projected face coordinates first when present, but always
+                # include geographic lon/lat for geospatial consumers.
+                face_coords = []
+                if have_xy_face:
+                    face_coords.extend(["face_x", "face_y"])
+                face_coords.extend(["face_lon", "face_lat"])
+                face_coord_string = " ".join(face_coords)
+
+                # Coordinate metadata.
+                if "node_lon" in nc.variables:
+                    v = nc.variables["node_lon"]
+                    v.standard_name = "longitude"
+                    v.long_name = "longitude of mesh node"
+                    v.units = "degrees_east"
+                    v.axis = "X"
+
+                if "node_lat" in nc.variables:
+                    v = nc.variables["node_lat"]
+                    v.standard_name = "latitude"
+                    v.long_name = "latitude of mesh node"
+                    v.units = "degrees_north"
+                    v.axis = "Y"
+
+                if "face_lon" in nc.variables:
+                    v = nc.variables["face_lon"]
+                    v.standard_name = "longitude"
+                    v.long_name = "longitude of face center"
+                    v.units = "degrees_east"
+                    if "face_lon_bounds" in nc.variables:
+                        v.bounds = "face_lon_bounds"
+                    elif "bounds" in v.ncattrs():
+                        v.delncattr("bounds")
+
+                if "face_lat" in nc.variables:
+                    v = nc.variables["face_lat"]
+                    v.standard_name = "latitude"
+                    v.long_name = "latitude of face center"
+                    v.units = "degrees_north"
+                    if "face_lat_bounds" in nc.variables:
+                        v.bounds = "face_lat_bounds"
+                    elif "bounds" in v.ncattrs():
+                        v.delncattr("bounds")
+
+                if "node_x" in nc.variables:
+                    v = nc.variables["node_x"]
+                    v.standard_name = "projection_x_coordinate"
+                    v.long_name = "projection x coordinate of mesh node"
+                    if not hasattr(v, "units"):
+                        v.units = "m"
+                    v.axis = "X"
+
+                if "node_y" in nc.variables:
+                    v = nc.variables["node_y"]
+                    v.standard_name = "projection_y_coordinate"
+                    v.long_name = "projection y coordinate of mesh node"
+                    if not hasattr(v, "units"):
+                        v.units = "m"
+                    v.axis = "Y"
+
+                if "face_x" in nc.variables:
+                    v = nc.variables["face_x"]
+                    v.standard_name = "projection_x_coordinate"
+                    v.long_name = "projection x coordinate of face center"
+                    if not hasattr(v, "units"):
+                        v.units = "m"
+                    v.axis = "X"
+
+                if "face_y" in nc.variables:
+                    v = nc.variables["face_y"]
+                    v.standard_name = "projection_y_coordinate"
+                    v.long_name = "projection y coordinate of face center"
+                    if not hasattr(v, "units"):
+                        v.units = "m"
+                    v.axis = "Y"
+
+                # Mesh topology variable.
+                if "mesh" in nc.variables:
+                    mesh = nc.variables["mesh"]
+                    mesh.cf_role = "mesh_topology"
+                    mesh.long_name = "Triangular unstructured mesh"
+                    mesh.topology_dimension = 2
+                    mesh.node_dimension = "node"
+                    mesh.face_dimension = "face"
+                    mesh.face_node_connectivity = "face_node_connectivity"
+
+                    if have_xy_node:
+                        mesh.node_coordinates = "node_x node_y"
+                    elif have_geo_node:
+                        mesh.node_coordinates = "node_lon node_lat"
+
+                    if have_xy_face:
+                        # UGRID primary face coordinates in native projected space.
+                        mesh.face_coordinates = "face_x face_y"
+                        # Keep lon/lat discoverable through data-variable coordinates below.
+                        mesh.geographic_face_coordinates = "face_lon face_lat"
+                    else:
+                        mesh.face_coordinates = "face_lon face_lat"
+
+                if "face_node_connectivity" in nc.variables:
+                    conn = nc.variables["face_node_connectivity"]
+                    conn.cf_role = "face_node_connectivity"
+                    conn.long_name = "Maps every triangular face to its three mesh nodes"
+                    conn.start_index = 0
+
+                # Variables that should not receive face mesh metadata.
+                skip = {
+                    "mesh",
+                    "face",
+                    "node",
+                    "nmax_face_nodes",
+                    "face_node_connectivity",
+                    "node_lon",
+                    "node_lat",
+                    "node_x",
+                    "node_y",
+                    "face_lon",
+                    "face_lat",
+                    "face_x",
+                    "face_y",
+                    "crs",
+                    "time",
+                    "avg_time",
+                    "depth",
+                    "depth_bounds",
+                    "depth_model_top",
+                    "depth_model_bounds",
+                    "specie",
+                    "specie_original_id",
+                    "specie_phase",
+                    "specie_name",
+                }
+
+                for vname, var in nc.variables.items():
+                    if vname in skip:
+                        continue
+
+                    dims = tuple(getattr(var, "dimensions", ()))
+                    if "face" not in dims:
+                        continue
+
+                    var.mesh = "mesh"
+                    var.location = "face"
+                    var.coordinates = face_coord_string
+
+                    if "crs" in nc.variables and not hasattr(var, "grid_mapping"):
+                        var.grid_mapping = "crs"
+
             # ------------------------------------------------------------------
             # Unstructured triangular writer
             # ------------------------------------------------------------------
             if unstructured:
                 with Dataset(filename, 'w') as nc:
-                    nc.Conventions = 'CF-1.10'
+                    nc.Conventions = 'CF-1.10 UGRID-1.0'
                     nc.title = 'ChemicalDrift gridded chemical field'
                     nc.source = 'OpenDrift ChemicalDrift'
                     nc.history = 'Created by write_netcdf_chemical_density_map'
@@ -12807,13 +13432,18 @@ class ChemicalDrift(OceanDrift):
                     mesh.cf_role = 'mesh_topology'
                     mesh.long_name = 'Triangular unstructured mesh'
                     mesh.topology_dimension = 2
+                    mesh.node_dimension = 'node'
+                    mesh.face_dimension = 'face'
                     mesh.face_node_connectivity = 'face_node_connectivity'
-                    mesh.face_coordinates = 'face_lon face_lat'
+
                     if explicit_grid['binning_coords'] == 'projected':
                         mesh.node_coordinates = 'node_x node_y'
                         mesh.face_coordinates = 'face_x face_y'
+                        mesh.geographic_node_coordinates = 'node_lon node_lat'
+                        mesh.geographic_face_coordinates = 'face_lon face_lat'
                     else:
                         mesh.node_coordinates = 'node_lon node_lat'
+                        mesh.face_coordinates = 'face_lon face_lat'
 
                     conn = nc.createVariable('face_node_connectivity', 'i4', ('face', 'nmax_face_nodes'))
                     conn[:] = explicit_grid['face_node_connectivity'].astype('i4')
@@ -12824,29 +13454,56 @@ class ChemicalDrift(OceanDrift):
                     node_lat = nc.createVariable('node_lat', 'f8', ('node',))
                     node_lon[:] = explicit_grid['node_lon']
                     node_lat[:] = explicit_grid['node_lat']
-                    node_lon.standard_name = 'longitude'; node_lon.units = 'degrees_east'
-                    node_lat.standard_name = 'latitude'; node_lat.units = 'degrees_north'
+                    node_lon.standard_name = 'longitude'
+                    node_lon.long_name = 'longitude of mesh node'
+                    node_lon.units = 'degrees_east'
+                    node_lon.axis = 'X'
+
+                    node_lat.standard_name = 'latitude'
+                    node_lat.long_name = 'latitude of mesh node'
+                    node_lat.units = 'degrees_north'
+                    node_lat.axis = 'Y'
 
                     face_lon = nc.createVariable('face_lon', 'f8', ('face',))
                     face_lat = nc.createVariable('face_lat', 'f8', ('face',))
                     face_lon[:] = explicit_grid['face_lon_center']
                     face_lat[:] = explicit_grid['face_lat_center']
-                    face_lon.standard_name = 'longitude'; face_lon.units = 'degrees_east'
-                    face_lat.standard_name = 'latitude'; face_lat.units = 'degrees_north'
+                    face_lon.standard_name = 'longitude'
+                    face_lon.long_name = 'longitude of face center'
+                    face_lon.units = 'degrees_east'
+
+                    face_lat.standard_name = 'latitude'
+                    face_lat.long_name = 'latitude of face center'
+                    face_lat.units = 'degrees_north'
 
                     if explicit_grid['binning_coords'] == 'projected':
                         node_x = nc.createVariable('node_x', 'f8', ('node',))
                         node_y = nc.createVariable('node_y', 'f8', ('node',))
                         node_x[:] = explicit_grid['node_x']
                         node_y[:] = explicit_grid['node_y']
-                        node_x.standard_name = 'projection_x_coordinate'; node_x.units = explicit_grid.get('native_x_units', 'm') or 'm'
-                        node_y.standard_name = 'projection_y_coordinate'; node_y.units = explicit_grid.get('native_y_units', 'm') or 'm'
+                        node_x.standard_name = 'projection_x_coordinate'
+                        node_x.long_name = 'projection x coordinate of mesh node'
+                        node_x.units = explicit_grid.get('native_x_units', 'm') or 'm'
+                        node_x.axis = 'X'
+
+                        node_y.standard_name = 'projection_y_coordinate'
+                        node_y.long_name = 'projection y coordinate of mesh node'
+                        node_y.units = explicit_grid.get('native_y_units', 'm') or 'm'
+                        node_y.axis = 'Y'
                         face_x = nc.createVariable('face_x', 'f8', ('face',))
                         face_y = nc.createVariable('face_y', 'f8', ('face',))
                         face_x[:] = explicit_grid['face_x_center']
                         face_y[:] = explicit_grid['face_y_center']
-                        face_x.standard_name = 'projection_x_coordinate'; face_x.units = explicit_grid.get('native_x_units', 'm') or 'm'
-                        face_y.standard_name = 'projection_y_coordinate'; face_y.units = explicit_grid.get('native_y_units', 'm') or 'm'
+
+                        face_x.standard_name = 'projection_x_coordinate'
+                        face_x.long_name = 'projection x coordinate of face center'
+                        face_x.units = explicit_grid.get('native_x_units', 'm') or 'm'
+                        face_x.axis = 'X'
+
+                        face_y.standard_name = 'projection_y_coordinate'
+                        face_y.long_name = 'projection y coordinate of face center'
+                        face_y.units = explicit_grid.get('native_y_units', 'm') or 'm'
+                        face_y.axis = 'Y'
 
                     volume = _create_f8(nc, 'volume', ('depth', 'face'))
                     volume_mask = (np.broadcast_to(combined_mask_face[None, :], pixel_volume_out.shape) | ~np.isfinite(pixel_volume_out))
@@ -12948,6 +13605,7 @@ class ChemicalDrift(OceanDrift):
                         if time_avg_conc:
                             _set_time_mean_attrs(pname)
 
+                _normalize_unstructured_cf_coordinate_metadata(nc)
                 logger.info('Wrote to %s', filename)
                 return
 
@@ -13032,10 +13690,21 @@ class ChemicalDrift(OceanDrift):
                 else:
                     nc.variables['x'].standard_name = 'projection_x_coordinate'; nc.variables['x'].long_name = 'x coordinate of cell center in target CRS'; nc.variables['x'].units = 'm'; nc.variables['x'].axis = 'X'
                     nc.variables['y'].standard_name = 'projection_y_coordinate'; nc.variables['y'].long_name = 'y coordinate of cell center in target CRS'; nc.variables['y'].units = 'm'; nc.variables['y'].axis = 'Y'
-                nc.createVariable('lon', 'f8', ('y', 'x'))[:] = lon_center_2d.T
-                nc.createVariable('lat', 'f8', ('y', 'x'))[:] = lat_center_2d.T
-                nc.variables['lon'].standard_name = 'longitude'; nc.variables['lon'].long_name = 'longitude of cell center'; nc.variables['lon'].units = 'degrees_east'
-                nc.variables['lat'].standard_name = 'latitude'; nc.variables['lat'].long_name = 'latitude of cell center'; nc.variables['lat'].units = 'degrees_north'
+                    lon_var_nc = nc.createVariable('lon', 'f8', ('y', 'x'))
+                    lat_var_nc = nc.createVariable('lat', 'f8', ('y', 'x'))
+
+                    lon_var_nc[:] = np.asarray(lon_center_2d, dtype=np.float64).T
+                    lat_var_nc[:] = np.asarray(lat_center_2d, dtype=np.float64).T
+
+                    lon_var_nc.standard_name = 'longitude'
+                    lon_var_nc.long_name = 'longitude of cell center'
+                    lon_var_nc.units = 'degrees_east'
+                    lon_var_nc.comment = 'Two-dimensional auxiliary coordinate for variables on the y/x grid.'
+
+                    lat_var_nc.standard_name = 'latitude'
+                    lat_var_nc.long_name = 'latitude of cell center'
+                    lat_var_nc.units = 'degrees_north'
+                    lat_var_nc.comment = 'Two-dimensional auxiliary coordinate for variables on the y/x grid.'
                 if explicit_grid is not None and explicit_grid.get('lon_corners_4') is not None and explicit_grid.get('lat_corners_4') is not None:
                     if 'nv' not in nc.dimensions:
                         nc.createDimension('nv', 4)
@@ -13412,7 +14081,7 @@ class ChemicalDrift(OceanDrift):
                     flag_meanings='valid invalid',
                     coordinates='lon lat',
                 )
-
+                _normalize_structured_cf_coordinate_metadata(nc)
                 logger.info('Wrote to %s', filename)
         finally:
             # Close/remove env readers even on exceptions
