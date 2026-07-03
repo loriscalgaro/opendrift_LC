@@ -25174,6 +25174,11 @@ class ChemicalDrift(OceanDrift):
         If variables_to_keep is provided, logical size is computed after
         filtering so max_size_GB is based only on the variables that will be
         written to the concatenated outputs.
+
+        Actual time coordinate values are stored in the returned metadata.
+        The partitioner uses them to allow safe prefix-compatible grouping,
+        e.g. files that all start at the same time
+        and have the same timestep, but stop at different dates.
         """
         import warnings
         import hashlib
@@ -25200,13 +25205,22 @@ class ChemicalDrift(OceanDrift):
 
                 time_first = None
                 time_last = None
+                time_values = None
+                time_step = None
+                time_is_regular = True
 
                 if "time" in ds_for_size.variables:
-                    time_values = np.asarray(ds_for_size["time"].values)
+                    time_values = np.asarray(ds_for_size["time"].values).copy()
 
                     if time_values.size > 0:
                         time_first = str(time_values[0])
                         time_last = str(time_values[-1])
+
+                    if time_values.size > 1:
+                        deltas = np.diff(time_values)
+                        if deltas.size > 0:
+                            time_step = deltas[0]
+                            time_is_regular = bool(np.all(deltas == deltas[0]))
 
                     h = hashlib.sha1()
                     h.update(str(time_values.dtype).encode("utf-8", errors="ignore"))
@@ -25240,6 +25254,9 @@ class ChemicalDrift(OceanDrift):
                     "time_first": time_first,
                     "time_last": time_last,
                     "time_signature": time_signature,
+                    "time_values": time_values,
+                    "time_step": time_step,
+                    "time_is_regular": time_is_regular,
                     "sort_key": ChemicalDrift._natural_key(path),
                 }
 
@@ -25249,13 +25266,99 @@ class ChemicalDrift(OceanDrift):
 
 
     @staticmethod
+    def _concat_time_values_prefix_compatible(a, b):
+        """
+        Return True when two time axes can be safely joined by prefix padding.
+
+        Compatibility rules:
+          1. both time axes are present;
+          2. both start at the same timestamp;
+          3. both are regular when they have >=2 timesteps;
+          4. when both have >=2 timesteps, the timestep is identical;
+          5. the shorter full time vector is an exact prefix of the longer.
+
+        This deliberately rejects non-prefix overlaps and irregular axes.  The
+        concat worker will still use xr.concat(..., join="exact") after
+        reindexing to the selected target axis.
+        """
+        import numpy as np
+
+        if a is None or b is None:
+            return False
+
+        a = np.asarray(a)
+        b = np.asarray(b)
+
+        if a.size == 0 or b.size == 0:
+            return a.size == b.size
+
+        if a[0] != b[0]:
+            return False
+
+        def _regular_step(values):
+            if values.size < 2:
+                return True, None
+            deltas = np.diff(values)
+            if deltas.size == 0:
+                return True, None
+            regular = bool(np.all(deltas == deltas[0]))
+            return regular, deltas[0]
+
+        a_regular, a_step = _regular_step(a)
+        b_regular, b_step = _regular_step(b)
+
+        if not (a_regular and b_regular):
+            return False
+
+        if a_step is not None and b_step is not None and a_step != b_step:
+            return False
+
+        if a.size <= b.size:
+            return bool(np.array_equal(b[:a.size], a))
+
+        return bool(np.array_equal(a[:b.size], b))
+
+    @staticmethod
+    def _concat_longest_time_values(a, b):
+        """Return the longer of two compatible time axes, preserving dtype."""
+        import numpy as np
+
+        if a is None:
+            return None if b is None else np.asarray(b).copy()
+        if b is None:
+            return np.asarray(a).copy()
+
+        a = np.asarray(a)
+        b = np.asarray(b)
+        return a.copy() if a.size >= b.size else b.copy()
+
+    @staticmethod
+    def _concat_time_signature_for_values(values):
+        """Small stable signature for a target time axis used in logs only."""
+        import hashlib
+        import numpy as np
+
+        if values is None:
+            return "no_time"
+
+        values = np.asarray(values)
+        h = hashlib.sha1()
+        h.update(str(values.dtype).encode("utf-8", errors="ignore"))
+        h.update(str(values.shape).encode("utf-8", errors="ignore"))
+        try:
+            h.update(np.ascontiguousarray(values).view("uint8"))
+        except Exception:
+            h.update(repr(values.tolist()).encode("utf-8", errors="ignore"))
+        return h.hexdigest()
+
     def _concat_one_global_id_range(job):
         """
         Worker process.
 
         Opens files relevant to this global trajectory range, selects local
-        trajectory positions, concatenates them, and rewrites the trajectory
-        coordinate to the new global trajectory IDs.
+        trajectory positions, pads prefix-compatible shorter time axes to the
+        job target time axis, concatenates along trajectory, and rewrites the
+        trajectory coordinate to the new global trajectory IDs.
         """
         from pathlib import Path
         import numpy as np
@@ -25267,6 +25370,9 @@ class ChemicalDrift(OceanDrift):
         part_index = job["part_index"]
         compression_level = job.get("compression_level", 6)
         variables_to_keep = job.get("variables_to_keep", None)
+        target_time_values = job.get("target_time_values", None)
+        if target_time_values is not None:
+            target_time_values = np.asarray(target_time_values)
 
         output_path = output_dir / f"{sim_name}_concatenated_{part_index}.nc"
 
@@ -25295,6 +25401,18 @@ class ChemicalDrift(OceanDrift):
 
                 subset = ds_for_concat.isel(trajectory=positions)
 
+                # Prefix-padding path:
+                # The partitioner only assigns files to the same job when their
+                # time axes are exact prefixes of target_time_values.  Reindexing
+                # pads missing trailing timesteps with NaN.  Integer variables
+                # (status/origin_marker/specie) are encoded below as int32 with
+                # _FillValue=np.iinfo(np.int32).max, so these NaNs become the
+                # NetCDF missing-value code on disk rather than active/real IDs.
+                if target_time_values is not None and "time" in subset.sizes:
+                    current_time = np.asarray(subset["time"].values)
+                    if not np.array_equal(current_time, target_time_values):
+                        subset = subset.reindex(time=target_time_values, copy=False)
+
                 selected.append(subset)
                 output_global_ids.extend(global_ids)
 
@@ -25317,9 +25435,9 @@ class ChemicalDrift(OceanDrift):
                     data_vars="all",
                     coords="minimal",
                     compat="override",
-                    # Time axes must be identical inside each concat job.
-                    # Use exact matching so accidental time-axis mismatches are
-                    # caught here instead of silently overwriting coordinates.
+                    # After explicit prefix padding/reindexing, all time axes
+                    # must be identical.  Keep exact joining so accidental
+                    # incompatible calendars fail instead of silently aligning.
                     join="exact",
                 )
 
@@ -25330,6 +25448,28 @@ class ChemicalDrift(OceanDrift):
             )
 
             out.attrs["steps_exported"] = max_steps_exported
+            if bool(job.get("prefix_time_padding", False)):
+                out.attrs["concat_time_padding"] = (
+                    "prefix-compatible time axes padded to the longest axis; "
+                    "status/origin_marker/specie missing values encoded as int32 _FillValue"
+                )
+
+            int_missing_vars = {"status", "origin_marker", "specie"}
+            int_fill_value = int(np.iinfo(np.int32).max)
+
+            # Avoid conflicts between existing decoded _FillValue metadata and
+            # the explicit integer missing-value encoding below.
+            for var_name in int_missing_vars:
+                if var_name in out.variables:
+                    try:
+                        out[var_name].attrs = dict(getattr(out[var_name], "attrs", {}) or {})
+                        out[var_name].encoding = dict(getattr(out[var_name], "encoding", {}) or {})
+                        for key in ("_FillValue", "missing_value"):
+                            out[var_name].attrs.pop(key, None)
+                            out[var_name].encoding.pop(key, None)
+                        out[var_name].encoding.pop("dtype", None)
+                    except Exception:
+                        pass
 
             encoding = {}
 
@@ -25340,20 +25480,37 @@ class ChemicalDrift(OceanDrift):
                 if da.dtype.kind not in {"f", "i", "u", "b"}:
                     continue
 
-                encoding[var_name] = {
+                enc = {
                     "zlib": True,
                     "complevel": compression_level,
                     "shuffle": True,
                 }
+
+                if var_name in int_missing_vars:
+                    enc.update({
+                        "dtype": "int32",
+                        "_FillValue": int_fill_value,
+                    })
+
+                encoding[var_name] = enc
 
             try:
                 out.to_netcdf(output_path, encoding=encoding)
             except Exception as e:
                 warnings.warn(
                     f"Compressed write failed for {output_path}: {e}. "
-                    "Retrying without explicit compression encoding."
+                    "Retrying without compression but preserving integer missing-value encoding."
                 )
-                out.to_netcdf(output_path)
+                fallback_encoding = {}
+                for var_name, da in out.data_vars.items():
+                    if da.ndim == 0:
+                        continue
+                    if var_name in int_missing_vars:
+                        fallback_encoding[var_name] = {
+                            "dtype": "int32",
+                            "_FillValue": int_fill_value,
+                        }
+                out.to_netcdf(output_path, encoding=fallback_encoding)
 
             return str(output_path)
 
@@ -25371,26 +25528,16 @@ class ChemicalDrift(OceanDrift):
 
         This handles files where local trajectory IDs restart from 0 in every file.
 
-        Important:
-        Files with different time coordinate signatures are not placed in the same
-        concat job. This prevents xarray alignment errors caused by trying to
-        concatenate trajectory subsets that have unequal or different time axes.
+        Prefix-compatible time-axis grouping:
+          - files may share a concat job when they have the same start time,
+            the same regular timestep, and the shorter time vector is an exact
+            prefix of the longer time vector;
+          - each job stores target_time_values as the longest time vector in
+            that job;
+          - the worker reindexes shorter datasets to target_time_values before
+            xr.concat(..., join="exact").
 
-        Example:
-            file_0 has local trajectory 0-79    -> global trajectory 0-79
-            file_1 has local trajectory 0-39    -> global trajectory 80-119
-            file_2 has local trajectory 0-119   -> global trajectory 120-239
-
-        Returns jobs containing:
-            - part_index
-            - path_to_selection
-            - approx_bytes
-            - min_id
-            - max_id
-            - time_signature
-            - time_size
-            - time_first
-            - time_last
+        Files with incompatible time axes are never placed in the same job.
         """
         import numpy as np
 
@@ -25404,86 +25551,161 @@ class ChemicalDrift(OceanDrift):
         current_time_size = None
         current_time_first = None
         current_time_last = None
+        current_target_time_values = None
+        current_prefix_time_padding = False
+
+        def _target_time_size(values):
+            if values is None:
+                return 0
+            return int(np.asarray(values).size)
+
+        def _scaled_per_id_bytes(meta, target_values):
+            """Approximate per-trajectory bytes after padding to target time."""
+            n_trajectory = max(1, int(meta.get("n_trajectory", 1)))
+            base_per_id = float(meta.get("logical_bytes", 0)) / float(n_trajectory)
+            source_time_size = max(1, int(meta.get("time_size", 0) or 0))
+            target_size = max(source_time_size, _target_time_size(target_values), 1)
+            scale = float(target_size) / float(source_time_size)
+            return max(1, int(np.ceil(base_per_id * scale)))
+
+        def _estimate_current_bytes(target_values):
+            total = 0
+            for selection in current.values():
+                meta = selection["meta"]
+                total += _scaled_per_id_bytes(meta, target_values) * len(selection["positions"])
+            return int(total)
+
+        def _start_new_job_state():
+            return {}, 0, None, None, None, None, None, None, None, False
+
+        def _flush_current():
+            nonlocal current, current_bytes, current_min_id, current_max_id
+            nonlocal current_time_signature, current_time_size
+            nonlocal current_time_first, current_time_last
+            nonlocal current_target_time_values, current_prefix_time_padding
+
+            if not current:
+                return
+
+            target_values = current_target_time_values
+            target_signature = ChemicalDrift._concat_time_signature_for_values(target_values)
+
+            jobs.append({
+                "part_index": len(jobs),
+                "path_to_selection": current,
+                "approx_bytes": int(current_bytes),
+                "min_id": current_min_id,
+                "max_id": current_max_id,
+                "time_signature": target_signature,
+                "time_size": _target_time_size(target_values),
+                "time_first": None if target_values is None or _target_time_size(target_values) == 0 else str(np.asarray(target_values)[0]),
+                "time_last": None if target_values is None or _target_time_size(target_values) == 0 else str(np.asarray(target_values)[-1]),
+                "target_time_values": None if target_values is None else np.asarray(target_values).copy(),
+                "prefix_time_padding": bool(current_prefix_time_padding),
+            })
+
+            (current, current_bytes, current_min_id, current_max_id,
+             current_time_signature, current_time_size, current_time_first,
+             current_time_last, current_target_time_values,
+             current_prefix_time_padding) = _start_new_job_state()
 
         global_offset = 0
 
         for meta in metas:
             path = meta["path"]
-            n_trajectory = meta["n_trajectory"]
-            file_time_signature = meta.get("time_signature")
-            file_time_size = meta.get("time_size")
-            file_time_first = meta.get("time_first")
-            file_time_last = meta.get("time_last")
+            n_trajectory = int(meta["n_trajectory"])
+            file_time_values = meta.get("time_values")
 
-            per_id_bytes = max(
-                1,
-                int(np.ceil(meta["logical_bytes"] / n_trajectory)),
-            )
+            file_global_start = global_offset
+            local_start = 0
 
-            for local_pos in range(n_trajectory):
-                global_id = global_offset + local_pos
+            while local_start < n_trajectory:
+                # If current is empty, initialize its target axis from this file.
+                if not current:
+                    current_target_time_values = None if file_time_values is None else np.asarray(file_time_values).copy()
+                    current_time_signature = ChemicalDrift._concat_time_signature_for_values(current_target_time_values)
+                    current_time_size = _target_time_size(current_target_time_values)
+                    current_time_first = None if current_time_size == 0 else str(current_target_time_values[0])
+                    current_time_last = None if current_time_size == 0 else str(current_target_time_values[-1])
+                    current_prefix_time_padding = False
 
-                if current and (
-                    current_bytes + per_id_bytes > max_bytes
-                    or current_time_signature != file_time_signature
+                # Never mix incompatible time axes.
+                if not ChemicalDrift._concat_time_values_prefix_compatible(
+                    current_target_time_values,
+                    file_time_values,
                 ):
-                    jobs.append({
-                        "part_index": len(jobs),
-                        "path_to_selection": current,
-                        "approx_bytes": current_bytes,
-                        "min_id": current_min_id,
-                        "max_id": current_max_id,
-                        "time_signature": current_time_signature,
-                        "time_size": current_time_size,
-                        "time_first": current_time_first,
-                        "time_last": current_time_last,
-                    })
+                    _flush_current()
+                    continue
 
-                    current = {}
-                    current_bytes = 0
-                    current_min_id = None
-                    current_max_id = None
-                    current_time_signature = None
-                    current_time_size = None
-                    current_time_first = None
-                    current_time_last = None
+                candidate_target_time_values = ChemicalDrift._concat_longest_time_values(
+                    current_target_time_values,
+                    file_time_values,
+                )
 
-                if current_time_signature is None:
-                    current_time_signature = file_time_signature
-                    current_time_size = file_time_size
-                    current_time_first = file_time_first
-                    current_time_last = file_time_last
+                # If adding a longer file would make the already-selected shorter
+                # trajectories too large after padding, finish the current job
+                # first and then start a new job with this file as target.
+                padded_current_bytes = _estimate_current_bytes(candidate_target_time_values)
+                if current and padded_current_bytes >= max_bytes:
+                    _flush_current()
+                    continue
+
+                per_id_bytes = _scaled_per_id_bytes(meta, candidate_target_time_values)
+                remaining_capacity = max_bytes - padded_current_bytes
+                capacity_positions = max(1, int(remaining_capacity // per_id_bytes))
+
+                take = min(n_trajectory - local_start, capacity_positions)
+                if take <= 0:
+                    _flush_current()
+                    continue
+
+                local_stop = local_start + take
+                positions = list(range(local_start, local_stop))
+                global_ids = [file_global_start + pos for pos in positions]
 
                 if path not in current:
                     current[path] = {
                         "positions": [],
                         "global_ids": [],
+                        "meta": meta,
                     }
 
-                current[path]["positions"].append(local_pos)
-                current[path]["global_ids"].append(global_id)
+                current[path]["positions"].extend(positions)
+                current[path]["global_ids"].extend(global_ids)
 
-                current_bytes += per_id_bytes
+                old_target_size = _target_time_size(current_target_time_values)
+                new_target_size = _target_time_size(candidate_target_time_values)
+                if old_target_size != new_target_size:
+                    current_prefix_time_padding = True
+                if int(meta.get("time_size", 0) or 0) != new_target_size:
+                    current_prefix_time_padding = True
+
+                current_target_time_values = candidate_target_time_values
+                current_time_signature = ChemicalDrift._concat_time_signature_for_values(current_target_time_values)
+                current_time_size = new_target_size
+                current_time_first = None if new_target_size == 0 else str(current_target_time_values[0])
+                current_time_last = None if new_target_size == 0 else str(current_target_time_values[-1])
+                current_bytes = _estimate_current_bytes(current_target_time_values)
 
                 if current_min_id is None:
-                    current_min_id = global_id
+                    current_min_id = global_ids[0]
+                current_max_id = global_ids[-1]
 
-                current_max_id = global_id
+                local_start = local_stop
+
+                # If this file continues but current job is full, flush now.
+                if local_start < n_trajectory:
+                    _flush_current()
 
             global_offset += n_trajectory
 
-        if current:
-            jobs.append({
-                "part_index": len(jobs),
-                "path_to_selection": current,
-                "approx_bytes": current_bytes,
-                "min_id": current_min_id,
-                "max_id": current_max_id,
-                "time_signature": current_time_signature,
-                "time_size": current_time_size,
-                "time_first": current_time_first,
-                "time_last": current_time_last,
-            })
+        _flush_current()
+
+        # Remove private metadata from selections before sending jobs to worker
+        # processes and before writing the human-readable summary.
+        for job in jobs:
+            for selection in job["path_to_selection"].values():
+                selection.pop("meta", None)
 
         return jobs
 
@@ -25527,11 +25749,12 @@ class ChemicalDrift(OceanDrift):
         delete_original_nc=True,
         compression_level=6,
         variables_to_keep=None,
+        verbose=False,
     ):
         """
         Parallel concatenation of simulation slices.
 
-        This version is designed for files where local trajectory IDs restart
+        This function is designed for files where local trajectory IDs restart
         from 0 in each file. It assigns a new global trajectory coordinate in
         file order.
 
@@ -25668,6 +25891,22 @@ class ChemicalDrift(OceanDrift):
             raise ValueError("No usable NetCDF files found")
 
         metas = sorted(metas, key=lambda m: m["sort_key"])
+        if verbose:
+            print("[concat] Source slice time axes:", flush=True)
+            for i, meta in enumerate(metas, start=1):
+                tsig = str(meta.get("time_signature", ""))[:12]
+                print(
+                    "[concat] "
+                    f"slice {i:03d}/{len(metas)} "
+                    f"{Path(meta['path']).name} | "
+                    f"n_time={meta.get('time_size')} | "
+                    f"first={meta.get('time_first')} | "
+                    f"last={meta.get('time_last')} | "
+                    f"n_traj={meta.get('n_trajectory')} | "
+                    f"logical_GB={meta.get('logical_bytes', 0) / 1024**3:.3f} | "
+                    f"time_sig={tsig}",
+                    flush=True,
+                )
 
         total_trajectories = sum(meta["n_trajectory"] for meta in metas)
         total_logical_size = sum(meta["logical_bytes"] for meta in metas)
@@ -25684,6 +25923,28 @@ class ChemicalDrift(OceanDrift):
         )
 
         print(f"Created {len(concat_jobs)} concatenation jobs")
+
+        if verbose:
+            print("[concat] Concatenation part time axes:", flush=True)
+            for job in concat_jobs:
+                files = [Path(p).name for p in job["path_to_selection"].keys()]
+                preview = ", ".join(files[:5])
+                if len(files) > 5:
+                    preview += f", ... +{len(files) - 5} more"
+
+                print(
+                    "[concat] "
+                    f"part {job['part_index']:03d} | "
+                    f"n_files={len(files)} | "
+                    f"global_ids={job['min_id']}-{job['max_id']} | "
+                    f"approx_GB={job['approx_bytes'] / 1024**3:.3f} | "
+                    f"n_time={job.get('time_size')} | "
+                    f"first={job.get('time_first')} | "
+                    f"last={job.get('time_last')} | "
+                    f"prefix_padding={bool(job.get('prefix_time_padding', False))} | "
+                    f"files={preview}",
+                    flush=True,
+                )
 
         for job in concat_jobs:
             job["output_dir"] = str(output_dir)
