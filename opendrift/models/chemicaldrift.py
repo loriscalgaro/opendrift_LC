@@ -15049,6 +15049,192 @@ class ChemicalDrift(OceanDrift):
                     if name in src_ds.variables and name not in dst_ds.variables and name not in dst_ds.coords:
                         dst_ds[name] = src_ds[name]
 
+            def _normalize_dataset_spatial_convention(ds, *, main_var_name):
+                """
+                Normalize support variables to use the same spatial dimension convention
+                as the main derived concentration variable.
+
+                  - If the main variable uses (latitude, longitude), rename compatible
+                    y/x or lat/lon support variables to (latitude, longitude).
+                  - If the main variable uses native y/x, preserve y/x.
+                  - If the main variable is unstructured, e.g. face/node topology, preserve it.
+                  - Never broadcast static grid variables over time.
+                """
+                if ds is None or main_var_name not in ds:
+                    return ds
+
+                main = ds[main_var_name]
+                main_dims = tuple(main.dims)
+
+                # Do not force unstructured meshes into latitude/longitude.
+                if "face" in main_dims or "node" in main_dims:
+                    return ds
+
+                # Only normalize to latitude/longitude if the main output variable already
+                # uses that convention.
+                if not ("latitude" in main_dims and "longitude" in main_dims):
+                    return ds
+
+                lat_dim = "latitude"
+                lon_dim = "longitude"
+
+                # Get target coordinate values from the main variable first.
+                lat_values = None
+                lon_values = None
+
+                if lat_dim in main.coords:
+                    lat_values = np.asarray(main[lat_dim].values)
+                elif lat_dim in ds:
+                    lat_values = np.asarray(ds[lat_dim].values)
+
+                if lon_dim in main.coords:
+                    lon_values = np.asarray(main[lon_dim].values)
+                elif lon_dim in ds:
+                    lon_values = np.asarray(ds[lon_dim].values)
+
+                # Fallback: if main has latitude/longitude dims but coordinates were not
+                # attached, reuse old y/x coordinate values when sizes match.
+                if lat_values is None:
+                    for old_lat in ("y", "lat"):
+                        if old_lat in ds and old_lat in ds.dims and ds.sizes[old_lat] == ds.sizes[lat_dim]:
+                            lat_values = np.asarray(ds[old_lat].values)
+                            break
+
+                if lon_values is None:
+                    for old_lon in ("x", "lon"):
+                        if old_lon in ds and old_lon in ds.dims and ds.sizes[old_lon] == ds.sizes[lon_dim]:
+                            lon_values = np.asarray(ds[old_lon].values)
+                            break
+
+                if lat_values is not None:
+                    ds = ds.assign_coords({
+                        lat_dim: xr.DataArray(
+                            lat_values,
+                            dims=(lat_dim,),
+                            attrs={
+                                "standard_name": "latitude",
+                                "long_name": "latitude",
+                                "units": "degrees_north",
+                                "axis": "Y",
+                            },
+                        )
+                    })
+
+                if lon_values is not None:
+                    ds = ds.assign_coords({
+                        lon_dim: xr.DataArray(
+                            lon_values,
+                            dims=(lon_dim,),
+                            attrs={
+                                "standard_name": "longitude",
+                                "long_name": "longitude",
+                                "units": "degrees_east",
+                                "axis": "X",
+                            },
+                        )
+                    })
+
+                def _can_rename_dim(old_dim, new_dim):
+                    if old_dim not in ds.dims:
+                        return False
+                    if new_dim not in ds.dims:
+                        return True
+                    return ds.sizes[old_dim] == ds.sizes[new_dim]
+
+                rename_candidates = {
+                    "y": lat_dim,
+                    "lat": lat_dim,
+                    "x": lon_dim,
+                    "lon": lon_dim,
+                }
+
+                def _normalize_da_dims(da):
+                    rename_map = {}
+
+                    for old_dim, new_dim in rename_candidates.items():
+                        if old_dim in da.dims and old_dim != new_dim and _can_rename_dim(old_dim, new_dim):
+                            rename_map[old_dim] = new_dim
+
+                    if rename_map:
+                        da = da.rename(rename_map)
+
+                    # Attach the same 1D coordinates as the main variable where applicable.
+                    assign_coords = {}
+                    if lat_dim in da.dims and lat_dim in ds.coords:
+                        assign_coords[lat_dim] = ds[lat_dim]
+                    if lon_dim in da.dims and lon_dim in ds.coords:
+                        assign_coords[lon_dim] = ds[lon_dim]
+                    if assign_coords:
+                        da = da.assign_coords(assign_coords)
+
+                    # Update stale CF coordinate attributes.
+                    coords_attr = da.attrs.get("coordinates")
+                    if isinstance(coords_attr, str):
+                        tokens = coords_attr.split()
+                        tokens = [
+                            "longitude" if t in ("x", "lon") else
+                            "latitude" if t in ("y", "lat") else
+                            t
+                            for t in tokens
+                        ]
+
+                        # Keep CF-style geographic auxiliary order.
+                        if "longitude" in tokens and "latitude" in tokens:
+                            other = [t for t in tokens if t not in ("longitude", "latitude")]
+                            tokens = other + ["longitude", "latitude"]
+
+                        da.attrs["coordinates"] = " ".join(tokens)
+
+                    return da
+
+                # Normalize data variables and non-dimension coordinate variables.
+                # Skip the old 1D coordinate variables y/x/lat/lon themselves; they are
+                # dropped later if no variable uses them anymore.
+                skip_names = {"y", "x", "lat", "lon", lat_dim, lon_dim}
+
+                for name in list(ds.variables):
+                    if name in skip_names:
+                        continue
+
+                    da = ds[name]
+                    if any(dim in da.dims for dim in rename_candidates):
+                        ds[name] = _normalize_da_dims(da)
+
+                # Drop old coordinate variables only if no remaining non-coordinate variable
+                # still uses their dimensions.
+                used_dims = set()
+                for name in ds.variables:
+                    if name in {"y", "x", "lat", "lon"}:
+                        continue
+                    used_dims.update(ds[name].dims)
+
+                drop_old = []
+                for old_name in ("y", "x", "lat", "lon"):
+                    if old_name in ds.variables and old_name not in used_dims:
+                        drop_old.append(old_name)
+
+                if drop_old:
+                    ds = ds.drop_vars(drop_old, errors="ignore")
+
+                # Final cleanup of coordinate metadata.
+                if lat_dim in ds:
+                    ds[lat_dim].attrs.update({
+                        "standard_name": "latitude",
+                        "long_name": "latitude",
+                        "units": "degrees_north",
+                        "axis": "Y",
+                    })
+
+                if lon_dim in ds:
+                    ds[lon_dim].attrs.update({
+                        "standard_name": "longitude",
+                        "long_name": "longitude",
+                        "units": "degrees_east",
+                        "axis": "X",
+                    })
+
+                return ds
+
             def _coord_getter(da_obj, name):
                 if name in da_obj.coords:
                     return da_obj.coords[name]
@@ -15293,10 +15479,32 @@ class ChemicalDrift(OceanDrift):
                 _copy_source_metadata(DS_wat_fin, DS)
                 gm_names = {da.attrs.get('grid_mapping') for da in DS_wat_fin.data_vars.values()}
                 _copy_support_vars(DS_wat_fin, DS, extra_grid_mapping_names=gm_names)
+                # Make topo/area/volume/land/domain masks use the same spatial
+                # convention as the main water output variable.
+                main_wat_vars = [
+                    name for name in sum_vars_wat_dict
+                    if name in DS_wat_fin.data_vars and name != 'topo'
+                ]
+                if main_wat_vars:
+                    DS_wat_fin = _normalize_dataset_spatial_convention(
+                        DS_wat_fin,
+                        main_var_name=main_wat_vars[0],
+                    )
             if do_sediment:
                 _copy_source_metadata(DS_sed_fin, DS)
                 gm_names = {da.attrs.get('grid_mapping') for da in DS_sed_fin.data_vars.values()}
                 _copy_support_vars(DS_sed_fin, DS, extra_grid_mapping_names=gm_names)
+                # Make topo/area/volume/land/domain masks use the same spatial
+                # convention as the main sediment output variable.
+                main_sed_vars = [
+                    name for name in sum_vars_sed_dict
+                    if name in DS_sed_fin.data_vars and name != 'topo'
+                ]
+                if main_sed_vars:
+                    DS_sed_fin = _normalize_dataset_spatial_convention(
+                        DS_sed_fin,
+                        main_var_name=main_sed_vars[0],
+                    )
 
             wat_file = sed_file = None
             if do_water:
