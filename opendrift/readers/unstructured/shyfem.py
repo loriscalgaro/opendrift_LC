@@ -80,15 +80,7 @@ class Reader(UnstructuredReader):
         self.x, self.y = self.dataset['longitude'][:], self.dataset[
             'latitude'][:]
 
-        ref_time = datetime.fromisoformat(self.dataset['time'].units[14:33])
-
-        self.times = np.array([
-            ref_time + timedelta(seconds=d.item())
-            for d in self.dataset['time'][:]
-        ])
-        self.start_time = self.times[0]
-        self.end_time = self.times[-1]
-        # time steps are not constant
+        self._init_time_coordinates()
 
         self.xmin = np.min(self.x)
         self.xmax = np.max(self.x)
@@ -101,8 +93,10 @@ class Reader(UnstructuredReader):
         # Run constructor of parent Reader class
         super().__init__()
 
-        self.boundary = self._build_boundary_polygon_(self.x.compressed(),
-                                                      self.y.compressed())
+        x_boundary = np.ma.asarray(self.x).compressed()
+        y_boundary = np.ma.asarray(self.y).compressed()
+
+        self.boundary = self._build_boundary_polygon_(x_boundary, y_boundary)
 
         self.timer_start("build index")
         logger.debug("building index of nodes..")
@@ -110,6 +104,49 @@ class Reader(UnstructuredReader):
         self.timer_end("build index")
 
         self.timer_end("open dataset")
+
+    def _init_time_coordinates(self):
+        """Initialize time coordinates, allowing fully static node files."""
+        if 'time' in self.dataset.variables:
+            time_var = self.dataset['time']
+            units = getattr(time_var, 'units', '')
+
+            # Expected common format: "seconds since YYYY-MM-DDTHH:MM:SS"
+            if 'since' in units:
+                ref_string = units.split('since', 1)[1].strip()
+                # Be tolerant of trailing timezone or missing T
+                ref_string = ref_string.replace('Z', '').strip()
+                ref_time = datetime.fromisoformat(ref_string)
+
+                # Keep reader times timezone-naive
+                if ref_time.tzinfo is not None:
+                    ref_time = ref_time.replace(tzinfo=None)
+            else:
+                raise ValueError(
+                    "time variable exists but has no CF-like 'units' attribute "
+                    "containing 'since'."
+                )
+
+            self.times = np.array([
+                ref_time + timedelta(seconds=float(d))
+                for d in time_var[:]
+            ])
+            self.start_time = self.times[0]
+            self.end_time = self.times[-1]
+            self.has_time = True
+
+        else:
+            # Fully static unstructured node file.
+            # Static variables do not depend on requested time.
+            logger.info(
+                'No time variable found; treating dataset as fully static '
+                'unstructured node data.'
+            )
+            self.times = np.array([datetime(1970, 1, 1)])
+            self.start_time = self.times[0]
+            self.end_time = self.times[-1]
+            self.has_time = False
+            self.always_valid = True
 
     def _init_vertical_coordinates(self):
         """Initialize z coordinates, allowing depth-collapsed 2D files."""
@@ -148,7 +185,7 @@ class Reader(UnstructuredReader):
     def _init_variable_mapping(self):
         """Map standard_name to dataset variable name."""
         self.variable_mapping = {}
-        coordinate_variables = set(['time', 'longitude', 'latitude'])
+        coordinate_variables = set(['time', 'longitude', 'latitude', 'node'])
         coordinate_variables.update(self.vertical_dimension_names)
 
         for var_name in self.dataset.variables:
@@ -180,6 +217,23 @@ class Reader(UnstructuredReader):
         # Backward-compatible fallback for datasets with unnamed/nonstandard
         # vertical axes but original SHYFEM variable shape (time, node, level).
         return len(var.shape) > 2
+
+    def _variable_has_time_dimension(self, standard_name):
+        """Return True if the mapped variable has a time dimension."""
+        var_name = self.variable_mapping.get(standard_name)
+        if var_name is None:
+            return True
+
+        var = self.dataset[var_name]
+        dims = getattr(var, 'dimensions', ())
+
+        if 'time' in dims:
+            return True
+
+        # Backward-compatible fallback:
+        # 2D variables are often (time, node),
+        # but only interpret 2D as time-dependent if the dataset actually has time.
+        return bool(getattr(self, 'has_time', True)) and len(var.shape) == 2
 
     def _all_requested_variables_are_z_independent(self, requested_variables):
         """Return True if all requested variables can safely ignore z."""
@@ -231,30 +285,69 @@ class Reader(UnstructuredReader):
         logger.debug("Requested variabels: %s, lengths: %d, %d, %d" %
                      (requested_variables, len(x), len(y), len(z)))
 
+        # Normalize requested_variables only for the preliminary checks below.
+        # check_arguments() may return its own normalized list, so we do not
+        # replace requested_variables permanently yet.
+        if isinstance(requested_variables, str):
+            requested_for_flags = [requested_variables]
+        else:
+            requested_for_flags = list(requested_variables)
+
         # If every requested variable is 1D/2D, the requested z must not affect
         # either argument validation or returned values. This guarantees that
         # particles at the same lon/lat/time receive the same bottom-variable
         # value even when their requested z values differ.
         z_independent_request = self._all_requested_variables_are_z_independent(
-            requested_variables
+            requested_for_flags
         )
         if z_independent_request:
             z_for_check = np.zeros_like(x, dtype=float)
         else:
             z_for_check = z
 
+        # If every requested variable is time-independent, the requested model time
+        # must not affect either argument validation or returned values.
+        time_independent_request = all(
+            not self._variable_has_time_dimension(var)
+            for var in requested_for_flags
+        )
+
+        if time_independent_request:
+            # Use the reader's internal static time for validation. This avoids
+            # check_arguments() rejecting valid static variables only because the
+            # model time is outside the artificial static time interval.
+            time_for_check = self.times[0]
+        else:
+            time_for_check = time
+
         requested_variables, time, x, y, z_checked, _outside = \
-            self.check_arguments(requested_variables, time, x, y, z_for_check)
+            self.check_arguments(
+                requested_variables,
+                time_for_check,
+                x,
+                y,
+                z_for_check
+            )
 
         if z_independent_request:
             z = z_checked
         else:
             z = z_checked
 
-        nearest_time, _time_before, _time_after, indx_nearest, _indx_before, _indx_after = self.nearest_time(
-            time)
+        # Recalculate after check_arguments(), because requested_variables may have
+        # been normalized or filtered by the base reader.
+        time_independent_request = all(
+            not self._variable_has_time_dimension(var)
+            for var in requested_variables
+        )
 
-        logger.debug("Nearest time: %s" % nearest_time)
+        if time_independent_request:
+            indx_nearest = 0
+            logger.debug("Time-independent request: using static index 0")
+        else:
+            nearest_time, _time_before, _time_after, indx_nearest, _indx_before, _indx_after = \
+                self.nearest_time(time)
+            logger.debug("Nearest time: %s" % nearest_time)
 
         variables = {}
 
@@ -265,10 +358,43 @@ class Reader(UnstructuredReader):
 
         for var in requested_variables:
             dvar_name = self.variable_mapping.get(var)
+
+            if dvar_name is None:
+                raise KeyError(
+                    "Requested variable %s is not available in reader %s. "
+                    "Available variables are: %s" %
+                    (var, self.name, self.variables)
+                )
+
             logger.debug("Interpolating: %s (%s)" % (var, dvar_name))
             dvar = self.dataset[dvar_name]
+            dims = getattr(dvar, 'dimensions', ())
 
-            if len(dvar.shape) > 2:
+            has_time_dim = 'time' in dims
+            has_vertical_dim = any(
+                dim in self.vertical_dimension_names
+                for dim in dims
+            )
+
+            # Identify the node dimension robustly. For SHYFEM node variables this
+            # is normally named "node", but we also allow the common fallback where
+            # longitude/latitude have a single shared dimension.
+            if 'node' in dims:
+                node_dim_name = 'node'
+            else:
+                lon_dims = getattr(self.dataset['longitude'], 'dimensions', ())
+                node_dim_name = lon_dims[0] if len(lon_dims) == 1 and lon_dims[0] in dims else None
+
+            if node_dim_name is None:
+                raise ValueError(
+                    "Variable %s (%s) has dimensions %s, but no node dimension "
+                    "matching longitude/latitude could be identified." %
+                    (var, dvar_name, dims)
+                )
+
+            node_axis = dims.index(node_dim_name)
+
+            if has_vertical_dim:
                 if not self.has_vertical_levels:
                     raise ValueError(
                         'Variable %s has more than two dimensions, but dataset '
@@ -276,44 +402,78 @@ class Reader(UnstructuredReader):
                     )
 
                 level_ind = self.__nearest_level__(z)
+                vertical_dim_name = next(
+                    dim for dim in dims
+                    if dim in self.vertical_dimension_names
+                )
+                vertical_axis = dims.index(vertical_dim_name)
 
                 # Reading the smallest block covering the actual data
-                block = dvar[indx_nearest,
-                             slice(nodes.min(),
-                                   nodes.max() + 1),
-                             slice(level_ind.min(),
-                                   level_ind.max() + 1), ]
+                indexer = [slice(None)] * len(dims)
+
+                if has_time_dim:
+                    indexer[dims.index('time')] = indx_nearest
+
+                indexer[node_axis] = slice(nodes.min(), nodes.max() + 1)
+                indexer[vertical_axis] = slice(level_ind.min(), level_ind.max() + 1)
+
+                block = dvar[tuple(indexer)]
 
                 # Picking the nearest value
-                variables[var] = block[
-                        nodes - nodes.min(),
-                        level_ind - level_ind.min(),
-                        ]
-            elif len(dvar.shape) == 2:
+                # After indexing with an integer time index, dimensions after the
+                # time axis shift left by one. Convert original axes to block axes.
+                block_dims = list(dims)
+                if has_time_dim:
+                    time_axis = dims.index('time')
+                    block_dims.pop(time_axis)
+                else:
+                    time_axis = None
+
+                block_node_axis = block_dims.index(node_dim_name)
+                block_vertical_axis = block_dims.index(vertical_dim_name)
+
+                node_local = nodes - nodes.min()
+                level_local = level_ind - level_ind.min()
+
+                if block_node_axis == 0 and block_vertical_axis == 1:
+                    variables[var] = block[node_local, level_local]
+                elif block_node_axis == 1 and block_vertical_axis == 0:
+                    variables[var] = block[level_local, node_local]
+                else:
+                    raise ValueError(
+                        "Variable %s (%s) has unsupported node/vertical axis "
+                        "order after slicing: %s" %
+                        (var, dvar_name, block_dims)
+                    )
+
+            elif has_time_dim:
                 # Reading the smallest block covering the actual data
                 # Variables with dimensions (time, node) have no vertical
                 # dependence. z is intentionally ignored.
-                block = dvar[indx_nearest,
-                             slice(nodes.min(),
-                                   nodes.max() + 1), ]
+                indexer = [slice(None)] * len(dims)
+                indexer[dims.index('time')] = indx_nearest
+                indexer[node_axis] = slice(nodes.min(), nodes.max() + 1)
+
+                block = dvar[tuple(indexer)]
 
                 # Picking the nearest value
                 variables[var] = block[
                         nodes - nodes.min(),
                         ]
-            elif len(dvar.shape) == 1:
+
+            else:
                 # Reading the smallest block covering the actual data
                 # Variables with dimensions (node) have no time or vertical
                 # dependence. z is intentionally ignored.
-                block = dvar[slice(nodes.min(),
-                                   nodes.max() + 1), ]
+                indexer = [slice(None)] * len(dims)
+                indexer[node_axis] = slice(nodes.min(), nodes.max() + 1)
+
+                block = dvar[tuple(indexer)]
 
                 # Picking the nearest value
                 variables[var] = block[
                         nodes - nodes.min(),
                         ]
-            else:
-                logger.error('unknown dimensionality')
 
         return variables
 
