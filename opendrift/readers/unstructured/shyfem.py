@@ -116,6 +116,9 @@ class Reader(UnstructuredReader):
                 ref_string = units.split('since', 1)[1].strip()
                 # Be tolerant of trailing timezone or missing T
                 ref_string = ref_string.replace('Z', '').strip()
+                ref_string = ref_string.strip()
+                if ref_string.upper().endswith(" UTC"):
+                    ref_string = ref_string[:-4].strip() + "+00:00"
                 ref_time = datetime.fromisoformat(ref_string)
 
                 # Keep reader times timezone-naive

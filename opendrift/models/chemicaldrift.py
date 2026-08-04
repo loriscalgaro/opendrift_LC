@@ -57,6 +57,12 @@ class Chemical(Lagrangian3DArray):
         ('mass_hydrolyzed_water', {'dtype': np.float32, 'units': 'ug', 'seed': True, 'default': 0}),
         ('mass_hydrolyzed_sediment', {'dtype': np.float32, 'units': 'ug', 'seed': True, 'default': 0}),
     ]
+    SINGLE_DEGRADATION_VARIABLE_NAMES = (
+    'mass_photodegraded',
+    'mass_biodegraded', 'mass_biodegraded_water', 'mass_biodegraded_sediment',
+    'mass_hydrolyzed', 'mass_hydrolyzed_water', 'mass_hydrolyzed_sediment',
+        )
+
     BED_INTERACTION_VARIABLES = [
         ('tau_bx', {'dtype': np.float32, 'units': 'Pa', 'seed': True, 'default': np.nan}),
         ('tau_by', {'dtype': np.float32, 'units': 'Pa', 'seed': True, 'default': np.nan}),
@@ -832,6 +838,59 @@ class ChemicalDrift(OceanDrift):
                     req.update(self.SEDIMENT_GRAIN_D50_REQUIRED_VARIABLES)
         return req
 
+    @staticmethod
+    def _chemical_element_array_length(elements_obj):
+        """Best-effort length of an OpenDrift element array.
+
+        Empty element buffers are created during model initialization using the
+        class-level ElementType. When optional Chemical variables are enabled
+        later from configuration, these empty buffers must be rebuilt with the
+        new concrete ElementType before delayed/scheduled particles are moved
+        into them.
+        """
+        if elements_obj is None:
+            return 0
+        try:
+            return len(elements_obj)
+        except Exception:
+            pass
+        try:
+            return int(len(elements_obj.lon))
+        except Exception:
+            return 0
+
+    def _chemical_sync_element_buffer(self, attr_name, required_names):
+        """Rebuild an empty element buffer if it lacks optional variables.
+
+        This keeps self.elements and self.elements_scheduled consistent with
+        self.ElementType after save_single_degr_mass/save_bed_interaction are
+        read from configuration. Non-empty buffers are never silently rebuilt,
+        because that would drop already seeded particles.
+        """
+        elements_obj = getattr(self, attr_name, None)
+        if elements_obj is None:
+            return
+
+        missing = [name for name in required_names if not hasattr(elements_obj, name)]
+        if not missing:
+            return
+
+        n = self._chemical_element_array_length(elements_obj)
+        if n == 0:
+            setattr(self, attr_name, self.ElementType())
+            logger.debug(
+                'Rebuilt empty Chemical element buffer %s with optional variables: %s',
+                attr_name, ', '.join(required_names)
+            )
+            return
+
+        raise RuntimeError(
+            f"Chemical element buffer '{attr_name}' already contains {n} element(s) "
+            f"but is missing required optional variable(s): {missing}. "
+            'Set chemical:transformations:Save_single_degr_mass and '
+            'chemical:sediment:save_bed_interaction before any seeding, or restart the model.'
+        )
+
     def _configure_element_type_from_config(self):
         save_single = bool(
             self.get_config('chemical:transformations:Save_single_degr_mass')
@@ -840,20 +899,35 @@ class ChemicalDrift(OceanDrift):
             self.get_config('chemical:sediment:save_bed_interaction')
         )
         key = (save_single, save_bed)
-        if getattr(self, '_chemical_element_type_key', None) == key:
-            return
-        if hasattr(self, 'elements') and self.num_elements_active() > 0:
-            raise RuntimeError(
-                'Cannot change optional Chemical element variables after seeding. '
-                'Set chemical:transformations:Save_single_degr_mass and '
-                'chemical:sediment:save_bed_interaction before seed_elements().'
-            )
 
-        self.ElementType = Chemical.make_element_type(
-            save_single_degr_mass=save_single,
-            save_bed_interaction=save_bed,
-        )
-        self._chemical_element_type_key = key
+        required_names = []
+        if save_single:
+            required_names.extend(Chemical.SINGLE_DEGRADATION_VARIABLE_NAMES)
+        if save_bed:
+            required_names.extend(Chemical.BED_INTERACTION_VARIABLE_NAMES)
+
+        if getattr(self, '_chemical_element_type_key', None) != key:
+            if hasattr(self, 'elements') and self.num_elements_active() > 0:
+                raise RuntimeError(
+                    'Cannot change optional Chemical element variables after seeding. '
+                    'Set chemical:transformations:Save_single_degr_mass and '
+                    'chemical:sediment:save_bed_interaction before seed_elements().'
+                )
+
+            self.ElementType = Chemical.make_element_type(
+                save_single_degr_mass=save_single,
+                save_bed_interaction=save_bed,
+            )
+            self._chemical_element_type_key = key
+
+        # Important: OpenDrift may already have created empty active/scheduled
+        # element arrays from the class-level default ElementType before runtime
+        # configuration is applied. Rebuild only empty buffers so that delayed
+        # release can move scheduled elements without AttributeError
+        if required_names:
+            self._chemical_sync_element_buffer('elements', required_names)
+            self._chemical_sync_element_buffer('elements_scheduled', required_names)
+            self._chemical_sync_element_buffer('elements_deactivated', required_names)
 
     def init_species(self):
         """Initialize specie types and build the species list.
@@ -5966,7 +6040,12 @@ class ChemicalDrift(OceanDrift):
         concDOC = self._validate_array_param("concDOC", concDOC, ge=0.0)
         concSPM = self._validate_array_param("concSPM", concSPM, ge=0.0)
         Conc_Phyto_water = self._validate_array_param("Conc_Phyto_water", Conc_Phyto_water, ge=0.0)
+        # OpenDrift z is negative downward. Photolysis formulas need positive depth
+        # measured downward from the sea surface.
+        Depth = np.asarray(Depth, dtype=float)
+        Depth = np.where(Depth < 0.0, -Depth, Depth)
         Depth = self._validate_array_param("Depth", Depth, ge=0.0)
+
         MLDepth = self._validate_array_param("MLDepth", MLDepth, ge=0.0)
 
         if not (concDOC.shape == concSPM.shape == Conc_Phyto_water.shape == Depth.shape == MLDepth.shape):
@@ -6109,6 +6188,8 @@ class ChemicalDrift(OceanDrift):
         """
         AveSolar = self._validate_scalar_param("AveSolar", AveSolar, gt=0.0)
         Solar_ly_day = self._validate_array_param("Solar_ly_day", Solar_ly_day, ge=0.0)
+        Depth = np.asarray(Depth, dtype=float)
+        Depth = np.where(Depth < 0.0, -Depth, Depth)
         Depth = self._validate_array_param("Depth", Depth, ge=0.0)
         MLDepth = self._validate_array_param("MLDepth", MLDepth, ge=0.0)
 
@@ -6427,8 +6508,10 @@ class ChemicalDrift(OceanDrift):
                         concSPM = self._spm_g_m3(idx_W)
                         # Mixed Layer depth (m)
                         MLDepth = self._env_array('ocean_mixed_layer_thickness', 50.0, idx=idx_W)
-                        # Depth of element (m)
-                        Depth = -self._z_array(idx_W)  # positive depth
+                        # Depth of element below sea surface (m).
+                        # OpenDrift z is negative downward, so convert z -> positive depth.
+
+                        Depth = np.maximum(-self._z_array(idx_W), 0.0)  # positive depth from surface
                         # Concentration of DOC (mmol[C]/Kg)
                         concDOC = self._doc_mmolkg(idx_W)
 
