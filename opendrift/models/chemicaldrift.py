@@ -5936,9 +5936,15 @@ class ChemicalDrift(OceanDrift):
                 k_Base        = base-catalyzed pseudo-second-order coefficient [L mol-1 h-1]
                 k_Hydr_Uncat  = uncatalyzed first-order hydrolysis rate [1/h]
         '''
-        k_Acid = self._validate_scalar_param("k_Acid", k_Acid, ge=0.0)
-        k_Base = self._validate_scalar_param("k_Base", k_Base, ge=0.0)
+        # k_Acid and k_Base may be negative by design.
+        # Negative values allow the pH-dependent acid/base terms to cancel
+        # the uncatalyzed term at specific pH values. The final total rate is
+        # clipped to >= 0 after summing the terms.
+        k_Acid = self._validate_scalar_param("k_Acid", k_Acid)
+        k_Base = self._validate_scalar_param("k_Base", k_Base)
+        # Keep uncatalyzed hydrolysis non-negative
         k_Hydr_Uncat = self._validate_scalar_param("k_Hydr_Uncat", k_Hydr_Uncat, ge=0.0)
+
         pH_water = self._validate_array_param("pH_water", pH_water, ge=0.0, le=14.0)
 
         k_W_hydro = np.zeros_like(pH_water)
@@ -5976,9 +5982,14 @@ class ChemicalDrift(OceanDrift):
                 k_Base        = base-catalyzed pseudo-second-order coefficient [L mol-1 h-1]
                 k_Hydr_Uncat  = uncatalyzed first-order hydrolysis rate [1/h]
     '''
-        k_Acid = self._validate_scalar_param("k_Acid", k_Acid, ge=0.0)
-        k_Base = self._validate_scalar_param("k_Base", k_Base, ge=0.0)
+        # k_Acid and k_Base may be negative by design.
+        # The final total hydrolysis rate is clipped to >= 0 after summing.
+        k_Acid = self._validate_scalar_param("k_Acid", k_Acid)
+        k_Base = self._validate_scalar_param("k_Base", k_Base)
+
+        # Keep uncatalyzed hydrolysis non-negative
         k_Hydr_Uncat = self._validate_scalar_param("k_Hydr_Uncat", k_Hydr_Uncat, ge=0.0)
+
         pH_sed = self._validate_array_param("pH_sed", pH_sed, ge=0.0, le=14.0)
 
         k_S_hydro = np.zeros_like(pH_sed)
