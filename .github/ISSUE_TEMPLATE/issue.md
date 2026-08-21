@@ -1,6 +1,6 @@
 ---
-name: Bug report
-about: Create a bug report
+name: Feature suggestion or bug report
+about: Create a bug report or suggest or request a feature
 title: ''
 labels: ''
 assignees: ''
