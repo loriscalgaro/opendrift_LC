@@ -396,7 +396,10 @@ class Reader(StructuredReader):
                 logger.debug(f'{warning}: Using single time dimension found in detected variables: {variable_time_dimensions}')
                 self.dimensions['time'] = variable_time_dimensions[0]
             elif len(variable_time_dimensions) > 1:
-                raise ValueError(f'{warning}, and also several time dimensions used by detected variables: {variable_time_dimensions}')
+                if 'time' in variable_time_dimensions:
+                    self.dimensions['time'] = 'time'
+                else:
+                    raise ValueError(f'{warning}, and also several time dimensions used by detected variables: {variable_time_dimensions}')
 
         # Run constructor of parent Reader class
         super().__init__()
