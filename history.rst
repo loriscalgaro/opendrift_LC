@@ -1,10 +1,25 @@
 History
 =======
 
+2026-08-28 / Release v1.14.12
+-----------------------------
+* remove proj dependeny (this is not a python package).
+
+2026-08-28 / Release v1.14.11
+-----------------------------
+* reader_netCDF_CF_generic: if two time dimensions, use the one named simply "time" (ref updates in hycom)
+* reader_schism_native: read each time slice as one chunk, read zcor once per time step (by jaemaning)
+* *drifter* argument to plot method may now be an Xarray Dataset
+* Fix for "outside" deactivation for elements crossing dateline (by simonweppe)
+* Temporary manual solution for downloading GSHHS since not updated in Cartopy on Conda
+* Pinning proj<9.8 until cartopy/proj,eqc issue is resolved
+* Skipping calculation of vector components from speed and direction if projection is not mercator or latlon
+* Readers are now subclasses of a single class, either StructuredReader, UnstructuredReader, ContinuousReader, which again are direct subclasses of BaseReader only
+
 2026-06-23 / Release v1.14.10
 -----------------------------
 * Bugfix in OpenBerg - north-south-component of waves was flipped. Thanks to Shovon Jubair.
-* Expecting now axis dimensions (y, x) (was x, y) for unprojected datasets with 2D arrays of lon and lat. 
+* Expecting now axis dimensions (y, x) (was x, y) for unprojected datasets with 2D arrays of lon and lat.
 * New internal helper method _set_mode()
 * Added new method default_readers() to list default readers
 * Converting time to python datetime in seed_elements, to allow using other time formats for seeding
@@ -268,7 +283,7 @@ History
 * Added utility method open_mfdataset_overlap to create manual threds aggregates, and example_manual_aggregate to illustrate usage
 * Added new config type 'str' with properties min_length and max_length (default 64). Added generic config 'general:simulation_name' (default empty)
 * Changing >= to > in condition regarding at which timestep to export buffer to file
-* Added new oil, HEIDRUN AARE 2023 
+* Added new oil, HEIDRUN AARE 2023
 
 2024-04-02 / Release v1.11.2
 ----------------------------
