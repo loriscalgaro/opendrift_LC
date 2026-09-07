@@ -2358,8 +2358,6 @@ class ChemicalDrift(OceanDrift):
         corr = 10**(Setschenow*ConcSalt)
         return corr
 
-
-
     ###########################################################################
     # Helpers for partitioning and species transitions
     ###########################################################################
