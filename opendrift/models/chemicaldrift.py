@@ -16615,6 +16615,8 @@ class ChemicalDrift(OceanDrift):
             emission_coordinate_mode="pixel_center",
             emission_wetcell_recovery=False,
             emission_wetcell_diagnostic_radius=2000,
+            water_concentration_unit=None,
+            concentration_coordinate_mode="legacy",
     ):
         """
         Seed elements based on a dataarray with water/sediment concentration or direct emissions to water.
@@ -16681,6 +16683,14 @@ class ChemicalDrift(OceanDrift):
                        Bathimetry_seed_data are moved to the nearest valid wet bathymetry cell within radius.
         emission_wetcell_diagnostic_radius: flot32, Radius in meters used only for debug diagnostics when emission_wetcell_recovery is enabled but no valid wet
                                cell is found within radius. Set to None or 0 to disable outside-radius diagnostic lookup.
+        water_concentration_unit: string or None, input water concentration unit, used only for mode='water_conc'.
+                              If None, reads 'units_water' or 'units' from input attributes; defaults to 'ug/L' if missing.
+                              Supports kg/g/mg/ug/µg/ng per m3 or L. Explicit values override metadata.
+                              Conversion applies to mass calculation; selection bounds remain in input units.
+        concentration_coordinate_mode: string, "legacy" or "center", used for water_conc and sed_conc.
+                              "legacy" adds half the grid resolution to input coordinates (default).
+                              "center" uses input coordinates directly, as required for writer-derived cell centres.
+                              Emission placement and radius-based spreading are unchanged.
 
 
         """
@@ -16770,6 +16780,61 @@ class ChemicalDrift(OceanDrift):
         self.validate_speciation_input_allowed(water_speciation, WATER_ALLOWED, label="water_speciation")
         self.validate_speciation_input_allowed(sed_speciation,   SED_ALLOWED,   label="sed_speciation")
 
+        if concentration_coordinate_mode not in ("legacy", "center"):
+            raise ValueError(
+                "concentration_coordinate_mode must be 'legacy' or 'center'."
+            )
+        # Convert input water concentrations to ug/m3 during mass calculation.
+        # Selection bounds remain expressed in the original input units.
+        water_conc_to_ug_m3 = 1.0
+        if mode == "water_conc":
+            import re
+
+            raw_unit = water_concentration_unit
+            if raw_unit is None:
+                raw_unit = (
+                    NETCDF_data.attrs.get("units_water")
+                    or NETCDF_data.attrs.get("units")
+                )
+            if raw_unit is None or not str(raw_unit).strip():
+                raw_unit = "ug/L"
+                logger.warning(
+                    "Water concentration units missing: assuming legacy ug/L. "
+                    "Set water_concentration_unit explicitly if needed."
+                )
+            unit = str(raw_unit).strip().lower()
+            for old, new in (
+                ("µ", "u"), ("μ", "u"),
+                ("³", "3"), ("¹", "1"),
+                ("⁻", "-"), ("−", "-"),
+            ):
+                unit = unit.replace(old, new)
+
+            unit = re.sub(r"\s+", "", unit)
+            unit = unit.replace("**", "").replace("^", "")
+            match = re.fullmatch(
+                r"(kg|mg|ug|ng|g)(/m3|m-3|/l|l-1)",
+                unit,
+            )
+            if match is None:
+                raise ValueError(
+                    f"Unsupported water concentration unit: {raw_unit!r}. "
+                    "Use a mass unit (kg/g/mg/ug/ng) per m3 or L, "
+                    "e.g. 'ug m-3' or 'ug/L'."
+                )
+            mass_to_ug = {
+                "kg": 1e9,
+                "g": 1e6,
+                "mg": 1e3,
+                "ug": 1.0,
+                "ng": 1e-3,
+            }[match.group(1)]
+
+            per_litre = match.group(2) in ("/l", "l-1")
+            water_conc_to_ug_m3 = (
+                mass_to_ug * (1e3 if per_litre else 1.0)
+            )
+
         # Select data
         sel = np.where((NETCDF_data > lowerbound) & (NETCDF_data < higherbound))
 
@@ -16857,10 +16922,17 @@ class ChemicalDrift(OceanDrift):
         # For gridded concentration fields, seed at pixel center.
         # For direct emissions, keep pixel-center behavior by default,
         # unless explicitly requested to seed at the source coordinates.
-        if mode == "emission" and emission_coordinate_mode == "source":
-            lon_array = lo
-            lat_array = la
+        if (
+            mode in ("water_conc", "sed_conc")
+            and concentration_coordinate_mode == "center"
+        ):
+            lon_array = lo.copy()
+            lat_array = la.copy()
+        elif mode == "emission" and emission_coordinate_mode == "source":
+            lon_array = lo.copy()
+            lat_array = la.copy()
         else:
+            # Preserve the existing half-cell offset for legacy inputs.
             lon_array = lo + lon_resol / 2
             lat_array = la + lat_resol / 2
 
@@ -17373,8 +17445,12 @@ class ChemicalDrift(OceanDrift):
                     raise ValueError("depth_layer_high is None for water_conc; check bathymetry/depth handling.")
 
                 if mode == 'water_conc':
-                    pixel_volume = depth_layer_high * lon_grid_m * lat_grid_m_scalar
-                    mass_ug = float(v) * (pixel_volume * 1e3)
+                    pixel_volume = (
+                        depth_layer_high * lon_grid_m * lat_grid_m_scalar
+                    )
+                    mass_ug = (
+                        float(v) * water_conc_to_ug_m3 * pixel_volume
+                    )
 
                 elif mode == 'sed_conc':
                     sed_mixing_depth_local = sed_mixing_depth_global
@@ -21087,8 +21163,8 @@ class ChemicalDrift(OceanDrift):
             time_steps = time_steps[pad_rows:]
             time_date_serie = time_date_serie[pad_rows:]
             # slice 1D dicts
-            for d in (mass_dict_1d, mass_sp_dict_1d, perc_sp_dict_1d, mass_transition_dict_1d,
-                      extra_fields_dict_1d, extra_fields_count_dict_1d):
+            for d in (mass_dict_1d, mass_sp_dict_1d, perc_sp_dict_1d, perc_elim_dict_1d,,
+                      mass_transition_dict_1d, extra_fields_dict_1d, extra_fields_count_dict_1d):
                 for k in list(d.keys()):
                     d[k] = np.asarray(d[k])[pad_rows:]
 
