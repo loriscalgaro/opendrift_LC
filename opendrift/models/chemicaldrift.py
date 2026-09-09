@@ -77,6 +77,12 @@ class Chemical(Lagrangian3DArray):
         ('z_ref', {'dtype': np.float32, 'units': 'm', 'seed': True, 'default': np.nan}),
         ('z0', {'dtype': np.float32, 'units': 'm', 'seed': True, 'default': np.nan}),
         ('tau_wave', {'dtype': np.float32, 'units': 'Pa', 'seed': True, 'default': np.nan}),
+        ('wave_orbital_velocity', {'dtype': np.float32, 'units': 'm/s', 'seed': True, 'default': np.nan}),
+        ('wave_excursion', {'dtype': np.float32, 'units': 'm', 'seed': True, 'default': np.nan}),
+        ('wave_number', {'dtype': np.float32, 'units': '1/m', 'seed': True, 'default': np.nan}),
+        ('wave_friction_factor', {'dtype': np.float32, 'units': '1', 'seed': True, 'default': np.nan}),
+        ('wave_z0', {'dtype': np.float32, 'units': 'm', 'seed': True, 'default': np.nan}),
+        ('wave_water_depth', {'dtype': np.float32, 'units': 'm', 'seed': True, 'default': np.nan}),
         ('p_res', {'dtype': np.float32, 'units': '1', 'seed': True, 'default': np.nan}),
         ('p_dep', {'dtype': np.float32, 'units': '1', 'seed': True, 'default': np.nan}),
         ('tau_cr_res', {'dtype': np.float32, 'units': 'Pa', 'seed': True, 'default': np.nan}),
@@ -89,6 +95,8 @@ class Chemical(Lagrangian3DArray):
         'rho', 'Cd',
         'speed', 'z_ref',
         'z0','tau_wave',
+        'wave_orbital_velocity', 'wave_excursion', 'wave_number',
+        'wave_friction_factor', 'wave_z0', 'wave_water_depth',
         'p_res', 'p_dep',
         'tau_cr_res',
             )
@@ -180,7 +188,7 @@ class ChemicalDrift(OceanDrift):
         # Direct bed stresses from hydro model
         # This should be requested whenever sediment exchange is active so the model
         # can prefer reader-provided sea_floor_current_stress when available.
-        'sea_floor_current_stress': {'fallback': 0, 'important': False, },     # Pa
+        'sea_floor_current_stress': {'fallback': np.nan, 'important': False, },     # Pa
         # Local organic-carbon fractions used when updating f_OC after particle/sediment transitions.
         'f_OC_spm': {'fallback': 0.01},                                        # gOC/g
         'f_OC_sed': {'fallback': 0.01},                                        # gOC/g
@@ -192,8 +200,7 @@ class ChemicalDrift(OceanDrift):
     'bottom_layer_thickness': {'fallback': 0.0, 'important': False,},          # m
     }
     SEDIMENT_LOG_Z0_REQUIRED_VARIABLES = {
-        # Needed by LOG_Z0 mode, and sometimes by wave stress if wave stress is
-        # estimated from orbital velocity instead of direct sea_floor_wave_stress.
+        # Roughness for the LOG_Z0 current law and LOG_Z0 wave friction.
         'sea_floor_roughness_length': {'fallback': 0.0, 'important': False,},  # m
     }
     SEDIMENT_GRAIN_D50_REQUIRED_VARIABLES = {
@@ -214,18 +221,22 @@ class ChemicalDrift(OceanDrift):
         'sea_floor_resuspension_critstress': {'fallback': 0, 'important': False,}, # Pa
     }
     OTHER_STRESS_REQUIRED_VARIABLES = {
-        'sea_floor_other_stress': {'fallback': 0, 'important': False,},        # Pa
+        'sea_floor_other_stress': {'fallback': np.nan, 'important': False,},        # Pa
     }
     WAVE_STRESS_REQUIRED_VARIABLES = {
-        # Direct or derived wave bed stress inputs
-        'sea_floor_wave_stress': {'fallback': 0, 'important': False,},          # Pa
-        # Used only if direct sea_floor_wave_stress is unavailable and wave stress
-        # must be estimated from orbital velocity and wave period.
-        'sea_floor_wave_orbital_velocity': {'fallback': 0, 'important': False,},# m/s
+        # Surface-wave forcing; no direct wave-stress/orbital-velocity inputs.
+        'sea_surface_wave_significant_height': {'fallback': None},  # m
+        # A missing period is tolerated only at genuinely calm/dry locations.
         'sea_surface_wave_period_at_variance_spectral_density_maximum': {
-            'fallback': 0, 'important': False,},                                # s
-        'sea_surface_wave_to_direction': {'fallback': 0, 'important': False,},  # degrees clockwise from north, "to"
-        'sea_surface_wave_from_direction': {'fallback': 0,'important': False,}, # degrees clockwise from north, "from"
+            'fallback': np.nan, 'important': False},  # peak period, s
+        'sea_surface_wave_to_direction': {
+            'fallback': np.nan, 'important': False},  # clockwise from north
+        'sea_surface_wave_from_direction': {
+            'fallback': np.nan, 'important': False},
+    }
+    DIRECT_WAVE_STRESS_REQUIRED_VARIABLES = {
+        # Wave-only stress amplitude [Pa], not total wave-current stress.
+        'sea_floor_wave_stress': {'fallback': None},
     }
     VOLATILIZATION_REQUIRED_VARIABLES = {
         'ocean_mixed_layer_thickness': {'fallback': 50,'important': False,},          # m
@@ -268,6 +279,7 @@ class ChemicalDrift(OceanDrift):
         SEDIMENT_RESUSPENSION_REQUIRED_VARIABLES,
         OTHER_STRESS_REQUIRED_VARIABLES,
         WAVE_STRESS_REQUIRED_VARIABLES,
+        DIRECT_WAVE_STRESS_REQUIRED_VARIABLES,
         VOLATILIZATION_REQUIRED_VARIABLES,
         HYDROLYSIS_REQUIRED_VARIABLES,
         BIODEGRADATION_REQUIRED_VARIABLES,
@@ -569,14 +581,30 @@ class ChemicalDrift(OceanDrift):
                 'description': 'Upper bound for drag coefficient.'},
             'chemical:sediment:include_wave_stress': {'type': 'bool', 'default': False,
                 'level': CONFIG_LEVEL_BASIC,
-                'description': 'Whether to include externally provided wave bed stress when available.'},
+                'description': 'Include wave bed stress from the selected CALCULATED or DIRECT source.'},
+            'chemical:sediment:wave_stress_source': {'type': 'enum',
+                'enum': ['CALCULATED', 'DIRECT'], 'default': 'CALCULATED',
+                'level': CONFIG_LEVEL_BASIC,
+                'description': 'CALCULATED derives wave stress from Hs, peak period, depth and roughness. DIRECT uses reader-supplied sea_floor_wave_stress: a finite non-negative wave-only stress amplitude in Pa. Sources are mutually exclusive.'},
+            'chemical:sediment:wave_height_convention': {'type': 'enum',
+                'enum': ['RMS_EQUIVALENT', 'SIGNIFICANT_HEIGHT'],
+                'default': 'RMS_EQUIVALENT', 'level': CONFIG_LEVEL_ADVANCED,
+                'description': 'Representative regular-wave height: Hs/sqrt(2) for RMS_EQUIVALENT, or Hs for SIGNIFICANT_HEIGHT. Both use the supplied peak period.'},
+            'chemical:sediment:wave_depth_convention': {'type': 'enum',
+                'enum': ['MEAN_SEA_LEVEL', 'INSTANTANEOUS'],
+                'default': 'MEAN_SEA_LEVEL', 'level': CONFIG_LEVEL_ADVANCED,
+                'description': 'MEAN_SEA_LEVEL adds sea_surface_height to bathymetry; INSTANTANEOUS uses the supplied depth directly. Missing surface elevation defaults to zero.'},
+            'chemical:sediment:wave_roughness_mode': {'type': 'enum',
+                'enum': ['CURRENT_MODE', 'LOG_Z0', 'GRAIN_D50', 'NIKURADSE'],
+                'default': 'CURRENT_MODE', 'level': CONFIG_LEVEL_ADVANCED,
+                'description': 'Wave roughness source. CURRENT_MODE follows the current-stress mode; LOG_Z0 uses mapped/configured z0; GRAIN_D50 uses ks=2.5*d50; NIKURADSE uses configured nikuradse_ks.'},
             'chemical:sediment:include_other_stress': {'type': 'bool', 'default': False,
                 'level': CONFIG_LEVEL_BASIC,
                 'description': 'Whether to include externally provided other bed stress when available.'},
             'chemical:sediment:shear_stress_combination': {'type': 'enum',
                 'enum': ['sum', 'max', 'rss', 'SOULSBY_CLARKE'], 'default': 'sum',
                 'level': CONFIG_LEVEL_ADVANCED,
-                'description': 'Heuristic scalar combination of current, wave, and other bed-stress magnitudes. Not a full nonlinear wave-current interaction model.'},
+                'description': 'sum/max/rss combine stress magnitudes heuristically. SOULSBY_CLARKE is the legacy name for the simplified Soulsby wave-current peak formulation, evaluated over both wave half-cycles; other stress is then added in quadrature.'},
             'chemical:sediment:use_critstress_heterogeneity': {
                 'type': 'bool', 'default': True,
                 'level': CONFIG_LEVEL_BASIC,
@@ -830,12 +858,29 @@ class ChemicalDrift(OceanDrift):
             if include_other_stress:
                 req.update(self.OTHER_STRESS_REQUIRED_VARIABLES)
             if include_wave_stress:
-                req.update(self.WAVE_STRESS_REQUIRED_VARIABLES)
-
-                if stress_mode in ('LOG_Z0', 'MANNING', 'CHEZY'):
-                    req.update(self.SEDIMENT_LOG_Z0_REQUIRED_VARIABLES)
-                if stress_mode == 'GRAIN_D50':
-                    req.update(self.SEDIMENT_GRAIN_D50_REQUIRED_VARIABLES)
+                source = self._wave_stress_source()
+                if source == 'CALCULATED':
+                    req.update(self.WAVE_STRESS_REQUIRED_VARIABLES)
+                    # No generic deep-water fallback in wave calculations.
+                    req['sea_floor_depth_below_sea_level'] = {'fallback': None}
+                    wave_roughness = self._resolved_wave_roughness_mode()
+                    if wave_roughness == 'LOG_Z0':
+                        req.update(self.SEDIMENT_LOG_Z0_REQUIRED_VARIABLES)
+                    elif wave_roughness == 'GRAIN_D50':
+                        req.update(self.SEDIMENT_GRAIN_D50_REQUIRED_VARIABLES)
+                else:
+                    req.update(self.DIRECT_WAVE_STRESS_REQUIRED_VARIABLES)
+                    for name in ('sea_surface_wave_to_direction', 'sea_surface_wave_from_direction'):
+                        req[name] = dict(self.WAVE_STRESS_REQUIRED_VARIABLES[name])
+                    # Bathymetry/roughness may still be needed by current stress
+                    # and sediment exchange, but are not required by DIRECT waves.
+                if self.get_config('chemical:sediment:shear_stress_combination') == 'SOULSBY_CLARKE':
+                    # Direct scalar current stress still needs a velocity direction.
+                    req.update(self.SEDIMENT_BOTTOM_VELOCITY_REQUIRED_VARIABLES)
+                    req.update(self.SEDIMENT_BULK_FLOW_REQUIRED_VARIABLES)
+                # Missing mapped roughness must remain distinguishable from zero.
+                if 'sea_floor_roughness_length' in req:
+                    req['sea_floor_roughness_length'] = {'fallback': np.nan, 'important': False}
         return req
 
     @staticmethod
@@ -1647,6 +1692,11 @@ class ChemicalDrift(OceanDrift):
         self._reader_variables = set()
         for _, reader in self.env.readers.items():
             self._reader_variables.update(getattr(reader, 'variables', []))
+
+        if (self.get_config('chemical:sediment:include_wave_stress') and
+                (self.get_config('chemical:sediment:enable_deposition') or
+                 self.get_config('chemical:sediment:enable_resuspension'))):
+            self._validate_wave_stress_source()
 
         if self._user_resuspension_threshold_overrides_d50() and self._d50_map_reader_present():
             raise ValueError(
@@ -3623,8 +3673,11 @@ class ChemicalDrift(OceanDrift):
         '''
         Apply stochastic dynamic partitioning for one timestep.
 
-        This routine interprets the per-element transfer-rate matrix as a
-        continuous-time Markov jump process among species.
+        This routine uses a one-jump-per-timestep approximation to the
+        continuous-time Markov process defined by the transfer-rate matrix.
+        Its first-event probability and destination draw are exact for rates
+        frozen at the start of the step; subsequent within-step jumps are omitted.
+        Timestep convergence should be checked when outgoing_rate * dt is large.
           - process elements grouped by their current/source species
           - for each source species, use only its possible destination species
           - avoid building full temporary arrays of shape N x nspecies
@@ -4171,6 +4224,26 @@ class ChemicalDrift(OceanDrift):
     # Helpers for bed shear stress and wave/current stress
     ###########################################################################
 
+    def _wave_reader_array(self, name, idx=None):
+        """Reader-supplied field only, preserving masked values as NaN.
+
+        Accept scalars/one-element constant fields and aligned per-element arrays.
+        This helper intentionally does not interpret generic fallbacks as data.
+        """
+        if not self._has_reader_variable(name):
+            return None
+        raw = getattr(self.environment, name, None)
+        if raw is None:
+            return None
+        values = np.ma.asarray(raw, dtype=float).filled(np.nan)
+        n = self.num_elements_active()
+        if values.ndim == 0 or values.size == 1:
+            count = n if idx is None else np.asarray(idx).size
+            return np.full(count, float(values.reshape(-1)[0]), dtype=float)
+        if values.ndim != 1 or values.size != n:
+            raise ValueError(f'{name} must be scalar or have one value per active element.')
+        return values.copy() if idx is None else values[np.asarray(idx, dtype=np.int64)]
+
     def _bottom_velocity_components(self, idx=None):
         """Return bottom-layer velocity components.
         This helper only accepts dedicated bottom-layer velocity fields:
@@ -4178,8 +4251,11 @@ class ChemicalDrift(OceanDrift):
             - y_bottom_sea_water_velocity
         No fallback to depth-averaged or full-column velocity is used.
         """
-        u_b = self._optional_env_array('x_bottom_sea_water_velocity', idx=idx)
-        v_b = self._optional_env_array('y_bottom_sea_water_velocity', idx=idx)
+        reader = (self._wave_reader_array
+                  if self.get_config('chemical:sediment:include_wave_stress')
+                  else self._optional_env_array)
+        u_b = reader('x_bottom_sea_water_velocity', idx=idx)
+        v_b = reader('y_bottom_sea_water_velocity', idx=idx)
 
         if u_b is None or v_b is None:
             return None, None
@@ -4192,8 +4268,11 @@ class ChemicalDrift(OceanDrift):
             - x_depth_averaged_sea_water_velocity
             - y_depth_averaged_sea_water_velocity
     """
-        u_da = self._optional_env_array('x_depth_averaged_sea_water_velocity', idx=idx)
-        v_da = self._optional_env_array('y_depth_averaged_sea_water_velocity', idx=idx)
+        reader = (self._wave_reader_array
+                  if self.get_config('chemical:sediment:include_wave_stress')
+                  else self._optional_env_array)
+        u_da = reader('x_depth_averaged_sea_water_velocity', idx=idx)
+        v_da = reader('y_depth_averaged_sea_water_velocity', idx=idx)
 
         if u_da is None or v_da is None:
             return None, None
@@ -4201,99 +4280,77 @@ class ChemicalDrift(OceanDrift):
         return np.asarray(u_da, dtype=float), np.asarray(v_da, dtype=float)
 
     def _hydraulic_radius_array(self, idx=None):
-        """
-        Return hydraulic radius for bulk friction laws.
-        1) environment.hydraulic_radius
-        2) config('chemical:sediment:bulk_hydraulic_radius') if > 0
-        3) local water depth as fallback approximation
-        All returned values are floored to a small positive epsilon.
-        """
-        eps = 1e-12
+        """Returns hydraulic radius [m] for bulk friction laws: valid reader value, configured value, then depth.
 
-        Rh = self._env_array('hydraulic_radius', None, idx=idx)
-        if Rh is not None:
-            Rh = np.asarray(Rh, dtype=float)
-            depth = np.asarray(
-                self._env_array('sea_floor_depth_below_sea_level', 1.0, idx=idx),
-                dtype=float)
-            Rh = np.where(np.isfinite(Rh) & (Rh > 0.0), Rh, depth)
-            return np.maximum(Rh, eps)
-
-        Rh_cfg = float(self.get_config('chemical:sediment:bulk_hydraulic_radius'))
-        if idx is None:
-            n = self.num_elements_active()
+        The priority applies separately to each element. Generic environment
+        fallback zeros do not take precedence over bulk_hydraulic_radius.
+        compute_bottom_shear_stress retains its existing cap at local depth.
+        """
+        n = self.num_elements_active() if idx is None else np.asarray(idx).size
+        radius = self._wave_reader_array('hydraulic_radius', idx=idx)
+        if radius is None:
+            radius = np.full(n, np.nan, dtype=float)
         else:
-            n = np.asarray(idx, dtype=np.int64).ravel().size
-
-        if Rh_cfg > 0.0:
-            return np.full(n, Rh_cfg, dtype=float)
-
-        depth = np.asarray(
-            self._env_array('sea_floor_depth_below_sea_level', 1.0, idx=idx),
-            dtype=float)
-        return np.maximum(depth, eps)
+            radius = np.asarray(radius, dtype=float).copy()
+        valid = np.isfinite(radius) & (radius > 0.0)
+        configured = float(self.get_config('chemical:sediment:bulk_hydraulic_radius'))
+        if not np.isfinite(configured):
+            raise ValueError('bulk_hydraulic_radius must be finite; use zero to select depth.')
+        if configured > 0.0:
+            radius[~valid] = configured
+        else:
+            depth = np.asarray(self._env_array(
+                'sea_floor_depth_below_sea_level', 1.0, idx=idx), dtype=float)
+            radius[~valid] = depth[~valid]
+        if np.any(~np.isfinite(radius)):
+            raise ValueError('Hydraulic-radius fallback contains non-finite water depth.')
+        return np.maximum(radius, 1e-12)
 
     def _bed_stress_array(self, name, idx=None):
-        """
-        Return a non-negative bed-stress magnitude field if available.
-        1) Read the requested stress field only if it is provided by a reader
-        2) Replace non-finite values with 0
-        3) Clip negative values to 0
+        """Read a direct current/other stress magnitude [Pa], preserving masks.
 
-        Used for sea_floor_current_stress, sea_floor_wave_stress, sea_floor_other_stress
+        No supplying reader: return None so the caller can use its documented
+        fallback. A supplying reader with invalid data: raise instead of silently
+        turning missing data into zero stress. Zero is a valid stress magnitude.
         """
-        tau = self._optional_env_array(name, idx=idx)
+        tau = self._wave_reader_array(name, idx=idx)
         if tau is None:
+            if self._has_reader_variable(name):
+                raise ValueError(f'{name} is advertised by a reader but has no available data.')
             return None
-        tau = np.asarray(tau, dtype=float)
-        tau = np.where(np.isfinite(tau), tau, 0.0)
-        return np.maximum(tau, 0.0)
+        invalid = ~np.isfinite(tau) | (tau < 0.0)
+        if np.any(invalid):
+            raise ValueError(
+                f'{name} contains {int(invalid.sum())} invalid stress values; '
+                'expected finite, non-negative magnitudes in Pa.')
+        return tau
 
-    def _wave_to_direction_array(self, idx = None):
+    def _wave_to_direction_array(self, idx=None):
+        """Geographic propagation bearing, clockwise from north; NaN if absent.
+
+        Prefer finite to-directions locally; fill gaps with finite from-directions
+        converted by 180 degrees. Never accept the generic environment fallback
+        as evidence that a direction field was actually supplied.
         """
-        Return wave propagation direction as a geographic bearing in the "to"
-        convention (degrees clockwise from north).
-
-        Accepted inputs, in priority order:
-          1) sea_surface_wave_to_direction
-          2) sea_surface_wave_from_direction
-        If a "from"-direction field is used, it is converted internally using:
-            to_direction = (from_direction + 180) % 360
-        """
-        to_candidates = (
-            "sea_surface_wave_to_direction",
-        )
-        from_candidates = (
-            "sea_surface_wave_from_direction",
-        )
-
-        self._wave_direction_source_name = None
-        self._wave_direction_source_convention = None
-
-        def _get_candidate(name):
-            arr = self._optional_env_array(name, idx=idx)
-            if arr is not None:
-                return arr
-            # Fallback: if the environment object already carries the raw name, use it.
-            if getattr(self.environment, name, None) is not None:
-                return self._env_array(name, fallback=None, idx=idx)
-            return None
-
-        for name in to_candidates:
-            arr = _get_candidate(name)
-            if arr is not None:
-                self._wave_direction_source_name = name
-                self._wave_direction_source_convention = "to"
-                return np.mod(np.asarray(arr, dtype=float), 360.0)
-
-        for name in from_candidates:
-            arr = _get_candidate(name)
-            if arr is not None:
-                self._wave_direction_source_name = name
-                self._wave_direction_source_convention = "from"
-                return np.mod(np.asarray(arr, dtype=float) + 180.0, 360.0)
-
-        return None
+        n = self.num_elements_active() if idx is None else np.asarray(idx).size
+        direction = np.full(n, np.nan, dtype=float)
+        used = []
+        for name, offset in (('sea_surface_wave_to_direction', 0.0),
+                             ('sea_surface_wave_from_direction', 180.0)):
+            values = self._wave_reader_array(name, idx=idx)
+            if values is None:
+                continue
+            values = np.asarray(values, dtype=float)
+            # Accepted geographic bearings: [0, 360]. Reject finite fill values
+            # rather than silently wrapping, e.g. -99999, into a valid bearing.
+            valid = np.isfinite(values) & (values >= 0) & (values <= 360)
+            take = ~np.isfinite(direction) & valid
+            direction[take] = (values[take] + offset) % 360.0
+            if np.any(take):
+                used.append(name)
+        self._wave_direction_source_name = ','.join(used) if used else None
+        self._wave_direction_source_convention = 'to' if used else None
+        return direction
 
     def _bearing_to_unit_vector(self, bearing_deg):
         """
@@ -4305,41 +4362,242 @@ class ChemicalDrift(OceanDrift):
         ey = np.cos(theta)
         return ex, ey
 
-    def _wave_stress_from_orbital(self, rho, z0, idx=None):
+    def _wave_water_depth(self, idx=None):
+        """Actual water-column thickness [m]; non-positive values are dry.
+
+        Bathymetry must be supplied by a reader (a constant reader is allowed).
+        Do not use the generic 10000 m fallback for wave attenuation.
         """
-        Wave-only bed-stress amplitude tau_w [Pa].
+        depth = self._wave_reader_array('sea_floor_depth_below_sea_level', idx=idx)
+        if depth is None:
+            raise ValueError('Wave stress requires reader-supplied sea_floor_depth_below_sea_level.')
+        depth = np.asarray(depth, dtype=float)
+        if np.any(~np.isfinite(depth)):
+            raise ValueError('Wave-stress bathymetry contains missing/non-finite values.')
+        mode = self.get_config('chemical:sediment:wave_depth_convention')
+        if mode == 'MEAN_SEA_LEVEL':
+            eta = self._wave_reader_array('sea_surface_height', idx=idx)
+            if eta is None:
+                eta = np.asarray(self._env_array('sea_surface_height', 0.0, idx=idx), dtype=float)
+            if np.any(~np.isfinite(eta)):
+                raise ValueError('Wave-stress surface elevation contains non-finite values.')
+            depth = depth + eta
+        elif mode != 'INSTANTANEOUS':
+            raise ValueError(f'Unknown wave_depth_convention: {mode!r}')
+        return depth
 
-        Priority:
-          1) use sea_floor_wave_stress directly if available
-          2) otherwise estimate from near-bed orbital velocity amplitude and wave period:
-               A   = Uw * T / (2*pi)
-               fwr = 1.39 * (A/z0)^(-0.52)   # rough turbulent
-               tau_w = 0.5 * rho * fwr * Uw^2
+    def _wave_number(self, period, depth):
+        """Solve omega**2=g*k*tanh(k*h) for positive period/depth arrays.
+
+        Safeguarded Newton iteration in q=k*h; bisection completes any
+        unconverged entries. Relative stopping criteria also cover shallow water.
         """
-        eps = 1e-12
+        period, depth = np.broadcast_arrays(np.asarray(period, dtype=float),
+                                            np.asarray(depth, dtype=float))
+        if np.any(~np.isfinite(period) | (period <= 0) |
+                  ~np.isfinite(depth) | (depth <= 0)):
+            raise ValueError('Dispersion requires finite, positive period and depth.')
+        x = (2.0 * np.pi / period)**2 * depth / 9.81
+        if np.any(~np.isfinite(x) | (x <= 0)):
+            raise ValueError('Wave period/depth outside numerical dispersion range.')
+        lo = np.maximum(x, np.sqrt(x))
+        hi = x + np.sqrt(x)
+        q = 0.5 * (lo + hi)
+        for _ in range(12):
+            tq = np.tanh(q)
+            residual = q * tq - x
+            done = np.abs(residual) <= 1e-12 * x
+            if np.all(done):
+                return q / depth
+            lo = np.where((residual < 0) & ~done, q, lo)
+            hi = np.where((residual >= 0) & ~done, q, hi)
+            proposal = q - residual / (tq + q * (1.0 - tq*tq))
+            proposal = np.where((proposal > lo) & (proposal < hi),
+                                proposal, 0.5 * (lo + hi))
+            q = np.where(done, q, proposal)
+        for _ in range(60):
+            residual = q * np.tanh(q) - x
+            done = np.abs(residual) <= 1e-12 * x
+            if np.all(done):
+                return q / depth
+            lo = np.where((residual < 0) & ~done, q, lo)
+            hi = np.where((residual >= 0) & ~done, q, hi)
+            q = np.where(done, q, 0.5 * (lo + hi))
+        raise RuntimeError('Wave dispersion solver failed to converge.')
 
-        tau_wave = self._bed_stress_array('sea_floor_wave_stress', idx=idx)
-        if tau_wave is not None:
-            return tau_wave
+    def _wave_orbital_parameters(self, height, period, depth):
+        """Equivalent-wave orbital amplitude and excursion; positive inputs only.
 
-        Uw = self._optional_env_array('sea_floor_wave_orbital_velocity', idx=idx)
-        T = self._optional_env_array('sea_surface_wave_period_at_variance_spectral_density_maximum', idx=idx)
+        Retain logarithms for stress evaluation in strongly attenuated waves.
+        RMS_EQUIVALENT uses Hs/sqrt(2), a narrow-band approximation at Tp.
+        The returned amplitude is not the maximum of a random sea state.
+        """
+        height, period, depth = np.broadcast_arrays(
+            np.asarray(height, dtype=float), np.asarray(period, dtype=float),
+            np.asarray(depth, dtype=float))
+        if np.any(~np.isfinite(height) | (height <= 0)):
+            raise ValueError('Orbital calculation requires finite, positive wave height.')
+        mode = self.get_config('chemical:sediment:wave_height_convention')
+        if mode == 'RMS_EQUIVALENT':
+            scale = np.sqrt(2.0)
+        elif mode == 'SIGNIFICANT_HEIGHT':
+            scale = 1.0
+        else:
+            raise ValueError(f'Unknown wave_height_convention: {mode!r}')
+        k = self._wave_number(period, depth)
+        q = k * depth
+        # log(1/sinh(q)) without overflow for large q or cancellation for small q.
+        log_transfer = np.log(2.0) - q - np.log(-np.expm1(-2.0*q))
+        log_u = np.log(np.pi) + np.log(height) - np.log(scale) - np.log(period) + log_transfer
+        log_a = log_u + np.log(period) - np.log(2.0*np.pi)
+        with np.errstate(under='ignore'):
+            u = np.exp(log_u)
+            a = np.exp(log_a)
+        if np.any(~np.isfinite(u) | ~np.isfinite(a)):
+            raise ValueError('Wave orbital parameters outside numerical range.')
+        return u, a, k, log_u, log_a
 
-        if Uw is None or T is None:
-            return None
+    def _soulsby_wave_stress(self, log_u, log_a, ks, rho, nu):
+        """Soulsby rough/smooth maximum closure; stress amplitude in Pa.
 
-        Uw = np.abs(np.asarray(Uw, dtype=float))
-        T = np.maximum(np.asarray(T, dtype=float), eps)
-        z0 = np.maximum(np.asarray(z0, dtype=float), eps)
+        Logarithms avoid overflow in f_w*U_w**2 at negligible orbital motion.
+        A friction factor beyond float range is reported as NaN in diagnostics;
+        stress remains evaluated from its finite logarithm. No empirical cap
+        from the old A/z0 clipping is retained.
+        """
+        log_u, log_a, ks, rho, nu = np.broadcast_arrays(
+            np.asarray(log_u, dtype=float), np.asarray(log_a, dtype=float),
+            np.asarray(ks, dtype=float), np.asarray(rho, dtype=float),
+            np.asarray(nu, dtype=float))
+        if np.any(~np.isfinite(log_u) | ~np.isfinite(log_a) |
+                  ~np.isfinite(ks) | (ks <= 0) | ~np.isfinite(rho) | (rho <= 0) |
+                  ~np.isfinite(nu) | (nu <= 0)):
+            raise ValueError('Wave friction requires finite orbital logarithms and positive ks/rho/nu.')
+        log_re = log_u + log_a - np.log(nu)
+        log_fr = np.log(0.237) - 0.52*(log_a - np.log(ks))
+        log_fs = np.where(log_re <= np.log(5e5),
+                          np.log(2.0) - 0.5*log_re,
+                          np.log(0.0521) - 0.187*log_re)
+        log_fw = np.maximum(log_fr, log_fs)
+        log_tau = np.log(0.5) + np.log(rho) + log_fw + 2.0*log_u
+        if np.any(~np.isfinite(log_tau) | (log_tau > np.log(np.finfo(float).max))):
+            raise ValueError('Calculated wave stress exceeds the numerical range.')
+        fw = np.full(log_fw.shape, np.nan, dtype=float)
+        representable = log_fw <= np.log(np.finfo(float).max)
+        with np.errstate(under='ignore'):
+            fw[representable] = np.exp(log_fw[representable])
+            tau = np.exp(log_tau)
+        return tau, fw
 
-        A = Uw * T / (2.0 * np.pi)
-        rel_rough = np.maximum(A / z0, 1.000001)
+    def _wave_stress_source(self):
+        """Selected source; never fall back between DIRECT and CALCULATED."""
+        source = self.get_config('chemical:sediment:wave_stress_source')
+        if source not in ('CALCULATED', 'DIRECT'):
+            raise ValueError(f'Unknown wave_stress_source: {source!r}')
+        return source
 
-        fwr = 1.39 * rel_rough ** (-0.52)
-        fwr = np.maximum(fwr, 0.0)
+    def _validate_wave_stress_source(self):
+        """Check required reader sources before preparing the simulation."""
+        source = self._wave_stress_source()
+        names = (('sea_floor_wave_stress',) if source == 'DIRECT' else
+                 ('sea_surface_wave_significant_height', 'sea_floor_depth_below_sea_level'))
+        for name in names:
+            if not self._has_reader_variable(name):
+                raise ValueError(f'{source} wave stress requires a reader for {name}; constant readers are allowed.')
+        logger.info('Wave stress source=%s; combination=%s', source,
+                    self.get_config('chemical:sediment:shear_stress_combination'))
+        if source == 'CALCULATED':
+            logger.info('Wave calculation: height=%s; depth=%s; roughness=%s',
+                        self.get_config('chemical:sediment:wave_height_convention'),
+                        self.get_config('chemical:sediment:wave_depth_convention'),
+                        self._resolved_wave_roughness_mode())
 
-        tau_wave = 0.5 * rho * fwr * Uw**2
-        return np.maximum(tau_wave, 0.0)
+    def _wave_stress(self, rho, idx=None):
+        """Return one wave-stress source and its available diagnostics.
+
+        DIRECT bypasses all wave orbital, roughness, depth and viscosity
+        calculations. Its input must be a wave-only stress amplitude in Pa;
+        a combined wave-current field would double-count current stress.
+        Missing, masked, negative or non-finite direct values raise an error;
+        zero is valid. Derived diagnostics remain NaN, including at zero stress.
+        Direction is handled by compute_bottom_shear_stress after source selection.
+        """
+        if self._wave_stress_source() == 'CALCULATED':
+            return self._wave_stress_from_surface(rho=rho, idx=idx)
+        if idx is None:
+            idx = np.arange(self.num_elements_active(), dtype=np.int64)
+        else:
+            idx = np.asarray(idx, dtype=np.int64).ravel()
+        n = idx.size
+        result = {name: np.full(n, np.nan, dtype=float) for name in
+                  ('wave_orbital_velocity', 'wave_excursion', 'wave_number',
+                   'wave_friction_factor', 'wave_z0', 'wave_water_depth')}
+        if n == 0:
+            result['tau_wave'] = np.empty(0, dtype=float)
+            return result
+        tau = self._wave_reader_array('sea_floor_wave_stress', idx=idx)
+        if tau is None:
+            raise ValueError('DIRECT wave stress requires reader-supplied sea_floor_wave_stress [Pa].')
+        bad = ~np.isfinite(tau) | (tau < 0)
+        if np.any(bad):
+            raise ValueError(f'Invalid DIRECT wave stress for {int(bad.sum())} elements: values must be finite and non-negative [Pa].')
+        result['tau_wave'] = tau.copy()
+        return result
+
+    def _wave_stress_from_surface(self, rho, idx=None):
+        """Derive wave stress from local Hs, Tp, depth and bed roughness.
+
+        Source: Soulsby (1997), rough/smooth friction closure; linear-wave
+        transfer and equivalent-wave definitions: Soulsby (2006), TR155.
+        Only positive-height, wet entries require period/roughness/viscosity.
+        Dry entries contribute zero wave stress; this does not perform particle
+        stranding or replace OceanDrift's wet/dry treatment.
+        """
+        if idx is None:
+            idx = np.arange(self.num_elements_active(), dtype=np.int64)
+        else:
+            idx = np.asarray(idx, dtype=np.int64).ravel()
+        n = idx.size
+        result = {name: np.zeros(n, dtype=float) for name in
+                  ('tau_wave', 'wave_orbital_velocity', 'wave_excursion', 'wave_number')}
+        result.update({name: np.full(n, np.nan, dtype=float) for name in
+                       ('wave_friction_factor', 'wave_z0', 'wave_water_depth')})
+        if n == 0:
+            return result
+        depth = self._wave_water_depth(idx=idx)
+        result['wave_water_depth'] = depth.copy()
+        wet = depth > 0
+        height = self._wave_reader_array('sea_surface_wave_significant_height', idx=idx)
+        if height is None:
+            raise ValueError('Wave stress requires reader-supplied sea_surface_wave_significant_height.')
+        height = np.asarray(height, dtype=float)
+        bad = wet & (~np.isfinite(height) | (height < 0))
+        if np.any(bad):
+            raise ValueError(f'Invalid/missing significant wave height for {int(bad.sum())} wet elements.')
+        active = wet & (height > 0)
+        if not np.any(active):
+            return result
+        active_idx = idx[active]
+        period = self._wave_reader_array(
+            'sea_surface_wave_period_at_variance_spectral_density_maximum', idx=active_idx)
+        if period is None:
+            raise ValueError('Positive waves require reader-supplied peak wave period.')
+        period = np.asarray(period, dtype=float)
+        if np.any(~np.isfinite(period) | (period <= 0)):
+            raise ValueError('Positive waves at wet elements require finite, positive peak periods.')
+        z0 = self._wave_roughness_length_array(idx=active_idx)
+        rho = np.broadcast_to(np.asarray(rho, dtype=float), (n,))[active]
+        temp = self._env_array('sea_water_temperature', 10.0, idx=active_idx)
+        salt = self._env_array('sea_water_salinity', 34.0, idx=active_idx)
+        nu = np.asarray(seawater_dynamic_viscosity(temp, salt), dtype=float) / rho
+        u, a, k, log_u, log_a = self._wave_orbital_parameters(
+            height[active], period, depth[active])
+        tau, fw = self._soulsby_wave_stress(log_u, log_a, 30.0*z0, rho, nu)
+        for name, value in (('tau_wave', tau), ('wave_orbital_velocity', u),
+                            ('wave_excursion', a), ('wave_number', k),
+                            ('wave_friction_factor', fw), ('wave_z0', z0)):
+            result[name][active] = value
+        return result
 
     def _bottom_roughness_length_array(self, idx=None):
         """
@@ -4389,6 +4647,51 @@ class ChemicalDrift(OceanDrift):
 
         return np.maximum(z0, eps)
 
+    def _resolved_wave_roughness_mode(self):
+        """Resolve CURRENT_MODE independently of whether direct current stress exists."""
+        mode = self.get_config('chemical:sediment:wave_roughness_mode')
+        if mode == 'CURRENT_MODE':
+            current = self.get_config('chemical:sediment:stress_param_mode')
+            mode = {'LOG_Z0': 'LOG_Z0', 'MANNING': 'LOG_Z0', 'CHEZY': 'LOG_Z0',
+                    'GRAIN_D50': 'GRAIN_D50', 'WHITE_COLEBROOK': 'NIKURADSE'}[current]
+        if mode not in ('LOG_Z0', 'GRAIN_D50', 'NIKURADSE'):
+            raise ValueError(f'Unknown wave_roughness_mode: {mode!r}')
+        return mode
+
+    def _wave_roughness_length_array(self, idx=None):
+        """Positive z0 [m] for wave friction; ks=30*z0, or ks=2.5*d50.
+
+        Reuses existing mapped/configured fallback policy and USER d50 rules.
+        Current roughness and its z0 diagnostic retain their existing meaning.
+        """
+        mode = self._resolved_wave_roughness_mode()
+        n = self.num_elements_active() if idx is None else np.asarray(idx).size
+        if mode == 'LOG_Z0':
+            z0 = self._wave_reader_array('sea_floor_roughness_length', idx=idx)
+            fallback = float(self.get_config('chemical:sediment:roughness_length'))
+            if z0 is None:
+                z0 = np.full(n, fallback, dtype=float)
+            else:
+                bad = ~np.isfinite(z0) | (z0 <= 0)
+                if np.any(bad):
+                    logger.warning('Replacing %s invalid wave z0 values with configured roughness_length.', int(bad.sum()))
+                    z0 = np.where(bad, fallback, z0)
+        elif mode == 'GRAIN_D50':
+            # Preserve USER semantics; otherwise keep masks until fallback selection.
+            d50 = None if self._user_resuspension_threshold_overrides_d50() else self._wave_reader_array('sea_floor_d50', idx=idx)
+            fallback = float(self.get_config('chemical:sediment:d50'))
+            if d50 is None:
+                d50 = np.full(n, fallback, dtype=float)
+            else:
+                d50 = np.where(np.isfinite(d50) & (d50 > 0), d50, fallback)
+            z0 = d50 / 12.0
+        else:
+            z0 = np.full(n, float(self.get_config('chemical:sediment:nikuradse_ks')) / 30.0)
+        z0 = np.asarray(z0, dtype=float)
+        if np.any(~np.isfinite(z0) | (z0 <= 0)):
+            raise ValueError('Wave friction requires positive, finite roughness z0.')
+        return z0
+
     def compute_bottom_shear_stress(self, idx=None):
         """
         Compute bed shear stress.
@@ -4400,21 +4703,15 @@ class ChemicalDrift(OceanDrift):
                (x/y_depth_averaged_sea_water_velocity) with hydraulic_radius
                (or sea depth as fallback approximation)
 
-        Combination options:
-          - sum / max / rss: heuristic scalar combinations
-          - SOULSBY_CLARKE: current-wave combination with
-                tau_m   = tau_c * (1 + 1.2 * (tau_w/(tau_c + tau_w))**3.2)
-                tau_max = | tau_m * e_current + tau_w * e_wave |
-            where tau_w is wave-alone bed-stress amplitude and e_wave is the wave
-            propagation unit vector from sea_surface_wave_to_direction.
-
-        For 'sum', 'max', and 'rss', tau_effective is a scalar heuristic combination.
-        The returned tau_effective_x/y are assigned along the current-stress direction
-        (or wave direction if current stress is zero), so that the vector components are
-        internally consistent with tau_effective.
-
-        'other' stress has no directional information; preserve current combined direction
-        when possible, and only inflate the magnitude heuristically.
+        Wave stress uses the selected CALCULATED (default) or DIRECT source.
+        sum/max/rss are scalar heuristic combinations. Their vector diagnostics
+        use a surrogate current direction (or wave axis if current is absent).
+        SOULSBY_CLARKE is used to name the simplified Soulsby peak formulation applied,
+        not the full Soulsby-Clarke boundary-layer model.
+        It evaluates both +/- wave half-cycles and saves the larger vector.
+        With no physical direction, diagnostic components are NaN, while the
+        scalar stress remains usable. Other stress is non-directional and is
+        added in quadrature in the SOULSBY_CLARKE branch.
         """
         if idx is None:
             idx = np.arange(self.num_elements_active(), dtype=np.int64)
@@ -4438,6 +4735,12 @@ class ChemicalDrift(OceanDrift):
                 'z_ref': empty,
                 'z0': empty,
                 'tau_wave': empty,
+                'wave_orbital_velocity': empty,
+                'wave_excursion': empty,
+                'wave_number': empty,
+                'wave_friction_factor': empty,
+                'wave_z0': empty,
+                'wave_water_depth': empty,
             }
 
         kappa = 0.41
@@ -4479,15 +4782,24 @@ class ChemicalDrift(OceanDrift):
         tau_c = self._bed_stress_array('sea_floor_current_stress', idx=idx)
 
         if tau_c is not None:
-            # Use bottom-layer direction if available, otherwise depth-averaged direction.
+            # Preserve current-only behavior; wave-enabled runs need local validity.
             u_ref, v_ref = self._bottom_velocity_components(idx=idx)
             if u_ref is None or v_ref is None:
                 u_ref, v_ref = self._depth_averaged_velocity_components(idx=idx)
-
             if u_ref is None or v_ref is None:
                 u_ref = np.zeros(n, dtype=float)
                 v_ref = np.zeros(n, dtype=float)
-
+            if self.get_config('chemical:sediment:include_wave_stress'):
+                u_ref = np.asarray(u_ref, dtype=float).copy()
+                v_ref = np.asarray(v_ref, dtype=float).copy()
+                invalid = ~np.isfinite(u_ref) | ~np.isfinite(v_ref) | (np.hypot(u_ref, v_ref) <= eps)
+                u_da, v_da = self._depth_averaged_velocity_components(idx=idx)
+                if u_da is not None and v_da is not None:
+                    valid_da = np.isfinite(u_da) & np.isfinite(v_da) & (np.hypot(u_da, v_da) > eps)
+                    take = invalid & valid_da
+                    u_ref[take], v_ref[take] = u_da[take], v_da[take]
+                invalid = ~np.isfinite(u_ref) | ~np.isfinite(v_ref)
+                u_ref[invalid], v_ref[invalid] = 0.0, 0.0
             speed = np.hypot(u_ref, v_ref)
 
             tau_bx = np.zeros(n, dtype=float)
@@ -4586,44 +4898,31 @@ class ChemicalDrift(OceanDrift):
         tau_eff_y = tau_by.copy()
         tau_eff = tau_c.copy()
 
-        # Current direction
-        ec_x = np.zeros(n, dtype=float)
-        ec_y = np.zeros(n, dtype=float)
-        # Current direction
-        # Build a true unit vector from the current-stress components.
-        # If direct bed stress exists but no usable velocity direction is available,
-        # tau_bx/tau_by remain zero and has_current stays False.
+        # Current stress direction is valid only with finite nonzero components.
         ec_x = np.zeros(n, dtype=float)
         ec_y = np.zeros(n, dtype=float)
         tau_vec = np.hypot(tau_bx, tau_by)
-        has_current = tau_vec > eps
+        has_current = np.isfinite(tau_vec) & (tau_vec > eps)
         ec_x[has_current] = tau_bx[has_current] / tau_vec[has_current]
         ec_y[has_current] = tau_by[has_current] / tau_vec[has_current]
 
-        # Wave magnitude and direction, if requested
         tau_wave = None
         ew_x = np.zeros(n, dtype=float)
         ew_y = np.zeros(n, dtype=float)
         has_wave_dir = np.zeros(n, dtype=bool)
-
+        wave = {name: np.full(n, np.nan, dtype=float) for name in
+                ('wave_orbital_velocity', 'wave_excursion', 'wave_number',
+                 'wave_friction_factor', 'wave_z0', 'wave_water_depth')}
         if use_wave:
-            z0_wave = z0_default
-            if z0_wave is None:
-                if Param_mode == 'WHITE_COLEBROOK':
-                    z0_wave = np.full(n, max(ks_cfg / 30.0, eps), dtype=float)
-                elif Param_mode == 'GRAIN_D50':
-                    z0_wave = np.maximum(np.asarray(d50_local, dtype=float) / 12.0, eps)
-                else:
-                    z0_wave = self._bottom_roughness_length_array(idx=idx)
-
-            tau_wave = self._wave_stress_from_orbital(rho=rho, z0=z0_wave, idx=idx)
-
-            # accept either a true "to" direction or a "from" direction that is
-            # converted internally to the propagation convention expected below.
+            if np.any(~np.isfinite(tau_c)):
+                raise ValueError('Current stress contains non-finite values; check current velocity forcing.')
+            wave = self._wave_stress(rho=rho, idx=idx)
+            tau_wave = wave['tau_wave']
             wave_to_dir = self._wave_to_direction_array(idx=idx)
             if wave_to_dir is not None:
-                ew_x, ew_y = self._bearing_to_unit_vector(wave_to_dir)
-                has_wave_dir[:] = True
+                has_wave_dir = np.isfinite(wave_to_dir)
+                ew_x[has_wave_dir], ew_y[has_wave_dir] = self._bearing_to_unit_vector(
+                    wave_to_dir[has_wave_dir])
 
         def _fallback_direction():
             """
@@ -4662,20 +4961,27 @@ class ChemicalDrift(OceanDrift):
 
         if combo == 'SOULSBY_CLARKE':
             if tau_wave is not None:
-                need_wave_dir = tau_wave > eps
-                if np.any(need_wave_dir & (~has_wave_dir)):
+                both = (tau_wave > 0) & (tau_c > 0)
+                if np.any(both & (~has_wave_dir | ~has_current)):
                     raise ValueError(
-                    "SOULSBY_CLARKE requires a usable wave-direction field for all "
-                    "elements where wave stress is used. Supported inputs are "
-                    "sea_surface_wave_to_direction or sea_surface_wave_from_direction "
-                    "(converted internally to the propagation convention).")
-
-                denom = np.maximum(tau_c + tau_wave, eps)
-                tau_m = tau_c * (1.0 + 1.2 * (tau_wave / denom) ** 3.2)
-
-                tau_eff_x = tau_m * ec_x + tau_wave * ew_x
-                tau_eff_y = tau_m * ec_y + tau_wave * ew_y
+                        'SOULSBY_CLARKE needs finite wave and current directions '
+                        'where both stresses are positive. Supply to/from wave '
+                        'direction and bottom or depth-averaged current velocity, '
+                        'or select the scalar sum/max/rss combination.')
+                total = tau_c + tau_wave
+                fraction = np.divide(tau_wave, total, out=np.zeros(n), where=total > 0)
+                tau_m = tau_c * (1.0 + 1.2*fraction**3.2)
+                # Choose the half-cycle that reinforces the current projection.
+                dot = ec_x*ew_x + ec_y*ew_y
+                sign = np.where(dot < 0, -1.0, 1.0)
+                tau_eff_x = tau_m*ec_x + sign*tau_wave*ew_x
+                tau_eff_y = tau_m*ec_y + sign*tau_wave*ew_y
                 tau_eff = np.hypot(tau_eff_x, tau_eff_y)
+                # Preserve scalar forcing even if its direction is unknowable.
+                current_only = (tau_c > 0) & (tau_wave == 0)
+                wave_only = (tau_wave > 0) & (tau_c == 0)
+                tau_eff[current_only] = tau_c[current_only]
+                tau_eff[wave_only] = tau_wave[wave_only]
 
             if tau_other is not None:
                 tau_eff = np.sqrt(tau_eff ** 2 + tau_other ** 2)
@@ -4722,6 +5028,12 @@ class ChemicalDrift(OceanDrift):
             tau_eff_x = tau_eff * dir_x
             tau_eff_y = tau_eff * dir_y
 
+        if use_wave:
+            # NaNs distinguish unknown direction from an actual zero stress.
+            unknown_direction = (tau_eff > 0) & (np.hypot(tau_eff_x, tau_eff_y) == 0)
+            tau_eff_x[unknown_direction] = np.nan
+            tau_eff_y[unknown_direction] = np.nan
+
         ustar_eff = np.sqrt(np.maximum(tau_eff, 0.0) / np.maximum(rho, eps))
 
         return {
@@ -4729,6 +5041,9 @@ class ChemicalDrift(OceanDrift):
             'tau_by': tau_by,                  # current-only y-component
             'tau_current': tau_c,              # current-only magnitude
             'tau_wave': tau_wave if tau_wave is not None else np.zeros(n, dtype=float),
+            **{name: wave[name] for name in
+               ('wave_orbital_velocity', 'wave_excursion', 'wave_number',
+                'wave_friction_factor', 'wave_z0', 'wave_water_depth')},
             'tau_effective': tau_eff,          # combined magnitude
             'tau_effective_x': tau_eff_x,      # combined x-component
             'tau_effective_y': tau_eff_y,      # combined y-component
@@ -5228,6 +5543,15 @@ class ChemicalDrift(OceanDrift):
             self.elements.z0[idx] = stress['z0']
 
         self.elements.tau_wave[idx] = stress['tau_wave']
+        for name in ('wave_orbital_velocity', 'wave_excursion', 'wave_number',
+                     'wave_friction_factor', 'wave_z0', 'wave_water_depth'):
+            values = np.asarray(stress[name], dtype=float)
+            target = getattr(self.elements, name)
+            # Float32 output may not represent very large deep-water friction
+            # factors; retain finite stress but mark unavailable diagnostics NaN.
+            limit = np.finfo(target.dtype).max
+            values = np.where(np.isfinite(values) & (np.abs(values) <= limit), values, np.nan)
+            target[idx] = values
 
         if p_dep is not None:
             self.elements.p_dep[idx] = p_dep
@@ -6286,6 +6610,20 @@ class ChemicalDrift(OceanDrift):
     # Main transformation-loss functions
     ###########################################################################
 
+    def _degradation_rate_fraction(self, mechanism_per_hour, total_per_second):
+        """Mechanism share of a total rate, with zero share for zero total rate.
+
+        Convert h^-1 to s^-1 before division. A positive denominator must not
+        be raised to a numerical floor: that loses mass from slow mechanisms.
+        """
+        rate, total = np.broadcast_arrays(
+            np.asarray(mechanism_per_hour, dtype=float) / 3600.0,
+            np.asarray(total_per_second, dtype=float))
+        if np.any(~np.isfinite(rate) | ~np.isfinite(total) | (rate < 0) | (total < 0)):
+            raise ValueError('Degradation rates must be finite and non-negative.')
+        share = np.divide(rate, total, out=np.zeros_like(total), where=total > 0)
+        return np.clip(share, 0.0, 1.0)
+
     def degradation(self):
         """
         Apply chemical mass loss by degradation.
@@ -6351,7 +6689,7 @@ class ChemicalDrift(OceanDrift):
                     k_W_fin = np.maximum(k_W_fin, 0.0)
 
                     degraded_now[W] = np.minimum(self.elements.mass[W],
-                        self.elements.mass[W] * ( 1 - np.exp(-k_W_fin * self.time_step.total_seconds())))
+                        self.elements.mass[W] * (-np.expm1(-k_W_fin * self.time_step.total_seconds())))
                     # avoid degrading more mass than present
 
                 # Degradation in the sediments
@@ -6398,7 +6736,7 @@ class ChemicalDrift(OceanDrift):
                             pass
 
                     degraded_now[S] = np.minimum(self.elements.mass[S],
-                        self.elements.mass[S] * (1 - np.exp(-k_S_fin * self.time_step.total_seconds()))
+                        self.elements.mass[S] * (-np.expm1(-k_S_fin * self.time_step.total_seconds()))
                         )  # avoid degrading more mass than present
 
                 if W_deg or S_deg:
@@ -6573,7 +6911,7 @@ class ChemicalDrift(OceanDrift):
 
                     if k_W_fin_sum > 0:
                         degraded_now[W] = np.minimum(self.elements.mass[W],
-                            self.elements.mass[W] * (1 - np.exp(-k_W_fin * self.time_step.total_seconds())))
+                            self.elements.mass[W] * (-np.expm1(-k_W_fin * self.time_step.total_seconds())))
                 else:
                     k_W_bio = 0
                     k_W_hydro = 0
@@ -6629,7 +6967,7 @@ class ChemicalDrift(OceanDrift):
 
                     if k_S_fin_sum > 0:
                         degraded_now[S] = np.minimum(self.elements.mass[S],
-                            self.elements.mass[S] * (1 - np.exp(-k_S_fin * self.time_step.total_seconds())))
+                            self.elements.mass[S] * (-np.expm1(-k_S_fin * self.time_step.total_seconds())))
                 else:
                     k_S_bio = 0
                     k_S_hydro = 0
@@ -6653,10 +6991,7 @@ class ChemicalDrift(OceanDrift):
                             )
                         if np.sum(k_W_photo) > 0:
                             photo_degraded_now = np.zeros(self.num_elements_active())
-                            k_W_photo_fraction = np.minimum(
-                                (k_W_photo / 3600) / np.maximum(k_W_fin, 1e-12), # from 1/h to 1/s, clamp fraction to 1 to avoid breaking mass conservation
-                                1.0
-                            )
+                            k_W_photo_fraction = self._degradation_rate_fraction(k_W_photo, k_W_fin)
                             photo_degraded_now[W] = degraded_now[W] * k_W_photo_fraction
 
                             if W_deg:
@@ -6672,14 +7007,11 @@ class ChemicalDrift(OceanDrift):
                         if np.sum(k_W_bio) > 0 or np.sum(k_S_bio) > 0:
                             bio_degraded_now = np.zeros(self.num_elements_active())
                             if np.sum(k_W_bio) > 0:
-                                k_W_bio_fraction = np.minimum((k_W_bio / 3600) / np.maximum(k_W_fin, 1e-12),
-                                    1.0) # from 1/h to 1/s, clamp fraction to 1 to avoid breaking mass conservation
+                                k_W_bio_fraction = self._degradation_rate_fraction(k_W_bio, k_W_fin)
 
                                 bio_degraded_now[W] = degraded_now[W] * k_W_bio_fraction
                             if np.sum(k_S_bio) > 0:
-                                k_S_bio_fraction = np.minimum(
-                                    (k_S_bio / 3600) / np.maximum(k_S_fin, 1e-12),
-                                    1.0) # from 1/h to 1/s, clamp fraction to 1 to avoid breaking mass conservation
+                                k_S_bio_fraction = self._degradation_rate_fraction(k_S_bio, k_S_fin)
 
                                 bio_degraded_now[S] = degraded_now[S] * k_S_bio_fraction
 
@@ -6700,15 +7032,11 @@ class ChemicalDrift(OceanDrift):
                         if np.sum(k_W_hydro) > 0 or np.sum(k_S_hydro) > 0:
                             hydro_degraded_now = np.zeros(self.num_elements_active())
                             if np.sum(k_W_hydro) > 0:
-                                k_W_hydro_fraction = np.minimum(
-                                    (k_W_hydro / 3600) / np.maximum(k_W_fin, 1e-12),
-                                    1.0) # from 1/h to 1/s, clamp fraction to 1 to avoid breaking mass conservation
+                                k_W_hydro_fraction = self._degradation_rate_fraction(k_W_hydro, k_W_fin)
 
                                 hydro_degraded_now[W] = degraded_now[W] * k_W_hydro_fraction
                             if np.sum(k_S_hydro) > 0:
-                                k_S_hydro_fraction = np.minimum(
-                                    (k_S_hydro / 3600) / np.maximum(k_S_fin, 1e-12),
-                                    1.0) # from 1/h to 1/s, clamp fraction to 1 to avoid breaking mass conservation
+                                k_S_hydro_fraction = self._degradation_rate_fraction(k_S_hydro, k_S_fin)
 
                                 hydro_degraded_now[S] = degraded_now[S] * k_S_hydro_fraction
 
