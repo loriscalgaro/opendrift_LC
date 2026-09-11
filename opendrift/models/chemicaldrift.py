@@ -6934,8 +6934,8 @@ class ChemicalDrift(OceanDrift):
                             logger.debug("pH_sed in degradation was 0, set to median value")
 
                     if Bio_degr is True and k_DecayMax_water > 0:
-                        # From AQUATOX: k_DecayMax_water is a rate (1/h), and k_S_bio is four times slower than k_DecayMax_water
-                        k_S_bio = self.get_config('chemical:transformations:k_DecayMax_water') / 4
+                        # From AQUATOX (Godshalk and Barko (1985)): k_DecayMax_water is a rate (1/h), and k_S_bio is four times faster than k_DecayMax_water
+                        k_S_bio = self.get_config('chemical:transformations:k_DecayMax_water') * 4
                         k_S_bio = k_S_bio * self.calc_pHCorr(pH_min_bio, pH_max_bio, pH_sed)
                         k_S_bio = k_S_bio * self.tempcorr("Arrhenius", DH_kSt, TS, Tref_kSt)
 
