@@ -95,10 +95,10 @@ def coastline_crossing(lon1, lat1, lon2, lat2, step_degrees, land_side=True):
             Last position in water (if land_side is False) or first position on land (if land_side is True (default)) along transect
     """
 
-    lon1 = np.atleast_1d(lon1)
-    lat1 = np.atleast_1d(lat1)
-    lon2 = np.atleast_1d(lon2)
-    lat2 = np.atleast_1d(lat2)
+    lon1 = np.atleast_1d(np.asarray(lon1, dtype=float))
+    lat1 = np.atleast_1d(np.asarray(lat1, dtype=float))
+    lon2 = np.atleast_1d(np.asarray(lon2, dtype=float))
+    lat2 = np.atleast_1d(np.asarray(lat2, dtype=float))
     if land_side is True:
         lon_c = lon2
         lat_c = lat2
@@ -667,7 +667,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             for var in self._elements_previous:
                 self._elements_previous[var][self.elements.ID] = getattr(self.elements, var)
 
-    def interact_with_coastline(self, final=False):
+    def interact_with_coastline(self, final=False, intermediate_simulation=False):
         """Coastline interaction according to configuration setting"""
 
         if self.num_elements_active() == 0:
@@ -678,6 +678,9 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         i = self.get_config('general:coastline_action')
         if i == 'none':  # Do nothing
             return
+
+        if intermediate_simulation is True:
+            return  # Coastline interaction is left for next simulationstarting from saved output
 
         coastline_approximation_precision = self.get_config('general:coastline_approximation_precision')
 
@@ -1835,7 +1838,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             outfile=None,
             export_variables=None,
             export_buffer_length=100,
-            stop_on_error=False):
+            stop_on_error=False,
+            intermediate_simulation=False):
         """Start a trajectory simulation, after initial configuration.
 
         Performs the main loop:
@@ -1869,6 +1873,9 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                 - end_time: datetime object defining the end of the simulation
             export_variables: list of variables and parameter names to be
                 saved to file. Default is None (all variables are saved)
+            intermediate_simulation: if set to True, coastline_interaction is skipped
+                on final time step, to be performed after a new simulation is started
+                from the saved state.
         """
 
         # Exporting software and hardware specification, for possible debugging
@@ -2152,9 +2159,26 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             ('land_binary_mask' in self.required_variables):
             #('land_binary_mask' not in self.fallback_values) and \
             self.timer_start('preparing main loop:moving elements to ocean')
-            self.elements_scheduled.lon, self.elements_scheduled.lat, land_indices = \
-                self.closest_ocean_points(self.elements_scheduled.lon,
-                                          self.elements_scheduled.lat)
+            # After a restart (seed_from_file / seed_from_dataset / ...), elements seeded from
+            # a previous run must keep their saved lon/lat to preserve their original trajectory.
+
+            # New seeds are identified by age_seconds <= 0 (or missing, non-finite)
+            age = np.asarray(getattr(
+                self.elements_scheduled, 'age_seconds',
+                np.zeros(self.num_elements_scheduled())))
+            newseed = ~np.isfinite(age) | (age <= 0)
+            
+            # Move only newly seeded particles on land to ocean
+            lon = np.array(self.elements_scheduled.lon, copy=True, dtype=float)
+            lat = np.array(self.elements_scheduled.lat, copy=True, dtype=float)
+            orig_lon, orig_lat = lon.copy(), lat.copy()
+            
+            lon, lat, _ = self.closest_ocean_points(lon, lat)
+            if np.any(~newseed):
+                lon[~newseed] = orig_lon[~newseed]
+                lat[~newseed] = orig_lat[~newseed]
+            self.elements_scheduled.lon = lon
+            self.elements_scheduled.lat = lat
             self.timer_end('preparing main loop:moving elements to ocean')
 
 
@@ -2308,7 +2332,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         self.timer_start('cleaning up')
         logger.debug('Cleaning up')
 
-        self.interact_with_coastline(final=True)
+        self.interact_with_coastline(final=True, intermediate_simulation=intermediate_simulation)
         self.timer_end('cleaning up')
         self.timer_end('total time')
         self.state_to_buffer(final=True)  # Append final status to buffer
