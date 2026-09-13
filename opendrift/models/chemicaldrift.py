@@ -324,13 +324,16 @@ class ChemicalDrift(OceanDrift):
         'sea_floor_other_stress': {'fallback': np.nan, 'important': False,},        # Pa
     }
     WAVE_STRESS_REQUIRED_VARIABLES = {
-        # Surface-wave forcing; no direct wave-stress/orbital-velocity inputs.
-        'sea_surface_wave_significant_height': {'fallback': None},  # m
-        # A missing period is tolerated only at genuinely calm/dry locations.
-        'sea_surface_wave_period_at_variance_spectral_density_maximum': {
-            'fallback': np.nan, 'important': False},  # peak period, s
+    # Surface-wave forcing; no direct wave-stress/orbital-velocity inputs.
+    'sea_surface_wave_significant_height': {'fallback': None},
+    # A missing period is tolerated only at genuinely calm/dry locations.
+    'sea_surface_wave_period_at_variance_spectral_density_maximum': {
+        'fallback': np.nan, 'important': False},
+    }
+
+    WAVE_DIRECTION_REQUIRED_VARIABLES = {
         'sea_surface_wave_to_direction': {
-            'fallback': np.nan, 'important': False},  # clockwise from north
+            'fallback': np.nan, 'important': False},
         'sea_surface_wave_from_direction': {
             'fallback': np.nan, 'important': False},
     }
@@ -423,6 +426,7 @@ class ChemicalDrift(OceanDrift):
         SEDIMENT_RESUSPENSION_REQUIRED_VARIABLES,
         OTHER_STRESS_REQUIRED_VARIABLES,
         WAVE_STRESS_REQUIRED_VARIABLES,
+        WAVE_DIRECTION_REQUIRED_VARIABLES,
         DIRECT_WAVE_STRESS_REQUIRED_VARIABLES,
         VOLATILIZATION_REQUIRED_VARIABLES,
         HYDROLYSIS_REQUIRED_VARIABLES,
@@ -979,7 +983,7 @@ class ChemicalDrift(OceanDrift):
         self._set_config_default('drift:vertical_mixing', True)
         self._set_config_default('drift:vertical_mixing_at_surface', True)
         self._set_config_default('drift:vertical_advection_at_surface', True)
-        self.required_variables = self._build_required_variables()
+        self._sync_required_variables_from_config()
 
     def _build_required_variables(self):
         """
@@ -1091,28 +1095,101 @@ class ChemicalDrift(OceanDrift):
                 req.update(self.OTHER_STRESS_REQUIRED_VARIABLES)
             if include_wave_stress:
                 source = self._wave_stress_source()
+
                 if source == 'CALCULATED':
                     req.update(self.WAVE_STRESS_REQUIRED_VARIABLES)
                     # No generic deep-water fallback in wave calculations.
                     req['sea_floor_depth_below_sea_level'] = {'fallback': None}
+
                     wave_roughness = self._resolved_wave_roughness_mode()
                     if wave_roughness == 'LOG_Z0':
                         req.update(self.SEDIMENT_LOG_Z0_REQUIRED_VARIABLES)
                     elif wave_roughness == 'GRAIN_D50':
                         req.update(self.SEDIMENT_GRAIN_D50_REQUIRED_VARIABLES)
-                else:
+
+                else:  # DIRECT
                     req.update(self.DIRECT_WAVE_STRESS_REQUIRED_VARIABLES)
-                    for name in ('sea_surface_wave_to_direction', 'sea_surface_wave_from_direction'):
-                        req[name] = dict(self.WAVE_STRESS_REQUIRED_VARIABLES[name])
                     # Bathymetry/roughness may still be needed by current stress
                     # and sediment exchange, but are not required by DIRECT waves.
-                if self.get_config('chemical:sediment:shear_stress_combination') == 'SOULSBY_CLARKE':
-                    # Direct scalar current stress still needs a velocity direction.
+                combo = self.get_config(
+                    'chemical:sediment:shear_stress_combination')
+
+                if combo == 'SOULSBY_CLARKE':
+                    # Wave direction is required for the directional wave-current
+                    # combination, but either "to" or "from" direction is sufficient.
+                    for name, spec in self.WAVE_DIRECTION_REQUIRED_VARIABLES.items():
+                        if self._has_reader_variable(name):
+                            req[name] = dict(spec)
+                    # Direct scalar current stress still needs a current direction.
                     req.update(self.SEDIMENT_BOTTOM_VELOCITY_REQUIRED_VARIABLES)
                     req.update(self.SEDIMENT_BULK_FLOW_REQUIRED_VARIABLES)
+
                 # Missing mapped roughness must remain distinguishable from zero.
                 if 'sea_floor_roughness_length' in req:
-                    req['sea_floor_roughness_length'] = {'fallback': np.nan, 'important': False}
+                    req['sea_floor_roughness_length'] = {
+                        'fallback': np.nan,
+                        'important': False,
+                    }
+        return req
+
+    def _sync_required_variables_from_config(self):
+        """
+        Synchronize the configuration-dependent ChemicalDrift environmental
+        requirements with OpenDrift's Environment object.
+
+        ChemicalDrift keeps a class-level superset of environmental variables so
+        OpenDrift can register all environment:constant:* and
+        environment:fallback:* configuration keys during construction.
+
+        Runtime configuration selects the actual subset. Because readers may have
+        been added before this subset is finalized, rebuild the relevant parts of
+        Environment.priority_list from the readers already attached to the model.
+        """
+        req = self._build_required_variables()
+
+        self.required_variables = req
+
+        if not hasattr(self, 'env'):
+            return req
+
+        self.env.required_variables = req
+
+        # Keep profile/desired-variable metadata synchronized.
+        self.env.required_profiles = [
+            name for name, spec in req.items()
+            if spec.get('profiles', False) is True
+        ]
+
+        self.env.desired_variables = [
+            name for name, spec in req.items()
+            if spec.get('important', True) is False
+        ]
+
+        self.required_profiles = list(self.env.required_profiles)
+        self.desired_variables = list(self.env.desired_variables)
+
+        # Remove priority entries that are no longer required.
+        for variable in list(self.env.priority_list):
+            if variable not in req:
+                del self.env.priority_list[variable]
+
+        # Re-register already attached non-lazy readers for variables that have
+        # become required after configuration changes.
+        for reader_name, reader in self.env.readers.items():
+            if getattr(reader, 'is_lazy', False):
+                continue
+
+            reader_variables = set(getattr(reader, 'variables', []))
+
+            for variable in req:
+                if variable not in reader_variables:
+                    continue
+
+                if variable not in self.env.priority_list:
+                    self.env.priority_list[variable] = [reader_name]
+                elif reader_name not in self.env.priority_list[variable]:
+                    self.env.priority_list[variable].append(reader_name)
+
         return req
 
     @staticmethod
@@ -1974,7 +2051,7 @@ class ChemicalDrift(OceanDrift):
 
         # Finalize required environmental variables after config/species setup,
         # but before OceanDrift.prepare_run() prepares/interpolates readers.
-        self.required_variables = self._build_required_variables()
+        self._sync_required_variables_from_config()
 
         logger.info('Required variables for this run:')
         for name in sorted(self.required_variables):
@@ -2054,7 +2131,11 @@ class ChemicalDrift(OceanDrift):
 
     def seed_elements(self, *args, **kwargs):
         import numpy as np
+
         self._configure_element_type_from_config()
+        # OpenDrift finalizes the environment when super().seed_elements()
+        # is entered, so synchronize the active required-variable subset first.
+        self._sync_required_variables_from_config()
 
         if hasattr(self, 'name_species') is False:
             self.init_species()
@@ -2494,20 +2575,20 @@ class ChemicalDrift(OceanDrift):
 
     def _has_reader_variable(self, name):
         """
-        Return True if an environment variable is actually provided by at least one reader.
+        Return True if an environment variable is actually provided by at least
+        one currently attached reader.
 
-        Prefer the cached set collected in prepare_run(), but also allow direct
-        inspection of attached readers so the check works during seeding before
-        prepare_run() has populated _reader_variables.
+        The cached set is refreshed from attached readers so that readers added
+        after model construction are also detected.
         """
-        reader_vars = getattr(self, '_reader_variables', None)
-        if reader_vars is None:
-            reader_vars = set()
-            env = getattr(self, 'env', None)
-            if env is not None:
-                for _, reader in getattr(env, 'readers', {}).items():
-                    reader_vars.update(getattr(reader, 'variables', []))
-            self._reader_variables = reader_vars
+        reader_vars = set(getattr(self, '_reader_variables', set()) or set())
+
+        env = getattr(self, 'env', None)
+        if env is not None:
+            for _, reader in getattr(env, 'readers', {}).items():
+                reader_vars.update(getattr(reader, 'variables', []))
+
+        self._reader_variables = reader_vars
         return name in reader_vars
 
     def _optional_env_array(self, name, idx=None):
@@ -4824,6 +4905,21 @@ class ChemicalDrift(OceanDrift):
                         self.get_config('chemical:sediment:wave_height_convention'),
                         self.get_config('chemical:sediment:wave_depth_convention'),
                         self._resolved_wave_roughness_mode())
+        combo = self.get_config(
+            'chemical:sediment:shear_stress_combination'
+        )
+
+        if combo == 'SOULSBY_CLARKE':
+            has_to = self._has_reader_variable(
+                'sea_surface_wave_to_direction')
+            has_from = self._has_reader_variable(
+                'sea_surface_wave_from_direction')
+            if not (has_to or has_from):
+                raise ValueError(
+                    'SOULSBY_CLARKE requires a reader supplying either '
+                    'sea_surface_wave_to_direction or '
+                    'sea_surface_wave_from_direction.'
+                )
 
     def _wave_stress(self, rho, idx=None):
         """Return one wave-stress source and its available diagnostics.
