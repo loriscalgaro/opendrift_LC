@@ -101,11 +101,104 @@ class Chemical(Lagrangian3DArray):
         'tau_cr_res',
             )
 
+    # Optional sediment-oxygen diagnostics. Only the subset required by the
+    # selected oxygen model is added to the element type when requested.
+    SEDIMENT_OXYGEN_DIAGNOSTIC_DEFINITIONS = {
+        'sed_o2_used': {'dtype': np.float32, 'units': 'mmol/m3', 'seed': True, 'default': np.nan},
+        'sed_o2_bottom': {'dtype': np.float32, 'units': 'mmol/m3', 'seed': True, 'default': np.nan},
+        'sed_o2_active_layer_thickness': {'dtype': np.float32, 'units': 'm', 'seed': True, 'default': np.nan},
+        'sed_o2_porosity': {'dtype': np.float32, 'units': '1', 'seed': True, 'default': np.nan},
+        'sed_o2_diffusivity': {'dtype': np.float32, 'units': 'm2/s', 'seed': True, 'default': np.nan},
+        'sed_o2_dbl_thickness': {'dtype': np.float32, 'units': 'm', 'seed': True, 'default': np.nan},
+        'sed_o2_k_bl': {'dtype': np.float32, 'units': 'm/s', 'seed': True, 'default': np.nan},
+        'sed_o2_surface': {'dtype': np.float32, 'units': 'mmol/m3', 'seed': True, 'default': np.nan},
+        'sed_o2_penetration_depth': {'dtype': np.float32, 'units': 'm', 'seed': True, 'default': np.nan},
+        'sed_o2_consumption_rate': {'dtype': np.float32, 'units': 'mmol O2 m-3 s-1', 'seed': True, 'default': np.nan},
+        'sed_o2_flux': {'dtype': np.float32, 'units': 'mmol O2 m-2 s-1', 'seed': True, 'default': np.nan},
+        'sed_o2_R_upper': {'dtype': np.float32, 'units': 'mmol O2 m-3 s-1', 'seed': True, 'default': np.nan},
+        'sed_o2_R_lower': {'dtype': np.float32, 'units': 'mmol O2 m-3 s-1', 'seed': True, 'default': np.nan},
+        'sed_o2_transition_depth': {'dtype': np.float32, 'units': 'm', 'seed': True, 'default': np.nan},
+    }
+
+    @classmethod
+    def sediment_oxygen_diagnostic_variable_names(
+            cls, oxygen_model, oxygen_demand_mode='VOLUMETRIC_RATE'):
+        """Return the exact diagnostic schema for one sediment-O2 setup."""
+        common = ['sed_o2_used', 'sed_o2_bottom']
+        geometry = ['sed_o2_active_layer_thickness']
+        transport = ['sed_o2_porosity', 'sed_o2_diffusivity']
+        penetration = ['sed_o2_penetration_depth']
+        flux = ['sed_o2_flux']
+        dbl = ['sed_o2_dbl_thickness', 'sed_o2_k_bl', 'sed_o2_surface']
+
+        if oxygen_model == 'FIXED_FRACTION':
+            names = common
+        elif oxygen_model == 'PRESCRIBED_OPD':
+            names = common + geometry + penetration
+        elif oxygen_model in ('ZERO_ORDER', 'ZERO_ORDER_DBL'):
+            if oxygen_demand_mode not in ('VOLUMETRIC_RATE', 'BENTHIC_FLUX'):
+                raise ValueError(
+                    'Unknown sediment oxygen demand mode: '
+                    f'{oxygen_demand_mode!r}'
+                )
+            names = common + geometry + transport
+            if oxygen_model == 'ZERO_ORDER_DBL':
+                names += dbl
+            names += penetration
+            if oxygen_demand_mode == 'VOLUMETRIC_RATE':
+                names += ['sed_o2_consumption_rate']
+            names += flux
+        elif oxygen_model == 'TWO_LAYER_DBL':
+            names = (
+                common + geometry + transport + dbl + penetration + flux
+                + ['sed_o2_R_upper', 'sed_o2_R_lower',
+                   'sed_o2_transition_depth']
+            )
+        else:
+            raise ValueError(
+                f'Unknown sediment oxygen model: {oxygen_model!r}'
+            )
+
+        # Preserve deterministic NetCDF variable order and reject accidental
+        # duplicate names in future edits.
+        if len(names) != len(set(names)):
+            raise RuntimeError(
+                'Duplicate sediment-oxygen diagnostic variable in schema.'
+            )
+        return tuple(names)
+
+    @classmethod
+    def sediment_oxygen_diagnostic_variables(
+            cls, oxygen_model, oxygen_demand_mode='VOLUMETRIC_RATE'):
+        """Return Lagrangian variable definitions for the selected schema."""
+        names = cls.sediment_oxygen_diagnostic_variable_names(
+            oxygen_model, oxygen_demand_mode
+        )
+        return [
+            (name, dict(cls.SEDIMENT_OXYGEN_DIAGNOSTIC_DEFINITIONS[name]))
+            for name in names
+        ]
+
+    @classmethod
+    def sediment_oxygen_diagnostic_schema_key(
+            cls, oxygen_model, oxygen_demand_mode='VOLUMETRIC_RATE'):
+        """Return the configuration components that change output schema."""
+        # Validation is delegated to the schema builder.
+        cls.sediment_oxygen_diagnostic_variable_names(
+            oxygen_model, oxygen_demand_mode
+        )
+        if oxygen_model in ('ZERO_ORDER', 'ZERO_ORDER_DBL'):
+            return (oxygen_model, oxygen_demand_mode)
+        return (oxygen_model,)
+
     @classmethod
     def make_element_type(
         cls,
         save_single_degr_mass=False,
         save_bed_interaction=False,
+        save_sediment_oxygen_diagnostics=False,
+        sediment_oxygen_model='FIXED_FRACTION',
+        sediment_oxygen_demand_mode='VOLUMETRIC_RATE',
     ):
         """
         Build a concrete Lagrangian3DArray element type from the active
@@ -118,11 +211,17 @@ class Chemical(Lagrangian3DArray):
             variables.extend(cls.SINGLE_DEGRADATION_VARIABLES)
         if save_bed_interaction:
             variables.extend(cls.BED_INTERACTION_VARIABLES)
+        if save_sediment_oxygen_diagnostics:
+            variables.extend(cls.sediment_oxygen_diagnostic_variables(
+                sediment_oxygen_model,
+                sediment_oxygen_demand_mode,
+            ))
         class ChemicalElement(Lagrangian3DArray):
             """Concrete Chemical element type for this run configuration."""
             pass
         ChemicalElement.variables = Lagrangian3DArray.add_variables(variables)
         return ChemicalElement
+
 
 
 class ChemicalDrift(OceanDrift):
@@ -147,6 +246,7 @@ class ChemicalDrift(OceanDrift):
     ElementType = Chemical.make_element_type(
         save_single_degr_mass=False,
         save_bed_interaction=False,
+        save_sediment_oxygen_diagnostics=False,
     )
 
     required_variables = {}
@@ -1035,9 +1135,9 @@ class ChemicalDrift(OceanDrift):
         """Rebuild an empty element buffer if it lacks optional variables.
 
         This keeps self.elements and self.elements_scheduled consistent with
-        self.ElementType after save_single_degr_mass/save_bed_interaction are
-        read from configuration. Non-empty buffers are never silently rebuilt,
-        because that would drop already seeded particles.
+        self.ElementType after optional output settings are read from
+        configuration. Non-empty buffers are never silently rebuilt, because
+        that would drop already seeded particles.
         """
         elements_obj = getattr(self, attr_name, None)
         if elements_obj is None:
@@ -1059,8 +1159,58 @@ class ChemicalDrift(OceanDrift):
         raise RuntimeError(
             f"Chemical element buffer '{attr_name}' already contains {n} element(s) "
             f"but is missing required optional variable(s): {missing}. "
-            'Set chemical:transformations:Save_single_degr_mass and '
-            'chemical:sediment:save_bed_interaction before any seeding, or restart the model.'
+            'Set chemical:transformations:Save_single_degr_mass, '
+            'chemical:sediment:save_bed_interaction, and '
+            'chemical:sediment:save_oxygen_diagnostics before any seeding, '
+            'or restart the model.'
+        )
+
+    def _validate_sediment_oxygen_diagnostics_config(self):
+        """Reject diagnostic configurations that would never be populated."""
+        if not bool(self.get_config('chemical:sediment:save_oxygen_diagnostics')):
+            return
+
+        transfer_setup = self.get_config('chemical:transfer_setup')
+        if transfer_setup not in ('organics', 'custom'):
+            raise ValueError(
+                'chemical:sediment:save_oxygen_diagnostics=True requires '
+                "chemical:transfer_setup to be 'organics' or 'custom', because "
+                'degradation() is otherwise not called by ChemicalDrift.update().'
+            )
+
+        if not bool(self.get_config('chemical:transformations:degradation')):
+            raise ValueError(
+                'chemical:sediment:save_oxygen_diagnostics=True requires '
+                'chemical:transformations:degradation=True.'
+            )
+        if self.get_config('chemical:transformations:degradation_mode') != 'SingleRateConstants':
+            raise ValueError(
+                'chemical:sediment:save_oxygen_diagnostics=True requires '
+                "chemical:transformations:degradation_mode='SingleRateConstants'."
+            )
+        if not bool(self.get_config('chemical:transformations:Biodegradation')):
+            raise ValueError(
+                'chemical:sediment:save_oxygen_diagnostics=True requires '
+                'chemical:transformations:Biodegradation=True.'
+            )
+
+        k_aer = float(self.get_config(
+            'chemical:transformations:k_DecayMax_water'
+        ))
+        k_ana = float(self.get_config(
+            'chemical:transformations:k_Anaerobic_water'
+        ))
+        if k_aer <= 0.0 and k_ana <= 0.0:
+            raise ValueError(
+                'chemical:sediment:save_oxygen_diagnostics=True requires at '
+                'least one positive biodegradation endpoint rate so the '
+                'sediment-oxygen calculation is actually evaluated.'
+            )
+
+        # Also validate the model/demand selector combination before seeding.
+        Chemical.sediment_oxygen_diagnostic_schema_key(
+            self.get_config('chemical:sediment:oxygen_model'),
+            self.get_config('chemical:sediment:oxygen_demand_mode'),
         )
 
     def _configure_element_type_from_config(self):
@@ -1070,32 +1220,63 @@ class ChemicalDrift(OceanDrift):
         save_bed = bool(
             self.get_config('chemical:sediment:save_bed_interaction')
         )
-        key = (save_single, save_bed)
+        save_o2 = bool(
+            self.get_config('chemical:sediment:save_oxygen_diagnostics')
+        )
+
+        oxygen_model = self.get_config('chemical:sediment:oxygen_model')
+        oxygen_demand_mode = self.get_config(
+            'chemical:sediment:oxygen_demand_mode'
+        )
+
+        if save_o2:
+            self._validate_sediment_oxygen_diagnostics_config()
+            o2_schema_key = Chemical.sediment_oxygen_diagnostic_schema_key(
+                oxygen_model, oxygen_demand_mode
+            )
+            o2_names = Chemical.sediment_oxygen_diagnostic_variable_names(
+                oxygen_model, oxygen_demand_mode
+            )
+        else:
+            o2_schema_key = None
+            o2_names = ()
+
+        # Only configuration changes that alter the concrete element schema
+        # participate in this key. For example, oxygen_demand_mode does not
+        # change the schema for FIXED_FRACTION, PRESCRIBED_OPD, or TWO_LAYER_DBL.
+        key = (save_single, save_bed, o2_schema_key)
 
         required_names = []
         if save_single:
             required_names.extend(Chemical.SINGLE_DEGRADATION_VARIABLE_NAMES)
         if save_bed:
             required_names.extend(Chemical.BED_INTERACTION_VARIABLE_NAMES)
+        if save_o2:
+            required_names.extend(o2_names)
 
         if getattr(self, '_chemical_element_type_key', None) != key:
             if hasattr(self, 'elements') and self.num_elements_active() > 0:
                 raise RuntimeError(
                     'Cannot change optional Chemical element variables after seeding. '
-                    'Set chemical:transformations:Save_single_degr_mass and '
-                    'chemical:sediment:save_bed_interaction before seed_elements().'
+                    'Set chemical:transformations:Save_single_degr_mass, '
+                    'chemical:sediment:save_bed_interaction, '
+                    'chemical:sediment:save_oxygen_diagnostics, oxygen_model, and '
+                    'oxygen_demand_mode before seed_elements().'
                 )
 
             self.ElementType = Chemical.make_element_type(
                 save_single_degr_mass=save_single,
                 save_bed_interaction=save_bed,
+                save_sediment_oxygen_diagnostics=save_o2,
+                sediment_oxygen_model=oxygen_model,
+                sediment_oxygen_demand_mode=oxygen_demand_mode,
             )
             self._chemical_element_type_key = key
 
         # Important: OpenDrift may already have created empty active/scheduled
         # element arrays from the class-level default ElementType before runtime
         # configuration is applied. Rebuild only empty buffers so that delayed
-        # release can move scheduled elements without AttributeError
+        # release can move scheduled elements without AttributeError.
         if required_names:
             self._chemical_sync_element_buffer('elements', required_names)
             self._chemical_sync_element_buffer('elements_scheduled', required_names)
@@ -6225,6 +6406,54 @@ class ChemicalDrift(OceanDrift):
         )
 
     ###########################################################################
+    # Helpers for optional sediment-oxygen diagnostics
+    ###########################################################################
+
+    def _save_sediment_oxygen_diagnostics(self):
+        """Return True when the selected O2 diagnostic schema is allocated."""
+        return (
+            bool(self.get_config('chemical:sediment:save_oxygen_diagnostics'))
+            and hasattr(self.elements, 'sed_o2_used')
+        )
+
+    def _reset_sediment_oxygen_diagnostics(self):
+        """Reset allocated sediment-O2 diagnostics to NaN for this timestep."""
+        if not self._save_sediment_oxygen_diagnostics():
+            return
+        for name in Chemical.SEDIMENT_OXYGEN_DIAGNOSTIC_DEFINITIONS:
+            if hasattr(self.elements, name):
+                getattr(self.elements, name).fill(np.nan)
+
+    def _store_sediment_oxygen_diagnostics(self, idx, diagnostics):
+        """Store one compact diagnostic dictionary at global element indices."""
+        if not self._save_sediment_oxygen_diagnostics():
+            return
+
+        idx = np.asarray(idx, dtype=np.int64).ravel()
+        if idx.size == 0:
+            return
+
+        for name, values in diagnostics.items():
+            if not hasattr(self.elements, name):
+                raise RuntimeError(
+                    'Sediment-oxygen diagnostic schema mismatch: calculation '
+                    f'produced {name!r}, but that variable is not allocated.'
+                )
+
+            values = np.asarray(values, dtype=float)
+            if values.ndim == 0:
+                values = np.full(idx.size, float(values), dtype=float)
+            else:
+                values = values.ravel()
+                if values.size != idx.size:
+                    raise ValueError(
+                        f'Sediment-oxygen diagnostic {name!r} has {values.size} '
+                        f'value(s) for {idx.size} element index/indices.'
+                    )
+
+            getattr(self.elements, name)[idx] = values
+
+    ###########################################################################
     # Reduced-order sediment oxygen helpers
     ###########################################################################
 
@@ -6536,7 +6765,7 @@ class ChemicalDrift(OceanDrift):
 
         return C_surface, L_oxygen, oxygen_flux
 
-    def _sediment_oxygen_fixed_fraction(self, idx):
+    def _sediment_oxygen_fixed_fraction(self, idx, return_diagnostics=False):
         """FIXED_FRACTION: C_active = f_active * C_bottom."""
         C_bottom = self._bottom_water_oxygen_for_sediment(idx)
         fraction = self._validate_scalar_param(
@@ -6545,9 +6774,14 @@ class ChemicalDrift(OceanDrift):
             ge=0.0,
             le=1.0,
         )
-        return fraction * C_bottom
+        oxygen = fraction * C_bottom
+        if not return_diagnostics:
+            return oxygen
+        return oxygen, {
+            'sed_o2_bottom': C_bottom,
+        }
 
-    def _sediment_oxygen_prescribed_opd(self, idx):
+    def _sediment_oxygen_prescribed_opd(self, idx, return_diagnostics=False):
         """
         PRESCRIBED_OPD: use a prescribed/mapped oxygen penetration depth L.
 
@@ -6562,11 +6796,18 @@ class ChemicalDrift(OceanDrift):
             idx,
             ge=0.0,
         )
-        return self._mean_parabolic_sediment_oxygen(
+        oxygen = self._mean_parabolic_sediment_oxygen(
             C_bottom, H_active, L_oxygen
         )
+        if not return_diagnostics:
+            return oxygen
+        return oxygen, {
+            'sed_o2_bottom': C_bottom,
+            'sed_o2_active_layer_thickness': H_active,
+            'sed_o2_penetration_depth': L_oxygen,
+        }
 
-    def _sediment_oxygen_zero_order(self, idx):
+    def _sediment_oxygen_zero_order(self, idx, return_diagnostics=False):
         """
         ZERO_ORDER: calculate oxygen penetration depth dynamically without DBL.
 
@@ -6590,6 +6831,8 @@ class ChemicalDrift(OceanDrift):
         D_s = self._local_sediment_oxygen_diffusivity(idx, porosity=porosity)
 
         L_oxygen = np.full(idx.size, np.inf, dtype=float)
+        oxygen_flux = np.zeros(idx.size, dtype=float)
+        R_oxygen = None
         demand_mode = self.get_config('chemical:sediment:oxygen_demand_mode')
 
         if demand_mode == 'VOLUMETRIC_RATE':
@@ -6605,6 +6848,9 @@ class ChemicalDrift(OceanDrift):
                 L_oxygen[reacting] = np.sqrt(
                     2.0 * porosity[reacting] * D_s[reacting]
                     * C_bottom[reacting] / R_oxygen[reacting]
+                )
+                oxygen_flux[reacting] = (
+                    R_oxygen[reacting] * L_oxygen[reacting]
                 )
 
         elif demand_mode == 'BENTHIC_FLUX':
@@ -6626,11 +6872,25 @@ class ChemicalDrift(OceanDrift):
                 f"Unknown chemical:sediment:oxygen_demand_mode: {demand_mode!r}"
             )
 
-        return self._mean_parabolic_sediment_oxygen(
+        oxygen = self._mean_parabolic_sediment_oxygen(
             C_bottom, H_active, L_oxygen
         )
+        if not return_diagnostics:
+            return oxygen
 
-    def _sediment_oxygen_zero_order_dbl(self, idx):
+        diagnostics = {
+            'sed_o2_bottom': C_bottom,
+            'sed_o2_active_layer_thickness': H_active,
+            'sed_o2_porosity': porosity,
+            'sed_o2_diffusivity': D_s,
+            'sed_o2_penetration_depth': L_oxygen,
+            'sed_o2_flux': oxygen_flux,
+        }
+        if demand_mode == 'VOLUMETRIC_RATE':
+            diagnostics['sed_o2_consumption_rate'] = R_oxygen
+        return oxygen, diagnostics
+
+    def _sediment_oxygen_zero_order_dbl(self, idx, return_diagnostics=False):
         """
         ZERO_ORDER_DBL: single-reactivity sediment plus diffusive boundary layer.
 
@@ -6665,6 +6925,7 @@ class ChemicalDrift(OceanDrift):
         k_bl = D0 / dbl
 
         demand_mode = self.get_config('chemical:sediment:oxygen_demand_mode')
+        R_oxygen = None
 
         if demand_mode == 'VOLUMETRIC_RATE':
             R_oxygen = self._sediment_oxygen_map_or_config(
@@ -6673,7 +6934,7 @@ class ChemicalDrift(OceanDrift):
                 idx,
                 ge=0.0,
             )
-            C_surface, L_oxygen, _ = self._zero_order_dbl_surface_depth(
+            C_surface, L_oxygen, oxygen_flux = self._zero_order_dbl_surface_depth(
                 C_bottom, porosity, D_s, R_oxygen, k_bl
             )
 
@@ -6710,9 +6971,26 @@ class ChemicalDrift(OceanDrift):
                 f"Unknown chemical:sediment:oxygen_demand_mode: {demand_mode!r}"
             )
 
-        return self._mean_parabolic_sediment_oxygen(
+        oxygen = self._mean_parabolic_sediment_oxygen(
             C_surface, H_active, L_oxygen
         )
+        if not return_diagnostics:
+            return oxygen
+
+        diagnostics = {
+            'sed_o2_bottom': C_bottom,
+            'sed_o2_active_layer_thickness': H_active,
+            'sed_o2_porosity': porosity,
+            'sed_o2_diffusivity': D_s,
+            'sed_o2_dbl_thickness': dbl,
+            'sed_o2_k_bl': k_bl,
+            'sed_o2_surface': C_surface,
+            'sed_o2_penetration_depth': L_oxygen,
+            'sed_o2_flux': oxygen_flux,
+        }
+        if demand_mode == 'VOLUMETRIC_RATE':
+            diagnostics['sed_o2_consumption_rate'] = R_oxygen
+        return oxygen, diagnostics
 
     @classmethod
     def _mean_two_layer_sediment_oxygen(cls, C_surface, H_active, L_oxygen,
@@ -6869,7 +7147,7 @@ class ChemicalDrift(OceanDrift):
 
         return np.clip(out, 0.0, C_surface)
 
-    def _sediment_oxygen_two_layer_dbl(self, idx):
+    def _sediment_oxygen_two_layer_dbl(self, idx, return_diagnostics=False):
         """
         TWO_LAYER_DBL: two zero-order sediment reactivities plus a DBL.
 
@@ -6933,6 +7211,7 @@ class ChemicalDrift(OceanDrift):
 
         C_surface = np.zeros(idx.size, dtype=float)
         L_oxygen = np.zeros(idx.size, dtype=float)
+        oxygen_flux = np.zeros(idx.size, dtype=float)
 
         # Bottom-water O2 required for oxygen to just reach h1. At L=h1 the
         # lower layer has zero thickness and the upper layer controls both
@@ -6944,7 +7223,7 @@ class ChemicalDrift(OceanDrift):
 
         upper_only = (C_bottom > 0.0) & (C_bottom <= C_transition)
         if np.any(upper_only):
-            Cs_u, L_u, _ = self._zero_order_dbl_surface_depth(
+            Cs_u, L_u, F_u = self._zero_order_dbl_surface_depth(
                 C_bottom[upper_only],
                 porosity[upper_only],
                 D_s[upper_only],
@@ -6953,6 +7232,7 @@ class ChemicalDrift(OceanDrift):
             )
             C_surface[upper_only] = Cs_u
             L_oxygen[upper_only] = L_u
+            oxygen_flux[upper_only] = F_u
 
         enters_lower = C_bottom > C_transition
         finite_lower = enters_lower & (R_lower > 0.0)
@@ -6995,6 +7275,7 @@ class ChemicalDrift(OceanDrift):
 
             C_surface[finite_lower] = np.maximum(Cs, 0.0)
             L_oxygen[finite_lower] = L
+            oxygen_flux[finite_lower] = R1*ht + R2*(L-ht)
 
         # If the lower layer has zero demand, oxygen that reaches h1 is not
         # exhausted at any finite depth. Flux is then only the integrated upper
@@ -7008,8 +7289,9 @@ class ChemicalDrift(OceanDrift):
             )
             C_surface[nonreactive_lower] = np.maximum(Cs, 0.0)
             L_oxygen[nonreactive_lower] = np.inf
+            oxygen_flux[nonreactive_lower] = F_upper
 
-        return self._mean_two_layer_sediment_oxygen(
+        oxygen = self._mean_two_layer_sediment_oxygen(
             C_surface,
             H_active,
             L_oxygen,
@@ -7019,40 +7301,106 @@ class ChemicalDrift(OceanDrift):
             R_lower,
             h1,
         )
+        if not return_diagnostics:
+            return oxygen
 
-    def calculate_active_sediment_oxygen(self, idx):
+        # Cross-check the independently calculated reaction flux against the
+        # DBL transport balance before exporting it.
+        flux_dbl = k_bl * (C_bottom - C_surface)
+        flux_scale = np.maximum(
+            1.0, np.maximum(np.abs(oxygen_flux), np.abs(flux_dbl))
+        )
+        if np.any(np.abs(oxygen_flux - flux_dbl) > 1.0e-10 * flux_scale):
+            raise ValueError(
+                'TWO_LAYER_DBL diagnostic flux does not satisfy the DBL balance.'
+            )
+
+        return oxygen, {
+            'sed_o2_bottom': C_bottom,
+            'sed_o2_active_layer_thickness': H_active,
+            'sed_o2_porosity': porosity,
+            'sed_o2_diffusivity': D_s,
+            'sed_o2_dbl_thickness': dbl,
+            'sed_o2_k_bl': k_bl,
+            'sed_o2_surface': C_surface,
+            'sed_o2_penetration_depth': L_oxygen,
+            'sed_o2_flux': oxygen_flux,
+            'sed_o2_R_upper': R_upper,
+            'sed_o2_R_lower': R_lower,
+            'sed_o2_transition_depth': h1,
+        }
+
+    def calculate_active_sediment_oxygen(self, idx, return_diagnostics=False):
         """
         Calculate effective dissolved O2 for active sediment elements [mmol/m3].
 
-        This is the single dispatcher used by sediment biodegradation. It must
-        be called only for active sediment species. Buried-sediment oxygen is
-        forced to exactly zero before applying the common aerobic/anaerobic biodegradation formula.
+        When return_diagnostics is True, also return a dictionary containing
+        exactly the mode-specific internal arrays allocated by the selected
+        sediment-oxygen diagnostic schema. The common sed_o2_used field is
+        stored by degradation(), because only that caller knows which sediment
+        elements are buried and must therefore receive O2 = 0.
         """
         idx = np.asarray(idx, dtype=np.int64).ravel()
         if idx.size == 0:
-            return np.empty(0, dtype=float)
+            empty = np.empty(0, dtype=float)
+            if return_diagnostics:
+                return empty, {}
+            return empty
 
         model = self.get_config('chemical:sediment:oxygen_model')
 
         if model == 'FIXED_FRACTION':
-            oxygen = self._sediment_oxygen_fixed_fraction(idx)
+            result = self._sediment_oxygen_fixed_fraction(
+                idx, return_diagnostics=return_diagnostics
+            )
         elif model == 'PRESCRIBED_OPD':
-            oxygen = self._sediment_oxygen_prescribed_opd(idx)
+            result = self._sediment_oxygen_prescribed_opd(
+                idx, return_diagnostics=return_diagnostics
+            )
         elif model == 'ZERO_ORDER':
-            oxygen = self._sediment_oxygen_zero_order(idx)
+            result = self._sediment_oxygen_zero_order(
+                idx, return_diagnostics=return_diagnostics
+            )
         elif model == 'ZERO_ORDER_DBL':
-            oxygen = self._sediment_oxygen_zero_order_dbl(idx)
+            result = self._sediment_oxygen_zero_order_dbl(
+                idx, return_diagnostics=return_diagnostics
+            )
         elif model == 'TWO_LAYER_DBL':
-            oxygen = self._sediment_oxygen_two_layer_dbl(idx)
+            result = self._sediment_oxygen_two_layer_dbl(
+                idx, return_diagnostics=return_diagnostics
+            )
         else:
             raise ValueError(
                 f"Unknown chemical:sediment:oxygen_model: {model!r}"
             )
 
+        if return_diagnostics:
+            oxygen, diagnostics = result
+        else:
+            oxygen = result
+            diagnostics = None
+
         oxygen = self._validate_array_param(
             "active_sediment_oxygen", oxygen, ge=0.0
         )
-        return oxygen
+
+        if not return_diagnostics:
+            return oxygen
+
+        demand_mode = self.get_config('chemical:sediment:oxygen_demand_mode')
+        expected = set(Chemical.sediment_oxygen_diagnostic_variable_names(
+            model, demand_mode
+        )) - {'sed_o2_used'}
+        actual = set(diagnostics)
+        if actual != expected:
+            missing = sorted(expected - actual)
+            extra = sorted(actual - expected)
+            raise RuntimeError(
+                'Sediment-oxygen diagnostic dictionary does not match the '
+                f'selected schema. Missing={missing}, extra={extra}.'
+            )
+
+        return oxygen, diagnostics
 
     ###########################################################################
     # Helpers for biodegradation, photolysis, hydrolysis
@@ -7730,6 +8078,11 @@ class ChemicalDrift(OceanDrift):
             mass < (mass + mass_degraded + mass_volatilized) / 500
         If mass_checks is enabled, internal balance checks are applied.
         """
+        # Optional sediment-O2 diagnostics are dense per-element arrays. Reset
+        # them every degradation call so particles that leave the sediment do
+        # not retain values from the previous timestep.
+        self._reset_sediment_oxygen_diagnostics()
+
         if self.get_config('chemical:transformations:degradation') is True:
 
             if self.get_config('chemical:transformations:degradation_mode') == 'OverallRateConstants':
@@ -8050,10 +8403,36 @@ class ChemicalDrift(OceanDrift):
                         S_is_active = ~S_is_buried
 
                         Ox_sed_mmol_m3 = np.zeros(idx_S.size, dtype=float)
+                        save_o2_diag = self._save_sediment_oxygen_diagnostics()
+
                         if np.any(S_is_active):
                             idx_S_active = idx_S[S_is_active]
-                            Ox_sed_mmol_m3[S_is_active] = (
-                                self.calculate_active_sediment_oxygen(idx_S_active)
+                            if save_o2_diag:
+                                active_oxygen, active_o2_diag = (
+                                    self.calculate_active_sediment_oxygen(
+                                        idx_S_active,
+                                        return_diagnostics=True,
+                                    )
+                                )
+                                Ox_sed_mmol_m3[S_is_active] = active_oxygen
+                                self._store_sediment_oxygen_diagnostics(
+                                    idx_S_active, active_o2_diag
+                                )
+                            else:
+                                Ox_sed_mmol_m3[S_is_active] = (
+                                    self.calculate_active_sediment_oxygen(
+                                        idx_S_active
+                                    )
+                                )
+
+                        if save_o2_diag:
+                            # This is the O2 value actually passed to sediment
+                            # biodegradation: active-layer mean for active sediment,
+                            # exactly zero for Sediment_buried. Non-sediment
+                            # particles remain NaN after the timestep reset.
+                            self._store_sediment_oxygen_diagnostics(
+                                idx_S,
+                                {'sed_o2_used': Ox_sed_mmol_m3},
                             )
 
                         # The biodegradation oxygen interpolation uses O2 in g/m3.
