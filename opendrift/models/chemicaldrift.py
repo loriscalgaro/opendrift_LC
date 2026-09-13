@@ -253,6 +253,50 @@ class ChemicalDrift(OceanDrift):
         'sea_water_ph_reported_on_total_scale': {'fallback': 8.1, 'profiles': True,}, # pH units, dimensionless
         'pH_sediment': {'fallback': 6.9, 'profiles': False,},                         # pH units, dimensionless
     }
+    # Optional mapped sediment-oxygen fields used only by the selected
+    # sediment oxygen model. np.nan fallbacks intentionally preserve the
+    # distinction between a reader-supplied map and the configured fallback.
+    SEDIMENT_OXYGEN_GEOMETRY_REQUIRED_VARIABLES = {
+        'active_sediment_layer_thickness': {'fallback': 0,
+            'important': False, 'profiles': False,},  # m
+    }
+
+    SEDIMENT_OXYGEN_OPD_REQUIRED_VARIABLES = {
+        'sediment_oxygen_penetration_depth': {'fallback': np.nan,
+            'important': False,'profiles': False,},  # m
+    }
+
+    SEDIMENT_OXYGEN_TRANSPORT_REQUIRED_VARIABLES = {
+        'sea_floor_porosity': {'fallback': np.nan,
+            'important': False,'profiles': False,},  # 1, m3 pore water / m3 bulk sediment
+        'sediment_oxygen_diffusivity': {'fallback': np.nan,
+            'important': False, 'profiles': False,},  # m2/s, effective pore-water diffusivity
+    }
+
+    SEDIMENT_OXYGEN_VOLUMETRIC_REQUIRED_VARIABLES = {
+        'sediment_oxygen_consumption_rate': {'fallback': np.nan,
+            'important': False, 'profiles': False,},  # mmol O2 m-3 bulk sediment s-1
+    }
+
+    SEDIMENT_OXYGEN_FLUX_REQUIRED_VARIABLES = {
+        'benthic_oxygen_flux': {'fallback': np.nan,
+            'important': False, 'profiles': False,},  # mmol O2 m-2 s-1, positive into sediment
+    }
+
+    SEDIMENT_OXYGEN_DBL_REQUIRED_VARIABLES = {
+        'diffusive_boundary_layer_thickness': {'fallback': np.nan,
+            'important': False, 'profiles': False,},  # m
+    }
+
+    SEDIMENT_OXYGEN_TWO_LAYER_REQUIRED_VARIABLES = {
+        'sediment_oxygen_consumption_rate_upper': {'fallback': np.nan,
+            'important': False, 'profiles': False,},  # mmol O2 m-3 bulk sediment s-1
+        'sediment_oxygen_consumption_rate_lower': {'fallback': np.nan,
+            'important': False, 'profiles': False,},  # mmol O2 m-3 bulk sediment s-1
+        'sediment_oxygen_reactivity_transition_depth': {'fallback': np.nan,
+            'important': False, 'profiles': False,},  # m
+    }
+
     PHOTODEGRADATION_REQUIRED_VARIABLES = {
         # Light and water-column attenuation fields
         'solar_irradiance': {'fallback': 241,'important': False,},             # W/m2, or Ly/day if chemical:transformations:solar_input_unit = 'Ly_day'
@@ -283,6 +327,13 @@ class ChemicalDrift(OceanDrift):
         VOLATILIZATION_REQUIRED_VARIABLES,
         HYDROLYSIS_REQUIRED_VARIABLES,
         BIODEGRADATION_REQUIRED_VARIABLES,
+        SEDIMENT_OXYGEN_GEOMETRY_REQUIRED_VARIABLES,
+        SEDIMENT_OXYGEN_OPD_REQUIRED_VARIABLES,
+        SEDIMENT_OXYGEN_TRANSPORT_REQUIRED_VARIABLES,
+        SEDIMENT_OXYGEN_VOLUMETRIC_REQUIRED_VARIABLES,
+        SEDIMENT_OXYGEN_FLUX_REQUIRED_VARIABLES,
+        SEDIMENT_OXYGEN_DBL_REQUIRED_VARIABLES,
+        SEDIMENT_OXYGEN_TWO_LAYER_REQUIRED_VARIABLES,
         PHOTODEGRADATION_REQUIRED_VARIABLES,
     ):
         required_variables.update(_required_group)
@@ -723,6 +774,57 @@ class ChemicalDrift(OceanDrift):
             'chemical:transformations:pH_max_bio': {'type': 'float', 'default': 8.5,              # Default from AQUATOX
                  'min': 0, 'max': None, 'units': '',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': 'Maximum pH over which limitation on biodegradation rate occurs'},
+            # Sediment oxygen used for sediment biodegradation
+            'chemical:sediment:oxygen_model': {'type': 'enum',
+                'enum': ['FIXED_FRACTION', 'PRESCRIBED_OPD', 'ZERO_ORDER',
+                    'ZERO_ORDER_DBL', 'TWO_LAYER_DBL',],
+                'default': 'FIXED_FRACTION', 'level': CONFIG_LEVEL_ADVANCED,
+                'description': ('Reduced-order model used to estimate dissolved oxygen in '
+                    'the active sediment layer for biodegradation. Buried sediment '
+                    'is handled separately and forced to zero oxygen.'),},
+            'chemical:sediment:oxygen_active_fraction': {'type': 'float',
+                'default': 1.0, 'min': 0.0, 'max': 1.0, 'units': '',
+                'level': CONFIG_LEVEL_ADVANCED,
+                'description': ('Fraction of bottom-water dissolved oxygen assigned to active '
+                    'sediment in FIXED_FRACTION mode.'),},
+            'chemical:sediment:oxygen_penetration_depth': {
+                'type': 'float', 'default': 0.003, 'min': 0.0, 'max': 100.0,
+                'units': 'm', 'level': CONFIG_LEVEL_ADVANCED, 'description': (
+                'Uniform fallback oxygen penetration depth used in PRESCRIBED_OPD mode when no valid '
+                'sediment_oxygen_penetration_depth map is supplied.'),},
+            'chemical:sediment:oxygen_demand_mode': {'type': 'enum', 'enum': ['VOLUMETRIC_RATE', 'BENTHIC_FLUX'],
+                'default': 'VOLUMETRIC_RATE', 'level': CONFIG_LEVEL_ADVANCED,
+                'description': ('Oxygen-demand input used by ZERO_ORDER and ZERO_ORDER_DBL: '
+                    'volumetric sediment oxygen consumption or benthic oxygen flux.'),},
+            'chemical:sediment:oxygen_consumption_rate': {'type': 'float',
+                'default': 0.03, 'min': 0.0, 'max': None, 'units': 'mmol O2 m-3 s-1',
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ('Uniform fallback zero-order oxygen consumption rate per bulk '
+                    'sediment volume when no valid sediment_oxygen_consumption_rate map is supplied.'),},
+            'chemical:sediment:benthic_oxygen_flux': {'type': 'float', 'default': 9.0e-5,
+                'min': 0.0, 'max': None, 'units': 'mmol O2 m-2 s-1', 'level': CONFIG_LEVEL_ADVANCED,
+                'description': ('Uniform fallback benthic oxygen flux, positive into sediment, '
+                    'when no valid benthic_oxygen_flux map is supplied.'),},
+            'chemical:sediment:oxygen_molecular_diffusivity': {'type': 'float', 'default': 2.0e-9,
+                'min': 1.0e-12, 'max': 1.0e-7,
+                'units': 'm2/s', 'level': CONFIG_LEVEL_ADVANCED,
+                'description': ('Molecular diffusivity of dissolved oxygen in free water used '
+                    'to derive sediment diffusivity when no valid sediment_oxygen_diffusivity map is supplied.'),},
+            'chemical:sediment:oxygen_dbl_thickness': {'type': 'float',
+                'default': 0.001, 'min': 1.0e-6, 'max': 0.1, 'units': 'm',
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ('Uniform fallback diffusive boundary-layer thickness used in '
+                    'DBL modes when no valid diffusive_boundary_layer_thickness map is supplied.'),},
+            'chemical:sediment:oxygen_consumption_rate_upper': {'type': 'float',
+                'default': 0.03, 'min': 0.0, 'max': None, 'units': 'mmol O2 m-3 s-1',
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ('Uniform fallback zero-order oxygen consumption rate in the '
+                    'upper reactive sediment layer for TWO_LAYER_DBL.'),},
+            'chemical:sediment:oxygen_consumption_rate_lower': {'type': 'float',
+                'default': 0.03, 'min': 0.0, 'max': None, 'units': 'mmol O2 m-3 s-1',
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ('Uniform fallback zero-order oxygen consumption rate in the '
+                'lower reactive sediment layer for TWO_LAYER_DBL. Equal upper/lower defaults reduce the model to the one-layer case.'),},
+            'chemical:sediment:oxygen_reactivity_transition_depth': {'type': 'float',
+                'default': 0.001, 'min': 0.0, 'max': 100.0, 'units': 'm',
+                'level': CONFIG_LEVEL_ADVANCED, 'description': ('Uniform fallback depth of the upper/lower reactivity transition '
+                    'for TWO_LAYER_DBL when no valid map is supplied.'),},
             # Hydrolysis
             # Based on the approach reported by Mabey, W., & Mill, T. (1978) https://doi.org/10.1063/1.555572 (Figure 1)
             'chemical:transformations:k_Acid': {'type': 'float', 'default': 0,        # Default: no acid catalyzed hydrolysis
@@ -822,6 +924,31 @@ class ChemicalDrift(OceanDrift):
         if degradation_enabled and degradation_mode == 'SingleRateConstants':
             if bool(self.get_config('chemical:transformations:Biodegradation')):
                 req.update(self.BIODEGRADATION_REQUIRED_VARIABLES)
+
+                sediment_oxygen_model = self.get_config('chemical:sediment:oxygen_model')
+
+                if sediment_oxygen_model == 'PRESCRIBED_OPD':
+                    req.update(self.SEDIMENT_OXYGEN_GEOMETRY_REQUIRED_VARIABLES)
+                    req.update(self.SEDIMENT_OXYGEN_OPD_REQUIRED_VARIABLES)
+
+                elif sediment_oxygen_model in ('ZERO_ORDER', 'ZERO_ORDER_DBL'):
+                    req.update(self.SEDIMENT_OXYGEN_GEOMETRY_REQUIRED_VARIABLES)
+                    req.update(self.SEDIMENT_OXYGEN_TRANSPORT_REQUIRED_VARIABLES)
+
+                    oxygen_demand_mode = self.get_config('chemical:sediment:oxygen_demand_mode')
+                    if oxygen_demand_mode == 'VOLUMETRIC_RATE':
+                        req.update(self.SEDIMENT_OXYGEN_VOLUMETRIC_REQUIRED_VARIABLES)
+                    else:
+                        req.update(self.SEDIMENT_OXYGEN_FLUX_REQUIRED_VARIABLES)
+
+                    if sediment_oxygen_model == 'ZERO_ORDER_DBL':
+                        req.update(self.SEDIMENT_OXYGEN_DBL_REQUIRED_VARIABLES)
+
+                elif sediment_oxygen_model == 'TWO_LAYER_DBL':
+                    req.update(self.SEDIMENT_OXYGEN_GEOMETRY_REQUIRED_VARIABLES)
+                    req.update(self.SEDIMENT_OXYGEN_TRANSPORT_REQUIRED_VARIABLES)
+                    req.update(self.SEDIMENT_OXYGEN_DBL_REQUIRED_VARIABLES)
+                    req.update(self.SEDIMENT_OXYGEN_TWO_LAYER_REQUIRED_VARIABLES)
             if bool(self.get_config('chemical:transformations:Photodegradation')):
                 req.update(self.PHOTODEGRADATION_REQUIRED_VARIABLES)
             if bool(self.get_config('chemical:transformations:Hydrolysis')):
@@ -5689,7 +5816,7 @@ class ChemicalDrift(OceanDrift):
             h_b=h_b_dep,
         )
 
-        # Optional debug storage. This should itself be guarded internally.
+        # Optional debug storage.
         self._store_bed_interaction(
             idx_dep,
             stress_dep,
@@ -5829,7 +5956,7 @@ class ChemicalDrift(OceanDrift):
             idx=idx_res,
         )
 
-        # Optional debug storage. This should itself be guarded internally.
+        # Optional debug storage.
         self._store_bed_interaction(
             idx_res,
             stress_res,
@@ -6098,56 +6225,1000 @@ class ChemicalDrift(OceanDrift):
         )
 
     ###########################################################################
+    # Reduced-order sediment oxygen helpers
+    ###########################################################################
+
+    def _sediment_oxygen_map_or_config(self, env_name, config_name, idx, *,
+                                       ge=None, gt=None, le=None, lt=None):
+        """
+        Return a local sediment-O2 input using the model-wide map -> config rule.
+
+        A mapped value is used only when the variable is genuinely supplied by
+        a reader and the local value is finite and satisfies the requested
+        bounds. Missing/invalid mapped values are replaced element-by-element by
+        the configured fallback.
+
+        This helper intentionally uses _optional_env_array(), so OpenDrift
+        environment fallbacks are not mistaken for genuine mapped inputs.
+        """
+        idx = np.asarray(idx, dtype=np.int64).ravel()
+        if idx.size == 0:
+            return np.empty(0, dtype=float)
+
+        fallback = self._validate_scalar_param(
+            config_name,
+            self.get_config(config_name),
+            ge=ge, gt=gt, le=le, lt=lt,
+        )
+        out = np.full(idx.size, fallback, dtype=float)
+
+        mapped = self._optional_env_array(env_name, idx=idx)
+        if mapped is None:
+            return out
+
+        mapped = np.asarray(mapped, dtype=float)
+        valid = np.isfinite(mapped)
+        if ge is not None:
+            valid &= mapped >= ge
+        if gt is not None:
+            valid &= mapped > gt
+        if le is not None:
+            valid &= mapped <= le
+        if lt is not None:
+            valid &= mapped < lt
+
+        out[valid] = mapped[valid]
+
+        if np.any(~valid):
+            logger.debug(
+                "%s: replaced %d invalid mapped value(s) with %s",
+                env_name, int(np.count_nonzero(~valid)), config_name,
+            )
+        return out
+
+    def _bottom_water_oxygen_for_sediment(self, idx):
+        """
+        Return bottom-water dissolved O2 for sediment calculations [mmol/m3].
+
+        Values must be finite and non-negative.
+        Conversion to g/m3 for the biodegradation O2-rate calculation is deliberately left to the degradation coupling.
+        """
+        oxygen = self._env_array(
+            'mole_concentration_of_dissolved_molecular_oxygen_in_sea_water',
+            225.0,
+            idx=idx,
+        )
+        return self._validate_array_param(
+            "bottom_water_oxygen", oxygen, ge=0.0
+        )
+
+    def _local_active_sediment_layer_thickness(self, idx):
+        """
+        Return active sediment-layer thickness H_a [m].
+
+        Priority:
+          1) reader-supplied active_sediment_layer_thickness when finite >= 0
+          2) chemical:sediment:mixing_depth
+
+        H_a = 0 is allowed. In the averaging helpers it is interpreted as the
+        surface-limit case, so the returned active-layer concentration equals
+        the sediment-surface concentration.
+        """
+        return self._sediment_oxygen_map_or_config(
+            'active_sediment_layer_thickness',
+            'chemical:sediment:mixing_depth',
+            idx,
+            ge=0.0,
+        )
+
+    def _local_sediment_oxygen_porosity(self, idx):
+        """
+        Return sediment porosity phi [-].
+
+        Priority:
+          1) reader-supplied sea_floor_porosity, requiring 0 < phi <= 1
+          2) chemical:sediment:porosity
+        """
+        return self._sediment_oxygen_map_or_config(
+            'sea_floor_porosity',
+            'chemical:sediment:porosity',
+            idx,
+            gt=0.0,
+            le=1.0,
+        )
+
+    def _local_sediment_oxygen_diffusivity(self, idx, porosity=None):
+        """
+        Return effective O2 diffusivity in sediment pore water D_s [m2/s].
+
+        If sediment_oxygen_diffusivity is genuinely mapped and positive, use it.
+        Otherwise derive D_s from the configured free-water molecular
+        diffusivity D_0 and porosity using Boudreau (1996):
+
+            theta^2 = 1 - ln(phi^2)
+            D_s     = D_0 / theta^2
+
+        Source:
+          Boudreau, B.P. (1996), Geochimica et Cosmochimica Acta 60,
+          3139-3142. DOI: 10.1016/0016-7037(96)00158-5
+        """
+        idx = np.asarray(idx, dtype=np.int64).ravel()
+        if idx.size == 0:
+            return np.empty(0, dtype=float)
+
+        if porosity is None:
+            porosity = self._local_sediment_oxygen_porosity(idx)
+        porosity = self._validate_array_param(
+            "sediment_oxygen_porosity", porosity, gt=0.0, le=1.0
+        )
+
+        D0 = self._validate_scalar_param(
+            "chemical:sediment:oxygen_molecular_diffusivity",
+            self.get_config('chemical:sediment:oxygen_molecular_diffusivity'),
+            gt=0.0,
+        )
+
+        theta2 = 1.0 - np.log(porosity * porosity)
+        derived = D0 / theta2
+
+        mapped = self._optional_env_array('sediment_oxygen_diffusivity', idx=idx)
+        if mapped is None:
+            return derived
+
+        mapped = np.asarray(mapped, dtype=float)
+        valid = np.isfinite(mapped) & (mapped > 0.0)
+        out = derived.copy()
+        out[valid] = mapped[valid]
+
+        if np.any(~valid):
+            logger.debug(
+                "sediment_oxygen_diffusivity: replaced %d invalid mapped "
+                "value(s) with Boudreau-derived D_s",
+                int(np.count_nonzero(~valid)),
+            )
+        return out
+
+    @staticmethod
+    def _mean_parabolic_sediment_oxygen(C_surface, H_active, L_oxygen):
+        """
+        Depth-average a zero-order parabolic O2 profile over the active layer.
+
+        Assumed profile:
+            C(z) = C_surface * (1 - z/L)^2,       0 <= z <= L
+            C(z) = 0,                             z > L
+
+        ChemicalDrift does not track an element's depth inside the active
+        sediment layer. The concentration assigned to an active sediment
+        element is therefore the layer mean:
+
+            C_active = (1/H) * integral_0^H C(z) dz
+        which gives:
+
+            H <= L: C_active = C_surface * [1 - H/L + H^2/(3 L^2)]
+            H >  L: C_active = C_surface * L/(3 H)
+
+        The parabolic zero-order diffusion-reaction profile is consistent with
+        classical steady sediment O2 models (e.g. Bouldin, 1968) and with the
+        uniform-reactivity interpretation discussed by Cai & Sayles (1996).
+
+        Sources:
+          Bouldin, D.R. (1968), Journal of Ecology 56, 77-87.
+          DOI: 10.2307/2258068
+          Cai, W.-J. & Sayles, F.L. (1996), Marine Chemistry 52, 123-131.
+          DOI: 10.1016/0304-4203(95)00081-X
+        """
+        C_surface, H_active, L_oxygen = np.broadcast_arrays(
+            np.asarray(C_surface, dtype=float),
+            np.asarray(H_active, dtype=float),
+            np.asarray(L_oxygen, dtype=float),
+        )
+
+        if not np.all(np.isfinite(C_surface)):
+            raise ValueError("C_surface contains non-finite values")
+        if not np.all(np.isfinite(H_active)):
+            raise ValueError("H_active contains non-finite values")
+        if np.any(C_surface < 0.0):
+            raise ValueError("C_surface must be >= 0")
+        if np.any(H_active < 0.0):
+            raise ValueError("H_active must be >= 0")
+        if np.any(np.isnan(L_oxygen)) or np.any(L_oxygen < 0.0):
+            raise ValueError("L_oxygen must be >= 0 or +inf")
+
+        out = np.zeros_like(C_surface, dtype=float)
+
+        # No O2 at the sediment surface, or zero penetration depth -> zero mean.
+        usable = (C_surface > 0.0) & (L_oxygen > 0.0)
+        if not np.any(usable):
+            return out
+
+        # H -> 0 is the sediment-surface limit.
+        surface_limit = usable & (H_active == 0.0)
+        out[surface_limit] = C_surface[surface_limit]
+
+        finite_layer = usable & (H_active > 0.0)
+
+        within_oxic = finite_layer & (H_active <= L_oxygen)
+        if np.any(within_oxic):
+            x = H_active[within_oxic] / L_oxygen[within_oxic]
+            out[within_oxic] = C_surface[within_oxic] * (
+                1.0 - x + x*x / 3.0
+            )
+
+        extends_below_oxic = finite_layer & (H_active > L_oxygen)
+        if np.any(extends_below_oxic):
+            out[extends_below_oxic] = (
+                C_surface[extends_below_oxic]
+                * L_oxygen[extends_below_oxic]
+                / (3.0 * H_active[extends_below_oxic])
+            )
+
+        # Protect against tiny floating-point excursions outside physical bounds.
+        return np.clip(out, 0.0, C_surface)
+
+    @staticmethod
+    def _zero_order_dbl_surface_depth(C_bottom, porosity, D_s, R_oxygen, k_bl):
+        """
+        Solve the single-layer zero-order diffusion-reaction model with a DBL.
+
+        Sediment equations:
+            C_s = R * L^2 / (2 phi D_s)
+            F   = R * L = sqrt(2 phi D_s R C_s)
+
+        DBL transfer equation:
+            F = k_bl * (C_bottom - C_s)
+            k_bl = D_0 / delta_DBL
+
+        Solving analytically for y = sqrt(C_s):
+            B = sqrt(2 phi D_s R)
+            y = 2 k_bl C_bottom /
+                [sqrt(B^2 + 4 k_bl^2 C_bottom) + B]
+
+        and then:
+            C_s = y^2
+            L   = sqrt(2 phi D_s C_s / R)
+
+        R = 0 is treated as no sediment O2 consumption:
+            C_s = C_bottom, L = +inf, F = 0.
+
+        DBL transport basis:
+          Jorgensen & Revsbech (1985), Limnology and Oceanography 30,
+          111-122. DOI: 10.4319/lo.1985.30.1.0111
+        """
+        C_bottom, porosity, D_s, R_oxygen, k_bl = np.broadcast_arrays(
+            np.asarray(C_bottom, dtype=float),
+            np.asarray(porosity, dtype=float),
+            np.asarray(D_s, dtype=float),
+            np.asarray(R_oxygen, dtype=float),
+            np.asarray(k_bl, dtype=float),
+        )
+
+        if np.any(~np.isfinite(C_bottom)) or np.any(C_bottom < 0.0):
+            raise ValueError("C_bottom must be finite and >= 0")
+        if np.any(~np.isfinite(porosity)) or np.any(porosity <= 0.0) or np.any(porosity > 1.0):
+            raise ValueError("porosity must be finite with 0 < porosity <= 1")
+        if np.any(~np.isfinite(D_s)) or np.any(D_s <= 0.0):
+            raise ValueError("D_s must be finite and > 0")
+        if np.any(~np.isfinite(R_oxygen)) or np.any(R_oxygen < 0.0):
+            raise ValueError("R_oxygen must be finite and >= 0")
+        if np.any(~np.isfinite(k_bl)) or np.any(k_bl <= 0.0):
+            raise ValueError("k_bl must be finite and > 0")
+
+        C_surface = np.zeros_like(C_bottom, dtype=float)
+        L_oxygen = np.zeros_like(C_bottom, dtype=float)
+        oxygen_flux = np.zeros_like(C_bottom, dtype=float)
+
+        no_consumption = (R_oxygen == 0.0)
+        C_surface[no_consumption] = C_bottom[no_consumption]
+        L_oxygen[no_consumption & (C_bottom > 0.0)] = np.inf
+        L_oxygen[no_consumption & (C_bottom == 0.0)] = 0.0
+
+        reacting = (R_oxygen > 0.0) & (C_bottom > 0.0)
+        if np.any(reacting):
+            B = np.sqrt(
+                2.0 * porosity[reacting] * D_s[reacting] * R_oxygen[reacting]
+            )
+            kb = k_bl[reacting]
+            Cb = C_bottom[reacting]
+
+            sqrt_C_surface = (
+                2.0 * kb * Cb
+                / (np.sqrt(B*B + 4.0*kb*kb*Cb) + B)
+            )
+            Cs = sqrt_C_surface * sqrt_C_surface
+            L = np.sqrt(
+                2.0 * porosity[reacting] * D_s[reacting] * Cs
+                / R_oxygen[reacting]
+            )
+
+            C_surface[reacting] = Cs
+            L_oxygen[reacting] = L
+            oxygen_flux[reacting] = R_oxygen[reacting] * L
+
+        return C_surface, L_oxygen, oxygen_flux
+
+    def _sediment_oxygen_fixed_fraction(self, idx):
+        """FIXED_FRACTION: C_active = f_active * C_bottom."""
+        C_bottom = self._bottom_water_oxygen_for_sediment(idx)
+        fraction = self._validate_scalar_param(
+            "chemical:sediment:oxygen_active_fraction",
+            self.get_config('chemical:sediment:oxygen_active_fraction'),
+            ge=0.0,
+            le=1.0,
+        )
+        return fraction * C_bottom
+
+    def _sediment_oxygen_prescribed_opd(self, idx):
+        """
+        PRESCRIBED_OPD: use a prescribed/mapped oxygen penetration depth L.
+
+        The active-layer oxygen concentration is the analytical mean of the
+        parabolic zero-order profile over H_active.
+        """
+        C_bottom = self._bottom_water_oxygen_for_sediment(idx)
+        H_active = self._local_active_sediment_layer_thickness(idx)
+        L_oxygen = self._sediment_oxygen_map_or_config(
+            'sediment_oxygen_penetration_depth',
+            'chemical:sediment:oxygen_penetration_depth',
+            idx,
+            ge=0.0,
+        )
+        return self._mean_parabolic_sediment_oxygen(
+            C_bottom, H_active, L_oxygen
+        )
+
+    def _sediment_oxygen_zero_order(self, idx):
+        """
+        ZERO_ORDER: calculate oxygen penetration depth dynamically without DBL.
+
+        Volumetric-demand mode uses the steady zero-order equation:
+            phi D_s d2C/dz2 = R
+            L = sqrt(2 phi D_s C_bottom / R)
+
+        Benthic-flux mode uses:
+            L = 2 phi D_s C_bottom / F_O2
+
+        The latter relationship is reported and evaluated for marine sediments
+        by Cai & Sayles (1996), DOI: 10.1016/0304-4203(95)00081-X.
+
+        For R = 0 or F_O2 = 0, oxygen is not depleted in this reduced model and
+        L is represented as +inf.
+        """
+        idx = np.asarray(idx, dtype=np.int64).ravel()
+        C_bottom = self._bottom_water_oxygen_for_sediment(idx)
+        H_active = self._local_active_sediment_layer_thickness(idx)
+        porosity = self._local_sediment_oxygen_porosity(idx)
+        D_s = self._local_sediment_oxygen_diffusivity(idx, porosity=porosity)
+
+        L_oxygen = np.full(idx.size, np.inf, dtype=float)
+        demand_mode = self.get_config('chemical:sediment:oxygen_demand_mode')
+
+        if demand_mode == 'VOLUMETRIC_RATE':
+            R_oxygen = self._sediment_oxygen_map_or_config(
+                'sediment_oxygen_consumption_rate',
+                'chemical:sediment:oxygen_consumption_rate',
+                idx,
+                ge=0.0,
+            )
+            reacting = (R_oxygen > 0.0) & (C_bottom > 0.0)
+            L_oxygen[C_bottom == 0.0] = 0.0
+            if np.any(reacting):
+                L_oxygen[reacting] = np.sqrt(
+                    2.0 * porosity[reacting] * D_s[reacting]
+                    * C_bottom[reacting] / R_oxygen[reacting]
+                )
+
+        elif demand_mode == 'BENTHIC_FLUX':
+            oxygen_flux = self._sediment_oxygen_map_or_config(
+                'benthic_oxygen_flux',
+                'chemical:sediment:benthic_oxygen_flux',
+                idx,
+                ge=0.0,
+            )
+            consuming = (oxygen_flux > 0.0) & (C_bottom > 0.0)
+            L_oxygen[(oxygen_flux > 0.0) & (C_bottom == 0.0)] = 0.0
+            if np.any(consuming):
+                L_oxygen[consuming] = (
+                    2.0 * porosity[consuming] * D_s[consuming]
+                    * C_bottom[consuming] / oxygen_flux[consuming]
+                )
+        else:
+            raise ValueError(
+                f"Unknown chemical:sediment:oxygen_demand_mode: {demand_mode!r}"
+            )
+
+        return self._mean_parabolic_sediment_oxygen(
+            C_bottom, H_active, L_oxygen
+        )
+
+    def _sediment_oxygen_zero_order_dbl(self, idx):
+        """
+        ZERO_ORDER_DBL: single-reactivity sediment plus diffusive boundary layer.
+
+        The DBL is represented as a linear transfer resistance:
+            F = k_bl (C_bottom - C_surface)
+            k_bl = D_0 / delta_DBL
+
+        Source for the DBL concept and its control on sediment O2 uptake:
+          Jorgensen & Revsbech (1985), Limnology and Oceanography 30,
+          111-122. DOI: 10.4319/lo.1985.30.1.0111
+
+        In BENTHIC_FLUX mode a prescribed flux greater than k_bl*C_bottom is
+        physically incompatible with non-negative C_surface and is rejected.
+        """
+        idx = np.asarray(idx, dtype=np.int64).ravel()
+        C_bottom = self._bottom_water_oxygen_for_sediment(idx)
+        H_active = self._local_active_sediment_layer_thickness(idx)
+        porosity = self._local_sediment_oxygen_porosity(idx)
+        D_s = self._local_sediment_oxygen_diffusivity(idx, porosity=porosity)
+
+        D0 = self._validate_scalar_param(
+            "chemical:sediment:oxygen_molecular_diffusivity",
+            self.get_config('chemical:sediment:oxygen_molecular_diffusivity'),
+            gt=0.0,
+        )
+        dbl = self._sediment_oxygen_map_or_config(
+            'diffusive_boundary_layer_thickness',
+            'chemical:sediment:oxygen_dbl_thickness',
+            idx,
+            gt=0.0,
+        )
+        k_bl = D0 / dbl
+
+        demand_mode = self.get_config('chemical:sediment:oxygen_demand_mode')
+
+        if demand_mode == 'VOLUMETRIC_RATE':
+            R_oxygen = self._sediment_oxygen_map_or_config(
+                'sediment_oxygen_consumption_rate',
+                'chemical:sediment:oxygen_consumption_rate',
+                idx,
+                ge=0.0,
+            )
+            C_surface, L_oxygen, _ = self._zero_order_dbl_surface_depth(
+                C_bottom, porosity, D_s, R_oxygen, k_bl
+            )
+
+        elif demand_mode == 'BENTHIC_FLUX':
+            oxygen_flux = self._sediment_oxygen_map_or_config(
+                'benthic_oxygen_flux',
+                'chemical:sediment:benthic_oxygen_flux',
+                idx,
+                ge=0.0,
+            )
+
+            transport_capacity = k_bl * C_bottom
+            tolerance = 1.0e-12 * np.maximum(1.0, transport_capacity)
+            impossible = oxygen_flux > (transport_capacity + tolerance)
+            if np.any(impossible):
+                raise ValueError(
+                    "Benthic oxygen flux exceeds DBL transport capacity "
+                    "k_bl*C_bottom for one or more sediment elements."
+                )
+
+            C_surface = np.maximum(
+                C_bottom - oxygen_flux / k_bl,
+                0.0,
+            )
+            L_oxygen = np.full(idx.size, np.inf, dtype=float)
+            consuming = oxygen_flux > 0.0
+            if np.any(consuming):
+                L_oxygen[consuming] = (
+                    2.0 * porosity[consuming] * D_s[consuming]
+                    * C_surface[consuming] / oxygen_flux[consuming]
+                )
+        else:
+            raise ValueError(
+                f"Unknown chemical:sediment:oxygen_demand_mode: {demand_mode!r}"
+            )
+
+        return self._mean_parabolic_sediment_oxygen(
+            C_surface, H_active, L_oxygen
+        )
+
+    @classmethod
+    def _mean_two_layer_sediment_oxygen(cls, C_surface, H_active, L_oxygen,
+                                        porosity, D_s, R_upper, R_lower,
+                                        transition_depth):
+        """
+        Return the active-layer mean O2 concentration for TWO_LAYER_DBL.
+
+        For finite L > h1, the piecewise zero-order profile is:
+
+          lower layer, h1 <= z <= L:
+            C2(z) = R2/(2 phi D_s) * (L - z)^2
+
+          upper layer, 0 <= z <= h1:
+            C1(z) = C_h + g_h (z-h1)
+                    + R1/(2 phi D_s) * (z-h1)^2
+
+          with:
+            C_h = R2/(2 phi D_s) * (L-h1)^2
+            g_h = -R2/(phi D_s) * (L-h1)
+
+        The returned concentration is the exact analytical integral of this
+        piecewise profile divided by the full active-layer thickness H_active;
+        any part of H_active below finite L contributes zero oxygen.
+
+        If R_lower = 0 and oxygen reaches below h1, no finite penetration depth
+        exists in this reduced model. The lower layer then has a constant O2
+        concentration equal to C(h1), and L is represented as +inf.
+
+        Two-reactivity-layer description is described by:
+          Epping, E.H.G. & Helder, W. (1997), Continental Shelf Research 17,
+          1737-1764. DOI: 10.1016/S0278-4343(97)00039-3
+        """
+        (C_surface, H_active, L_oxygen, porosity, D_s,
+         R_upper, R_lower, transition_depth) = np.broadcast_arrays(
+            np.asarray(C_surface, dtype=float),
+            np.asarray(H_active, dtype=float),
+            np.asarray(L_oxygen, dtype=float),
+            np.asarray(porosity, dtype=float),
+            np.asarray(D_s, dtype=float),
+            np.asarray(R_upper, dtype=float),
+            np.asarray(R_lower, dtype=float),
+            np.asarray(transition_depth, dtype=float),
+        )
+
+        if np.any(~np.isfinite(C_surface)) or np.any(C_surface < 0.0):
+            raise ValueError("C_surface must be finite and >= 0")
+        if np.any(~np.isfinite(H_active)) or np.any(H_active < 0.0):
+            raise ValueError("H_active must be finite and >= 0")
+        if np.any(np.isnan(L_oxygen)) or np.any(L_oxygen < 0.0):
+            raise ValueError("L_oxygen must be >= 0 or +inf")
+        if np.any(~np.isfinite(porosity)) or np.any(porosity <= 0.0) or np.any(porosity > 1.0):
+            raise ValueError("porosity must be finite with 0 < porosity <= 1")
+        if np.any(~np.isfinite(D_s)) or np.any(D_s <= 0.0):
+            raise ValueError("D_s must be finite and > 0")
+        if np.any(~np.isfinite(R_upper)) or np.any(R_upper < 0.0):
+            raise ValueError("R_upper must be finite and >= 0")
+        if np.any(~np.isfinite(R_lower)) or np.any(R_lower < 0.0):
+            raise ValueError("R_lower must be finite and >= 0")
+        if np.any(~np.isfinite(transition_depth)) or np.any(transition_depth < 0.0):
+            raise ValueError("transition_depth must be finite and >= 0")
+
+        out = np.zeros_like(C_surface, dtype=float)
+        oxygenated = C_surface > 0.0
+        if not np.any(oxygenated):
+            return out
+
+        surface_limit = oxygenated & (H_active == 0.0)
+        out[surface_limit] = C_surface[surface_limit]
+
+        finite_H = oxygenated & (H_active > 0.0)
+        if not np.any(finite_H):
+            return np.clip(out, 0.0, C_surface)
+
+        # If oxygen is exhausted in the upper layer, the profile is simply the
+        # single-layer parabolic solution and can use the common exact average.
+        upper_only = finite_H & np.isfinite(L_oxygen) & (L_oxygen <= transition_depth)
+        if np.any(upper_only):
+            out[upper_only] = cls._mean_parabolic_sediment_oxygen(
+                C_surface[upper_only],
+                H_active[upper_only],
+                L_oxygen[upper_only],
+            )
+
+        # Finite penetration into the lower reactive layer.
+        lower_finite = finite_H & np.isfinite(L_oxygen) & (L_oxygen > transition_depth)
+        if np.any(lower_finite):
+            H = H_active[lower_finite]
+            L = L_oxygen[lower_finite]
+            phi = porosity[lower_finite]
+            Ds = D_s[lower_finite]
+            R1 = R_upper[lower_finite]
+            R2 = R_lower[lower_finite]
+            h1 = transition_depth[lower_finite]
+
+            a1 = R1 / (2.0 * phi * Ds)
+            a2 = R2 / (2.0 * phi * Ds)
+            C_h = a2 * (L - h1)**2
+            g_h = -R2 * (L - h1) / (phi * Ds)
+
+            x1 = np.minimum(H, h1)
+            u0 = -h1
+            u1 = x1 - h1
+            I_upper = (
+                C_h * (u1 - u0)
+                + 0.5 * g_h * (u1*u1 - u0*u0)
+                + (a1 / 3.0) * (u1*u1*u1 - u0*u0*u0)
+            )
+
+            I_lower = np.zeros_like(H)
+            reaches_lower = H > h1
+            if np.any(reaches_lower):
+                x2 = np.minimum(H[reaches_lower], L[reaches_lower])
+                I_lower[reaches_lower] = (
+                    a2[reaches_lower] / 3.0
+                    * (
+                        (L[reaches_lower] - h1[reaches_lower])**3
+                        - (L[reaches_lower] - x2)**3
+                    )
+                )
+
+            out[lower_finite] = (I_upper + I_lower) / H
+
+        # Infinite penetration occurs only when the lower-layer consumption is
+        # zero and enough O2 remains after crossing the upper layer.
+        lower_nonreactive = finite_H & np.isinf(L_oxygen)
+        if np.any(lower_nonreactive):
+            H = H_active[lower_nonreactive]
+            Cs = C_surface[lower_nonreactive]
+            phi = porosity[lower_nonreactive]
+            Ds = D_s[lower_nonreactive]
+            R1 = R_upper[lower_nonreactive]
+            h1 = transition_depth[lower_nonreactive]
+
+            a1 = R1 / (2.0 * phi * Ds)
+            C_h = np.maximum(Cs - a1*h1*h1, 0.0)
+
+            x1 = np.minimum(H, h1)
+            u0 = -h1
+            u1 = x1 - h1
+            I_upper = (
+                C_h * (u1 - u0)
+                + (a1 / 3.0) * (u1*u1*u1 - u0*u0*u0)
+            )
+
+            I_lower = np.zeros_like(H)
+            reaches_lower = H > h1
+            I_lower[reaches_lower] = (
+                C_h[reaches_lower]
+                * (H[reaches_lower] - h1[reaches_lower])
+            )
+
+            out[lower_nonreactive] = (I_upper + I_lower) / H
+
+        return np.clip(out, 0.0, C_surface)
+
+    def _sediment_oxygen_two_layer_dbl(self, idx):
+        """
+        TWO_LAYER_DBL: two zero-order sediment reactivities plus a DBL.
+
+        Governing equations:
+
+          phi D_s d2C/dz2 = R1,  0 < z < h1
+          phi D_s d2C/dz2 = R2,  h1 < z < L
+
+          C(L) = 0,  dC/dz|L = 0
+          k_bl (C_bottom - C_surface) = F
+
+        For L > h1:
+          C_surface = [R2 L^2 + (R1-R2) h1^2] / (2 phi D_s)
+          F = R1 h1 + R2 (L-h1)
+
+        The lower-layer solution for R2 > 0 reduces to one quadratic equation
+        in L, solved analytically below. If R2 = 0 and oxygen passes h1, no
+        finite penetration depth exists and the lower layer remains at constant
+        O2 concentration.
+
+        THe two-layer oxic-zone model with discrete reactivities was taken from
+        Epping & Helder (1997), DOI: 10.1016/S0278-4343(97)00039-3.
+        """
+        idx = np.asarray(idx, dtype=np.int64).ravel()
+        C_bottom = self._bottom_water_oxygen_for_sediment(idx)
+        H_active = self._local_active_sediment_layer_thickness(idx)
+        porosity = self._local_sediment_oxygen_porosity(idx)
+        D_s = self._local_sediment_oxygen_diffusivity(idx, porosity=porosity)
+
+        D0 = self._validate_scalar_param(
+            "chemical:sediment:oxygen_molecular_diffusivity",
+            self.get_config('chemical:sediment:oxygen_molecular_diffusivity'),
+            gt=0.0,
+        )
+        dbl = self._sediment_oxygen_map_or_config(
+            'diffusive_boundary_layer_thickness',
+            'chemical:sediment:oxygen_dbl_thickness',
+            idx,
+            gt=0.0,
+        )
+        k_bl = D0 / dbl
+
+        R_upper = self._sediment_oxygen_map_or_config(
+            'sediment_oxygen_consumption_rate_upper',
+            'chemical:sediment:oxygen_consumption_rate_upper',
+            idx,
+            ge=0.0,
+        )
+        R_lower = self._sediment_oxygen_map_or_config(
+            'sediment_oxygen_consumption_rate_lower',
+            'chemical:sediment:oxygen_consumption_rate_lower',
+            idx,
+            ge=0.0,
+        )
+        h1 = self._sediment_oxygen_map_or_config(
+            'sediment_oxygen_reactivity_transition_depth',
+            'chemical:sediment:oxygen_reactivity_transition_depth',
+            idx,
+            ge=0.0,
+        )
+
+        C_surface = np.zeros(idx.size, dtype=float)
+        L_oxygen = np.zeros(idx.size, dtype=float)
+
+        # Bottom-water O2 required for oxygen to just reach h1. At L=h1 the
+        # lower layer has zero thickness and the upper layer controls both
+        # surface concentration and flux.
+        C_transition = (
+            R_upper * h1*h1 / (2.0 * porosity * D_s)
+            + R_upper * h1 / k_bl
+        )
+
+        upper_only = (C_bottom > 0.0) & (C_bottom <= C_transition)
+        if np.any(upper_only):
+            Cs_u, L_u, _ = self._zero_order_dbl_surface_depth(
+                C_bottom[upper_only],
+                porosity[upper_only],
+                D_s[upper_only],
+                R_upper[upper_only],
+                k_bl[upper_only],
+            )
+            C_surface[upper_only] = Cs_u
+            L_oxygen[upper_only] = L_u
+
+        enters_lower = C_bottom > C_transition
+        finite_lower = enters_lower & (R_lower > 0.0)
+        if np.any(finite_lower):
+            phi = porosity[finite_lower]
+            Ds = D_s[finite_lower]
+            kb = k_bl[finite_lower]
+            Cb = C_bottom[finite_lower]
+            R1 = R_upper[finite_lower]
+            R2 = R_lower[finite_lower]
+            ht = h1[finite_lower]
+            dR = R1 - R2
+
+            a = kb * R2 / (2.0 * phi * Ds)
+            b = R2
+            c = (
+                dR * ht
+                + kb * dR * ht*ht / (2.0 * phi * Ds)
+                - kb * Cb
+            )
+            discriminant = b*b - 4.0*a*c
+            # Only roundoff-sized negatives are admissible here.
+            disc_scale = b*b + np.abs(4.0*a*c)
+            bad_disc = discriminant < (
+                -1.0e-12 * np.maximum(1.0, disc_scale)
+            )
+            if np.any(bad_disc):
+                raise ValueError(
+                    "Negative discriminant in TWO_LAYER_DBL oxygen solution."
+                )
+            discriminant = np.maximum(discriminant, 0.0)
+
+            # Stable positive root of a*L^2 + b*L + c = 0. In this physical
+            # branch c < 0 and the positive root is -2c/(b + sqrt(discriminant)).
+            L = -2.0 * c / (b + np.sqrt(discriminant))
+
+            Cs = (
+                R2 * L*L + dR * ht*ht
+            ) / (2.0 * phi * Ds)
+
+            C_surface[finite_lower] = np.maximum(Cs, 0.0)
+            L_oxygen[finite_lower] = L
+
+        # If the lower layer has zero demand, oxygen that reaches h1 is not
+        # exhausted at any finite depth. Flux is then only the integrated upper
+        # layer demand R1*h1 and the lower layer has constant concentration.
+        nonreactive_lower = enters_lower & (R_lower == 0.0)
+        if np.any(nonreactive_lower):
+            F_upper = R_upper[nonreactive_lower] * h1[nonreactive_lower]
+            Cs = (
+                C_bottom[nonreactive_lower]
+                - F_upper / k_bl[nonreactive_lower]
+            )
+            C_surface[nonreactive_lower] = np.maximum(Cs, 0.0)
+            L_oxygen[nonreactive_lower] = np.inf
+
+        return self._mean_two_layer_sediment_oxygen(
+            C_surface,
+            H_active,
+            L_oxygen,
+            porosity,
+            D_s,
+            R_upper,
+            R_lower,
+            h1,
+        )
+
+    def calculate_active_sediment_oxygen(self, idx):
+        """
+        Calculate effective dissolved O2 for active sediment elements [mmol/m3].
+
+        This is the single dispatcher used by sediment biodegradation. It must
+        be called only for active sediment species. Buried-sediment oxygen is
+        forced to exactly zero before applying the common aerobic/anaerobic biodegradation formula.
+        """
+        idx = np.asarray(idx, dtype=np.int64).ravel()
+        if idx.size == 0:
+            return np.empty(0, dtype=float)
+
+        model = self.get_config('chemical:sediment:oxygen_model')
+
+        if model == 'FIXED_FRACTION':
+            oxygen = self._sediment_oxygen_fixed_fraction(idx)
+        elif model == 'PRESCRIBED_OPD':
+            oxygen = self._sediment_oxygen_prescribed_opd(idx)
+        elif model == 'ZERO_ORDER':
+            oxygen = self._sediment_oxygen_zero_order(idx)
+        elif model == 'ZERO_ORDER_DBL':
+            oxygen = self._sediment_oxygen_zero_order_dbl(idx)
+        elif model == 'TWO_LAYER_DBL':
+            oxygen = self._sediment_oxygen_two_layer_dbl(idx)
+        else:
+            raise ValueError(
+                f"Unknown chemical:sediment:oxygen_model: {model!r}"
+            )
+
+        oxygen = self._validate_array_param(
+            "active_sediment_oxygen", oxygen, ge=0.0
+        )
+        return oxygen
+
+    ###########################################################################
     # Helpers for biodegradation, photolysis, hydrolysis
     ###########################################################################
 
     ### Biodegradation
-    def calc_DOCorr(self, HalfSatO_w, k_Anaerobic_water, k_DecayMax_water, Ox_water):
-        '''
-        Dissolved-oxygen correction factor for biodegradation.
-        Follows a Monod-type oxygen limitation with optional anaerobic fallback:
-            MMFact_w = O2 / (HalfSatO_w + O2)
-            DOCorr = MMFact_w + (1 - MMFact_w) * (k_Anaerobic_water / k_DecayMax_water)
-        where:
-            O2:                dissolved oxygen concentration [g/m3]
-            HalfSatO_w:        half-saturation oxygen concentration [g/m3]
-            k_DecayMax_water:  maximum aerobic biodegradation rate [1/h]
-            k_Anaerobic_water: anaerobic biodegradation rate [1/h]
-                '''
-        HalfSatO_w = self._validate_scalar_param("HalfSatO_w", HalfSatO_w, gt=0.0)
-        k_Anaerobic_water = self._validate_scalar_param("k_Anaerobic_water", k_Anaerobic_water, ge=0.0)
-        k_DecayMax_water = self._validate_scalar_param("k_DecayMax_water", k_DecayMax_water, ge=0.0)
-        Ox_water = self._validate_array_param("Ox_water", Ox_water, ge=0.0)
+    def calc_DO_biodegradation_rate(
+            self,
+            HalfSatO_w,
+            k_Anaerobic_water,
+            k_Aerobic,
+            Ox):
+        """
+        Return the dissolved-oxygen-dependent biodegradation rate [1/h]
+        before pH and temperature corrections.
 
-        if k_DecayMax_water == 0.0:
-            if k_Anaerobic_water > 0.0:
-                raise ValueError(
-                    "k_Anaerobic_water cannot be > 0 when k_DecayMax_water == 0.")
-            return np.zeros_like(Ox_water, dtype=float)
+        The formulation is the direct-rate form of the AQUATOX-type
+        aerobic/anaerobic interpolation previously implemented through
+        a dimensionless dissolved-oxygen correction factor:
+
+            f_O2 = O2 / (HalfSatO_w + O2)
+
+            k_eff = f_O2 * k_Aerobic
+                  + (1 - f_O2) * k_Anaerobic_water
+
+        This is algebraically equivalent to:
+
+            k_eff = k_Aerobic * [
+                f_O2
+                + (1 - f_O2) * k_Anaerobic_water / k_Aerobic
+            ]
+
+        when k_Aerobic > 0, but the direct-rate form is numerically safer
+        and also remains valid when k_Aerobic == 0.
+
+        The formulation intentionally permits:
+
+            k_Anaerobic_water > k_Aerobic
+
+        because anaerobic degradation can be faster than aerobic degradation
+        for some compounds. In that case the effective rate decreases as O2
+        increases, approaching k_Aerobic at high O2.
+
+        Parameters
+        ----------
+        HalfSatO_w : float
+            Oxygen half-saturation constant [g/m3]. Must be > 0.
+        k_Anaerobic_water : float
+            Anaerobic biodegradation rate constant [1/h]. Must be >= 0.
+            The same constant is used for water and sediment.
+        k_Aerobic : float
+            Aerobic endpoint rate constant [1/h]. Must be >= 0.
+            For water this is k_DecayMax_water.
+            For sediment this is 4 * k_DecayMax_water.
+        Ox : array-like
+            Dissolved oxygen concentration [g/m3]. Must be >= 0.
+
+        """
+        HalfSatO_w = self._validate_scalar_param(
+            "HalfSatO_w", HalfSatO_w, gt=0.0
+        )
+        k_Anaerobic_water = self._validate_scalar_param(
+            "k_Anaerobic_water", k_Anaerobic_water, ge=0.0
+        )
+        k_Aerobic = self._validate_scalar_param(
+            "k_Aerobic", k_Aerobic, ge=0.0
+        )
+        Ox = self._validate_array_param(
+            "Ox", Ox, ge=0.0
+        )
+
+        Ox = np.asarray(Ox, dtype=float)
+        original_shape = Ox.shape
+        Ox_flat = Ox.ravel()
+        k_eff_flat = np.empty_like(Ox_flat, dtype=float)
+
+        chunk_size = int(1e5)
+        for i in range(0, Ox_flat.size, chunk_size):
+            end = min(i + chunk_size, Ox_flat.size)
+            Ox_chunk = Ox_flat[i:end]
+
+            f_O2 = Ox_chunk / (HalfSatO_w + Ox_chunk)
+
+            k_eff_flat[i:end] = (
+                f_O2 * k_Aerobic
+                + (1.0 - f_O2) * k_Anaerobic_water
+            )
+
+        k_eff = k_eff_flat.reshape(original_shape)
+
+        if np.any(~np.isfinite(k_eff)):
+            raise ValueError(
+                "Calculated dissolved-oxygen biodegradation rate contains "
+                "non-finite values."
+            )
+
+        # Inputs and interpolation weights are non-negative, so negative output
+        # should only be possible through an unexpected numerical/code error.
+        if np.any(k_eff < -1e-15):
+            raise ValueError(
+                "Calculated dissolved-oxygen biodegradation rate is negative."
+            )
+
+        return np.maximum(k_eff, 0.0)
+
+    def _debug_biodegradation_rate_regime(
+            self,
+            k_DecayMax_water,
+            k_Anaerobic_water):
+        """
+        Log unusual aerobic/anaerobic rate relationships at DEBUG level only.
+
+        These relationships are scientifically permitted and are therefore
+        not validation errors. Messages are emitted only when DEBUG logging is
+        enabled and only once for each parameter pair, preventing repeated
+        messages at every model timestep.
+        """
+        if not logger.isEnabledFor(logging.DEBUG):
+            return
+
+        k_DecayMax_water = float(k_DecayMax_water)
+        k_Anaerobic_water = float(k_Anaerobic_water)
+        key = (k_DecayMax_water, k_Anaerobic_water)
+
+        if getattr(self, '_biodegradation_rate_debug_key', None) == key:
+            return
+
+        k_DecayMax_sediment = 4.0 * k_DecayMax_water
+
+        if k_DecayMax_water == 0.0 and k_Anaerobic_water == 0.0:
+            logger.debug(
+                "Biodegradation is enabled but both k_DecayMax_water and "
+                "k_Anaerobic_water are 0 1/h; biodegradation rate is zero."
+            )
+
+        elif k_DecayMax_water == 0.0 and k_Anaerobic_water > 0.0:
+            logger.debug(
+                "Biodegradation parameter note: k_DecayMax_water is 0 1/h "
+                "while k_Anaerobic_water=%g 1/h. This is permitted; the "
+                "oxygen interpolation gives maximum degradation at O2=0 and "
+                "approaches zero under strongly aerobic conditions.",
+                k_Anaerobic_water,
+            )
 
         if k_Anaerobic_water > k_DecayMax_water:
-            raise ValueError(
-                "k_Anaerobic_water should not exceed k_DecayMax_water.")
+            logger.debug(
+                "Biodegradation parameter note: k_Anaerobic_water=%g 1/h "
+                "exceeds the aerobic water endpoint k_DecayMax_water=%g 1/h. "
+                "This is permitted; water biodegradation decreases with "
+                "increasing O2 between these endpoints.",
+                k_Anaerobic_water,
+                k_DecayMax_water,
+            )
 
-        DOCorr = np.zeros_like(Ox_water)
-        N = len(DOCorr)
-        chunk_size = int(1e5)
-        for i in range(0, N, chunk_size):
-            end = min(i + chunk_size, N)
-            Ox_water_chunk = Ox_water[i:end]
+        if k_Anaerobic_water > k_DecayMax_sediment:
+            logger.debug(
+                "Biodegradation parameter note: k_Anaerobic_water=%g 1/h "
+                "exceeds the aerobic sediment endpoint "
+                "4*k_DecayMax_water=%g 1/h. This is permitted; sediment "
+                "biodegradation decreases with increasing O2 between these "
+                "endpoints.",
+                k_Anaerobic_water,
+                k_DecayMax_sediment,
+            )
 
-            if k_DecayMax_water == 0:
-                logger.debug("k_DecayMax_water is set to 0 1/h, therefore  DOCorr = 0 and no biodegradation occurs")
-            elif k_DecayMax_water < 0:
-                raise ValueError("k_DecayMax_water is set < 0 1/h, this is not possible")
-            elif k_DecayMax_water > 0:
-                MMFact_w = Ox_water_chunk / (HalfSatO_w + Ox_water_chunk)
-                DOCorr[i:end] = MMFact_w + (1 - MMFact_w) * (k_Anaerobic_water / k_DecayMax_water)
-
-            if np.any((DOCorr[i:end] < 0) | (DOCorr[i:end] > 1)):
-                raise ValueError('DOCorr is not between 0 and 1')
-
-        return DOCorr
+        self._biodegradation_rate_debug_key = key
 
     def calc_TCorr(self, T_Max_bio, T_Opt_bio, T_Adp_bio, Max_Accl_bio, Dec_Accl_bio, Q10_bio, TW):
         """
@@ -6795,20 +7866,37 @@ class ChemicalDrift(OceanDrift):
                 k_DecayMax_water = self.get_config('chemical:transformations:k_DecayMax_water')
                 k_Anaerobic_water = self.get_config('chemical:transformations:k_Anaerobic_water')
 
-                if k_Photo == 0:
-                    logger.debug("k_Photo is set to 0 1/h, therefore no photodegradation occurs")
-                if k_DecayMax_water == 0:
-                    logger.debug("k_DecayMax_water is set to 0 1/h, therefore DOCorr = 0 and no biodegradation occurs")
-                if k_Anaerobic_water == 0:
-                    logger.debug("k_Anaerobic_water is set to 0 1/h, therefore no biodegradation occurs without oxygen")
+                # Biodegradation is active when at least one endpoint rate is
+                # positive. Do not require the aerobic endpoint to be > 0:
+                # an anaerobic-only compound is a valid case.
+                bio_rate_enabled = (
+                    Bio_degr is True and (
+                        k_DecayMax_water > 0.0
+                        or k_Anaerobic_water > 0.0))
 
+                if k_Photo == 0:
+                    logger.debug(
+                        "k_Photo is set to 0 1/h, therefore no photodegradation occurs"
+                    )
+
+                if Bio_degr is True:
+                    # This helper uses logger.debug only. No warning/error is
+                    # raised when anaerobic degradation exceeds aerobic degradation.
+                    self._debug_biodegradation_rate_regime(
+                        k_DecayMax_water, k_Anaerobic_water,
+                    )
+
+                if k_Anaerobic_water == 0:
+                    logger.debug(
+                        "k_Anaerobic_water is set to 0 1/h, therefore no biodegradation occurs at O2 = 0"
+                    )
                 if W_deg or S_deg:
                     Tref_kWt = self.get_config('chemical:transformations:Tref_kWt')
                     DH_kWt = self.get_config('chemical:transformations:DeltaH_kWt')
                     Tref_kSt = self.get_config('chemical:transformations:Tref_kSt')
                     DH_kSt = self.get_config('chemical:transformations:DeltaH_kSt')
 
-                    if Bio_degr is True and k_DecayMax_water > 0:
+                    if bio_rate_enabled:
                         HalfSatO_w = self.get_config('chemical:transformations:HalfSatO_w')
                         T_Max_bio = self.get_config('chemical:transformations:T_Max_bio')
                         T_Opt_bio = self.get_config('chemical:transformations:T_Opt_bio')
@@ -6818,8 +7906,14 @@ class ChemicalDrift(OceanDrift):
                         Q10_bio = self.get_config('chemical:transformations:Q10_bio')
                         pH_min_bio = self.get_config('chemical:transformations:pH_min_bio')
                         pH_max_bio = self.get_config('chemical:transformations:pH_max_bio')
-                        Ox_water = (self._env_array('mole_concentration_of_dissolved_molecular_oxygen_in_sea_water',
-                            7.25, idx=idx_W) if W_deg else np.empty(0, dtype=float)) * 31.9988e-3 # from mmol/m3 to to g/m3
+                        Ox_water = (
+                            self._env_array(
+                                'mole_concentration_of_dissolved_molecular_oxygen_in_sea_water',
+                                7.25,
+                                idx=idx_W,
+                            )
+                            if W_deg else np.empty(0, dtype=float)
+                        ) * 31.9988e-3  # mmol/m3 -> g/m3 O2
 
                     if Hydro_degr is True:
                         k_Acid = self.get_config('chemical:transformations:k_Acid')
@@ -6862,7 +7956,7 @@ class ChemicalDrift(OceanDrift):
                         # Concentration of DOC (mmol[C]/Kg)
                         concDOC = self._doc_mmolkg(idx_W)
 
-                    if (Bio_degr is True and k_DecayMax_water > 0) or Hydro_degr is True:
+                    if bio_rate_enabled or Hydro_degr is True:
                         # pH water
                         pH_water = self._env_array('sea_water_ph_reported_on_total_scale',
                             8.1, idx=idx_W)
@@ -6872,14 +7966,21 @@ class ChemicalDrift(OceanDrift):
                             logger.debug("pH_water in degradation was 0, set to median value")
 
                     # Calculate correction factors for degradation rates
-                    if Bio_degr is True and k_DecayMax_water > 0:
-                        k_W_bio = k_DecayMax_water * self.calc_DOCorr(
-                            HalfSatO_w, k_Anaerobic_water, k_DecayMax_water, Ox_water)
+                    if bio_rate_enabled:
+                        # Direct aerobic/anaerobic interpolation [1/h].
+                        # This formulation permits k_Anaerobic_water to exceed k_DecayMax_water and remains valid when the aerobic
+                        # endpoint is exactly zero.
+                        k_W_bio = self.calc_DO_biodegradation_rate(
+                            HalfSatO_w=HalfSatO_w, k_Anaerobic_water=k_Anaerobic_water,
+                            k_Aerobic=k_DecayMax_water, Ox=Ox_water,
+                        )
 
-                        k_W_bio = k_W_bio * self.calc_pHCorr(pH_min_bio, pH_max_bio, pH_water)
+                        k_W_bio = k_W_bio * self.calc_pHCorr(
+                            pH_min_bio, pH_max_bio, pH_water,
+                            )
                         k_W_bio = k_W_bio * self.calc_TCorr(
-                            T_Max_bio, T_Opt_bio, T_Adp_bio, Max_Accl_bio,
-                            Dec_Accl_bio, Q10_bio, TW)
+                            T_Max_bio, T_Opt_bio, T_Adp_bio, Max_Accl_bio, Dec_Accl_bio, Q10_bio, TW,
+                            )
 
                         k_W_bio = np.maximum(k_W_bio, 0.0)
                     else:
@@ -6926,33 +8027,56 @@ class ChemicalDrift(OceanDrift):
                     #     TS[TS==0]=np.median(TS)
                     #     logger.debug("Temperature in degradation was 0, set to median value")
 
-                    if (Bio_degr is True and k_DecayMax_water > 0) or Hydro_degr is True:
+                    if bio_rate_enabled or Hydro_degr is True:
                         # pH sediments
                         pH_sed = self._env_array('pH_sediment', 6.9, idx=idx_S)
                         if np.any(pH_sed == 0):
                             pH_sed[pH_sed == 0] = np.median(pH_sed)
                             logger.debug("pH_sed in degradation was 0, set to median value")
 
-                    if Bio_degr is True and k_DecayMax_water > 0:
-                        # From AQUATOX (Godshalk and Barko (1985)): k_DecayMax_water is a rate (1/h), and k_S_bio is four times faster than k_DecayMax_water
-                        k_S_bio = self.get_config('chemical:transformations:k_DecayMax_water') * 4
-                        k_S_bio = k_S_bio * self.calc_pHCorr(pH_min_bio, pH_max_bio, pH_sed)
-                        k_S_bio = k_S_bio * self.tempcorr("Arrhenius", DH_kSt, TS, Tref_kSt)
+                    if bio_rate_enabled:
+                        # Only the aerobic endpoint is increased in sediment.
+                        # The anaerobic endpoint remains exactly the configured k_Anaerobic_water value.
+                        k_DecayMax_sediment = 4.0 * k_DecayMax_water
 
-                        # Apply slower degradation to buried sediments due to anoxic conditions
-                        ssrev_slow_deg = self.get_config('chemical:transformations:ssrev_slow_deg_factor')
-                        if ssrev_slow_deg < 1:
-                            if ssrev_slow_deg < 0:
-                                ssrev_slow_deg = 0.0
-                            # Apply the slowdown to the buried sediment compartment
-                            if hasattr(self, 'num_sburied'):
-                                S_is_buried = (self.elements.specie[S] == self.num_sburied)
-                                k_S_bio[S_is_buried] *= ssrev_slow_deg
-                            else:
-                                # Backward compatibility (older setups used ssrev as buried)
-                                # S_is_buried = (self.elements.specie[S] == self.num_ssrev)
-                                # k_S_bio[S_is_buried] *= ssrev_slow_deg
-                                pass
+                        # Build one sediment-O2 array aligned with idx_S.
+                        # Active sediment uses the selected reduced-order oxygen
+                        # model. Buried sediment is forced to exactly O2 = 0.
+                        S_is_buried = np.zeros(idx_S.size, dtype=bool)
+                        if hasattr(self, 'num_sburied'):
+                            S_is_buried = (
+                                self.elements.specie[idx_S] == self.num_sburied
+                            )
+                        S_is_active = ~S_is_buried
+
+                        Ox_sed_mmol_m3 = np.zeros(idx_S.size, dtype=float)
+                        if np.any(S_is_active):
+                            idx_S_active = idx_S[S_is_active]
+                            Ox_sed_mmol_m3[S_is_active] = (
+                                self.calculate_active_sediment_oxygen(idx_S_active)
+                            )
+
+                        # The biodegradation oxygen interpolation uses O2 in g/m3.
+                        # Molecular weight O2 = 31.9988 g/mol:
+                        # mmol/m3 * 31.9988e-3 = g/m3.
+                        Ox_sed = Ox_sed_mmol_m3 * 31.9988e-3
+
+                        # Direct aerobic/anaerobic interpolation [1/h].
+                        # At O2 = 0 this returns exactly k_Anaerobic_water,
+                        # irrespective of the fourfold aerobic sediment factor.
+                        k_S_bio = self.calc_DO_biodegradation_rate(
+                            HalfSatO_w=HalfSatO_w, k_Anaerobic_water=k_Anaerobic_water,
+                            k_Aerobic=k_DecayMax_sediment, Ox=Ox_sed,
+                        )
+
+                        k_S_bio = k_S_bio * self.calc_pHCorr(
+                            pH_min_bio, pH_max_bio, pH_sed,
+                        )
+                        k_S_bio = k_S_bio * self.tempcorr(
+                            "Arrhenius", DH_kSt, TS, Tref_kSt,
+                        )
+                        k_S_bio = np.maximum(k_S_bio, 0.0)
+
                     else:
                         k_S_bio = np.zeros_like(TS)
 
@@ -6997,7 +8121,7 @@ class ChemicalDrift(OceanDrift):
                             if W_deg:
                                 self.elements.mass_photodegraded[W] += photo_degraded_now[W]
 
-                    if Bio_degr is True and k_DecayMax_water > 0:
+                    if bio_rate_enabled:
                         missing = [name for name in ['mass_biodegraded', 'mass_biodegraded_water', 'mass_biodegraded_sediment',] if not hasattr(self.elements, name)]
                         if missing:
                             raise RuntimeError(
