@@ -882,6 +882,11 @@ class ChemicalDrift(OceanDrift):
                 'description': ('Reduced-order model used to estimate dissolved oxygen in '
                     'the active sediment layer for biodegradation. Buried sediment '
                     'is handled separately and forced to zero oxygen.'),},
+            'chemical:sediment:save_oxygen_diagnostics': {'type': 'bool',
+                'default': False, 'level': CONFIG_LEVEL_BASIC,
+                'description': ('Save mode-specific per-element sediment-oxygen diagnostic '
+                    'arrays. Only variables required by the selected oxygen model '
+                    'and oxygen-demand mode are added to the output schema.'),},
             'chemical:sediment:oxygen_active_fraction': {'type': 'float',
                 'default': 1.0, 'min': 0.0, 'max': 1.0, 'units': '',
                 'level': CONFIG_LEVEL_ADVANCED,
