@@ -22992,7 +22992,7 @@ class ChemicalDrift(OceanDrift):
             time_steps = time_steps[pad_rows:]
             time_date_serie = time_date_serie[pad_rows:]
             # slice 1D dicts
-            for d in (mass_dict_1d, mass_sp_dict_1d, perc_sp_dict_1d, perc_elim_dict_1d,,
+            for d in (mass_dict_1d, mass_sp_dict_1d, perc_sp_dict_1d, perc_elim_dict_1d,
                       mass_transition_dict_1d, extra_fields_dict_1d, extra_fields_count_dict_1d):
                 for k in list(d.keys()):
                     d[k] = np.asarray(d[k])[pad_rows:]
