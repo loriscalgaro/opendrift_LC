@@ -29,7 +29,7 @@ from opendrift.models.physics_methods import seawater_dynamic_viscosity
 from opendrift.models.oceandrift import OceanDrift, Lagrangian3DArray
 from opendrift.config import CONFIG_LEVEL_ESSENTIAL, CONFIG_LEVEL_BASIC, CONFIG_LEVEL_ADVANCED
 import pyproj
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class Chemical(Lagrangian3DArray):
@@ -2042,6 +2042,74 @@ class ChemicalDrift(OceanDrift):
         logger.debug('nspecies: %s' % self.nspecies)
         logger.debug("Transfer rates:\n%s", self.transfer_rates)
 
+    def _store_model_state_for_export(self):
+        """Store ChemicalDrift model-level state using collision-safe dimensions.
+          * ordinary transfer matrices keep the historical
+            (specie_0, specie_1) dimensions for backward compatibility;
+          * Sandnesfj_Al uses a dedicated salinity_interval axis, preventing
+            the 4-bin salinity dimension from colliding with nspecies;
+          * ntransformations always uses (specie_0, specie_1).
+        """
+        nspecies = int(self.nspecies)
+
+        transfer_rates = np.asarray(self.transfer_rates)
+        if transfer_rates.ndim == 2:
+            expected = (nspecies, nspecies)
+            if transfer_rates.shape != expected:
+                raise ValueError(
+                    'transfer_rates has incompatible shape for export: '
+                    f'{transfer_rates.shape}; expected {expected}.')
+            self.result['transfer_rates'] = (
+                ('specie_0', 'specie_1'), transfer_rates)
+
+        elif transfer_rates.ndim == 3:
+            if transfer_rates.shape[-2:] != (nspecies, nspecies):
+                raise ValueError(
+                    '3-D transfer_rates must end with the two species axes. '
+                    f'Got shape {transfer_rates.shape} for nspecies={nspecies}.')
+            if not hasattr(self, 'salinity_intervals'):
+                raise ValueError(
+                    '3-D transfer_rates requires self.salinity_intervals for '
+                    'an unambiguous model-state export.')
+
+            salinity_intervals = np.asarray(
+                self.salinity_intervals, dtype=np.float32).ravel()
+            if salinity_intervals.size != transfer_rates.shape[0]:
+                raise ValueError(
+                    'salinity_intervals length does not match the leading '
+                    'transfer_rates dimension: '
+                    f'{salinity_intervals.size} != {transfer_rates.shape[0]}.')
+
+            # A coordinate named like the dimension is interpreted by xarray
+            # as the coordinate for that dimension.
+            self.result['salinity_interval'] = (
+                ('salinity_interval',), salinity_intervals)
+            self.result['transfer_rates'] = (
+                ('salinity_interval', 'specie_0', 'specie_1'),
+                transfer_rates)
+        else:
+            raise ValueError(
+                'transfer_rates must be a 2-D species matrix or a 3-D '
+                'salinity-by-species matrix. '
+                f'Got ndim={transfer_rates.ndim}.')
+
+        ntransformations = np.asarray(self.ntransformations)
+        expected = (nspecies, nspecies)
+        if ntransformations.shape != expected:
+            raise ValueError(
+                'ntransformations has incompatible shape for export: '
+                f'{ntransformations.shape}; expected {expected}.')
+        self.result['ntransformations'] = (
+            ('specie_0', 'specie_1'), ntransformations)
+
+        self.result['nspecies'] = self.nspecies
+        self.result['name_species'] = self.name_species
+
+        # Species-index attributes are scalar model state. Keep their existing
+        # names and values so downstream readers remain backward compatible.
+        for var_name in sorted(k for k in vars(self) if k.startswith('num_')):
+            self.result[var_name] = getattr(self, var_name)
+
     def prepare_run(self):
         self._configure_element_type_from_config()
         if not hasattr(self, "name_species"):
@@ -2108,26 +2176,422 @@ class ChemicalDrift(OceanDrift):
                     f'Got chemical:sediment:d50={sed_d50} and chemical:particle_diameter={part_diam}.'
                 )
 
-        # List of additional custom variables to be saved in self.result
-        # TODO: These could now be moved to post_run() which should be
-        # more robust in case variables are changed during run()
-
-        savelist = ['nspecies', 'name_species',
-                    'transfer_rates', 'ntransformations']
-
-        # Add all variables starting with "num_"
-        savelist.extend(k for k in vars(self) if k.startswith("num_"))
-
-        # Saving the variables
-        for var_name in savelist:
-            var_value = getattr(self, var_name)
-            if isinstance(var_value, np.ndarray):
-                dims = tuple(f'specie_{i}' for i in range(var_value.ndim))
-                self.result[var_name] = (dims, var_value)
-            else:
-                self.result[var_name] = var_value
+        # Model-level ChemicalDrift state is exported separately from element
+        # trajectories using semantic/collision-safe dimensions.
+        self._store_model_state_for_export()
 
         super(ChemicalDrift, self).prepare_run()
+
+    def _infer_seed_element_count(self, args, kwargs):
+        """Infer ChemicalDrift seed cardinality without overriding OpenDrift semantics.
+
+        Explicit ``number`` remains authoritative. Otherwise, lon/lat arrays,
+        number_per_point, time-series releases (>2 times), or per-element
+        Chemical properties can determine the cardinality. Two-element time
+        arrays are intentionally treated as start/end intervals, matching
+        OpenDrift rather than as two particles.
+
+        Returns
+        -------
+        (num_elements, inject_number)
+            ``inject_number`` is True only when ChemicalDrift inferred the
+            count from per-element properties but the parent OpenDrift seeder
+            would otherwise fall back to seed:number.
+        """
+        def _non_scalar_size(value):
+            if value is None or isinstance(value, (str, bytes)) or np.isscalar(value):
+                return None
+            try:
+                arr = np.asarray(value)
+            except Exception:
+                return None
+            if arr.ndim == 0:
+                return None
+            return int(arr.size)
+
+        lon = kwargs.get('lon', args[0] if len(args) > 0 else None)
+        lat = kwargs.get('lat', args[1] if len(args) > 1 else None)
+        time = kwargs.get('time', args[2] if len(args) > 2 else None)
+
+        lon_n = _non_scalar_size(lon)
+        lat_n = _non_scalar_size(lat)
+        if lon_n is not None and lat_n is not None and lon_n != lat_n:
+            raise ValueError(
+                f"'lon' length ({lon_n}) must equal 'lat' length ({lat_n}).")
+
+        point_count = lon_n if lon_n is not None else lat_n
+        if point_count is not None and point_count < 1:
+            raise ValueError('Seeding coordinates must contain at least one point.')
+
+        explicit_number = kwargs.get('number', None)
+        number_per_point = kwargs.get('number_per_point', None)
+
+        if explicit_number is not None and number_per_point is not None:
+            raise ValueError(
+                "'number' and 'number_per_point' cannot both be supplied.")
+
+        if explicit_number is not None:
+            num_elements = int(explicit_number)
+            if num_elements < 1:
+                raise ValueError("'number' must be >= 1.")
+            if point_count is not None and point_count > 1:
+                if num_elements % point_count != 0:
+                    raise ValueError(
+                        f"Coordinate length ({point_count}) must divide number "
+                        f"of elements ({num_elements}).")
+            inject_number = False
+
+        elif number_per_point is not None:
+            npp = int(number_per_point)
+            if npp < 1:
+                raise ValueError("'number_per_point' must be >= 1.")
+            if point_count is None or point_count <= 1:
+                raise ValueError(
+                    "'number_per_point' requires array-like lon/lat with more "
+                    "than one seeding point.")
+            num_elements = point_count * npp
+            inject_number = False  # parent OpenDrift handles this expansion
+
+        else:
+            # OpenDrift interprets >2 times as a release time series. Exactly
+            # two times mean start/end of a continuous release and therefore do
+            # not determine particle count.
+            time_n = _non_scalar_size(time)
+            time_series_count = time_n if time_n is not None and time_n > 2 else None
+
+            coordinate_count = point_count if point_count is not None else None
+
+            property_sizes = {}
+            element_names = set(getattr(self.ElementType, 'variables', {}).keys())
+            for name in element_names:
+                if name in ('lon', 'lat') or name not in kwargs:
+                    continue
+                size = _non_scalar_size(kwargs[name])
+                if size is not None:
+                    property_sizes[name] = size
+
+            inferred_candidates = {}
+            if coordinate_count is not None:
+                inferred_candidates['coordinates'] = coordinate_count
+            if time_series_count is not None:
+                inferred_candidates['time'] = time_series_count
+            inferred_candidates.update(property_sizes)
+
+            unique_sizes = sorted(set(inferred_candidates.values()))
+            if len(unique_sizes) > 1:
+                detail = ', '.join(
+                    f'{name}={size}' for name, size in sorted(inferred_candidates.items()))
+                raise ValueError(
+                    'Inconsistent per-element seed-array lengths: ' + detail)
+
+            if unique_sizes:
+                num_elements = unique_sizes[0]
+                if num_elements < 1:
+                    raise ValueError('Per-element seed arrays cannot be empty.')
+
+                # Parent OpenDrift automatically infers count from coordinate
+                # arrays of length >1 and from time arrays of length >2. It does
+                # not infer count from arbitrary element-property arrays.
+                parent_can_infer = (
+                    (coordinate_count is not None and coordinate_count > 1)
+                    or (time_series_count is not None)
+                )
+                inject_number = not parent_can_infer
+            else:
+                num_elements = int(self.get_config('seed:number'))
+                inject_number = False
+
+        # Per-element properties must match the total number of elements after
+        # any point replication implied by explicit number/number_per_point.
+        element_names = set(getattr(self.ElementType, 'variables', {}).keys())
+        for name in sorted(element_names):
+            if name in ('lon', 'lat') or name not in kwargs:
+                continue
+            size = _non_scalar_size(kwargs[name])
+            if size is not None and size != num_elements:
+                raise ValueError(
+                    f"'{name}' length ({size}) must equal number of elements "
+                    f"({num_elements}).")
+
+        return num_elements, inject_number
+
+    def _prepare_restart_lifecycle(self):
+        """Prepare ChemicalDrift restart state before OpenDrift freezes config.
+
+        OpenDrift advances from Config to Ready before its restart seeders run.
+        Predefined ChemicalDrift transfer setups may call set_config() while
+        initializing species, so all such preparation must happen while the
+        model is still in Config mode.
+        """
+        mode_name = getattr(getattr(self, 'mode', None), 'name', None)
+
+        if mode_name == 'Config':
+            self._configure_element_type_from_config()
+            self._sync_required_variables_from_config()
+            if not hasattr(self, 'name_species'):
+                self.init_species()
+            if not hasattr(self, 'transfer_rates'):
+                self.init_transfer_rates()
+            return
+
+        # If the model is already Ready, configuration is frozen. We can only
+        # proceed when species and transfer state were prepared earlier.
+        missing = [
+            name for name in ('name_species', 'nspecies', 'transfer_rates',
+                              'ntransformations')
+            if not hasattr(self, name)
+        ]
+        if missing:
+            raise RuntimeError(
+                'ChemicalDrift restart reached OpenDrift Ready mode before '
+                'Chemical model state was initialized. Missing: '
+                + ', '.join(missing)
+                + '. Call seed_from_file/seed_from_dataset on a newly configured '
+                  'ChemicalDrift instance, before any other seeding operation.')
+
+        # Reapplying an unchanged schema is safe and verifies that the concrete
+        # optional ElementType still matches the frozen configuration.
+        self._configure_element_type_from_config()
+
+    @staticmethod
+    def _restart_dataset_string_list(value):
+        """Return a robust list of strings from an xarray/NumPy value."""
+        raw = getattr(value, 'values', value)
+        arr = np.asarray(raw)
+
+        # Older NetCDF encodings may expose a 2-D S1/U1 character array.
+        if arr.ndim == 2 and arr.dtype.kind in ('S', 'U'):
+            out = []
+            for row in arr:
+                chars = []
+                for item in row.tolist():
+                    if isinstance(item, bytes):
+                        item = item.decode('utf-8', errors='replace')
+                    chars.append(str(item))
+                out.append(''.join(chars).rstrip('\x00 ').strip())
+            return out
+
+        out = []
+        for item in arr.ravel().tolist():
+            if isinstance(item, bytes):
+                item = item.decode('utf-8', errors='replace')
+            out.append(str(item))
+        return out
+
+    def _capture_restart_model_state(self, ds, trajectory_time_index, keep_properties):
+        """Capture run-level ChemicalDrift state before parent reseeding.
+
+        Older ChemicalDrift files may not contain model-level metadata. Such
+        files remain usable: element properties are still restored by OpenDrift
+        and missing run-level history stays freshly initialized with a warning.
+        """
+        if not keep_properties:
+            # keep_properties=False is ordinary reseeding, not an exact restart.
+            return None
+
+        time_size = int(ds.sizes.get('time', 0)) if hasattr(ds, 'sizes') else 0
+        state = {
+            'trajectory_time_index': trajectory_time_index,
+            'time_size': time_size,
+            'restore_ntransformations': True,
+        }
+
+        for name in ('nspecies', 'name_species', 'transfer_rates',
+                     'ntransformations', 'salinity_interval'):
+            if name in ds:
+                value = ds[name]
+                if name == 'name_species':
+                    state[name] = self._restart_dataset_string_list(value)
+                else:
+                    state[name] = np.asarray(value.values).copy()
+
+        # Accept an alternate/legacy plural spelling if encountered.
+        if 'salinity_interval' not in state and 'salinity_intervals' in ds:
+            state['salinity_interval'] = np.asarray(
+                ds['salinity_intervals'].values).copy()
+
+        # Preserve any exported species-index mapping for later compatibility
+        # validation. These are run-level scalars, not element properties.
+        state['num_indices'] = {}
+        for name in ds.variables:
+            if not str(name).startswith('num_'):
+                continue
+            value = np.asarray(ds[name].values)
+            if value.size == 1:
+                state['num_indices'][str(name)] = int(value.reshape(-1)[0])
+
+        model_state_names = (
+            'nspecies', 'name_species', 'transfer_rates', 'ntransformations')
+        if not any(name in state for name in model_state_names):
+            logger.warning(
+                'Restart source contains no ChemicalDrift run-level model-state '
+                'metadata. Element properties can still be restored, but exact '
+                'global history (e.g. ntransformations) is unavailable.')
+
+        # ntransformations is exported as run-level final metadata, without a
+        # time axis. Restoring it from a non-final trajectory record would copy
+        # transitions that occurred after the selected restart time. Keep the
+        # newly initialized counter in that case and warn explicitly.
+        if 'ntransformations' in state and time_size > 0:
+            try:
+                selected = int(trajectory_time_index)
+            except Exception:
+                selected = -1
+            if selected < 0:
+                selected = time_size + selected
+            if selected != time_size - 1:
+                state['restore_ntransformations'] = False
+                logger.warning(
+                    'Restart requested from non-final time index %s. '
+                    'ntransformations is stored only as final run-level metadata, '
+                    'so it will not be restored for this branch restart.',
+                    trajectory_time_index)
+
+        if ('transfer_rates' in state
+                and np.asarray(state['transfer_rates']).ndim == 3
+                and 'salinity_interval' not in state):
+            logger.warning(
+                'Restart source has 3-D salinity-dependent transfer_rates but no '
+                'exported salinity_interval coordinate. Compatibility will be '
+                'checked from transfer-rate shape/values; current configured '
+                'salinity intervals will be retained.')
+
+        return state
+
+    def _validate_restart_model_state(self, state):
+        """Validate source model-state metadata against the configured model.
+
+        The restart must not silently reinterpret species indices or transfer
+        matrices produced by a chemically incompatible simulation.
+        """
+        if not state:
+            return
+
+        if 'nspecies' in state:
+            source = np.asarray(state['nspecies'])
+            if source.size != 1:
+                raise ValueError(
+                    'Restart metadata nspecies must be scalar; got shape '
+                    f'{source.shape}.')
+            source_nspecies = int(source.reshape(-1)[0])
+            if source_nspecies != int(self.nspecies):
+                raise ValueError(
+                    'ChemicalDrift restart species-count mismatch: source '
+                    f'nspecies={source_nspecies}, current nspecies={self.nspecies}.')
+
+        if 'name_species' in state:
+            source_names = list(state['name_species'])
+            current_names = [str(v) for v in self.name_species]
+            if source_names != current_names:
+                raise ValueError(
+                    'ChemicalDrift restart species ordering mismatch. '
+                    f'Source={source_names}; current={current_names}.')
+
+        if 'transfer_rates' in state:
+            source_rates = np.asarray(state['transfer_rates'])
+            current_rates = np.asarray(self.transfer_rates)
+            if source_rates.shape != current_rates.shape:
+                raise ValueError(
+                    'ChemicalDrift restart transfer_rates shape mismatch: '
+                    f'source={source_rates.shape}, current={current_rates.shape}.')
+            if not np.allclose(
+                    source_rates, current_rates, rtol=1e-6, atol=1e-12,
+                    equal_nan=True):
+                raise ValueError(
+                    'ChemicalDrift restart transfer_rates differ from the '
+                    'currently configured model. Use the same chemical setup '
+                    'as the source simulation for an exact restart.')
+
+        if 'ntransformations' in state:
+            source_counts = np.asarray(state['ntransformations'])
+            expected = (int(self.nspecies), int(self.nspecies))
+            if source_counts.shape != expected:
+                raise ValueError(
+                    'ChemicalDrift restart ntransformations shape mismatch: '
+                    f'source={source_counts.shape}, expected={expected}.')
+
+        if 'salinity_interval' in state:
+            source_salinity = np.asarray(
+                state['salinity_interval'], dtype=float).ravel()
+            if not hasattr(self, 'salinity_intervals'):
+                raise ValueError(
+                    'Restart source contains salinity-dependent transfer rates, '
+                    'but the current ChemicalDrift setup has no salinity_intervals.')
+            current_salinity = np.asarray(
+                self.salinity_intervals, dtype=float).ravel()
+            if (source_salinity.shape != current_salinity.shape
+                    or not np.allclose(source_salinity, current_salinity,
+                                       rtol=0.0, atol=0.0)):
+                raise ValueError(
+                    'ChemicalDrift restart salinity intervals differ from the '
+                    f'current setup: source={source_salinity.tolist()}, '
+                    f'current={current_salinity.tolist()}.')
+
+        for name, source_index in state.get('num_indices', {}).items():
+            if not hasattr(self, name):
+                raise ValueError(
+                    'ChemicalDrift restart species-index metadata is '
+                    f'incompatible: source contains {name}={source_index}, '
+                    'but the current setup has no such index.')
+            current_index = int(getattr(self, name))
+            if int(source_index) != current_index:
+                raise ValueError(
+                    'ChemicalDrift restart species-index mismatch for '
+                    f'{name}: source={source_index}, current={current_index}.')
+
+    def _restore_restart_model_state(self, state):
+        """Restore captured run-level ChemicalDrift state after reseeding."""
+        if not state:
+            return
+
+        if 'transfer_rates' in state:
+            source_rates = np.asarray(state['transfer_rates'])
+            target_dtype = np.asarray(self.transfer_rates).dtype
+            self.transfer_rates = source_rates.astype(target_dtype, copy=True)
+            self._build_transition_destination_cache()
+
+        if ('ntransformations' in state
+                and state.get('restore_ntransformations', True)):
+            self.ntransformations = np.asarray(
+                state['ntransformations'], dtype=np.int64).copy()
+
+        if 'salinity_interval' in state:
+            self.salinity_intervals = np.asarray(
+                state['salinity_interval'], dtype=float).ravel().tolist()
+
+    def seed_from_dataset(self, ds, trajectory_time_index=-1, time=None,
+                          keep_properties=True, **kwargs):
+        """Restart/reseed from an OpenDrift dataset with Chemical lifecycle setup.
+
+        Element properties are still delegated to OpenDrift's implementation.
+        This only prepares the concrete Chemical schema/model state before
+        the OpenDrift Config->Ready transition and captures run-level state for
+        restoration after seeding.
+        """
+        self._prepare_restart_lifecycle()
+        restart_state = self._capture_restart_model_state(
+            ds, trajectory_time_index, keep_properties)
+        self._validate_restart_model_state(restart_state)
+
+        super(ChemicalDrift, self).seed_from_dataset(
+            ds,
+            trajectory_time_index=trajectory_time_index,
+            time=time,
+            keep_properties=keep_properties,
+            **kwargs)
+
+        self._restore_restart_model_state(restart_state)
+
+    def seed_from_file(self, filename, trajectory_time_index=-1, time=None,
+                       keep_properties=True, **kwargs):
+        """Prepare ChemicalDrift while Config is mutable, then delegate file I/O."""
+        self._prepare_restart_lifecycle()
+        return super(ChemicalDrift, self).seed_from_file(
+            filename,
+            trajectory_time_index=trajectory_time_index,
+            time=time,
+            keep_properties=keep_properties,
+            **kwargs)
 
     def seed_elements(self, *args, **kwargs):
         import numpy as np
@@ -2141,11 +2605,16 @@ class ChemicalDrift(OceanDrift):
             self.init_species()
             self.init_transfer_rates()
 
-        # Number of elements
-        if 'number' in kwargs:
-            num_elements = int(kwargs['number'])
-        else:
-            num_elements = int(self.get_config('seed:number'))
+        # Number of elements. OpenDrift can infer this from lon/lat arrays,
+        # whereas the historical ChemicalDrift wrapper fell back immediately
+        # to seed:number. That broke seed_from_dataset()/seed_from_file() when
+        # restarting more than one particle.
+        num_elements, inject_number = self._infer_seed_element_count(args, kwargs)
+        if inject_number and 'number' not in kwargs:
+            # Only inject when OpenDrift cannot infer the same count from its
+            # own coordinate/time semantics (e.g. scalar coordinates plus a
+            # per-element Chemical property array).
+            kwargs['number'] = num_elements
 
         def _as_per_element_int_array(x, n, name):
             if x is None or np.isscalar(x):
@@ -17879,7 +18348,8 @@ class ChemicalDrift(OceanDrift):
                     number=np.ceil(np.array(mass_ug / mass_element_ug_0)).astype('int')
                     mass_element_ug=mass_ug/number
 
-                time = datetime.utcfromtimestamp((t[i] - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's'))
+                time = datetime.fromtimestamp(float((t[i] - np.datetime64('1970-01-01T00:00:00'))
+                        / np.timedelta64(1, 's')), tz=timezone.utc,).replace(tzinfo=None)
 
                 if number>0:
                     z = -1*np.random.uniform(0, 1, number)
@@ -18234,6 +18704,326 @@ class ChemicalDrift(OceanDrift):
         return tuple(prune_one(x) for x in items)
 
     @staticmethod
+    def _normalize_seed_geographic_coordinates(da, label="DataArray"):
+        """
+        Return a rectilinear geographic DataArray with canonical horizontal
+        dimension/coordinate names ``latitude`` and ``longitude``.
+
+        Accepted input representations are, in priority order:
+
+        1. canonical ``latitude`` / ``longitude`` coordinates;
+        2. ``lat`` / ``lon`` aliases;
+        3. coordinates identified by CF ``standard_name`` metadata;
+        4. ``y`` / ``x`` coordinates only when their CF metadata identify
+           them unambiguously as geographic latitude/longitude.
+
+        Separable 2-D geographic auxiliary coordinates are reduced to 1-D
+        latitude/longitude vectors. Genuinely curvilinear 2-D coordinates and
+        projected-only x/y coordinates are rejected rather than guessed.
+
+        No regridding or coordinate shift is performed here. The existing
+        ``concentration_coordinate_mode`` / ``emission_coordinate_mode`` logic
+        remains responsible for any half-cell offset applied during seeding.
+        """
+        import numpy as np
+
+        if da is None:
+            return None
+        if not hasattr(da, "dims") or not hasattr(da, "coords"):
+            raise TypeError(
+                f"{label} must be an xarray DataArray-like object with dims and coords."
+            )
+
+        def _meta(coord):
+            attrs = getattr(coord, "attrs", {}) or {}
+            return {
+                "standard_name": str(attrs.get("standard_name", "") or "").strip().lower(),
+                "units": str(attrs.get("units", "") or "").strip().lower(),
+                "axis": str(attrs.get("axis", "") or "").strip().upper(),
+            }
+
+        def _is_degree_north(units):
+            u = units.replace(" ", "").replace("°", "degree")
+            return u in {
+                "degrees_north", "degree_north", "degreesnorth", "degreenorth",
+                "degrees_n", "degree_n", "degreesn", "degreen",
+            }
+
+        def _is_degree_east(units):
+            u = units.replace(" ", "").replace("°", "degree")
+            return u in {
+                "degrees_east", "degree_east", "degreeseast", "degreeeast",
+                "degrees_e", "degree_e", "degreese", "degreee",
+            }
+
+        def _candidate_priority(name, coord, axis_kind):
+            meta = _meta(coord)
+            if axis_kind == "lat":
+                if name == "latitude":
+                    return 0
+                if name == "lat":
+                    return 1
+                if meta["standard_name"] == "latitude":
+                    return 2
+                if name == "y" and (
+                    _is_degree_north(meta["units"])
+                    or (meta["axis"] == "Y" and _is_degree_north(meta["units"]))
+                ):
+                    return 3
+            else:
+                if name == "longitude":
+                    return 0
+                if name == "lon":
+                    return 1
+                if meta["standard_name"] == "longitude":
+                    return 2
+                if name == "x" and (
+                    _is_degree_east(meta["units"])
+                    or (meta["axis"] == "X" and _is_degree_east(meta["units"]))
+                ):
+                    return 3
+            return None
+
+        def _describe_coords():
+            desc = []
+            for name, coord in da.coords.items():
+                meta = _meta(coord)
+                desc.append(
+                    f"{name}:dims={tuple(coord.dims)!r},shape={tuple(coord.shape)!r},"
+                    f"standard_name={meta['standard_name']!r},units={meta['units']!r},"
+                    f"axis={meta['axis']!r}"
+                )
+            return "; ".join(desc) if desc else "<no coordinates>"
+
+        def _collect(axis_kind):
+            candidates = []
+            for order, (name, coord) in enumerate(da.coords.items()):
+                priority = _candidate_priority(str(name), coord, axis_kind)
+                if priority is not None:
+                    candidates.append((priority, order, str(name), coord))
+            candidates.sort(key=lambda x: (x[0], x[1], x[2]))
+            if not candidates:
+                long_name = "latitude" if axis_kind == "lat" else "longitude"
+                raise ValueError(
+                    f"{label}: could not identify a geographic {long_name} coordinate. "
+                    f"Dimensions: {tuple(da.dims)!r}. Coordinates: {_describe_coords()}. "
+                    "Accepted forms are latitude/longitude, lat/lon, CF standard_name "
+                    "latitude/longitude, or CF-geographic y/x axes. Projected-only x/y "
+                    "coordinates are not interpreted as longitude/latitude."
+                )
+            return candidates
+
+        lat_candidates = _collect("lat")
+        lon_candidates = _collect("lon")
+        _, _, lat_name, lat_coord = lat_candidates[0]
+        _, _, lon_name, lon_coord = lon_candidates[0]
+
+        def _assert_named_alias_consistency(candidates, canonical, alias, axis_kind):
+            by_name = {name: coord for _, _, name, coord in candidates}
+            if canonical not in by_name or alias not in by_name:
+                return
+            a = by_name[canonical]
+            b = by_name[alias]
+            av = np.asarray(a.values)
+            bv = np.asarray(b.values)
+            if tuple(a.dims) != tuple(b.dims) or av.shape != bv.shape:
+                raise ValueError(
+                    f"{label}: conflicting {axis_kind} definitions: {canonical!r} "
+                    f"uses dims/shape {tuple(a.dims)!r}/{av.shape!r}, while {alias!r} "
+                    f"uses {tuple(b.dims)!r}/{bv.shape!r}."
+                )
+            if not np.allclose(av, bv, rtol=0.0, atol=1e-10, equal_nan=True):
+                raise ValueError(
+                    f"{label}: conflicting {axis_kind} values are present in "
+                    f"{canonical!r} and {alias!r}."
+                )
+
+        _assert_named_alias_consistency(lat_candidates, "latitude", "lat", "latitude")
+        _assert_named_alias_consistency(lon_candidates, "longitude", "lon", "longitude")
+
+        lat_ndim = int(getattr(lat_coord, "ndim", np.asarray(lat_coord.values).ndim))
+        lon_ndim = int(getattr(lon_coord, "ndim", np.asarray(lon_coord.values).ndim))
+
+        # Preserve the historical scalar-coordinate case. The downstream
+        # _coord_values_and_sel_index() helper already handles scalar coords.
+        if lat_ndim == 0 or lon_ndim == 0:
+            if lat_ndim not in (0, 1) or lon_ndim not in (0, 1):
+                raise ValueError(
+                    f"{label}: scalar/array mixed geographic coordinates must be scalar or 1-D; "
+                    f"got latitude ndim={lat_ndim}, longitude ndim={lon_ndim}."
+                )
+            out = da
+            rename_map = {}
+            if lat_name != "latitude" and lat_name in out.coords:
+                rename_map[lat_name] = "latitude"
+            if lon_name != "longitude" and lon_name in out.coords:
+                rename_map[lon_name] = "longitude"
+            if rename_map:
+                out = out.rename(rename_map)
+            return out
+
+        if lat_ndim == 1 and lon_ndim == 1:
+            lat_dim = lat_coord.dims[0]
+            lon_dim = lon_coord.dims[0]
+            if lat_dim == lon_dim:
+                raise ValueError(
+                    f"{label}: latitude and longitude resolve to the same dimension "
+                    f"{lat_dim!r}; a rectilinear grid requires distinct horizontal dimensions."
+                )
+            if lat_dim not in da.dims or lon_dim not in da.dims:
+                raise ValueError(
+                    f"{label}: geographic 1-D coordinates must index DataArray dimensions. "
+                    f"Latitude dims={tuple(lat_coord.dims)!r}, longitude dims={tuple(lon_coord.dims)!r}, "
+                    f"data dims={tuple(da.dims)!r}."
+                )
+
+            lat_vals = np.asarray(lat_coord.values, dtype=float)
+            lon_vals = np.asarray(lon_coord.values, dtype=float)
+            if lat_vals.size != int(da.sizes[lat_dim]) or lon_vals.size != int(da.sizes[lon_dim]):
+                raise ValueError(
+                    f"{label}: geographic coordinate length does not match its dimension size."
+                )
+            if not np.all(np.isfinite(lat_vals)) or not np.all(np.isfinite(lon_vals)):
+                raise ValueError(f"{label}: latitude/longitude coordinates must be finite.")
+
+            rename_dims = {}
+            if lat_dim != "latitude":
+                if "latitude" in da.dims and lat_dim != "latitude":
+                    raise ValueError(
+                        f"{label}: cannot rename {lat_dim!r} to 'latitude' because a distinct "
+                        "'latitude' dimension already exists."
+                    )
+                rename_dims[lat_dim] = "latitude"
+            if lon_dim != "longitude":
+                if "longitude" in da.dims and lon_dim != "longitude":
+                    raise ValueError(
+                        f"{label}: cannot rename {lon_dim!r} to 'longitude' because a distinct "
+                        "'longitude' dimension already exists."
+                    )
+                rename_dims[lon_dim] = "longitude"
+
+            out = da.rename(rename_dims) if rename_dims else da
+            out = out.assign_coords(
+                latitude=("latitude", lat_vals),
+                longitude=("longitude", lon_vals),
+            )
+            out.coords["latitude"].attrs = dict(getattr(lat_coord, "attrs", {}) or {})
+            out.coords["longitude"].attrs = dict(getattr(lon_coord, "attrs", {}) or {})
+            out.coords["latitude"].attrs.setdefault("standard_name", "latitude")
+            out.coords["latitude"].attrs.setdefault("units", "degrees_north")
+            out.coords["longitude"].attrs.setdefault("standard_name", "longitude")
+            out.coords["longitude"].attrs.setdefault("units", "degrees_east")
+            return out
+
+        if lat_ndim == 2 and lon_ndim == 2:
+            if len(lat_coord.dims) != 2 or len(lon_coord.dims) != 2:
+                raise ValueError(
+                    f"{label}: 2-D latitude/longitude coordinates must each have exactly two dimensions."
+                )
+            if set(lat_coord.dims) != set(lon_coord.dims):
+                raise ValueError(
+                    f"{label}: 2-D latitude/longitude coordinates do not share the same dimensions: "
+                    f"{tuple(lat_coord.dims)!r} vs {tuple(lon_coord.dims)!r}."
+                )
+
+            spatial_dims = tuple(lat_coord.dims)
+            if any(dim not in da.dims for dim in spatial_dims):
+                raise ValueError(
+                    f"{label}: 2-D geographic coordinates must index DataArray dimensions; "
+                    f"coordinate dims={spatial_dims!r}, data dims={tuple(da.dims)!r}."
+                )
+
+            lat2d = np.asarray(lat_coord.values, dtype=float)
+            lon2d_da = lon_coord.transpose(*spatial_dims)
+            lon2d = np.asarray(lon2d_da.values, dtype=float)
+            if lat2d.shape != lon2d.shape:
+                raise ValueError(
+                    f"{label}: 2-D latitude/longitude shape mismatch: "
+                    f"{lat2d.shape!r} vs {lon2d.shape!r}."
+                )
+            if not np.all(np.isfinite(lat2d)) or not np.all(np.isfinite(lon2d)):
+                raise ValueError(f"{label}: latitude/longitude coordinates must be finite.")
+
+            # A rectilinear geographic grid represented by 2-D auxiliaries can
+            # be stored in either dimension order. Detect which dimension is
+            # latitude-like and which is longitude-like from separability.
+            lat_vec_0 = lat2d[:, 0]
+            lon_vec_1 = lon2d[0, :]
+            orientation_01 = (
+                np.allclose(lat2d, lat_vec_0[:, None], rtol=0.0, atol=1e-10, equal_nan=False)
+                and np.allclose(lon2d, lon_vec_1[None, :], rtol=0.0, atol=1e-10, equal_nan=False)
+            )
+
+            lat_vec_1 = lat2d[0, :]
+            lon_vec_0 = lon2d[:, 0]
+            orientation_10 = (
+                np.allclose(lat2d, lat_vec_1[None, :], rtol=0.0, atol=1e-10, equal_nan=False)
+                and np.allclose(lon2d, lon_vec_0[:, None], rtol=0.0, atol=1e-10, equal_nan=False)
+            )
+
+            if orientation_01 and not orientation_10:
+                lat_dim, lon_dim = spatial_dims[0], spatial_dims[1]
+                lat_vec, lon_vec = lat_vec_0, lon_vec_1
+            elif orientation_10 and not orientation_01:
+                lat_dim, lon_dim = spatial_dims[1], spatial_dims[0]
+                lat_vec, lon_vec = lat_vec_1, lon_vec_0
+            elif orientation_01 and orientation_10 and lat2d.size == 1:
+                # A 1x1 grid is separable in both orientations; either mapping
+                # is equivalent, so preserve the coordinate dimension order.
+                lat_dim, lon_dim = spatial_dims[0], spatial_dims[1]
+                lat_vec, lon_vec = lat_vec_0, lon_vec_1
+            else:
+                raise ValueError(
+                    f"{label}: geographic coordinates {lat_name!r}/{lon_name!r} are genuinely "
+                    "two-dimensional (curvilinear) or spatially ambiguous. seed_from_NETCDF "
+                    "currently requires a rectilinear geographic grid. Regrid to a rectilinear "
+                    "latitude/longitude grid before reseeding."
+                )
+
+            if lat_dim == lon_dim:
+                raise ValueError(f"{label}: invalid 2-D geographic coordinate dimensions {spatial_dims!r}.")
+
+            rename_dims = {}
+            if lat_dim != "latitude":
+                if "latitude" in da.dims and lat_dim != "latitude":
+                    raise ValueError(
+                        f"{label}: cannot rename {lat_dim!r} to 'latitude' because a distinct "
+                        "'latitude' dimension already exists."
+                    )
+                rename_dims[lat_dim] = "latitude"
+            if lon_dim != "longitude":
+                if "longitude" in da.dims and lon_dim != "longitude":
+                    raise ValueError(
+                        f"{label}: cannot rename {lon_dim!r} to 'longitude' because a distinct "
+                        "'longitude' dimension already exists."
+                    )
+                rename_dims[lon_dim] = "longitude"
+
+            out = da.rename(rename_dims) if rename_dims else da
+            out = out.assign_coords(
+                latitude=("latitude", lat_vec),
+                longitude=("longitude", lon_vec),
+            )
+            out.coords["latitude"].attrs = {
+                "standard_name": "latitude",
+                "long_name": "latitude",
+                "units": "degrees_north",
+                "axis": "Y",
+            }
+            out.coords["longitude"].attrs = {
+                "standard_name": "longitude",
+                "long_name": "longitude",
+                "units": "degrees_east",
+                "axis": "X",
+            }
+            return out
+
+        raise ValueError(
+            f"{label}: latitude and longitude must both be 1-D rectilinear coordinates "
+            f"or both be separable 2-D auxiliaries; got ndim {lat_ndim} and {lon_ndim}."
+        )
+
+    @staticmethod
     def _coord_values_and_sel_index(da, dim_name):
         """
         Return (coord_values, index_in_dims or None).
@@ -18552,25 +19342,26 @@ class ChemicalDrift(OceanDrift):
         Seed elements based on a dataarray with water/sediment concentration or direct emissions to water.
 
         Arguments:
-        NETCDF_data:          dataarray with concentration or emission data, with coordinates
-            * latitude        (latitude) float32
-            * longitude       (longitude) float32
+        NETCDF_data:          dataarray with concentration or emission data on a rectilinear geographic grid.
+                              Accepted horizontal coordinate representations are:
+                                * latitude / longitude
+                                * lat / lon
+                                * CF-compliant geographic y / x axes
+                                * separable 2-D geographic lat/lon auxiliary coordinates
+                              Projected-only x/y and genuinely curvilinear 2-D lon/lat grids are rejected.
             * time            (time) datetime64[ns]
             * depth           (depth) float32 (optional)
-        Bathimetry_data:      dataarray with bathimetry data to calcuate volume of gridcells for water_conc
-                              MUST have the same grid of NETCDF_data, no time dimension, and positive values
-            * latitude        (latitude) float32
-            * longitude       (longitude) float32
-        Bathimetry_seed_data: dataarray with bathimetry data to check seeding of elements,
-                              MUST be the same used for running the simulation, no time dimension, and positive downward.
+        Bathimetry_data:      dataarray with bathimetry data to calculate volume of grid cells for water_conc.
+                              Uses the same accepted geographic coordinate representations as NETCDF_data,
+                              has no time dimension, and contains positive-down water depth.
+        Bathimetry_seed_data: dataarray with bathimetry data to check seeding of elements.
+                              Uses the same accepted geographic coordinate representations as NETCDF_data,
+                              has no time dimension, and contains positive-down water depth.
                               Required for "water_conc", "sed_conc", and "emission_depth".
-            * latitude        (latitude) float32
-            * longitude       (longitude) float32
-        active_sediment_layer_thickness_data: dataarray with local active sediment layer thickness [m]
-                              MUST be on the same spatial grid as NETCDF_data. Used only for mode='sed_conc'.
-                              If not given, or if local values are invalid, the global self.get_config('chemical:sediment:mixing_depth') is used.
-            * latitude        (latitude) float32
-            * longitude       (longitude) float32
+        active_sediment_layer_thickness_data: dataarray with local active sediment layer thickness [m].
+                              Uses the same accepted geographic coordinate representations as NETCDF_data.
+                              Used only for mode='sed_conc'. If not given, or if local values are invalid,
+                              the global self.get_config('chemical:sediment:mixing_depth') is used.
         mode:                 "water_conc" (seed from concentration in water column, in ug/L),
                       "sed_conc" (seed from sediment concentration, in ug/kg d.w.),
                       "emission" (seed from direct discharge to water, in kg),
@@ -18625,7 +19416,7 @@ class ChemicalDrift(OceanDrift):
 
         """
         import opendrift
-        from datetime import datetime
+        from datetime import datetime, timezone
         import numpy as np
         from collections import Counter
         fail_records = []
@@ -18714,6 +19505,25 @@ class ChemicalDrift(OceanDrift):
             raise ValueError(
                 "concentration_coordinate_mode must be 'legacy' or 'center'."
             )
+
+        # Normalize all geographic inputs once, before any coordinate-based
+        # selection. This keeps the existing seeding logic canonical while
+        # allowing CF-compliant writer output (e.g. geographic y/x axes) and
+        # common lat/lon aliases without duplicating coordinate branches below.
+        NETCDF_data = self._normalize_seed_geographic_coordinates(
+            NETCDF_data, "NETCDF_data"
+        )
+        Bathimetry_data = self._normalize_seed_geographic_coordinates(
+            Bathimetry_data, "Bathimetry_data"
+        )
+        Bathimetry_seed_data = self._normalize_seed_geographic_coordinates(
+            Bathimetry_seed_data, "Bathimetry_seed_data"
+        )
+        active_sediment_layer_thickness_data = self._normalize_seed_geographic_coordinates(
+            active_sediment_layer_thickness_data,
+            "active_sediment_layer_thickness_data",
+        )
+
         # Convert input water concentrations to ug/m3 during mass calculation.
         # Selection bounds remain expressed in the original input units.
         water_conc_to_ug_m3 = 1.0
@@ -19048,8 +19858,8 @@ class ChemicalDrift(OceanDrift):
                 thickness_dims = set(active_sediment_layer_thickness_data.dims)
                 if not {'latitude', 'longitude'}.issubset(thickness_dims):
                     raise ValueError(
-                        "active_sediment_layer_thickness_data must have at least "
-                        "'latitude' and 'longitude' dimensions.")
+                        "active_sediment_layer_thickness_data could not be normalized to "
+                        "rectilinear 'latitude' and 'longitude' dimensions.")
 
         # origin markers aligned with filtered points
         if origin_marker == "single":
@@ -19426,11 +20236,15 @@ class ChemicalDrift(OceanDrift):
 
 
                 if getattr(t, "size", 1) == 1:
-                    time = datetime.utcfromtimestamp(
-                        int((np.array(t - np.datetime64('1970-01-01T00:00:00'))) / np.timedelta64(1, 's')))
+                    time = datetime.fromtimestamp(
+                        int(np.array(t - np.datetime64('1970-01-01T00:00:00'))
+                            / np.timedelta64(1, 's')
+                        ), tz=timezone.utc,).replace(tzinfo=None)
                 else:
-                    time = datetime.utcfromtimestamp(
-                        int((np.array(t[i] - np.datetime64('1970-01-01T00:00:00'))) / np.timedelta64(1, 's')))
+                    time = datetime.fromtimestamp(
+                        int(np.array(t[i] - np.datetime64('1970-01-01T00:00:00'))
+                            / np.timedelta64(1, 's')
+                        ), tz=timezone.utc,).replace(tzinfo=None)
 
                 speciation_ctrl = (
                 sed_speciation if mode == "sed_conc"
