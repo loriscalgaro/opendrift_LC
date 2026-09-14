@@ -285,13 +285,15 @@ class ChemicalDrift(OceanDrift):
         'interaction_sediment_layer_thickness': {'fallback': 0},               # m
         # Needed to check sediment exchange by adsorption/desorption.
         'ocean_mixed_layer_thickness': {'fallback': 50,'important': False,},   # m
-        # Direct bed stresses from hydro model
-        # This should be requested whenever sediment exchange is active so the model
-        # can prefer reader-provided sea_floor_current_stress when available.
-        'sea_floor_current_stress': {'fallback': np.nan, 'important': False, },     # Pa
         # Local organic-carbon fractions used when updating f_OC after particle/sediment transitions.
         'f_OC_spm': {'fallback': 0.01},                                        # gOC/g
         'f_OC_sed': {'fallback': 0.01},                                        # gOC/g
+    }
+    DIRECT_CURRENT_STRESS_REQUIRED_VARIABLES = {
+        # Optional preferred hydro-model current bed stress
+        'sea_floor_current_stress': {'fallback': -1.0, 'important': False},    # Pa
+        # Finite negative fallback is used as physically invalid sentinel and is therefore rejected explicitly by
+        # _direct_current_stress_array() at runtime
     }
     SEDIMENT_BOTTOM_VELOCITY_REQUIRED_VARIABLES = {
     # Needed by LOG_Z0 and GRAIN_D50 fallback stress modes
@@ -419,6 +421,7 @@ class ChemicalDrift(OceanDrift):
         BASE_REQUIRED_VARIABLES,
         PARTITIONING_REQUIRED_VARIABLES,
         SEDIMENT_EXCHANGE_REQUIRED_VARIABLES,
+        DIRECT_CURRENT_STRESS_REQUIRED_VARIABLES,
         SEDIMENT_BOTTOM_VELOCITY_REQUIRED_VARIABLES,
         SEDIMENT_LOG_Z0_REQUIRED_VARIABLES,
         SEDIMENT_GRAIN_D50_REQUIRED_VARIABLES,
@@ -1066,9 +1069,15 @@ class ChemicalDrift(OceanDrift):
             req.update(self.VOLATILIZATION_REQUIRED_VARIABLES)
         if sediment_exchange_enabled:
             req.update(self.SEDIMENT_EXCHANGE_REQUIRED_VARIABLES)
-            # Direct current bed stress is requested in SEDIMENT_EXCHANGE_REQUIRED_VARIABLES.
-            # If absent from readers, compute_bottom_shear_stress() falls back to the
-            # chosen parameterization.
+
+            # Direct current bed stress is an optional preferred source.  Its
+            # reader availability is resolved once in prepare_run(); only then is
+            # it promoted into the runtime required-variable subset.  If no reader
+            # supplies it, compute_bottom_shear_stress() uses the selected
+            # calculated-current parameterization instead.
+            if bool(getattr(self, '_direct_current_stress_reader_available', False)):
+                req.update(self.DIRECT_CURRENT_STRESS_REQUIRED_VARIABLES)
+
             if stress_mode in ('LOG_Z0', 'GRAIN_D50'):
                 req.update(self.SEDIMENT_BOTTOM_VELOCITY_REQUIRED_VARIABLES)
             if stress_mode == 'LOG_Z0':
@@ -2117,8 +2126,19 @@ class ChemicalDrift(OceanDrift):
         if not hasattr(self, "transfer_rates"):
             self.init_transfer_rates()
 
-        # Finalize required environmental variables after config/species setup,
-        # but before OceanDrift.prepare_run() prepares/interpolates readers.
+        # Cache the variables actually advertised by attached readers, then
+        # resolve the optional preferred direct-current-stress source exactly
+        # once for this run.  Runtime stress calculations use this frozen choice
+        # and validate only the local data values.
+        self._reader_variables = set()
+        for _, reader in self.env.readers.items():
+            self._reader_variables.update(getattr(reader, 'variables', []))
+        self._resolve_current_stress_source()
+
+        # Finalize required environmental variables after config/species/source
+        # resolution, but before OceanDrift.prepare_run() prepares/interpolates
+        # readers.  sea_floor_current_stress is included only when the source
+        # resolved above is DIRECT.
         self._sync_required_variables_from_config()
 
         logger.info('Required variables for this run:')
@@ -2145,11 +2165,6 @@ class ChemicalDrift(OceanDrift):
             if 'doc' in value.variables:
                 if (hasattr(value,'sigma') or hasattr(value,'z') ):
                     self.DOC_vertical_levels_given = True
-
-        # Keep track of supplied readers
-        self._reader_variables = set()
-        for _, reader in self.env.readers.items():
-            self._reader_variables.update(getattr(reader, 'variables', []))
 
         if (self.get_config('chemical:sediment:include_wave_stress') and
                 (self.get_config('chemical:sediment:enable_deposition') or
@@ -5107,6 +5122,34 @@ class ChemicalDrift(OceanDrift):
             raise ValueError(f'{name} must be scalar or have one value per active element.')
         return values.copy() if idx is None else values[np.asarray(idx, dtype=np.int64)]
 
+    def _required_wave_environment_array(self, name, idx=None):
+        """Return already-loaded wave forcing without re-checking reader availability.
+
+        Reader capability is validated once by _validate_wave_stress_source()
+        before the run starts. This helper is therefore only responsible for
+        retrieving the values already placed in ``self.environment`` for the
+        current timestep and active elements.
+
+        A missing attribute here is an internal lifecycle/environment-loading
+        inconsistency, not a reader-availability decision. Masked values are
+        preserved as NaN so the calling physics routine can reject invalid local
+        values before they enter a calculation.
+        """
+        raw = getattr(self.environment, name, None)
+        if raw is None:
+            raise RuntimeError(
+                f'Required wave forcing {name!r} was validated before the run, '
+                'but is absent from the current environment state.'
+            )
+        values = np.ma.asarray(raw, dtype=float).filled(np.nan)
+        n = self.num_elements_active()
+        if values.ndim == 0 or values.size == 1:
+            count = n if idx is None else np.asarray(idx).size
+            return np.full(count, float(values.reshape(-1)[0]), dtype=float)
+        if values.ndim != 1 or values.size != n:
+            raise ValueError(f'{name} must be scalar or have one value per active element.')
+        return values.copy() if idx is None else values[np.asarray(idx, dtype=np.int64)]
+
     def _bottom_velocity_components(self, idx=None):
         """Return bottom-layer velocity components.
         This helper only accepts dedicated bottom-layer velocity fields:
@@ -5169,12 +5212,83 @@ class ChemicalDrift(OceanDrift):
             raise ValueError('Hydraulic-radius fallback contains non-finite water depth.')
         return np.maximum(radius, 1e-12)
 
-    def _bed_stress_array(self, name, idx=None):
-        """Read a direct current/other stress magnitude [Pa], preserving masks.
+    def _resolve_current_stress_source(self):
+        """Resolve the optional direct-current-stress source once per run.
 
-        No supplying reader: return None so the caller can use its documented
-        fallback. A supplying reader with invalid data: raise instead of silently
-        turning missing data into zero stress. Zero is a valid stress magnitude.
+        Reader capability belongs to prepare_run(), not to the timestep physics.
+        If an attached reader advertises ``sea_floor_current_stress``, DIRECT is
+        selected for the run.  Otherwise the configured current-stress
+        parameterization is used.  Invalid/missing local DIRECT values never
+        trigger a fallback; they are rejected explicitly at runtime.
+        """
+        sediment_exchange_enabled = bool(
+            self.get_config('chemical:sediment:enable_deposition') or
+            self.get_config('chemical:sediment:enable_resuspension')
+        )
+        has_direct = bool(
+            sediment_exchange_enabled and
+            self._has_reader_variable('sea_floor_current_stress')
+        )
+        self._direct_current_stress_reader_available = has_direct
+        self._current_stress_source = 'DIRECT' if has_direct else 'CALCULATED'
+
+        if sediment_exchange_enabled:
+            if has_direct:
+                logger.info(
+                    'Current bed-stress source=DIRECT (reader-supplied '
+                    'sea_floor_current_stress).')
+            else:
+                logger.info(
+                    'Current bed-stress source=CALCULATED (mode=%s); no reader '
+                    'supplies sea_floor_current_stress.',
+                    self.get_config('chemical:sediment:stress_param_mode'))
+        return self._current_stress_source
+
+    def _direct_current_stress_array(self, idx=None):
+        """Return current local DIRECT stress values selected in prepare_run().
+
+        This routine does not inspect reader availability.  ``prepare_run()`` has
+        already frozen whether DIRECT current stress is available for the run.
+        Here we only retrieve the already-loaded local environment values and
+        reject missing, non-finite or negative stresses before they enter the
+        physics.  Zero is a valid stress magnitude.
+        """
+        if not bool(getattr(self, '_direct_current_stress_reader_available', False)):
+            return None
+
+        name = 'sea_floor_current_stress'
+        raw = getattr(self.environment, name, None)
+        if raw is None:
+            raise RuntimeError(
+                f'Required direct current-stress forcing {name!r} was resolved '
+                'from the readers in prepare_run(), but is absent from the '
+                'current environment state.')
+
+        values = np.ma.asarray(raw, dtype=float).filled(np.nan)
+        n = self.num_elements_active()
+        if values.ndim == 0 or values.size == 1:
+            count = n if idx is None else np.asarray(idx).size
+            tau = np.full(count, float(values.reshape(-1)[0]), dtype=float)
+        else:
+            if values.ndim != 1 or values.size != n:
+                raise ValueError(
+                    f'{name} must be scalar or have one value per active element.')
+            tau = values.copy() if idx is None else values[np.asarray(idx, dtype=np.int64)]
+
+        invalid = ~np.isfinite(tau) | (tau < 0.0)
+        if np.any(invalid):
+            raise ValueError(
+                f'{name} contains {int(invalid.sum())} invalid stress values; '
+                'expected finite, non-negative magnitudes in Pa.')
+        return tau
+
+    def _bed_stress_array(self, name, idx=None):
+        """Read an optional non-current stress magnitude [Pa], preserving masks.
+
+        This helper retains reader-availability discovery for optional stress
+        fields such as ``sea_floor_other_stress``.  Direct current stress uses
+        ``_direct_current_stress_array()`` instead, because its source is frozen
+        once in prepare_run().
         """
         tau = self._wave_reader_array(name, idx=idx)
         if tau is None:
@@ -5228,12 +5342,12 @@ class ChemicalDrift(OceanDrift):
     def _wave_water_depth(self, idx=None):
         """Actual water-column thickness [m]; non-positive values are dry.
 
-        Bathymetry must be supplied by a reader (a constant reader is allowed).
-        Do not use the generic 10000 m fallback for wave attenuation.
+        Reader availability for bathymetry is validated before the run starts.
+        Here only the current local values are retrieved and validated. The
+        generic 10000 m environment fallback is never used for wave attenuation.
         """
-        depth = self._wave_reader_array('sea_floor_depth_below_sea_level', idx=idx)
-        if depth is None:
-            raise ValueError('Wave stress requires reader-supplied sea_floor_depth_below_sea_level.')
+        depth = self._required_wave_environment_array(
+            'sea_floor_depth_below_sea_level', idx=idx)
         depth = np.asarray(depth, dtype=float)
         if np.any(~np.isfinite(depth)):
             raise ValueError('Wave-stress bathymetry contains missing/non-finite values.')
@@ -5360,13 +5474,27 @@ class ChemicalDrift(OceanDrift):
         return source
 
     def _validate_wave_stress_source(self):
-        """Check required reader sources before preparing the simulation."""
+        """
+        Validate wave-reader capability once before the simulation starts.
+        Runtime wave-stress routines then deal only with local values: they
+        decide which inputs are physically needed for the current elements and
+        reject invalid values before those values enter a calculation.
+        """
         source = self._wave_stress_source()
-        names = (('sea_floor_wave_stress',) if source == 'DIRECT' else
-                 ('sea_surface_wave_significant_height', 'sea_floor_depth_below_sea_level'))
+        if source == 'DIRECT':
+            names = ('sea_floor_wave_stress',)
+        else:
+            names = (
+                'sea_surface_wave_significant_height',
+                'sea_surface_wave_period_at_variance_spectral_density_maximum',
+                'sea_floor_depth_below_sea_level',
+            )
         for name in names:
             if not self._has_reader_variable(name):
-                raise ValueError(f'{source} wave stress requires a reader for {name}; constant readers are allowed.')
+                raise ValueError(
+                    f'{source} wave stress requires a reader for {name}; '
+                    'constant readers are allowed.'
+                )
         logger.info('Wave stress source=%s; combination=%s', source,
                     self.get_config('chemical:sediment:shear_stress_combination'))
         if source == 'CALCULATED':
@@ -5394,11 +5522,13 @@ class ChemicalDrift(OceanDrift):
         """Return one wave-stress source and its available diagnostics.
 
         DIRECT bypasses all wave orbital, roughness, depth and viscosity
-        calculations. Its input must be a wave-only stress amplitude in Pa;
-        a combined wave-current field would double-count current stress.
-        Missing, masked, negative or non-finite direct values raise an error;
-        zero is valid. Derived diagnostics remain NaN, including at zero stress.
-        Direction is handled by compute_bottom_shear_stress after source selection.
+        calculations. Reader availability is validated before the run; this
+        routine validates only the current local stress values. The input must
+        be a wave-only stress amplitude in Pa; a combined wave-current field
+        would double-count current stress. Masked, negative or non-finite direct
+        values raise an error; zero is valid. Derived diagnostics remain NaN,
+        including at zero stress. Direction is handled by
+        compute_bottom_shear_stress after source selection.
         """
         if self._wave_stress_source() == 'CALCULATED':
             return self._wave_stress_from_surface(rho=rho, idx=idx)
@@ -5413,12 +5543,13 @@ class ChemicalDrift(OceanDrift):
         if n == 0:
             result['tau_wave'] = np.empty(0, dtype=float)
             return result
-        tau = self._wave_reader_array('sea_floor_wave_stress', idx=idx)
-        if tau is None:
-            raise ValueError('DIRECT wave stress requires reader-supplied sea_floor_wave_stress [Pa].')
+        tau = self._required_wave_environment_array('sea_floor_wave_stress', idx=idx)
         bad = ~np.isfinite(tau) | (tau < 0)
         if np.any(bad):
-            raise ValueError(f'Invalid DIRECT wave stress for {int(bad.sum())} elements: values must be finite and non-negative [Pa].')
+            raise ValueError(
+                f'Invalid DIRECT wave stress for {int(bad.sum())} elements: '
+                'values must be finite and non-negative [Pa].'
+            )
         result['tau_wave'] = tau.copy()
         return result
 
@@ -5427,7 +5558,12 @@ class ChemicalDrift(OceanDrift):
 
         Source: Soulsby (1997), rough/smooth friction closure; linear-wave
         transfer and equivalent-wave definitions: Soulsby (2006), TR155.
-        Only positive-height, wet entries require period/roughness/viscosity.
+
+        Reader capability is checked once before the run. At each timestep this
+        routine then uses the local Hs field to decide whether the more expensive
+        period/roughness/viscosity branch is needed. Only positive-height, wet
+        entries consume Tp and enter the orbital/stress calculation. Invalid Hs
+        or Tp values are rejected before they can enter those calculations.
         Dry entries contribute zero wave stress; this does not perform particle
         stranding or replace OceanDrift's wet/dry treatment.
         """
@@ -5442,27 +5578,50 @@ class ChemicalDrift(OceanDrift):
                        ('wave_friction_factor', 'wave_z0', 'wave_water_depth')})
         if n == 0:
             return result
+
+        # Depth and Hs are always needed to determine whether wave stress exists
+        # for the current elements at this timestep.
         depth = self._wave_water_depth(idx=idx)
         result['wave_water_depth'] = depth.copy()
         wet = depth > 0
-        height = self._wave_reader_array('sea_surface_wave_significant_height', idx=idx)
-        if height is None:
-            raise ValueError('Wave stress requires reader-supplied sea_surface_wave_significant_height.')
+
+        height = self._required_wave_environment_array(
+            'sea_surface_wave_significant_height', idx=idx)
         height = np.asarray(height, dtype=float)
-        bad = wet & (~np.isfinite(height) | (height < 0))
-        if np.any(bad):
-            raise ValueError(f'Invalid/missing significant wave height for {int(bad.sum())} wet elements.')
-        active = wet & (height > 0)
+
+        # Hs must be finite and non-negative wherever the element is wet. Invalid
+        # values are stopped here and never enter the wave calculations.
+        bad_height = wet & (~np.isfinite(height) | (height < 0.0))
+        if np.any(bad_height):
+            raise ValueError(
+                f'Invalid/missing significant wave height for '
+                f'{int(bad_height.sum())} wet elements.'
+            )
+
+        # Only wet elements with strictly positive Hs need Tp, roughness,
+        # viscosity, dispersion, orbital velocity or wave-friction calculations.
+        active = wet & (height > 0.0)
         if not np.any(active):
             return result
+
         active_idx = idx[active]
-        period = self._wave_reader_array(
-            'sea_surface_wave_period_at_variance_spectral_density_maximum', idx=active_idx)
-        if period is None:
-            raise ValueError('Positive waves require reader-supplied peak wave period.')
+
+        # Tp is deliberately accessed only after active waves have been identified.
+        period = self._required_wave_environment_array(
+            'sea_surface_wave_period_at_variance_spectral_density_maximum',
+            idx=active_idx,
+        )
         period = np.asarray(period, dtype=float)
-        if np.any(~np.isfinite(period) | (period <= 0)):
-            raise ValueError('Positive waves at wet elements require finite, positive peak periods.')
+
+        # Invalid Tp must not enter dispersion/orbital/stress calculations.
+        bad_period = ~np.isfinite(period) | (period <= 0.0)
+        if np.any(bad_period):
+            raise ValueError(
+                'Positive waves at wet elements require finite, positive peak periods; '
+                f'found {int(bad_period.sum())} invalid value(s).'
+            )
+
+        # The remaining inputs/calculations are needed only for active waves.
         z0 = self._wave_roughness_length_array(idx=active_idx)
         rho = np.broadcast_to(np.asarray(rho, dtype=float), (n,))[active]
         temp = self._env_array('sea_water_temperature', 10.0, idx=active_idx)
@@ -5656,8 +5815,10 @@ class ChemicalDrift(OceanDrift):
 
         z0_default = None
 
-        # Preferred path: direct hydro-model current bed stress
-        tau_c = self._bed_stress_array('sea_floor_current_stress', idx=idx)
+        # Preferred path: direct hydro-model current bed stress, but only when
+        # its reader was resolved as available once in prepare_run().  Runtime
+        # logic validates local values only and never re-checks reader capability.
+        tau_c = self._direct_current_stress_array(idx=idx)
 
         if tau_c is not None:
             # Preserve current-only behavior; wave-enabled runs need local validity.
