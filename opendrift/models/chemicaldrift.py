@@ -22738,6 +22738,162 @@ class ChemicalDrift(OceanDrift):
             plt.savefig(filename, format=filename[-3:], transparent=True, bbox_inches="tight", dpi=300)
 
     ##### Helpers for extract_summary_timeseries
+
+    ##### Metadata for extract_summary_timeseries
+
+    # Class-level scientific/output metadata for every ChemicalDrift variable that
+    # may be considered by extract_summary_timeseries(). This is code metadata, not
+    # per-run state and is not expected to be stored in trajectory files. Runtime
+    # reader requirements remain in the *_REQUIRED_VARIABLES dictionaries above;
+    # the registry built below is authoritative for summary units, semantics and
+    # default aggregation.
+    _ENVIRONMENT_SUMMARY_METADATA = {
+        'x_sea_water_velocity': {'units': 'm s-1', 'long_name': 'Eastward sea-water velocity'},
+        'y_sea_water_velocity': {'units': 'm s-1', 'long_name': 'Northward sea-water velocity'},
+        'upward_sea_water_velocity': {'units': 'm s-1', 'long_name': 'Upward sea-water velocity'},
+        'sea_surface_height': {'units': 'm', 'long_name': 'Sea-surface height'},
+        'x_wind': {'units': 'm s-1', 'long_name': 'Eastward wind velocity'},
+        'y_wind': {'units': 'm s-1', 'long_name': 'Northward wind velocity'},
+        'ocean_vertical_diffusivity': {'units': 'm2 s-1', 'long_name': 'Ocean vertical diffusivity'},
+        'horizontal_diffusivity': {'units': 'm2 s-1', 'long_name': 'Horizontal diffusivity'},
+        'land_binary_mask': {'units': '1', 'long_name': 'Land binary mask'},
+        'sea_floor_depth_below_sea_level': {
+            'units': 'm', 'long_name': 'Sea-floor depth below sea level', 'positive': 'down'},
+        'sea_water_temperature': {'units': 'degree_Celsius', 'long_name': 'Sea-water temperature'},
+        'sea_water_salinity': {
+            'units': '1', 'long_name': 'Sea-water practical salinity',
+            'unit_note': 'Dimensionless practical salinity; historically reported as PSU.'},
+        'doc': {'units': 'mmol C kg-1', 'long_name': 'Dissolved organic carbon concentration'},
+        'spm': {'units': 'g m-3', 'long_name': 'Suspended particulate matter concentration'},
+        'f_OC_spm': {'units': '1', 'long_name': 'Organic-carbon mass fraction of suspended particulate matter'},
+        'f_OC_sed': {'units': '1', 'long_name': 'Organic-carbon mass fraction of sediment'},
+        'sea_water_ph_reported_on_total_scale': {'units': '1', 'long_name': 'Sea-water pH on total scale'},
+        'pH_sediment': {'units': '1', 'long_name': 'Sediment pH'},
+        'ocean_mixed_layer_thickness': {'units': 'm', 'long_name': 'Ocean mixed-layer thickness'},
+        'active_sediment_layer_thickness': {'units': 'm', 'long_name': 'Active sediment-layer thickness'},
+        'interaction_sediment_layer_thickness': {'units': 'm', 'long_name': 'Interaction sediment-layer thickness'},
+        'sea_floor_current_stress': {'units': 'Pa', 'long_name': 'Sea-floor current shear stress'},
+        'x_bottom_sea_water_velocity': {'units': 'm s-1', 'long_name': 'Eastward bottom sea-water velocity'},
+        'y_bottom_sea_water_velocity': {'units': 'm s-1', 'long_name': 'Northward bottom sea-water velocity'},
+        'bottom_layer_thickness': {'units': 'm', 'long_name': 'Bottom hydrodynamic layer thickness'},
+        'sea_floor_roughness_length': {'units': 'm', 'long_name': 'Sea-floor roughness length'},
+        'sea_floor_d50': {'units': 'm', 'long_name': 'Sea-floor median grain diameter'},
+        'x_depth_averaged_sea_water_velocity': {'units': 'm s-1', 'long_name': 'Eastward depth-averaged sea-water velocity'},
+        'y_depth_averaged_sea_water_velocity': {'units': 'm s-1', 'long_name': 'Northward depth-averaged sea-water velocity'},
+        'hydraulic_radius': {'units': 'm', 'long_name': 'Hydraulic radius'},
+        'sea_floor_erodibility_M': {'units': 'kg m-2 s-1 Pa-1', 'long_name': 'Sea-floor cohesive erodibility coefficient'},
+        'sea_floor_resuspension_critstress': {'units': 'Pa', 'long_name': 'Sea-floor critical shear stress for resuspension'},
+        'sea_floor_other_stress': {'units': 'Pa', 'long_name': 'Additional sea-floor shear stress'},
+        'sea_surface_wave_significant_height': {'units': 'm', 'long_name': 'Significant wave height'},
+        'sea_surface_wave_period_at_variance_spectral_density_maximum': {
+            'units': 's', 'long_name': 'Wave period at variance spectral-density maximum'},
+        'sea_surface_wave_to_direction': {
+            'units': 'degree', 'long_name': 'Wave propagation direction (to)',
+            'summary_mode': 'circular_mean', 'angular_period': 360.0},
+        'sea_surface_wave_from_direction': {
+            'units': 'degree', 'long_name': 'Wave propagation direction (from)',
+            'summary_mode': 'circular_mean', 'angular_period': 360.0},
+        'sea_floor_wave_stress': {'units': 'Pa', 'long_name': 'Wave-only sea-floor shear-stress amplitude'},
+        'mole_concentration_of_dissolved_molecular_oxygen_in_sea_water': {
+            'units': 'mmol m-3', 'long_name': 'Dissolved molecular oxygen concentration in sea water'},
+        'sediment_oxygen_penetration_depth': {'units': 'm', 'long_name': 'Reader-supplied sediment oxygen penetration depth'},
+        'sea_floor_porosity': {'units': '1', 'long_name': 'Sea-floor sediment porosity'},
+        'sediment_oxygen_diffusivity': {'units': 'm2 s-1', 'long_name': 'Effective sediment oxygen diffusivity'},
+        'sediment_oxygen_consumption_rate': {'units': 'mmol O2 m-3 s-1', 'long_name': 'Sediment oxygen consumption rate'},
+        'benthic_oxygen_flux': {'units': 'mmol O2 m-2 s-1', 'long_name': 'Benthic oxygen flux into sediment'},
+        'diffusive_boundary_layer_thickness': {'units': 'm', 'long_name': 'Diffusive boundary-layer thickness'},
+        'sediment_oxygen_consumption_rate_upper': {'units': 'mmol O2 m-3 s-1', 'long_name': 'Upper-layer sediment oxygen consumption rate'},
+        'sediment_oxygen_consumption_rate_lower': {'units': 'mmol O2 m-3 s-1', 'long_name': 'Lower-layer sediment oxygen consumption rate'},
+        'sediment_oxygen_reactivity_transition_depth': {'units': 'm', 'long_name': 'Sediment oxygen reactivity transition depth'},
+        'solar_irradiance': {
+            'units': None, 'long_name': 'Solar irradiance used by ChemicalDrift photolysis',
+            'units_from_config': 'chemical:transformations:solar_input_unit',
+            'units_map': {'W_m2': 'W m-2', 'Ly_day': 'Ly day-1'}},
+        'mole_concentration_of_phytoplankton_expressed_as_carbon_in_sea_water': {
+            'units': 'mmol C m-3', 'long_name': 'Phytoplankton carbon concentration in sea water'},
+    }
+
+    CHEMICALDRIFT_VARIABLE_REGISTRY = {
+        'lon': {
+            'source': 'element', 'units': 'degree_east', 'long_name': 'Element longitude',
+            'summary_mode': 'mean', 'zeros_valid': True},
+        'lat': {
+            'source': 'element', 'units': 'degree_north', 'long_name': 'Element latitude',
+            'summary_mode': 'mean', 'zeros_valid': True},
+        'z': {
+            'source': 'element', 'units': 'm', 'long_name': 'Element vertical position',
+            'summary_mode': 'mean', 'zeros_valid': True, 'positive': 'up'},
+        'status': {
+            'source': 'element', 'units': '1', 'long_name': 'OpenDrift element status code',
+            'summary_mode': 'special', 'processor': 'event_status'},
+    }
+
+    # Chemical element fields inherit their physical unit directly from the
+    # authoritative element definitions. Optional diagnostic fields are added
+    # even when not active in a particular run; presence in self.result still
+    # depends on the simulation configuration.
+    for _name, _definition in (
+        list(Chemical.BASE_CHEMICAL_VARIABLES)
+        + list(Chemical.SINGLE_DEGRADATION_VARIABLES)
+        + list(Chemical.BED_INTERACTION_VARIABLES)
+    ):
+        CHEMICALDRIFT_VARIABLE_REGISTRY[_name] = {
+            'source': 'element',
+            'units': _definition.get('units') or '1',
+            'long_name': _name.replace('_', ' '),
+            'summary_mode': 'mean',
+            'zeros_valid': True,
+        }
+    for _name, _definition in Chemical.SEDIMENT_OXYGEN_DIAGNOSTIC_DEFINITIONS.items():
+        CHEMICALDRIFT_VARIABLE_REGISTRY[_name] = {
+            'source': 'element',
+            'units': _definition.get('units') or '1',
+            'long_name': _name.replace('_', ' '),
+            'summary_mode': 'mean',
+            'zeros_valid': True,
+        }
+
+    # Source variables consumed by dedicated budget/event processors must never
+    # be routed through the generic summary aggregator.
+    for _name in (
+        'mass', 'mass_degraded', 'mass_degraded_water',
+        'mass_degraded_sediment', 'mass_volatilized',
+        'mass_photodegraded', 'mass_biodegraded',
+        'mass_biodegraded_water', 'mass_biodegraded_sediment',
+        'mass_hydrolyzed', 'mass_hydrolyzed_water',
+        'mass_hydrolyzed_sediment',
+    ):
+        if _name in CHEMICALDRIFT_VARIABLE_REGISTRY:
+            CHEMICALDRIFT_VARIABLE_REGISTRY[_name].update({
+                'summary_mode': 'special',
+                'processor': 'mass_budget' if _name == 'mass' else 'elimination_budget',
+                'mass_like': True,
+            })
+    if 'specie' in CHEMICALDRIFT_VARIABLE_REGISTRY:
+        CHEMICALDRIFT_VARIABLE_REGISTRY['specie'].update({
+            'summary_mode': 'special', 'processor': 'species_budget'})
+
+    # Infinite oxygen penetration can be physically meaningful for a
+    # non-reactive/deeply oxygenated layer. The summary mean remains finite-only
+    # and a companion positive-infinity count preserves that information.
+    if 'sed_o2_penetration_depth' in CHEMICALDRIFT_VARIABLE_REGISTRY:
+        CHEMICALDRIFT_VARIABLE_REGISTRY['sed_o2_penetration_depth'][
+            'report_positive_infinity_count'] = True
+
+    for _name, _meta in _ENVIRONMENT_SUMMARY_METADATA.items():
+        _entry = {
+            'source': 'environment',
+            'units': _meta.get('units'),
+            'long_name': _meta['long_name'],
+            'summary_mode': _meta.get('summary_mode', 'mean'),
+            'zeros_valid': True,
+        }
+        for _key in ('positive', 'unit_note', 'units_from_config', 'units_map', 'angular_period'):
+            if _key in _meta:
+                _entry[_key] = _meta[_key]
+        CHEMICALDRIFT_VARIABLE_REGISTRY[_name] = _entry
+    del _name, _meta, _entry, _definition, _key
+
     def calc_mass_conversion_factor(self, mass_unit):
         """
         Returns factor f such that:
@@ -23139,8 +23295,345 @@ class ChemicalDrift(OceanDrift):
             )
         return out
 
+    @classmethod
+    def _validate_chemicaldrift_variable_registry(cls):
+        """Validate registry coverage and aggregation metadata."""
+        valid_modes = {
+            'mean', 'sum', 'mean_nonzero', 'mean_abs_nonzero',
+            'circular_mean', 'special',
+        }
+        required_names = set()
+        required_group_names = (
+            'BASE_REQUIRED_VARIABLES',
+            'PARTITIONING_REQUIRED_VARIABLES',
+            'SEDIMENT_EXCHANGE_REQUIRED_VARIABLES',
+            'DIRECT_CURRENT_STRESS_REQUIRED_VARIABLES',
+            'SEDIMENT_BOTTOM_VELOCITY_REQUIRED_VARIABLES',
+            'SEDIMENT_LOG_Z0_REQUIRED_VARIABLES',
+            'SEDIMENT_GRAIN_D50_REQUIRED_VARIABLES',
+            'SEDIMENT_BULK_FLOW_REQUIRED_VARIABLES',
+            'SEDIMENT_RESUSPENSION_REQUIRED_VARIABLES',
+            'OTHER_STRESS_REQUIRED_VARIABLES',
+            'WAVE_STRESS_REQUIRED_VARIABLES',
+            'WAVE_DIRECTION_REQUIRED_VARIABLES',
+            'DIRECT_WAVE_STRESS_REQUIRED_VARIABLES',
+            'VOLATILIZATION_REQUIRED_VARIABLES',
+            'HYDROLYSIS_REQUIRED_VARIABLES',
+            'BIODEGRADATION_REQUIRED_VARIABLES',
+            'SEDIMENT_OXYGEN_GEOMETRY_REQUIRED_VARIABLES',
+            'SEDIMENT_OXYGEN_OPD_REQUIRED_VARIABLES',
+            'SEDIMENT_OXYGEN_TRANSPORT_REQUIRED_VARIABLES',
+            'SEDIMENT_OXYGEN_VOLUMETRIC_REQUIRED_VARIABLES',
+            'SEDIMENT_OXYGEN_FLUX_REQUIRED_VARIABLES',
+            'SEDIMENT_OXYGEN_DBL_REQUIRED_VARIABLES',
+            'SEDIMENT_OXYGEN_TWO_LAYER_REQUIRED_VARIABLES',
+            'PHOTODEGRADATION_REQUIRED_VARIABLES',
+        )
+        for group_name in required_group_names:
+            required_names.update(getattr(cls, group_name).keys())
+
+        missing_required = sorted(required_names - set(cls.CHEMICALDRIFT_VARIABLE_REGISTRY))
+        if missing_required:
+            raise RuntimeError(
+                'CHEMICALDRIFT_VARIABLE_REGISTRY is missing required environmental '
+                f'variable(s): {missing_required}'
+            )
+
+        element_names = {
+            name for name, _ in (
+                list(Chemical.BASE_CHEMICAL_VARIABLES)
+                + list(Chemical.SINGLE_DEGRADATION_VARIABLES)
+                + list(Chemical.BED_INTERACTION_VARIABLES)
+            )
+        }
+        element_names.update(Chemical.SEDIMENT_OXYGEN_DIAGNOSTIC_DEFINITIONS)
+        missing_elements = sorted(element_names - set(cls.CHEMICALDRIFT_VARIABLE_REGISTRY))
+        if missing_elements:
+            raise RuntimeError(
+                'CHEMICALDRIFT_VARIABLE_REGISTRY is missing Chemical element '
+                f'variable(s): {missing_elements}'
+            )
+
+        for name, spec in cls.CHEMICALDRIFT_VARIABLE_REGISTRY.items():
+            mode = spec.get('summary_mode')
+            if mode not in valid_modes:
+                raise RuntimeError(
+                    f'Invalid registry summary_mode for {name!r}: {mode!r}'
+                )
+            if spec.get('source') not in ('element', 'environment', 'derived', 'special'):
+                raise RuntimeError(
+                    f'Invalid registry source for {name!r}: {spec.get("source")!r}'
+                )
+            if not spec.get('units') and not spec.get('units_from_config'):
+                raise RuntimeError(
+                    f'Registry variable {name!r} has no authoritative unit definition.'
+                )
+            if mode == 'circular_mean' and spec.get('units') != 'degree':
+                raise RuntimeError(
+                    f'Circular registry variable {name!r} must use degree units.'
+                )
+        return True
+
+    @staticmethod
+    def _normalize_summary_mode(mode):
+        mode = str(mode).strip().lower()
+        aliases = {
+            'mean_non_zero': 'mean_nonzero',
+            'mean_non0': 'mean_nonzero',
+            'mean_abs_non_zero': 'mean_abs_nonzero',
+            'mean_abs_non0': 'mean_abs_nonzero',
+            'circular': 'circular_mean',
+            'circularmean': 'circular_mean',
+        }
+        mode = aliases.get(mode, mode)
+        valid = {'mean', 'sum', 'mean_nonzero', 'mean_abs_nonzero', 'circular_mean'}
+        if mode not in valid:
+            raise ValueError(
+                f'Incorrect summary mode: {mode!r}. Allowed: {sorted(valid)}'
+            )
+        return mode
+
+    @staticmethod
+    def _canonical_unit_string(unit):
+        """Canonicalize common equivalent unit spellings for validation only."""
+        if unit is None:
+            return None
+        raw = str(unit).strip()
+        compact = raw.lower().replace(' ', '').replace('^', '')
+        aliases = {
+            '': '1', 'dimensionless': '1',
+            'm/s': 'ms-1', 'ms-1': 'ms-1',
+            'm2/s': 'm2s-1', 'm2s-1': 'm2s-1',
+            'kg/m3': 'kgm-3', 'kgm-3': 'kgm-3',
+            'g/m3': 'gm-3', 'gm-3': 'gm-3',
+            'mmol/m3': 'mmolm-3', 'mmolm-3': 'mmolm-3',
+            '1/m': 'm-1', 'm-1': 'm-1',
+            'w/m2': 'wm-2', 'wm-2': 'wm-2',
+            'degc': 'degree_celsius', 'degree_celsius': 'degree_celsius',
+            'degrees_celsius': 'degree_celsius',
+            'degree': 'degree', 'degrees': 'degree',
+            'psu': '1',
+        }
+        return aliases.get(compact, compact)
+
+    def _summary_registry_units(self, field):
+        spec = self.CHEMICALDRIFT_VARIABLE_REGISTRY[field]
+        config_key = spec.get('units_from_config')
+        if config_key:
+            config_value = self.get_config(config_key)
+            unit_map = spec.get('units_map', {})
+            if config_value not in unit_map:
+                raise ValueError(
+                    f'No summary unit mapping for {field!r} with '
+                    f'{config_key}={config_value!r}'
+                )
+            return unit_map[config_value]
+        return spec.get('units') or '1'
+
+    def _resolve_summary_field_specs(self, result_ds, summary_variables=None, extra_fields=None):
+        """Resolve registered fields that are available in a finished result."""
+        import warnings
+
+        registry = self.CHEMICALDRIFT_VARIABLE_REGISTRY
+        resolved = {}
+
+        if summary_variables is None:
+            requested = []
+        elif isinstance(summary_variables, str):
+            if summary_variables != 'configured':
+                raise ValueError(
+                    "summary_variables must be None, 'configured', or an iterable of registry names"
+                )
+            requested = []
+            for name, reg in registry.items():
+                if reg.get('summary_mode') == 'special':
+                    continue
+                if name not in result_ds:
+                    continue
+                requested.append(name)
+        else:
+            requested = list(summary_variables)
+
+        for field in requested:
+            if field not in registry:
+                raise ValueError(
+                    f'Summary variable {field!r} is not registered in '
+                    'CHEMICALDRIFT_VARIABLE_REGISTRY.'
+                )
+            reg = dict(registry[field])
+            if reg.get('summary_mode') == 'special':
+                warnings.warn(
+                    f'Summary variable {field!r} is handled by the dedicated '
+                    f'{reg.get("processor", "special")} processor and will not be '
+                    'duplicated by the generic aggregator.',
+                    RuntimeWarning,
+                )
+                continue
+            reg['units'] = self._summary_registry_units(field)
+            reg['mode'] = self._normalize_summary_mode(reg['summary_mode'])
+            reg['legacy_name'] = field
+            reg['registered'] = True
+            resolved[field] = reg
+
+        # Backward-compatible extra_fields layer. The registry remains the source
+        # of truth: reader-only/unregistered result variables are rejected.
+        for field, user_spec in (extra_fields or {}).items():
+            user_spec = {} if user_spec is None else dict(user_spec)
+            if field in registry:
+                reg = dict(registry[field])
+                if reg.get('summary_mode') == 'special':
+                    raise ValueError(
+                        f'Extra field {field!r} is handled by dedicated processor '
+                        f'{reg.get("processor", "special")!r} and cannot be '
+                        're-aggregated generically.'
+                    )
+                expected_unit = self._summary_registry_units(field)
+                supplied_unit = user_spec.get('Unit of measure', user_spec.get('Unit'))
+                if supplied_unit not in (None, ''):
+                    if self._canonical_unit_string(supplied_unit) != self._canonical_unit_string(expected_unit):
+                        raise ValueError(
+                            f'Incorrect unit supplied for registered variable {field!r}: '
+                            f'{supplied_unit!r}; ChemicalDrift requires {expected_unit!r}.'
+                        )
+                default_mode = self._normalize_summary_mode(reg['summary_mode'])
+                mode = self._normalize_summary_mode(user_spec.get('mode', default_mode))
+                if default_mode == 'circular_mean' and mode != 'circular_mean':
+                    raise ValueError(
+                        f'Angular variable {field!r} must use circular_mean, not {mode!r}.'
+                    )
+                if default_mode != 'circular_mean' and mode == 'circular_mean':
+                    raise ValueError(
+                        f'Non-angular registered variable {field!r} cannot use circular_mean.'
+                    )
+                # Registered intensive diagnostics may use alternate mean-like
+                # filters, but summation is not a scientifically safe override.
+                if mode == 'sum':
+                    raise ValueError(
+                        f'Registered variable {field!r} is not defined as an extensive '
+                        'quantity and cannot override its registry mode with sum.'
+                    )
+                reg['units'] = expected_unit
+                reg['mode'] = mode
+                reg['legacy_name'] = user_spec.get('Name', field)
+                reg['registered'] = True
+                resolved[field] = reg
+            else:
+                raise ValueError(
+                    f'Extra field {field!r} is not registered in '
+                    'CHEMICALDRIFT_VARIABLE_REGISTRY. extract_summary_timeseries '
+                    'only processes variables defined by ChemicalDrift and stored '
+                    'in the finished simulation result.'
+                )
+
+        return resolved
+
+    @staticmethod
+    def _summary_output_variable_name(field, mode):
+        """Return a NetCDF-safe, operation-explicit generic summary name."""
+        import re
+        safe = re.sub(r'[^0-9A-Za-z_]+', '_', str(field)).strip('_')
+        if not safe:
+            safe = 'summary_variable'
+        if safe[0].isdigit():
+            safe = 'v_' + safe
+        suffix = {
+            'mean': '_mean',
+            'mean_nonzero': '_mean_nonzero',
+            'mean_abs_nonzero': '_mean_abs_nonzero',
+            'circular_mean': '_mean',
+            'sum': '_sum',
+        }[mode]
+        return safe + suffix
+
+    @staticmethod
+    def _netcdf_safe_attr_value(value):
+        """Convert config/metadata values to NetCDF-compatible scalar/string attrs."""
+        import numpy as np
+        if value is None:
+            return 'None'
+        if isinstance(value, (bool, np.bool_)):
+            return 'true' if bool(value) else 'false'
+        if isinstance(value, (str, int, float, np.integer, np.floating)):
+            if isinstance(value, (np.integer, np.floating)):
+                return value.item()
+            return value
+        return str(value)
+
+    def _summary_configuration_metadata(self):
+        """Return interpretation-relevant ChemicalDrift configuration metadata."""
+        config_keys = (
+            'chemical:dynamic_partitioning',
+            'chemical:transformations:degradation',
+            'chemical:transformations:degradation_mode',
+            'chemical:transformations:Biodegradation',
+            'chemical:transformations:Photodegradation',
+            'chemical:transformations:Hydrolysis',
+            'chemical:transformations:volatilization',
+            'chemical:transformations:solar_input_unit',
+            'chemical:sediment:enable_deposition',
+            'chemical:sediment:enable_resuspension',
+            'chemical:sediment:stress_param_mode',
+            'chemical:sediment:include_wave_stress',
+            'chemical:sediment:wave_stress_source',
+            'chemical:sediment:shear_stress_combination',
+            'chemical:sediment:oxygen_model',
+            'chemical:sediment:oxygen_demand_mode',
+            'chemical:sediment:save_bed_interaction',
+            'chemical:sediment:save_oxygen_diagnostics',
+        )
+        out = {}
+        for key in config_keys:
+            try:
+                out[key] = self._netcdf_safe_attr_value(self.get_config(key))
+            except Exception:
+                continue
+        return out
+
+    @staticmethod
+    def _summary_output_paths(path, output_format):
+        """Resolve deterministic .nc/.csv paths from one requested path/base."""
+        import os
+        if path is None:
+            raise ValueError('timeseries_file_path is unspecified when save_files is True')
+        path = os.fspath(path)
+        root, ext = os.path.splitext(path)
+        ext_l = ext.lower()
+        if ext_l in ('.nc', '.netcdf', '.csv'):
+            base = root
+        else:
+            base = path
+        nc_path = path if ext_l in ('.nc', '.netcdf') else base + '.nc'
+        csv_path = path if ext_l == '.csv' else base + '.csv'
+        if output_format == 'netcdf':
+            return nc_path, None
+        if output_format == 'csv':
+            return None, csv_path
+        return nc_path, csv_path
+
+    @staticmethod
+    def _summary_dataset_to_dataframe(summary_ds, mass_unit, time_unit):
+        """Build the compatibility CSV/DataFrame strictly from summary_ds."""
+        import pandas as pd
+        data = {
+            f'time [{time_unit}]': summary_ds['elapsed_time'].values,
+            'date_of_timestep': pd.to_datetime(summary_ds['time'].values),
+        }
+        for name, da in summary_ds.data_vars.items():
+            if name == 'elapsed_time':
+                continue
+            csv_name = da.attrs.get('csv_name', name)
+            data[csv_name] = da.values
+        df = pd.DataFrame(data)
+        n = len(df)
+        if n:
+            df['UM'] = pd.NA
+            df.loc[df.index[0], 'UM'] = f'[{mass_unit}] [{time_unit}]'
+        else:
+            df['UM'] = pd.Series(dtype='object')
+        return df
+
     def extract_summary_timeseries(self,
-            timeseries_file_path,
+            timeseries_file_path=None,
             mass_unit='g',
             time_unit='h',
             shp_file_path = None,
@@ -23153,12 +23646,13 @@ class ChemicalDrift(OceanDrift):
             time_start=None,
             time_end=None,
             extra_fields=None,
+            summary_variables=None,
+            output_format='both',
             save_files = True,
             verbose = False
             ):
         """
-        Extract, aggregate, and optionally export (.csv) a mass-budget summary time series from a
-        ChemicalDrift simulation stored in self.result.
+        Build a scientifically self-describing ChemicalDrift summary time series.
 
         This routine builds 1D time series (one value per output timestep) from element-wise
         (trajectory,time) variables, taking care of:
@@ -23167,6 +23661,11 @@ class ChemicalDrift(OceanDrift):
         - definition of the “inside simulation domain” to avoid double-counting mass that has left
           the domain,
         - robust handling of NaNs after element deactivation (forward-fill per element when needed).
+	Additional element/environment variables are resolved through
+        CHEMICALDRIFT_VARIABLE_REGISTRY and aggregated from stored
+        (trajectory,time) values. Environmental summaries therefore describe values
+        sampled at ChemicalDrift element positions, not spatial means of the reader
+        domain.
 
         The resulting DataFrame contains:
         1) Mass currently inside the system (water, active sediment layer, total)
@@ -23178,24 +23677,32 @@ class ChemicalDrift(OceanDrift):
 
         Parameters
         ----------
-        timeseries_file_path: str, Output CSV file path. Must end with ".csv" when save_files is True.
-        mass_unit:            str, Mass unit for outputs. Allowed: 'kg', 'g', 'mg', 'ug', 'µg'. Default is 'g'.
-                                       The conversion is performed from the unit stored in self.elements.variables['mass']['units'].
-        time_unit:            str, Time unit for the exported time axis.
-                                       Allowed: 's' (seconds), 'm' (minutes), 'hr' or 'h' (hours), 'd' (days). Default is 'h'.
-                                       The conversion is based on self.time_step_output (the model output interval).
-        shp_file_path:        str, Path to a shapefile defining the “inside” domain polygon(s).
-                                       If provided, adv_out is computed as NOT-within shapefile.
-        lon_min, lon_max,
-        lat_min, lat_max:     float, Geographic bounding box used to define the inside domain when no shapefile is provided.
-                                      Takes precedence over deactivate_coords. Default is None.
+        timeseries_file_path : str or path-like, optional
+            Output path or basename. For ``output_format='both'`` sibling .nc and
+            .csv files are created. Required only when ``save_files=True``.
+        mass_unit : {'kg','g','mg','ug','µg'}
+            Unit used by all dedicated mass-budget outputs.
+        time_unit : {'s','m','hr','h','d'}
+            Unit of the auxiliary ``elapsed_time`` variable and compatibility CSV
+            elapsed-time column. The NetCDF ``time`` coordinate remains datetime.
+        shp_file_path: Path to a shapefile defining the “inside” domain polygon(s).
+            If provided, adv_out is computed as NOT-within shapefile.
+	lon_min, lon_max, lat_min, lat_max : Geographic bounding box used to define
+	    the inside domain when no shapefile is provided.
+            Takes precedence over deactivate_coords. Default is None.
         start_date, end_date: pandas.Timestamp/np.datetime64, Start/end dates for slicing the exported period.
         time_start, time_end: int/float, Start/end of slicing window for the exported period, in requested time_unit
-                                         (e.g. hours if time_unit='h').
-                                         Takes precedence over start_date, end_date.
-        extra_fields:        dict, optional Extra 2D fields from self.result to aggregate over ALL elements
-                     in the selected period, with no active/in/out/species masks.
-                     Format: { "field1": {"Name": "AAA","Unit": "UM", "mode": "mean"},}
+                              (e.g. hours if time_unit='h'). Takes precedence over start_date, end_date.
+        summary_variables : None, 'configured', or iterable of str
+            None exports only the mandatory/core ChemicalDrift summary. 'configured'
+            additionally aggregates every registered non-special variable that is
+            actually present in the finished simulation result. An iterable selects registered
+            variables explicitly.
+        extra_fields : dict, optional
+            Explicit field selection/override. Registered fields obtain authoritative units from the registry and cannot override them.
+            Unregistered fields are rejected: the registry is the source of truth for
+            variables that may be summarized. Existing aliases for mean_nonzero/mean_abs_nonzero are retained.
+            Format: { "field1": {"Name": "AAA","Unit": "UM", "mode": "mean"},}
                      where:
                        - dict key = variable name in self.result
                        - "Name" = output column label
@@ -23203,18 +23710,26 @@ class ChemicalDrift(OceanDrift):
                        - "mode" can be:
                            * "mean" -> per-timestep nanmean across elements
                                       <Name> [Unit] = per-timestep mean over finite values
-                                      <Name> [Unit]__n_valid = number of finite elements used
+                                      <Name> [Unit]_n_valid = number of finite elements used
                            * "sum"  -> per-timestep nansum across elements
                            * "mean_nonzero" -> per-timestep mean over finite, non-zero values only
-                                               <Name> [Unit]__n_valid = number of finite, non-zero
+                                               <Name> [Unit]_n_valid = number of finite, non-zero
                                                elements used
                            * "mean_abs_nonzero" -> per-timestep mean of abs(value) over finite,
                                                    non-zero values only
-                                                   <Name> [Unit]__n_valid = number of finite,
+                                                   <Name> [Unit]_n_valid = number of finite,
                                                    non-zero elements used
-        save_files:           bool, If True, export the resulting DataFrame to timeseries_file_path and return None.
-                                    If False, return the DataFrame and do not write files.
-        verbose:              bool, Print progress information.
+			   * "circular_mean" -> per-timestep circular mean of values in degrees over finite values,
+						<Name> [Unit]_n_valid = number of finite elements used
+	output_format : {'netcdf','csv','both'}, default 'both'
+            NetCDF is the authoritative scientific representation. CSV is generated
+            strictly from the completed xarray.Dataset.
+        save_files : bool, default True
+            If True, write requested file(s) and return None. If False, return the
+            xarray.Dataset for netcdf/both, or the derived compatibility DataFrame for
+            csv.
+        verbose : bool
+            Print progress information.
 
         Processes / logic
         -----------------
@@ -23283,11 +23798,10 @@ class ChemicalDrift(OceanDrift):
         Returns
         -------
         If save_files is True:
-            None
-            Writes CSV to timeseries_file_path.
+            None, xarray.Dataset, or pandas.DataFrame
 
         If save_files is False:
-            pandas.DataFrame with the following columns:
+            pandas.DataFrame of xarray.Dataset
 
             Time axis
             ---------
@@ -23383,15 +23897,23 @@ class ChemicalDrift(OceanDrift):
         import opendrift
         import pandas as pd
         import numpy as np
+        import xarray as xr
+        import json
+        from datetime import datetime, timezone
 
         if shp_file_path is not None:
             import geopandas as gpd
 
-        if save_files:
-            if timeseries_file_path is None:
-                raise ValueError("timeseries_file_path is unspecified when save_file is True")
-            if not timeseries_file_path.endswith(".csv"):
-                raise ValueError("timeseries_file_path must end with .csv")
+        output_format = str(output_format).strip().lower()
+        if output_format not in ('netcdf', 'csv', 'both'):
+            raise ValueError(
+                "output_format must be one of 'netcdf', 'csv', or 'both'"
+            )
+        self._validate_chemicaldrift_variable_registry()
+        if save_files and timeseries_file_path is None:
+            raise ValueError(
+                "timeseries_file_path is unspecified when save_files is True"
+            )
 
         # Initialize init_species() and init_transfer_rates() if they were not stored in self.result
         required_meta = ['nspecies', 'name_species', 'transfer_rates']
@@ -23451,48 +23973,79 @@ class ChemicalDrift(OceanDrift):
         if verbose:
             print("Extracting data from simulation")
         # Extract properties from simulation
-
         ds = self.result
-        vars_time = [v for v in ds.data_vars if set(ds[v].dims) == {"trajectory", "time"}]
+
+        required_fields = [
+            "lat", "lon",
+            "mass", "status", "specie",]
+        missing_attrs = [
+            field for field in required_fields
+            if field not in ds
+        ]
+        if missing_attrs:
+            raise ValueError(
+                f"Required field(s) not found in self.result: {missing_attrs}"
+            )
+
+        vars_time = [v for v in ds.data_vars
+            if set(ds[v].dims) == {"trajectory", "time"}]
         if not vars_time:
-            raise ValueError("No (trajectory,time) variables found (in any dim order).")
+            raise ValueError(
+                "No (trajectory,time) variables found (in any dim order)."
+            )
 
-        # Check only lat/lon
+        # Keep trajectories having at least one timestep at which both
+        # longitude and latitude are simultaneously valid.
         valid_traj = (
-            ds["lon"].notnull().any("time") & ds["lat"].notnull().any("time"))
-        removed = ds.trajectory.where(~valid_traj, drop=True).values
-        if verbose:
-            if len(removed) > 0:
-                print(f"Removed IDs {removed} from self.result  as lat/lon were NaN")
+            np.isfinite(ds["lon"]) & np.isfinite(ds["lat"])
+            ).any("time")
 
-        # keep only valid trajectories
-        ds_clean = ds.isel(trajectory=valid_traj)
-        self.result = ds_clean
-        del ds_clean, ds
+        valid_traj_np = valid_traj.to_numpy()
+        invalid_idx = np.flatnonzero(~valid_traj_np)
+        if invalid_idx.size:
+            if verbose:
+                removed = ds.trajectory.values[invalid_idx]
+                print(f"Removed IDs {removed} from summary processing "
+                    "because lon/lat were never simultaneously valid")
+
+            valid_idx = np.flatnonzero(valid_traj_np)
+            result_ds = ds.isel(trajectory=valid_idx)
+        else:
+            # No indexing/copy required in the usual case.
+            result_ds = ds
 
         # Optional time filtering
-        result_ds = self.result
-        # Build full time axes on the *current* (cleaned) dataset
+        # Build full time axes on the cleaned local dataset.
         full_time_date = pd.to_datetime(result_ds.time.values)
         full_steps = full_time_date.size
-        full_time_steps = (np.arange(full_steps, dtype=np.float64) * time_conversion_factor)  # in requested time_unit
+        full_time_steps = (np.arange(full_steps, dtype=np.float64)
+            * time_conversion_factor)
 
         mask_t = np.ones(full_steps, dtype=bool)
-        use_time_window = (time_start is not None) or (time_end is not None)
-        # Calendar-date filtering (only if no explicit time window)
+
+        use_time_window = (
+            (time_start is not None)
+            or (time_end is not None))
+        # Calendar-date filtering is used only when no explicit elapsed-time
+        # window is provided.
         if (not use_time_window) and (start_date is not None):
             sd = pd.to_datetime(start_date)
-            mask_t &= (full_time_date >= sd)
+            mask_t &= full_time_date >= sd
         if (not use_time_window) and (end_date is not None):
             ed = pd.to_datetime(end_date)
-            mask_t &= (full_time_date <= ed)
-        # Time-since-start filtering (inclusive)
+            mask_t &= full_time_date <= ed
+        # Elapsed-time filtering, inclusive.
         if time_start is not None:
-            mask_t &= (full_time_steps >= float(time_start))
+            mask_t &= full_time_steps >= float(time_start)
         if time_end is not None:
-            mask_t &= (full_time_steps <= float(time_end))
-        # Apply slicing only if any filter was requested
-        filter_requested = (start_date is not None) or (end_date is not None) or (time_start is not None) or (time_end is not None)
+            mask_t &= full_time_steps <= float(time_end)
+
+        filter_requested = any(
+            value is not None
+            for value in (
+                start_date, end_date,
+                time_start, time_end,
+            ))
 
         pad_rows = 0
         time_index0 = 0
@@ -23503,43 +24056,37 @@ class ChemicalDrift(OceanDrift):
             if idx.size == 0:
                 raise ValueError("Requested time/date filter returned an empty time window.")
 
-            i0, i1 = int(idx[0]), int(idx[-1])
-
-            # include one step before i0 as padding (if possible) for deltas/transitions
+            i0 = int(idx[0])
+            i1 = int(idx[-1])
+            # Include one preceding timestep where possible so that
+            # deltas and transitions at the beginning of the requested
+            # interval can be reconstructed correctly.
             slice_start = max(i0 - 1, 0)
-            slice_end   = i1 + 1  # python slice end is exclusive
+            slice_end = i1 + 1
 
-            pad_rows = i0 - slice_start          # 1 if i0>0 else 0
-            time_index0 = slice_start            # offset to keep 'time since simulation start' consistent
-            window_starts_at_sim0 = (i0 == 0)
-
-            self.result = result_ds.isel(time=slice(slice_start, slice_end))
-            result_ds = self.result
-
-        # Number of timesteps (after optional filtering)
-        steps = len(self.result.time)
-        result_ds=self.result
-        required_fields = [
-            'lat', 'lon', 'mass', 'status', 'specie',
-            'mass_degraded', 'mass_degraded_water',
-            'mass_degraded_sediment', 'mass_volatilized',
-        ]
-        missing_attrs = [
-            field for field in required_fields
-            if field not in result_ds
-        ]
-        if missing_attrs:
-            raise ValueError(
-                f"Required field(s) not found in self.result: {missing_attrs}"
+            pad_rows = i0 - slice_start
+            time_index0 = slice_start
+            window_starts_at_sim0 = i0 == 0
+            # Local xarray selection only: self.result is unchanged.
+            result_ds = result_ds.isel(
+                time=slice(slice_start, slice_end)
             )
 
-        missing_extra_fields = [
-            field for field in (extra_fields or {})
+        steps = result_ds.sizes["time"]
+
+        resolved_summary_fields = self._resolve_summary_field_specs(
+            result_ds=result_ds,
+            summary_variables=summary_variables,
+            extra_fields=extra_fields,
+        )
+        missing_summary_fields = [
+            field for field in resolved_summary_fields
             if field not in result_ds
         ]
-        if missing_extra_fields:
+        if missing_summary_fields:
             raise ValueError(
-                f"Requested extra field(s) not found in self.result: {missing_extra_fields}"
+                "Requested summary field(s) not found in self.result: "
+                f"{missing_summary_fields}"
             )
 
         def get_2d(result_ds, name, dtype=None, contiguous=False):
@@ -23668,9 +24215,11 @@ class ChemicalDrift(OceanDrift):
             raise ValueError(error)
 
         # Keep time since simulation start (not since window start)
-        time_steps = (np.arange(time_index0, time_index0 + steps, dtype=np.float64) * time_conversion_factor)
-        # Use dataset time coordinate directly
-        time_date_serie = pd.to_datetime(self.result.time.values)
+        time_steps = (np.arange(time_index0, time_index0 + steps, dtype=np.float64)
+            * time_conversion_factor)
+
+        # Use the local cleaned/filtered dataset; self.result remains unchanged.
+        time_date_serie = pd.to_datetime(result_ds.time.values)
 
         def masked_nansum(arr, mask, axis=1):
             """Sum arr over axis, only where mask==True; ignore NaNs inside mask."""
@@ -23954,113 +24503,170 @@ class ChemicalDrift(OceanDrift):
                 where=total_elim_ts > 0.0,) * 100.0
             perc_elim_dict_1d[perc_key] = perc.astype(np.float32, copy=False)
 
-        # 9) Extra user-requested fields aggregated over all elements (no masks)
-        # For mean-like modes, also export a companion count series:
-        #   <value_col>__n_valid
+        # 9) Registry-resolved generic fields aggregated over all stored elements.
+        # No inside/status/species  mask is applied; finite/selected values across trajectory are aggregated.
+        # All generic outputs include n_valid for robust multi-file aggregation.
+        extra_fields_meta = {}
+        extra_fields_inf_count_dict_1d = {}
+
+        # For exact aggregation of circular means across multiple summary files.
+        # These store the sums of sin(theta) and cos(theta) over all finite
+        # contributing element values at each timestep.
+        extra_fields_circular_sin_dict_1d = {}
+        extra_fields_circular_cos_dict_1d = {}
+
+
         def aggregate_extra_field_chunked(da, mode, chunk_cols=50000):
+            """Chunked aggregation over trajectory.
+
+            Returns
+            -------
+            values, valid_count, positive_inf_count, circular_sum_sin, circular_sum_cos
+
+            Notes
+            -----
+            - NaN and +/-inf are excluded from arithmetic aggregation.
+            - positive_inf_count preserves physically meaningful +inf occurrences
+              (e.g. sediment O2 penetration depth).
+            - For circular_mean, sum_sin and sum_cos are retained so results from
+              multiple summary files can later be combined exactly.
             """
-            Aggregate a 2D xarray.DataArray with dims ('time', 'trajectory')
-            in chunks over trajectory to reduce temporary RAM use.
-            Returns:
-                ts:          (T,) float64
-                valid_count: (T,) float64 or None
-            """
-            da_t = da.transpose("time", "trajectory")
-            T = da_t.sizes["time"]
-            N = da_t.sizes["trajectory"]
+            da_t = da.transpose('time', 'trajectory')
+            T, N = da_t.sizes['time'], da_t.sizes['trajectory']
 
             sums = np.zeros(T, dtype=np.float64)
-            if mode == "sum":
+            valid_count = np.zeros(T, dtype=np.float64)
+            positive_inf_count = np.zeros(T, dtype=np.float64)
+
+            # Circular mean: accumulate vector components rather than averaging angles.
+            if mode == 'circular_mean':
+                sum_sin = np.zeros(T, dtype=np.float64)
+                sum_cos = np.zeros(T, dtype=np.float64)
+
+                # Process trajectories in chunks to limit temporary memory allocation.
                 for start in range(0, N, chunk_cols):
                     end = min(start + chunk_cols, N)
-                    chunk = da_t.isel(trajectory=slice(start, end)).to_numpy()
-                    # Same behavior as np.nansum(arr2d, axis=1), but chunked.
+                    chunk = np.asarray(
+                        da_t.isel(trajectory=slice(start, end)).to_numpy(), dtype=np.float64)
+
                     finite = np.isfinite(chunk)
-                    sums += np.sum(
-                        chunk, axis=1,
-                        where=finite,
-                        dtype=np.float64,
-                        initial=0.0,
-                    )
-                return sums, None
+                    positive_inf_count += np.isposinf(chunk).sum(axis=1, dtype=np.float64)
+                    valid_count += finite.sum(axis=1, dtype=np.float64)
 
-            if mode not in ("mean", "mean_nonzero", "mean_abs_nonzero"):
-                raise ValueError(
-                    f"Incorrect mode: {mode!r}. "
-                    "Allowed: 'mean', 'sum', 'mean_nonzero', 'mean_abs_nonzero'"
-                )
-            valid_count = np.zeros(T, dtype=np.float64)
+                    # Invalid values are replaced only before conversion; `where=finite`
+                    # below ensures they do not contribute to the vector sums.
+                    radians = np.deg2rad(np.where(finite, chunk, 0.0))
+                    sum_sin += np.sum(
+                        np.sin(radians), axis=1, where=finite, dtype=np.float64, initial=0.0)
+                    sum_cos += np.sum(
+                        np.cos(radians), axis=1, where=finite, dtype=np.float64, initial=0.0)
 
+                resultant = np.hypot(sum_sin, sum_cos)
+                angle = np.mod(np.rad2deg(np.arctan2(sum_sin, sum_cos)), 360.0)
+
+                # A true 0-degree result may appear numerically as 360-epsilon.
+                angle[np.isclose(angle, 360.0, rtol=0.0, atol=1e-10)] = 0.0
+
+                # Circular mean is undefined with no valid observations or when the
+                # resultant vector is effectively zero.
+                angle[(valid_count == 0) | (resultant <= 1e-12 * valid_count)] = np.nan
+
+                return angle, valid_count, positive_inf_count, sum_sin, sum_cos
+
+            # Standard arithmetic aggregation.
             for start in range(0, N, chunk_cols):
                 end = min(start + chunk_cols, N)
-                chunk = da_t.isel(trajectory=slice(start, end)).to_numpy()
-                finite = np.isfinite(chunk)
+                chunk = np.asarray(
+                    da_t.isel(trajectory=slice(start, end)).to_numpy(), dtype=np.float64)
 
-                if mode == "mean":
-                    used = finite
-                    values = chunk
-                elif mode == "mean_nonzero":
-                    used = finite & (chunk != 0)
-                    values = chunk
-                elif mode == "mean_abs_nonzero":
-                    used = finite & (chunk != 0)
-                    # Chunk-sized temporary only, not full T x N.
-                    values = np.empty_like(chunk, dtype=np.float64)
-                    np.abs(chunk, out=values, where=finite)
-                    values[~finite] = 0.0
+                finite = np.isfinite(chunk)
+                positive_inf_count += np.isposinf(chunk).sum(axis=1, dtype=np.float64)
+
+                if mode in ('mean', 'sum'):
+                    used, values = finite, chunk
+                elif mode == 'mean_nonzero':
+                    used, values = finite & (chunk != 0), chunk
+                elif mode == 'mean_abs_nonzero':
+                    used, values = finite & (chunk != 0), np.abs(chunk)
+                else:
+                    raise ValueError(f'Unsupported aggregation mode: {mode!r}')
 
                 valid_count += used.sum(axis=1, dtype=np.float64)
-                sums += np.sum(
-                    values, axis=1,
-                    where=used, dtype=np.float64,
-                    initial=0.0,
-                )
-            ts = np.divide(
-                sums, valid_count,
-                out=np.full(T, np.nan, dtype=np.float64),
-                where=valid_count > 0,
-            )
-            return ts, valid_count
+                sums += np.sum(values, axis=1, where=used, dtype=np.float64, initial=0.0)
 
-        for field, spec in (extra_fields or {}).items():
+            if mode == 'sum':
+                values = sums
+            else:
+                values = np.divide(
+                    sums, valid_count, out=np.full(T, np.nan, dtype=np.float64),
+                    where=valid_count > 0)
+
+            return values, valid_count, positive_inf_count, None, None
+
+        for field, spec in resolved_summary_fields.items():
             da = result_ds[field]
-            if set(da.dims) != {"trajectory", "time"}:
+            if set(da.dims) != {'trajectory', 'time'}:
                 raise ValueError(
-                    f"Requested extra field {field!r} must have dims "
+                    f'Requested summary field {field!r} must have dims '
                     f"('trajectory','time') in any order, got {da.dims}"
                 )
-            spec = {} if spec is None else dict(spec)
-            out_name = spec.get("Name", field)
-            out_um = spec.get("Unit of measure", spec.get("Unit", getattr(da, "units", "")))
-            mode = str(spec.get("mode", "mean")).strip().lower()
-            # Optional aliases
-            mode_aliases = {
-                "mean_non_zero": "mean_nonzero",
-                "mean_non0": "mean_nonzero",
-                "mean_abs_non_zero": "mean_abs_nonzero",
-                "mean_abs_non0": "mean_abs_nonzero",
-            }
-            mode = mode_aliases.get(mode, mode)
-            col_name = f"{out_name} [{out_um}]" if str(out_um).strip() else out_name
-            if mode == "sum":
-                ts, _ = aggregate_extra_field_chunked(
-                    da=da, mode=mode,
-                    chunk_cols=50000,
-                )
-                extra_fields_dict_1d[col_name] = ts
-            elif mode in ("mean", "mean_nonzero", "mean_abs_nonzero"):
-                ts, valid_count = aggregate_extra_field_chunked(
-                    da=da,
-                    mode=mode,
-                    chunk_cols=50000,
-                )
-                extra_fields_dict_1d[col_name] = ts
-                extra_fields_count_dict_1d[f"{col_name}__n_valid"] = valid_count
-            else:
-                raise ValueError(
-                    f"Incorrect mode for extra field {field!r}: {mode!r}. "
-                    "Allowed: 'mean', 'sum', 'mean_nonzero', 'mean_abs_nonzero'"
-                )
+            mode = spec['mode']
+            (ts, valid_count, positive_inf_count,
+             circular_sum_sin, circular_sum_cos,) = aggregate_extra_field_chunked(da=da, mode=mode, chunk_cols=50000,)
+            output_name = self._summary_output_variable_name(field, mode)
+            legacy_name = spec.get('legacy_name', field)
+            units = spec['units']
+            legacy_col = f'{legacy_name} [{units}]' if str(units).strip() else legacy_name
+
+            extra_fields_dict_1d[output_name] = ts
+            count_name = f'{output_name}_n_valid'
+            extra_fields_count_dict_1d[count_name] = valid_count
+
+            # Preserve the vector components required to combine circular means
+            # exactly across multiple independently generated summary files.
+            if mode == 'circular_mean':
+                # output_name is normally <source_variable>_mean.
+                # Ancillary variables retain the source-variable identity without
+                # the "_mean" suffix.
+                if output_name.endswith('_mean'):
+                    circular_base_name = output_name[:-5]
+                else:
+                    circular_base_name = output_name
+
+                sum_sin_name = f'{circular_base_name}_sum_sin'
+                sum_cos_name = f'{circular_base_name}_sum_cos'
+
+                extra_fields_circular_sin_dict_1d[
+                    sum_sin_name
+                ] = circular_sum_sin
+
+                extra_fields_circular_cos_dict_1d[
+                    sum_cos_name
+                ] = circular_sum_cos
+
+            meta = dict(spec)
+            meta.update({
+                'source_variable': field,
+                'output_name': output_name,
+                'count_name': count_name,
+                'csv_name': legacy_col,
+                'count_csv_name': f'{legacy_col}_n_valid',
+            })
+            if mode == 'circular_mean':
+                meta['circular_sum_sin_name'] = sum_sin_name
+                meta['circular_sum_cos_name'] = sum_cos_name
+                meta['circular_sum_sin_csv_name'] = (
+                    f'{legacy_name}__sum_sin')
+                meta['circular_sum_cos_csv_name'] = (
+                    f'{legacy_name}__sum_cos')
+            if spec.get('report_positive_infinity_count', False):
+                inf_name = f'{output_name}_n_inf'
+                extra_fields_inf_count_dict_1d[inf_name] = positive_inf_count
+                meta['positive_inf_count_name'] = inf_name
+                meta['positive_inf_csv_name'] = f'{legacy_col}_n_inf'
+            extra_fields_meta[output_name] = meta
+
+
 
         # Drop padding row (if used) and recompute window cumulatives
         if pad_rows:
@@ -24068,8 +24674,14 @@ class ChemicalDrift(OceanDrift):
             time_steps = time_steps[pad_rows:]
             time_date_serie = time_date_serie[pad_rows:]
             # slice 1D dicts
-            for d in (mass_dict_1d, mass_sp_dict_1d, perc_sp_dict_1d, perc_elim_dict_1d,
-                      mass_transition_dict_1d, extra_fields_dict_1d, extra_fields_count_dict_1d):
+            for d in (
+                mass_dict_1d,
+                mass_sp_dict_1d, perc_sp_dict_1d, perc_elim_dict_1d,
+                mass_transition_dict_1d, extra_fields_dict_1d,
+                extra_fields_count_dict_1d, extra_fields_inf_count_dict_1d,
+                extra_fields_circular_sin_dict_1d, extra_fields_circular_cos_dict_1d,
+                    ):
+
                 for k in list(d.keys()):
                     d[k] = np.asarray(d[k])[pad_rows:]
 
@@ -24087,83 +24699,542 @@ class ChemicalDrift(OceanDrift):
                     if cum_key in mass_eliminated_dict_1d:
                         mass_eliminated_dict_1d[cum_key] = np.cumsum(ts, dtype=np.float64).astype(np.float32)
 
-        # Assemble DataFrame
-        # The function builds time-series arrays in *_dict_1d;
-        # assemble them into a dataframe for convenience.
-        mass_UM = f"[{mass_unit}]"
-        time_UM = f"[{time_unit}]"
+        # Add cumulative counterparts for all species-transition/event amounts.
+        # Keeping both representations makes temporal harmonization symmetric:
+        # cumulative curves are interpolated, then *_ts is regenerated by differencing.
+        for k in list(mass_transition_dict_1d.keys()):
+            if k.endswith("_ts"):
+                mass_transition_dict_1d[k[:-3] + "_cumulative"] = np.cumsum(
+                    np.asarray(mass_transition_dict_1d[k], dtype=np.float64), dtype=np.float64)
 
-        # rename columns (dict keys)
-        mass_dict              = {f"{k} {mass_UM}": v for k, v in mass_dict_1d.items()}
-        mass_eliminated_dict   = {f"{k} {mass_UM}": v for k, v in mass_eliminated_dict_1d.items()}
-        mass_sp_dict           = {f"{k} {mass_UM}": v for k, v in mass_sp_dict_1d.items()}
-        mass_transition_dict   = {f"{k} {mass_UM}": v for k, v in mass_transition_dict_1d.items()}
-        perc_sp_dict           = {f"{k} [%]":       v for k, v in perc_sp_dict_1d.items()}
-        perc_elim_dict         = {f"{k} [%]":       v for k, v in perc_elim_dict_1d.items()}
-
-        # UM column:
-        # row 0 -> global mass/time units
-        # row 1 -> extra field metadata (if any)
-        n = len(time_steps)
-        extra_fields_info = pd.NA
-        if extra_fields:
-            parts = []
-            for field, spec in extra_fields.items():
-                spec = {} if spec is None else dict(spec)
-                out_name = spec.get("Name", field)
-                out_um = spec.get("Unit of measure", spec.get("Unit", ""))
-                mode = str(spec.get("mode", "mean")).strip().lower()
-
-                mode_aliases = {
-                    "mean_non_zero": "mean_nonzero",
-                    "mean_non0": "mean_nonzero",
-                    "mean_abs_non_zero": "mean_abs_nonzero",
-                    "mean_abs_non0": "mean_abs_nonzero",
-                }
-                mode = mode_aliases.get(mode, mode)
-                if str(out_um).strip():
-                    msg = f"{field} -> {out_name}: mode={mode}, UM={out_um}"
-                else:
-                    msg = f"{field} -> {out_name}: mode={mode}"
-
-                if mode in ("mean", "mean_nonzero", "mean_abs_nonzero"):
-                    col_name = f"{out_name} [{out_um}]" if str(out_um).strip() else out_name
-                    msg += f", count_col={col_name}__n_valid"
-
-                parts.append(msg)
-            extra_fields_info = " ; ".join(parts)
-
-        if n == 0:
-            um_col = []
-        elif n == 1:
-            # only one row available: merge both pieces of info into the first row
-            if pd.isna(extra_fields_info):
-                um_col = [f"{mass_UM} {time_UM}"]
-            else:
-                um_col = [f"{mass_UM} {time_UM} | {extra_fields_info}"]
-        else:
-            um_col = [f"{mass_UM} {time_UM}", extra_fields_info] + [pd.NA] * (n - 2)
-
-        df = pd.DataFrame({
-            f"time [{time_unit}]": time_steps,
-            "date_of_timestep": time_date_serie,
-            **mass_dict,
-            **mass_eliminated_dict,
-            **mass_transition_dict,
-            **extra_fields_dict_1d,
-            **extra_fields_count_dict_1d,
-            **mass_sp_dict,
-            **perc_sp_dict,
-            **perc_elim_dict,
-            "UM": um_col,
+        # Build the authoritative xarray summary Dataset first. CSV is derived
+        # from this completed Dataset so there is only one computational path.
+        time_coord = np.asarray(pd.to_datetime(time_date_serie).values, dtype='datetime64[ns]')
+        summary_ds = xr.Dataset(coords={'time': ('time', time_coord)})
+        summary_ds['time'].attrs.update({
+            'standard_name': 'time',
+            'long_name': 'Model output time',
+            'time_semantics': 'coordinate',
+        })
+        summary_ds['elapsed_time'] = xr.DataArray(
+            np.asarray(time_steps, dtype=np.float64), dims=('time',)
+        )
+        summary_ds['elapsed_time'].attrs.update({
+            'long_name': 'Elapsed time since simulation start',
+            'units': time_unit,
+            'csv_name': f'time [{time_unit}]',
+            'time_semantics': 'coordinate',
         })
 
+        def add_1d(name, values, units, long_name, processor,
+                   aggregation_mode='special', csv_name=None,
+                   sampling_scope=None, time_semantics=None, extra_attrs=None):
+            summary_ds[name] = xr.DataArray(np.asarray(values), dims=('time',))
+            attrs = {
+                'long_name': long_name,
+                'units': units,
+                'source_type': 'derived',
+                'aggregation_mode': aggregation_mode,
+                'processor': processor,
+            }
+            if csv_name is not None:
+                attrs['csv_name'] = csv_name
+            if sampling_scope is not None:
+                attrs['sampling_scope'] = sampling_scope
+            if time_semantics is not None:
+                attrs['time_semantics'] = time_semantics
+            if extra_attrs:
+                attrs.update({
+                    k: self._netcdf_safe_attr_value(v)
+                    for k, v in extra_attrs.items() if v is not None
+                })
+            summary_ds[name].attrs.update(attrs)
+
+        # Dedicated mass budget outputs: unchanged numerical arrays, new metadata.
+        mass_long_names = {
+            'mass_water_ts': 'Chemical mass currently inside the system in water-column species',
+            'mass_sed_ts': 'Chemical mass currently inside the system in active sediment species',
+            'mass_actual_ts': 'Total chemical mass currently inside the system',
+            'mass_emitted_ts': 'Chemical mass first appearing during this timestep',
+            'mass_emitted_cumulative': 'Cumulative chemical mass emitted in the selected summary window',
+        }
+        for name, values in mass_dict_1d.items():
+            time_semantics = (
+                'cumulative' if name.endswith('_cumulative') else
+                'interval_amount' if name == 'mass_emitted_ts' else 'snapshot')
+            add_1d(
+                name, values, mass_unit,
+                mass_long_names.get(name, name.replace('_', ' ')),
+                processor='mass_budget',
+                csv_name=f'{name} [{mass_unit}]',
+                sampling_scope='dedicated ChemicalDrift mass-budget masks',
+                time_semantics=time_semantics,
+            )
+
+        for name, values in mass_eliminated_dict_1d.items():
+            add_1d(
+                name, values, mass_unit, name.replace('_', ' '),
+                processor='elimination_event_budget',
+                csv_name=f'{name} [{mass_unit}]',
+                sampling_scope='dedicated ChemicalDrift elimination/event masks',
+                time_semantics=('cumulative' if name.endswith('_cumulative') else 'interval_amount'),
+            )
+
+        for name, values in mass_transition_dict_1d.items():
+            add_1d(
+                name, values, mass_unit, name.replace('_', ' '),
+                processor='species_transition_budget',
+                csv_name=f'{name} [{mass_unit}]',
+                sampling_scope='inside domain before and after species transition',
+                time_semantics=('cumulative' if name.endswith('_cumulative') else 'interval_amount'),
+            )
+
+        for name, values in mass_sp_dict_1d.items():
+            add_1d(
+                name, values, mass_unit, name.replace('_', ' '),
+                processor='species_budget', csv_name=f'{name} [{mass_unit}]',
+                sampling_scope='inside-system elements of the named species',
+                time_semantics='snapshot',
+            )
+
+        for name, values in perc_sp_dict_1d.items():
+            add_1d(
+                name, values, '%',
+                name.replace('_', ' '),
+                processor='species_budget',
+                aggregation_mode='derived_ratio',
+                csv_name=f'{name} [%]',
+                sampling_scope='derived from inside-system species mass and total mass',
+                time_semantics='derived',
+            )
+
+        for name, values in perc_elim_dict_1d.items():
+            add_1d(
+                name, values, '%',
+                name.replace('_', ' '),
+                processor='elimination_event_budget',
+                aggregation_mode='derived_ratio',
+                csv_name=f'{name} [%]',
+                sampling_scope='derived from per-timestep elimination/event mass',
+                time_semantics='derived',
+            )
+
+        # Registry/custom generic outputs and their ancillary counts.
+        for output_name, values in extra_fields_dict_1d.items():
+            spec = extra_fields_meta[output_name]
+            source = spec.get('source', 'custom')
+            source_variable = spec['source_variable']
+            mode = spec['mode']
+            long_name = spec.get('long_name', source_variable.replace('_', ' '))
+            if source == 'environment':
+                long_name = (
+                    f'{long_name}; mean/statistic of values sampled at '
+                    'ChemicalDrift element positions, not a reader-domain spatial mean'
+                )
+            summary_ds[output_name] = xr.DataArray(np.asarray(values), dims=('time',))
+            attrs = {
+                'long_name': long_name,
+                'units': spec['units'],
+                'source_variable': source_variable,
+                'source_type': source,
+                'aggregation_mode': mode,
+                'aggregation_dimension': 'trajectory',
+                'sampling_scope': 'all stored elements with values accepted by the aggregation mode',
+                'zero_value_policy': 'exclude' if mode.endswith('nonzero') else 'include',
+                'missing_value_policy': 'exclude non-finite values from arithmetic aggregation',
+                'ancillary_variables': spec['count_name'],
+                'csv_name': spec['csv_name'],
+                'time_semantics': ('snapshot_circular' if mode == 'circular_mean' else 'snapshot_mean'),
+            }
+            if 'positive' in spec:
+                attrs['positive'] = spec['positive']
+            if 'unit_note' in spec:
+                attrs['unit_note'] = spec['unit_note']
+            if mode == 'circular_mean':
+                attrs['angular_period'] = float(spec.get('angular_period', 360.0))
+                attrs['circular_mean_convention'] = 'degrees; atan2(sum(sin), sum(cos)); result in [0,360)'
+                attrs['ancillary_variables'] += (' '
+                    + spec['circular_sum_sin_name']
+                    + ' '
+                    + spec['circular_sum_cos_name'])
+                attrs['circular_aggregation_note'] = (
+                    'For aggregation across multiple summary files, sum the '
+                    'ancillary sum_sin and sum_cos variables separately and '
+                    'recompute the direction with '
+                    'atan2(total_sum_sin, total_sum_cos). '
+                    'Do not average circular means arithmetically.')
+            if spec.get('report_positive_infinity_count', False):
+                attrs['missing_value_policy'] = (
+                    'finite values used for mean; positive infinity excluded from '
+                    'mean and reported by ancillary n_inf variable'
+                )
+                attrs['ancillary_variables'] += ' ' + spec['positive_inf_count_name']
+            summary_ds[output_name].attrs.update(attrs)
+
+            count_name = spec['count_name']
+            summary_ds[count_name] = xr.DataArray(
+                np.asarray(extra_fields_count_dict_1d[count_name], dtype=np.int64),
+                dims=('time',),
+            )
+            summary_ds[count_name].attrs.update({
+                'long_name': f'Number of element values contributing to {output_name}',
+                'units': '1',
+                'source_variable': source_variable,
+                'source_type': source,
+                'aggregation_role': 'valid_count',
+                'csv_name': spec['count_csv_name'],
+                'time_semantics': ('snapshot_circular' if mode == 'circular_mean' else 'snapshot_mean'),
+            })
+            if mode == 'circular_mean':
+                sum_sin_name = spec['circular_sum_sin_name']
+                sum_cos_name = spec['circular_sum_cos_name']
+
+                summary_ds[sum_sin_name] = xr.DataArray(
+                    np.asarray(extra_fields_circular_sin_dict_1d[sum_sin_name],
+                        dtype=np.float64,), dims=('time',),
+                )
+
+                summary_ds[sum_sin_name].attrs.update({
+                    'long_name': (
+                        f'Sum of sine components of finite '
+                        f'{source_variable} values'),
+                    'units': '1',
+                    'source_variable': source_variable,
+                    'source_type': source,
+                    'aggregation_role': 'circular_sum_sin',
+                    'angular_input_units': 'degree',
+                    'aggregation_dimension': 'trajectory',
+                    'time_semantics': 'snapshot_circular',
+                    'csv_name': spec[
+                        'circular_sum_sin_csv_name'
+                    ], })
+
+                summary_ds[sum_cos_name] = xr.DataArray(
+                    np.asarray(extra_fields_circular_cos_dict_1d[
+                            sum_cos_name], dtype=np.float64,),
+                    dims=('time',),)
+
+                summary_ds[sum_cos_name].attrs.update({
+                    'long_name': (
+                        f'Sum of cosine components of finite '
+                        f'{source_variable} values'),
+                    'units': '1',
+                    'source_variable': source_variable,
+                    'source_type': source,
+                    'aggregation_role': 'circular_sum_cos',
+                    'angular_input_units': 'degree',
+                    'aggregation_dimension': 'trajectory',
+                    'time_semantics': 'snapshot_circular',
+                    'csv_name': spec[
+                        'circular_sum_cos_csv_name'
+                    ],})
+
+            inf_name = spec.get('positive_inf_count_name')
+            if inf_name:
+                summary_ds[inf_name] = xr.DataArray(
+                    np.asarray(extra_fields_inf_count_dict_1d[inf_name], dtype=np.int64),
+                    dims=('time',),
+                )
+                summary_ds[inf_name].attrs.update({
+                    'long_name': f'Number of positive-infinite values observed for {source_variable}',
+                    'units': '1',
+                    'source_variable': source_variable,
+                    'source_type': source,
+                    'aggregation_role': 'positive_infinity_count',
+                    'time_semantics': 'snapshot_mean',
+                    'csv_name': spec['positive_inf_csv_name'],
+                })
+
+        config_meta = self._summary_configuration_metadata()
+        filter_meta = {
+            'shp_file_path': str(shp_file_path) if shp_file_path is not None else None,
+            'lon_min': lon_min, 'lon_max': lon_max,
+            'lat_min': lat_min, 'lat_max': lat_max,
+            'start_date': str(start_date) if start_date is not None else None,
+            'end_date': str(end_date) if end_date is not None else None,
+            'time_start': time_start, 'time_end': time_end,
+        }
+        summary_ds.attrs.update({
+            'title': 'ChemicalDrift summary time series',
+            'source': 'OpenDrift ChemicalDrift',
+            'Conventions': 'CF-1.10',
+            'chemicaldrift_summary_version': '3',
+            'history': (
+                f'{datetime.now(timezone.utc).isoformat()} '
+                'extract_summary_timeseries created registry-driven summary'
+            ),
+            'mass_output_unit': mass_unit,
+            'time_output_unit': time_unit,
+            'generic_sampling_semantics': (
+                'Generic diagnostics/environment fields aggregate stored values across '
+                'trajectory with no mass-budget inside/status/species mask.'
+            ),
+            'environment_sampling_semantics': (
+                'Environmental values are interpolated/sampled at ChemicalDrift element '
+                'positions; they are not spatial means of the reader domain.'
+            ),
+            'summary_filter_json': json.dumps(filter_meta, default=str, sort_keys=True),
+            'chemicaldrift_configuration_json': json.dumps(config_meta, default=str, sort_keys=True),
+        })
+        for key, value in config_meta.items():
+            attr_name = 'config_' + key.replace(':', '_').replace('-', '_')
+            summary_ds.attrs[attr_name] = self._netcdf_safe_attr_value(value)
+
+        # CSV/DataFrame is a compatibility view generated from the final Dataset.
+        df = self._summary_dataset_to_dataframe(summary_ds, mass_unit, time_unit)
+
         if save_files:
-            df.to_csv(timeseries_file_path, index=False)
-        else:
+            nc_path, csv_path = self._summary_output_paths(
+                timeseries_file_path, output_format
+            )
+            if nc_path is not None:
+                summary_ds.to_netcdf(nc_path)
+            if csv_path is not None:
+                df.to_csv(csv_path, index=False)
+            return None
+
+        if output_format == 'csv':
             return df
+        return summary_ds
 
     ##### Helpers for plot_summary_timeseries
+    @staticmethod
+    def _summary_plot_role(name, attrs=None):
+        """Identify support statistics before inferring a primary plot variable."""
+        import re
+        attrs = attrs or {}
+        if attrs.get('aggregation_role'):
+            return attrs['aggregation_role']
+        # Accept old/new CSV suffixes, with or without a final unit tag.
+        label = re.sub(r'\s*\[[^\]]+\]\s*$', '', str(name))
+        match = re.search(r'_+(n_valid|n_inf|sum_sin|sum_cos)$', label)
+        roles = {'n_valid': 'valid_count', 'n_inf': 'positive_infinity_count',
+                 'sum_sin': 'circular_sum_sin', 'sum_cos': 'circular_sum_cos'}
+        return roles[match.group(1)] if match else None
+
+    @staticmethod
+    def _summary_plot_time_unit(unit):
+        """Normalize elapsed-time units only; never apply this to physical fields."""
+        aliases = {'seconds': 's', 'second': 's', 'minutes': 'm', 'minute': 'm',
+                   'min': 'm', 'hours': 'hr', 'hour': 'hr', 'h': 'hr', 'days': 'd', 'day': 'd'}
+        unit = str(unit).strip()
+        unit = aliases.get(unit, unit)
+        if unit not in ('s', 'm', 'hr', 'd'):
+            raise ValueError(f'Unsupported summary elapsed-time unit: {unit!r}')
+        return unit
+
+    @staticmethod
+    def _summary_plot_input(summary=None, df=None, timeseries_file_path=None):
+        """Load one summary, preserving metadata and the legacy DataFrame path.
+
+        Precedence is summary, df, then timeseries_file_path. A lower-priority
+        path may still be used for output naming, but is not read a second time.
+        Caller-owned Datasets are not loaded, modified or closed here.
+        """
+        import os
+        import pandas as pd
+        import xarray as xr
+        item = summary if summary is not None else df
+        if item is None:
+            item = timeseries_file_path
+        if item is None:
+            raise ValueError('Provide summary, df, or timeseries_file_path.')
+        source_path = None
+        if isinstance(item, (str, os.PathLike)):
+            source_path = os.fspath(item)
+            ext = os.path.splitext(source_path)[1].lower()
+            if ext in ('.nc', '.netcdf'):
+                # Keep elapsed_time numeric, while decoding the true time coordinate.
+                with xr.open_dataset(source_path, decode_timedelta=False) as opened:
+                    item = opened.load()
+            elif ext == '.csv':
+                item = pd.read_csv(source_path)
+            else:
+                raise ValueError(f'Unsupported summary extension {ext!r}; use .nc, .netcdf or .csv.')
+        if not isinstance(item, (xr.Dataset, pd.DataFrame)):
+            raise TypeError('A summary must be an xarray.Dataset, pandas.DataFrame, or NetCDF/CSV path.')
+        return item, isinstance(item, xr.Dataset), source_path
+
+    def _summary_plot_dataset_frame(self, summary_ds, target_mass_unit=None, target_time_unit=None):
+        """Prepare a local rendering frame and metadata without resampling data.
+
+        Reuse the existing mass/time converters and CSV-frame builder, not the
+        sum routine: calling sum for plotting would rebase cumulative quantities.
+        The sum routine's legacy-normalization closure remains unchanged.
+        """
+        import numpy as np
+        import pandas as pd
+        import xarray as xr
+        ds = summary_ds.copy(deep=False)
+        if 'time' not in ds.coords or ds['time'].dims != ('time',) or not ds.sizes.get('time', 0):
+            raise ValueError('Expected a non-empty summary Dataset with a one-dimensional time coordinate.')
+        bad = [name for name, da in ds.data_vars.items() if da.dims != ('time',)]
+        if bad:
+            raise ValueError(f'Expected summary variables with dims (time,), not trajectory data: {bad}')
+        is_datetime = np.issubdtype(ds['time'].dtype, np.datetime64)
+        if not is_datetime and not np.issubdtype(ds['time'].dtype, np.number):
+            raise TypeError('Summary time must be datetime64 or numeric; non-standard calendars are not supported.')
+        if not np.isfinite(ds['time'].values).all():
+            raise ValueError('Summary time contains missing or non-finite values.')
+        index = ds['time'].to_index()
+        if not index.is_unique or not index.is_monotonic_increasing:
+            raise ValueError('Summary time must be unique and increasing; no sorting/resampling is done by plotting.')
+
+        mass_processors = {'mass_budget', 'elimination_event_budget', 'species_transition_budget', 'species_budget'}
+        mass_units = {'kg', 'g', 'mg', 'ug'}
+        def mass_token(unit):
+            return str(unit).strip().replace('\u00b5g', 'ug').replace('\u03bcg', 'ug')
+        inferred = {mass_token(da.attrs.get('units')) for da in ds.data_vars.values()
+                    if da.attrs.get('processor') in mass_processors
+                    and mass_token(da.attrs.get('units')) in mass_units}
+        source_mass = ds.attrs.get('mass_output_unit')
+        if source_mass is None:
+            if len(inferred) > 1 and target_mass_unit is None:
+                raise ValueError('Mixed mass units require an explicit target_mass_unit.')
+            source_mass = next(iter(inferred)) if len(inferred) == 1 else (target_mass_unit or 'g')
+        mu = mass_token(source_mass if target_mass_unit is None else target_mass_unit)
+        if mu not in mass_units:
+            raise ValueError(f'Unsupported summary mass unit: {mu!r}')
+
+        elapsed = ds.get('elapsed_time')
+        source_time = (elapsed.attrs.get('units') if elapsed is not None else None)
+        source_time = source_time or ds.attrs.get('time_output_unit') or ds['time'].attrs.get('units')
+        if source_time is None and not is_datetime:
+            raise ValueError('Numeric summary time requires time_output_unit or time units metadata.')
+        source_time = self._summary_plot_time_unit(source_time or 's')
+        tu = self._summary_plot_time_unit(target_time_unit or source_time)
+        if elapsed is not None:
+            if np.issubdtype(elapsed.dtype, np.timedelta64):
+                seconds = elapsed.values / np.timedelta64(1, 's')
+                elapsed_values = seconds * self._time_factor('s', tu)
+            else:
+                elapsed_values = np.asarray(elapsed.values, dtype=float) * self._time_factor(source_time, tu)
+            elapsed_attrs = dict(elapsed.attrs)
+        elif is_datetime:
+            elapsed_values = ((ds['time'].values - ds['time'].values[0]) / np.timedelta64(1, 's'))
+            elapsed_values = elapsed_values * self._time_factor('s', tu)
+            elapsed_attrs = {'long_name': 'Elapsed time since first stored summary timestamp'}
+        else:
+            elapsed_values = np.asarray(ds['time'].values, dtype=float) * self._time_factor(source_time, tu)
+            elapsed_attrs = {'long_name': 'Stored numeric summary time'}
+        elapsed_attrs.update({'units': tu, 'csv_name': f'time [{tu}]', 'time_semantics': 'coordinate'})
+        ds['elapsed_time'] = xr.DataArray(elapsed_values, dims=('time',), attrs=elapsed_attrs)
+
+        plot_meta, by_name, used_labels = {}, {}, {'UM', 'date_of_timestep', f'time [{tu}]'}
+        for name in ds.data_vars:
+            if name == 'elapsed_time':
+                continue
+            da = ds[name]
+            attrs = dict(da.attrs)
+            role = self._summary_plot_role(name, attrs)
+            processor = attrs.get('processor')
+            unit = attrs.get('units')
+            is_mass = (processor in mass_processors and not role
+                       and attrs.get('aggregation_mode') != 'derived_ratio')
+            if is_mass:
+                src = mass_token(unit)
+                if src not in mass_units:
+                    raise ValueError(f'Mass summary {name!r} has unsupported/missing units: {unit!r}')
+                factor = self._mass_factor(src, mu)
+                if factor != 1.0:
+                    ds[name] = da.astype('float64') * factor
+                attrs['units'] = unit = mu
+            # Core panels use stable internal mass/percentage names. Generic
+            # display names may remain customized, but their unit label is metadata-led.
+            if is_mass or (attrs.get('aggregation_mode') == 'derived_ratio' and name.startswith('perc_')):
+                csv_name = f'{name} [{unit}]'
+            else:
+                csv_name = str(attrs.get('csv_name') or name)
+                if not role and unit not in (None, ''):
+                    csv_name = f'{self._strip_units(csv_name)} [{unit}]'
+            if csv_name in used_labels:
+                raise ValueError(f'Duplicate/reserved plotting column label: {csv_name!r}')
+            used_labels.add(csv_name)
+            attrs['csv_name'] = csv_name
+            ds[name].attrs = attrs
+            meta = dict(attrs, variable_name=name)
+            if role:
+                meta['aggregation_role'] = role
+            plot_meta[csv_name] = meta
+            by_name[name] = meta
+        ds.attrs.update({'mass_output_unit': mu, 'time_output_unit': tu})
+        if is_datetime:
+            frame = self._summary_dataset_to_dataframe(ds, mu, tu)
+        else:
+            frame = pd.DataFrame({f'time [{tu}]': elapsed_values,
+                **{da.attrs['csv_name']: da.values for name, da in ds.data_vars.items() if name != 'elapsed_time'}})
+            frame['UM'] = pd.NA
+            frame.loc[frame.index[0], 'UM'] = f'[{mu}] [{tu}]'
+        frame.attrs['summary_plot_metadata'] = plot_meta
+        return frame, mu, tu, f'time [{tu}]', plot_meta, by_name, is_datetime
+
+    def _summary_plot_legacy_metadata(self, frame):
+        """Recover only unambiguous legacy labels/roles; never invent scientific units."""
+        import re
+        registry = self.CHEMICALDRIFT_VARIABLE_REGISTRY
+        plot_meta, by_name = {}, {}
+        circular_labels = set()
+        for col in frame.columns:
+            base = self._strip_units(col)
+            match = re.match(r'^(.*?)_+sum_(?:sin|cos)$', base)
+            if match:
+                circular_labels.add(match.group(1))
+        saved = frame.attrs.get('summary_plot_metadata', {})
+        for col in frame.columns:
+            base = self._strip_units(col)
+            meta = dict(saved.get(col, {}))
+            role = self._summary_plot_role(col, meta)
+            field = base if base in registry else None
+            if field is None:
+                for suffix in ('_mean_abs_nonzero', '_mean_nonzero', '_mean'):
+                    if base.endswith(suffix) and base[:-len(suffix)] in registry:
+                        field = base[:-len(suffix)]
+                        break
+            if field and not role:
+                reg = registry[field]
+                meta.setdefault('source_variable', field)
+                meta.setdefault('long_name', reg.get('long_name', field.replace('_', ' ')))
+                meta.setdefault('aggregation_mode', reg.get('summary_mode'))
+                if 'angular_period' in reg:
+                    meta.setdefault('angular_period', reg['angular_period'])
+            if base in circular_labels and not role:
+                meta['aggregation_mode'] = 'circular_mean'
+            if role:
+                meta['aggregation_role'] = role
+                meta['units'] = '1'
+            else:
+                meta['units'] = self._unit_from_col(col)
+            meta.update({'csv_name': col, 'variable_name': meta.get('variable_name', base)})
+            plot_meta[col] = meta
+            by_name[meta['variable_name']] = meta
+        return plot_meta, by_name
+
+    def _summary_plot_field_panel(self, col, meta, ancillary=False):
+        """Describe one diagnostic panel; ancillary counts never become angles."""
+        import textwrap
+        source = meta.get('source_variable') or meta.get('variable_name') or self._strip_units(col)
+        title = str(source).replace('_', ' ').strip().capitalize()
+        long_name = str(meta.get('long_name') or '').split(';', 1)[0].strip()
+        if long_name and len(long_name) < len(title) and len(long_name) <= 60:
+            title = long_name
+        unit = meta.get('units') or self._unit_from_col(col) or '1'
+        role = meta.get('aggregation_role')
+        if ancillary:
+            prefix = 'Positive-infinity count' if role == 'positive_infinity_count' else 'Valid-value count'
+            title = f'{prefix}: {title}'
+            ylabel, circular = 'Count / effective count [1]', False
+        else:
+            circular = (not role and (meta.get('aggregation_mode') == 'circular_mean'
+                        or meta.get('time_semantics') == 'snapshot_circular'))
+            statistic = {'mean': 'Mean value', 'mean_nonzero': 'Nonzero mean',
+                'mean_abs_nonzero': 'Absolute nonzero mean', 'sum': 'Sum'}.get(meta.get('aggregation_mode'), 'Value')
+            ylabel = f'Direction [{unit}]' if circular else f'{statistic} [{unit}]'
+        if circular and float(meta.get('angular_period', 360.0)) != 360.0:
+            raise ValueError(f'Only 360-degree circular summary plots are supported: {col!r}')
+        return dict(title=textwrap.fill(title, width=43), kind='line', cols=[col],
+                    ylabel=ylabel, legend={'max_cols': 1}, keep_zero=True,
+                    circular=circular, ancillary=ancillary)
+
     @staticmethod
     def _existing(df, cols):
         return [c for c in cols if c in df.columns]
@@ -24665,7 +25736,7 @@ class ChemicalDrift(OceanDrift):
         timeseries_file_path=None,
         target_mass_unit=None,
         target_time_unit=None,
-        use_date=False,
+        use_date=None,
         time_col=None,
         start_date=None,
         end_date=None,
@@ -24682,17 +25753,20 @@ class ChemicalDrift(OceanDrift):
         png_dpi=200,
         png_prefix=None,
         ts_cumulative_twin_axes=False,
+        *, summary=None, plot_additional_fields=True, plot_ancillary=False,
     ):
         """
             Plot summary time-series panels for mass balance, elimination pathways, and speciation.
 
-            df:                     pd.DataFrame, Input dataframe containing the time-series results.
-                                    If None, `timeseries_file_path` must be provided.
-            timeseries_file_path:   str or path-like, Path to a CSV file to read when `df` is None.
+            summary:                Preferred keyword-only input: xr.Dataset, pd.DataFrame, or
+                                    .nc/.netcdf/.csv path. Precedence: summary > df > timeseries_file_path.
+            df:                     Backward-compatible input, including the original positional slot.
+            timeseries_file_path:   Input path when summary/df is absent; otherwise output-naming hint.
             target_mass_unit:       str, Target mass unit for conversion ("ug", "mg", "g", "kg").
             target_time_unit:       str, Target time unit for conversion ("s", "m", "hr", "d").
-            use_date:               bool, If True and the column `date_of_timestep` exists,
-                                    use it as x-axis. Otherwise use the numeric time column.
+            use_date:               bool or None. None uses datetime for Dataset/NetCDF inputs
+                                    when available, numeric time for legacy CSV/DataFrame inputs.
+                                    True uses datetime when available; False uses elapsed time.
             time_col:               str, Name of the time column to use
                                     (for example: `time [hr]`).
                                     If None, it is inferred automatically.
@@ -24708,15 +25782,14 @@ class ChemicalDrift(OceanDrift):
             font_sizes:             dict, Explicit font-size overrides.
             font_scale:             float, Global multiplicative scale applied to default
                                     font sizes before `font_sizes` overrides are applied.
-            split_a4:               bool, If False, If True, split the output into multiple A4 portrait pages
-                                    grouped by topic.
-            pdf_path:               str or path-like, Output PDF path used only when `split_a4=True`. If provided, all pages are written
-                                    to a multi-page PDF.
+            split_a4:               bool, If True, split output into A4 portrait pages grouped by topic.
+                                    False preserves the existing single-figure layout.
+            pdf_path:               Output PDF path. With split_a4=True, all pages share one PDF.
             row_mode:               {"double", "single"}, Panel layout mode.
                                     `"double"`: two panels per row, `"single"`: one wide panel per row
             page_output: {'pdf', 'png', 'both', 'none'}
-                Used only when split_a4=True.
-                - 'pdf' : save pages to a multi-page PDF
+                Applied in both layout modes.
+                - 'pdf' : save the figure/pages to a PDF
                 - 'png' : save each page as a PNG image
                 - 'both': save both PDF and PNG pages
                 - 'none': do not write page files; just return figure objects
@@ -24732,6 +25805,21 @@ class ChemicalDrift(OceanDrift):
                 plot timestep values on the primary left y-axis and cumulative values
                 on a secondary right y-axis. Default False preserves the previous
                 single-axis behaviour.
+            plot_additional_fields: bool, Include primary environmental/diagnostic panels (default True).
+            plot_ancillary:         bool, Add a separate count/effective-count section (default False).
+                                    Circular sine/cosine support arrays and speciation QC stay hidden.
+
+            Notes
+            -----
+            Plotting never interpolates, rebins, rebases cumulative series, or changes self.result.
+            Existing percentages, stored elapsed-time origin and source timestamps are retained.
+            A date filter is a display crop, not a new cumulative accounting window. NaN line
+            gaps are preserved; circular wrap crossings are broken for display only.
+
+            Returns
+            -------
+            (figs, axes, plotting_dataframe, saved_png_paths, saved_pdf_path)
+                The original five-item return contract is retained in both layout modes.
         """
         import re
         from pathlib import Path
@@ -24768,11 +25856,9 @@ class ChemicalDrift(OceanDrift):
             if x_tick_every < 1:
                 raise ValueError("x_tick_every must be >= 1 when provided.")
 
-        if df is None:
-            if timeseries_file_path is not None:
-                df = pd.read_csv(timeseries_file_path)
-            else:
-                raise ValueError("Both df and timeseries_file_path are None")
+        source, dataset_input, source_path = self._summary_plot_input(summary, df, timeseries_file_path)
+        if timeseries_file_path is None and source_path is not None:
+            timeseries_file_path = source_path
 
         # font sizes (defaults)
         fs = {
@@ -24794,17 +25880,26 @@ class ChemicalDrift(OceanDrift):
         if font_sizes:
             fs.update(font_sizes)
 
-        # Convert units + get resulting units and time col name
-        dfc, UM_mass, UM_time, time_col = self.convert_units(
-            df, target_mass_unit=target_mass_unit, target_time_unit=target_time_unit, time_col=time_col
-        )
-
-        # choose x axis + optional period filter
-        use_date_axis = bool(use_date and "date_of_timestep" in dfc.columns)
+        # Keep the legacy conversion path, but use metadata for new-format inputs.
+        # These are rendering views only: no call to extract/sum or interpolation.
+        if dataset_input:
+            dfc, UM_mass, UM_time, time_col, plot_meta, plot_by_name, has_datetime = (
+                self._summary_plot_dataset_frame(source, target_mass_unit, target_time_unit))
+        else:
+            if not source.columns.is_unique:
+                raise ValueError('Summary DataFrame contains duplicate column labels.')
+            dfc, UM_mass, UM_time, time_col = self.convert_units(
+                source, target_mass_unit=target_mass_unit, target_time_unit=target_time_unit, time_col=time_col)
+            plot_meta, plot_by_name = self._summary_plot_legacy_metadata(dfc)
+            has_datetime = 'date_of_timestep' in dfc.columns
+        if dfc.empty:
+            raise ValueError('Cannot plot an empty summary.')
+        dfc.attrs['summary_plot_metadata'] = plot_meta
+        use_date_axis = bool((dataset_input if use_date is None else use_date) and has_datetime)
 
         if use_date_axis:
             x_raw = pd.to_datetime(dfc["date_of_timestep"], errors="coerce")
-            xlab = "date_of_timestep"
+            xlab = "Time" if dataset_input else "date_of_timestep"
         else:
             if time_col is None:
                 raise ValueError("No time column found (expected something like 'time [hr]').")
@@ -24859,6 +25954,8 @@ class ChemicalDrift(OceanDrift):
             if len(dfc) == 0:
                 raise ValueError("No rows remain after applying start_date/end_date filter.")
 
+        if x_raw.isna().any():
+            raise ValueError('Selected plotting time axis contains invalid values.')
         x = x_raw
 
         period_suffix = ""
@@ -25321,51 +26418,98 @@ class ChemicalDrift(OceanDrift):
                  stack_style="bars", show_empty_outline=True),
         ]
 
-        # Extra user-defined fields: dedicated section before mass-budget checks
-        extra_panel_start_idx = None
+        # Extend existing process line panels with their stored cumulative partner.
+        # _ts is not sufficient evidence: compartment/species mass fields are snapshots.
+        def _is_process_interval(col):
+            meta = plot_meta.get(col, {})
+            key = meta.get('variable_name', self._strip_units(col))
+            if meta.get('aggregation_role') or not key.endswith('_ts'):
+                return False
+            if meta.get('time_semantics') == 'snapshot' or key.startswith('mass_sp_'):
+                return False
+            if key in ('mass_water_ts', 'mass_sed_ts', 'mass_actual_ts'):
+                return False
+            return (meta.get('time_semantics') == 'interval_amount' or
+                    (not dataset_input and key.startswith('mass_')))
 
-        extra_line_cols = []
-        skip_exact = {"UM", "date_of_timestep"}
-        if time_col is not None:
-            skip_exact.add(time_col)
-
-        for c in dfc.columns:
-            if c in skip_exact:
+        for panel in panels:
+            if panel.get('kind') != 'line':
                 continue
-            if c.startswith("time [") and c.endswith("]"):
+            cols = panel.get('cols', [])
+            appended = False
+            for col in list(cols):
+                if not _is_process_interval(col):
+                    continue
+                key = plot_meta.get(col, {}).get('variable_name', self._strip_units(col))
+                partner = mcol(key[:-3] + '_cumulative')
+                if partner in dfc.columns and partner not in cols:
+                    cols.append(partner)
+                    appended = True
+            if appended:
+                panel['title'] = panel['title'].split(' (', 1)[0] + ' (interval + cumulative)'
+                if len(cols) > 4:
+                    panel['legend']['max_cols'] = 2
+
+        # Include future transition pairs identified by processor, not only today's fixed list.
+        used_mass = {c for panel in panels for c in panel.get('cols', [])}
+        unknown_transition_panels = []
+        for col, meta in plot_meta.items():
+            if (meta.get('processor') == 'species_transition_budget' and col not in used_mass
+                    and _is_process_interval(col)):
+                key = meta['variable_name']
+                unknown_transition_panels.append(dict(title=self._pretty_label(key) + ' (interval + cumulative)',
+                    kind='line', cols=self._existing(dfc, [col, mcol(key[:-3] + '_cumulative')]),
+                    legend={'max_cols': 1}))
+        if unknown_transition_panels:
+            at = next((i for i, p in enumerate(panels) if p['title'].startswith('All species masses')), len(panels))
+            if row_mode == 'double' and len(unknown_transition_panels) % 2:
+                unknown_transition_panels.append(dict(title='', kind='blank', cols=[], legend={'max_cols': 1}))
+            panels[at:at] = unknown_transition_panels
+
+        # Primary diagnostics and support counts are different plot sections.
+        # Never discover an angle by treating its sine/cosine accumulators as data.
+        extra_panel_start_idx = ancillary_panel_start_idx = None
+        extra_line_cols, ancillary_cols = [], []
+        skip_exact = {'UM', 'date_of_timestep', time_col}
+        ancillary_names = {name for meta in plot_meta.values()
+                           for name in str(meta.get('ancillary_variables', '')).split()}
+        for col in dfc.columns:
+            if col in skip_exact or (col.startswith('time [') and col.endswith(']')):
                 continue
-            if c.startswith("mass_") or c.startswith("perc_") or c.startswith("qc_") or c.endswith("__n_valid"):
+            meta = plot_meta.get(col, {})
+            name = meta.get('variable_name', self._strip_units(col))
+            role = self._summary_plot_role(col, meta)
+            if (meta.get('time_semantics') == 'coordinate' or meta.get('processor') == 'speciation_qc'
+                    or name.startswith('qc_')):
                 continue
-            if not pd.api.types.is_numeric_dtype(dfc[c]):
+            if not pd.api.types.is_numeric_dtype(dfc[col]):
                 continue
-
-            s = pd.to_numeric(dfc[c], errors="coerce")
-            if s.notna().sum() == 0:
+            if not np.isfinite(pd.to_numeric(dfc[col], errors='coerce').to_numpy(dtype=float)).any():
                 continue
+            if role in ('valid_count', 'positive_infinity_count'):
+                if plot_ancillary:
+                    ancillary_cols.append(col)
+                continue
+            if role or name in ancillary_names:
+                continue
+            if name.startswith(('mass_', 'perc_')):
+                continue
+            if plot_additional_fields:
+                extra_line_cols.append(col)
 
-            extra_line_cols.append(c)
-
-        if extra_line_cols:
-            # force "Additional fields" to start on a fresh row in double mode
-            if row_mode == "double" and (len(panels) % 2 == 1):
-                panels.append(dict(title="", kind="blank", cols=[], legend={"max_cols": 1}))
-
-            extra_panel_start_idx = len(panels)
-
-            for col in extra_line_cols:
-                unit = self._unit_from_col(col)
-                ylabel = f"Value [{unit}]" if unit else "Value"
-                panels.append(
-                    dict(
-                        title=self._strip_units(col),
-                        kind="line",
-                        cols=[col],
-                        ylabel=ylabel,
-                        legend={"max_cols": 1},))
-
-            # force following sanity section to start on a fresh row too
-            if row_mode == "double" and (len(panels) % 2 == 1):
-                panels.append(dict(title="", kind="blank", cols=[], legend={"max_cols": 1}))
+        for field_cols, is_ancillary in ((extra_line_cols, False), (ancillary_cols, True)):
+            if not field_cols:
+                continue
+            if row_mode == 'double' and len(panels) % 2:
+                panels.append(dict(title='', kind='blank', cols=[], legend={'max_cols': 1}))
+            if is_ancillary:
+                ancillary_panel_start_idx = len(panels)
+            else:
+                extra_panel_start_idx = len(panels)
+            for col in field_cols:
+                panels.append(self._summary_plot_field_panel(col, plot_meta.get(col, {}), is_ancillary))
+            if row_mode == 'double' and len(panels) % 2:
+                panels.append(dict(title='', kind='blank', cols=[], legend={'max_cols': 1}))
 
         # Mass budget checks
         has_ts = all(c in dfc.columns for c in [mcol("mass_degraded_ts"), mcol("mass_photodegraded_ts"),
@@ -25388,6 +26532,9 @@ class ChemicalDrift(OceanDrift):
         i_extra = None
         if extra_panel_start_idx is not None:
             i_extra = (extra_panel_start_idx // 2) if row_mode == "double" else extra_panel_start_idx
+        i_ancillary = None
+        if ancillary_panel_start_idx is not None:
+            i_ancillary = (ancillary_panel_start_idx // 2) if row_mode == "double" else ancillary_panel_start_idx
 
         # Build a global label list so colors stay consistent even if some series are omitted in a panel
         all_labels = []
@@ -25563,7 +26710,8 @@ class ChemicalDrift(OceanDrift):
                 ax.axis("off")
                 return
 
-            ax.set_title(title, fontsize=fs["subplot_title"])
+            import textwrap
+            ax.set_title(textwrap.fill(title, width=43 if row_mode == 'double' else 76), fontsize=fs["subplot_title"])
 
             if kind == "line":
                 ts_cols, cumulative_cols, other_cols = _split_ts_cumulative_line_columns(cols)
@@ -25574,8 +26722,22 @@ class ChemicalDrift(OceanDrift):
                     if key.startswith(("mass_", "perc_")):
                         pretty = self._pretty_label(key)
                     else:
-                        pretty = key
+                        pretty = str(plot_meta.get(col, {}).get('source_variable') or key).replace('_', ' ')
+                        pretty = textwrap.fill(pretty, width=35 if row_mode == 'double' else 65)
                     return key, pretty, color_map.get(key, None)
+
+                def _skip_line(col):
+                    return not spec.get('keep_zero', False) and self._is_all_zero(dfc[col], atol=1e-12)
+
+                def _line_xy(col):
+                    if not spec.get('circular', False):
+                        return x, dfc[col]
+                    yy = pd.to_numeric(dfc[col], errors='coerce').to_numpy(dtype=float)
+                    xx = np.asarray(x)
+                    # Insert display-only gaps at wrap crossings; keep every stored observation.
+                    jumps = np.flatnonzero(np.isfinite(yy[1:]) & np.isfinite(yy[:-1])
+                                           & (np.abs(np.diff(yy)) > 180.0)) + 1
+                    return np.insert(xx, jumps, xx[jumps]), np.insert(yy, jumps, np.nan)
 
                 if use_twin:
                     ax2 = ax.twinx()
@@ -25583,21 +26745,21 @@ class ChemicalDrift(OceanDrift):
                     ax._has_ts_cumulative_twin_axes = True
 
                     for col in other_cols + ts_cols:
-                        if self._is_all_zero(dfc[col], atol=1e-12):
+                        if _skip_line(col):
                             continue
                         key, pretty, colr = _line_label_and_color(col)
                         ax.plot(
-                            x, dfc[col],
+                            *_line_xy(col),
                             label=pretty,
                             color=colr,
                             linewidth=1.8)
 
                     for col in cumulative_cols:
-                        if self._is_all_zero(dfc[col], atol=1e-12):
+                        if _skip_line(col):
                             continue
                         key, pretty, colr = _line_label_and_color(col)
                         ax2.plot(
-                            x, dfc[col],
+                            *_line_xy(col),
                             label=pretty,
                             color=colr,
                             linewidth=1.8,
@@ -25608,11 +26770,11 @@ class ChemicalDrift(OceanDrift):
                     for col in cols:
                         if col not in dfc.columns:
                             continue
-                        if self._is_all_zero(dfc[col], atol=1e-12):
+                        if _skip_line(col):
                             continue
                         key, pretty, colr = _line_label_and_color(col)
                         ax.plot(
-                            x, dfc[col],
+                            *_line_xy(col),
                             label=pretty,
                             color=colr,
                             linewidth=1.8)
@@ -25855,6 +27017,9 @@ class ChemicalDrift(OceanDrift):
 
             # common styling
             _set_ylabel(ax, kind, cols, ylabel=spec.get("ylabel"))
+            if spec.get('circular', False):
+                ax.set_ylim(0, 360)
+                ax.set_yticks([0, 90, 180, 270, 360])
             ax.set_axisbelow(True)
 
             # Remove vertical gridlines: only y-grid
@@ -26007,11 +27172,14 @@ class ChemicalDrift(OceanDrift):
                 end_idx = (i_sp_sed_comp + 1) if i_sp_sed_comp is not None else (i_sp_sed + 1)
                 topic_pages.append(("Speciation in sediment", rows[i_sp_sed:end_idx]))
 
-        # 7) Additional fields
+        # 7) Additional primary fields, followed by a separate support-count section.
         if i_extra is not None:
-            end_extra = i_sanity if i_sanity is not None else len(rows)
+            end_extra = i_ancillary if i_ancillary is not None else (i_sanity if i_sanity is not None else len(rows))
             if end_extra > i_extra:
                 topic_pages.append(("Additional fields", rows[i_extra:end_extra]))
+        if i_ancillary is not None:
+            end_ancillary = i_sanity if i_sanity is not None else len(rows)
+            topic_pages.append(("Ancillary counts / effective counts", rows[i_ancillary:end_ancillary]))
 
         # 8) Mass budget checks
         if i_sanity is not None:
@@ -26671,27 +27839,16 @@ class ChemicalDrift(OceanDrift):
         return out
 
     def sum_summary_timeseries(
-        self,
-        df_list,
-        target_mass_unit="g",
-        target_time_unit="hr",
-        date_col="date_of_timestep",
-        time_col=None,
-        align_mode="pad",
-        nearest_tol_time=None,
-        clip_to_original=True,
-        start_date=None, end_date=None,
-        freq_time=None,
-        rebuild_time_from_date=True,
-        verbose=False,
-        qc_check=True,
-        add_qc_columns=False,
-        qc_on_fail="warn",
-        return_qc_report=False,
-        normalize_perc_to_100=False,
+        self, df_list, target_mass_unit="g", target_time_unit="hr",
+        date_col="date_of_timestep", time_col=None, align_mode="interpolate",
+        nearest_tol_time=None, clip_to_original=True, start_date=None,
+        end_date=None, freq_time=None, rebuild_time_from_date=True,
+        verbose=False, qc_check=True, add_qc_columns=False,
+        qc_on_fail="warn", return_qc_report=False,
+        normalize_perc_to_100=False, timeseries_file_path=None,
+        output_format="csv", save_files=False, strict_metadata=True,
     ):
-        '''
-        Align and sum multiple summary time series DataFrames, then recompute perc_sp_*.
+        '''Combine ChemicalDrift summary time series on a common time axis.
 
         df_list:             list[pandas.DataFrame], Input summary DataFrames to align and sum.
                              Each DF is converted to common units using convert_units().
@@ -26724,263 +27881,766 @@ class ChemicalDrift(OceanDrift):
         return_qc_report:    bool, If True, return a QC report dict in addition to the output DataFrame.
         normalize_perc_to_100: bool, If True, renormalize perc_sp columns to sum exactly to 100 when denom>0.
 
-        Returns:
-            pandas.DataFrame, Summed and post-processed DataFrame (units converted, aligned, summed, perc_sp recomputed).
-            (pandas.DataFrame, dict), If return_qc_report=True, returns (output_df, qc_report_dict).
+        Temporal harmonization is variable-aware:
+        - continuous snapshots are linearly interpolated in time;
+        - ordinary means interpolate mean*n_valid and n_valid, then reconstruct;
+        - circular means interpolate sum_sin/sum_cos/n_valid, then reconstruct;
+        - cumulative process/event masses are interpolated as cumulative curves;
+        - per-timestep process/event masses are regenerated by differencing the
+          harmonized cumulative curves;
+        - derived percentages are recomputed after combination.
+
+        ``align_mode='interpolate'`` is the recommended/default behavior.
+        ``exact``, ``pad`` and ``nearest`` remain available for compatibility,
+        but cumulative quantities are still treated through their cumulative
+        representation before per-timestep increments are regenerated.
         '''
+        import json
+        import os
+        import re
+        import warnings
         import numpy as np
         import pandas as pd
         import xarray as xr
+        from datetime import datetime, timezone
 
         if not df_list:
             raise ValueError("df_list is empty")
+        output_format = str(output_format).strip().lower()
+        if output_format not in ('netcdf', 'csv', 'both'):
+            raise ValueError("output_format must be one of 'netcdf', 'csv', or 'both'")
+        if align_mode not in ('interpolate', 'exact', 'pad', 'nearest'):
+            raise ValueError("align_mode must be one of 'interpolate', 'exact', 'pad', or 'nearest'")
+        if save_files and timeseries_file_path is None:
+            raise ValueError("timeseries_file_path is unspecified when save_files is True")
 
-        nearest_tol_time = self._as_timedelta64(nearest_tol_time)
+        target_mass_unit = 'ug' if target_mass_unit == 'µg' else target_mass_unit
+        if target_mass_unit not in ('kg', 'g', 'mg', 'ug'):
+            raise ValueError(f"Unsupported target_mass_unit: {target_mass_unit!r}")
+        if target_time_unit not in ('s', 'm', 'min', 'hr', 'h', 'd'):
+            raise ValueError(f"Unsupported target_time_unit: {target_time_unit!r}")
 
-        ds_list = []
-        perc_sp_cols_union = set()
-        perc_elim_cols_union = set()
-        time_name = None
-        UM_mass = UM_time = None
-        used_date_axis = None
+        registry = self.CHEMICALDRIFT_VARIABLE_REGISTRY
+        ref_cols = list(df_list[0].columns) if isinstance(df_list[0], pd.DataFrame) else None
+        input_kinds = []
 
-        # reference column order from the first converted df
-        ref_cols = None
-        ref_time_col = None  # exact "time [..]" label from ref_cols (if any)
+        def _processor_for_legacy(name):
+            if name.startswith('mass_sp_'):
+                return 'species_budget'
+            if name.startswith(('mass_ads_', 'mass_des_', 'mass_dep_', 'mass_res_',
+                                'mass_aggr_', 'mass_disaggr_')):
+                return 'species_transition_budget'
+            if name.startswith('mass_') and any(k in name for k in (
+                    'degraded', 'volatilized', 'adv_out', 'stranded', 'buried')):
+                return 'elimination_event_budget'
+            if name.startswith('mass_'):
+                return 'mass_budget'
+            return 'legacy_summary'
 
-        for df in df_list:
-            dfc, UM_mass_i, UM_time_i, detected_time_col = self.convert_units(
-                df,
-                target_mass_unit=target_mass_unit,
-                target_time_unit=target_time_unit,
-                time_col=time_col,)
+        def _infer_time_semantics(name, attrs):
+            sem = attrs.get('time_semantics')
+            if sem:
+                return str(sem)
+            role = attrs.get('aggregation_role')
+            mode = attrs.get('aggregation_mode')
+            if mode == 'derived_ratio':
+                return 'derived'
+            if name == 'elapsed_time':
+                return 'coordinate'
+            if name.endswith('_cumulative'):
+                return 'cumulative'
+            if name in ('mass_water_ts', 'mass_sed_ts', 'mass_actual_ts') or name.startswith('mass_sp_'):
+                return 'snapshot'
+            if name.startswith('mass_') and name.endswith('_ts'):
+                return 'interval_amount'
+            if mode == 'circular_mean' or role in ('circular_sum_sin', 'circular_sum_cos'):
+                return 'snapshot_circular'
+            if mode in ('mean', 'mean_nonzero', 'mean_abs_nonzero') or role in ('valid_count', 'positive_infinity_count'):
+                return 'snapshot_mean'
+            return 'snapshot'
 
-            if ref_cols is None:
-                ref_cols = list(dfc.columns)
-                ref_time_col = next(
-                    (c for c in ref_cols if c.startswith("time [") and c.endswith("]")),
-                    None)
+        def _legacy_dataframe_to_dataset(df):
+            """Normalize an extract_summary_timeseries compatibility DataFrame."""
+            df = df.copy()
+            mass_u, time_u = self._parse_um_from_df(df)
+            mass_u = 'ug' if mass_u == 'µg' else mass_u
+            time_u = 'hr' if time_u == 'h' else time_u
+            detected_time_col = time_col or next(
+                (c for c in df.columns if c.startswith('time [') and c.endswith(']')), None)
 
-            perc_sp_cols_union.update([c for c in dfc.columns if c.startswith("perc_sp_") and c.endswith("[%]")])
-            perc_elim_cols_union.update([c for c in dfc.columns if c.startswith("perc_elim_") and c.endswith("[%]")])
-
-            has_date = (date_col in dfc.columns)
-            if used_date_axis is None:
-                used_date_axis = has_date
-            if used_date_axis != has_date:
-                raise ValueError(f"Inconsistent time axis: {date_col!r} present in some dataframes but not all.")
-
-            if has_date:
-                tname = date_col
-                dfc[tname] = pd.to_datetime(dfc[tname])
-                dfc = dfc.set_index(tname)
-                time_like_cols = [c for c in dfc.columns if c.startswith("time [") and c.endswith("]")]
+            if date_col in df.columns:
+                time_values = pd.to_datetime(df[date_col]).to_numpy(dtype='datetime64[ns]')
+            elif detected_time_col is not None:
+                raw = pd.to_numeric(df[detected_time_col], errors='coerce').to_numpy(dtype=float)
+                if time_u and target_time_unit:
+                    raw = raw * self._time_factor(time_u, target_time_unit)
+                time_values = raw
             else:
-                if detected_time_col is None:
-                    raise ValueError("No date_col present and no time column detected.")
-                tname = detected_time_col
-                dfc[tname] = pd.to_numeric(dfc[tname], errors="coerce")
-                dfc = dfc.set_index(tname)
-                time_like_cols = []  # time axis is the index already
+                raise ValueError(f"Legacy DataFrame has neither {date_col!r} nor a numeric time column")
 
-            drop_cols = []
-            if "UM" in dfc.columns:
-                drop_cols.append("UM")
-            drop_cols += [c for c in dfc.columns if c.startswith("perc_") and c.endswith("[%]")]
-            drop_cols += time_like_cols
+            ds = xr.Dataset(coords={'time': ('time', time_values)})
+            if detected_time_col is not None:
+                elapsed = pd.to_numeric(df[detected_time_col], errors='coerce').to_numpy(dtype=float)
+                if time_u and target_time_unit:
+                    elapsed = elapsed * self._time_factor(time_u, target_time_unit)
+                ds['elapsed_time'] = xr.DataArray(elapsed, dims=('time',))
+                ds['elapsed_time'].attrs.update({
+                    'units': target_time_unit, 'csv_name': f'time [{target_time_unit}]',
+                    'time_semantics': 'coordinate'})
 
-            dfc2 = dfc.drop(columns=[c for c in drop_cols if c in dfc.columns], errors="ignore")
+            value_map = {}
+            count_re = re.compile(r'^(.*?)\s*\[([^\]]+)\](?:__|_)n_valid$')
+            inf_re = re.compile(r'^(.*?)\s*\[([^\]]+)\](?:__|_)n_inf$')
+            unit_re = re.compile(r'^(.*?)\s*\[([^\]]+)\]$')
+            circ_re = re.compile(r'^(.*?)__sum_(sin|cos)$')
+            circular_labels = {m.group(1) for c in df.columns if (m := circ_re.match(str(c)))}
 
-            ds = dfc2.to_xarray()
-            numeric_vars = [v for v in ds.data_vars if np.issubdtype(ds[v].dtype, np.number)]
-            if not numeric_vars:
-                raise ValueError("A dataframe had no numeric variables after dropping perc/UM/time.")
-            ds = ds[numeric_vars].astype("float64")
+            for col in df.columns:
+                text = str(col)
+                if col in ('UM', date_col, detected_time_col) or count_re.match(text) or inf_re.match(text) or circ_re.match(text):
+                    continue
+                m = unit_re.match(text)
+                label, unit = (m.group(1).strip(), m.group(2).strip()) if m else (text, None)
+                if label.startswith('perc_'):
+                    name = label
+                    attrs = {'aggregation_mode': 'derived_ratio', 'source_type': 'derived',
+                        'processor': _processor_for_legacy(label.replace('perc_', 'mass_', 1)),
+                        'units': unit or '%', 'csv_name': col, 'time_semantics': 'derived'}
+                elif label.startswith('mass_'):
+                    name = label
+                    attrs = {'aggregation_mode': 'special', 'source_type': 'derived',
+                        'processor': _processor_for_legacy(label),
+                        'units': unit or mass_u or target_mass_unit, 'csv_name': col}
+                    attrs['time_semantics'] = _infer_time_semantics(name, attrs)
+                else:
+                    field = label if label in registry else None
+                    reg = registry.get(field, {}) if field else {}
+                    mode = reg.get('summary_mode') if reg else None
+                    if mode == 'special':
+                        mode = None
+                    if label in circular_labels:
+                        mode = 'circular_mean'
+                    if mode in ('mean', 'mean_nonzero', 'mean_abs_nonzero', 'circular_mean', 'sum'):
+                        name = self._summary_output_variable_name(field or label, mode)
+                        attrs = {'aggregation_mode': mode, 'source_variable': field or label,
+                            'source_type': reg.get('source', 'legacy'),
+                            'units': unit or reg.get('units') or '1', 'csv_name': col}
+                        if mode == 'circular_mean':
+                            attrs['angular_period'] = float(reg.get('angular_period', 360.0))
+                    else:
+                        name = re.sub(r'[^0-9A-Za-z_]+', '_', label).strip('_') or 'legacy_variable'
+                        attrs = {'aggregation_mode': 'special', 'source_type': 'legacy',
+                            'processor': 'legacy_summary', 'units': unit or '1', 'csv_name': col}
+                    attrs['time_semantics'] = _infer_time_semantics(name, attrs)
+                value_map[label] = name
+                ds[name] = xr.DataArray(pd.to_numeric(df[col], errors='coerce').to_numpy(dtype=float), dims=('time',))
+                ds[name].attrs.update(attrs)
 
-            ds_list.append(ds)
+            for col in df.columns:
+                text = str(col)
+                m = count_re.match(text)
+                if m:
+                    label = m.group(1).strip(); value_name = value_map.get(label)
+                    if value_name:
+                        name = f'{value_name}_n_valid'
+                        ds[name] = xr.DataArray(pd.to_numeric(df[col], errors='coerce').fillna(0).to_numpy(dtype=float), dims=('time',))
+                        ds[name].attrs.update({'units': '1', 'aggregation_role': 'valid_count',
+                            'source_variable': ds[value_name].attrs.get('source_variable', label),
+                            'csv_name': col, 'time_semantics': ds[value_name].attrs.get('time_semantics', 'snapshot_mean')})
+                        ds[value_name].attrs['ancillary_variables'] = (
+                            ds[value_name].attrs.get('ancillary_variables', '') + ' ' + name).strip()
+                    continue
+                m = inf_re.match(text)
+                if m:
+                    label = m.group(1).strip(); value_name = value_map.get(label)
+                    if value_name:
+                        name = f'{value_name}_n_inf'
+                        ds[name] = xr.DataArray(pd.to_numeric(df[col], errors='coerce').fillna(0).to_numpy(dtype=float), dims=('time',))
+                        ds[name].attrs.update({'units': '1', 'aggregation_role': 'positive_infinity_count',
+                            'source_variable': ds[value_name].attrs.get('source_variable', label),
+                            'csv_name': col, 'time_semantics': 'snapshot_mean'})
+                        ds[value_name].attrs['ancillary_variables'] = (
+                            ds[value_name].attrs.get('ancillary_variables', '') + ' ' + name).strip()
+                    continue
+                m = circ_re.match(text)
+                if m:
+                    label, component = m.group(1).strip(), m.group(2)
+                    value_name = value_map.get(label)
+                    if value_name:
+                        base = value_name[:-5] if value_name.endswith('_mean') else value_name
+                        name = f'{base}_sum_{component}'
+                        ds[name] = xr.DataArray(pd.to_numeric(df[col], errors='coerce').fillna(0).to_numpy(dtype=float), dims=('time',))
+                        ds[name].attrs.update({'units': '1', 'aggregation_role': f'circular_sum_{component}',
+                            'source_variable': ds[value_name].attrs.get('source_variable', label),
+                            'csv_name': col, 'time_semantics': 'snapshot_circular'})
+                        ds[value_name].attrs['ancillary_variables'] = (
+                            ds[value_name].attrs.get('ancillary_variables', '') + ' ' + name).strip()
 
-            if time_name is None:
-                time_name = tname
-            elif time_name != tname:
-                raise ValueError(f"Time coordinate name mismatch: {time_name!r} vs {tname!r}")
+            ds.attrs.update({'source': 'ChemicalDrift legacy summary DataFrame',
+                'mass_output_unit': mass_u or target_mass_unit,
+                'time_output_unit': target_time_unit,
+                'legacy_dataframe_input': 'true'})
+            return ds
 
-            UM_mass, UM_time = UM_mass_i, UM_time_i
+        def _load_summary(item):
+            if isinstance(item, xr.Dataset):
+                input_kinds.append('xarray')
+                return item.copy(deep=False)
+            if isinstance(item, pd.DataFrame):
+                input_kinds.append('dataframe')
+                return _legacy_dataframe_to_dataset(item)
+            if isinstance(item, (str, os.PathLike)):
+                path = os.fspath(item); ext = os.path.splitext(path)[1].lower()
+                if ext in ('.nc', '.netcdf'):
+                    input_kinds.append('netcdf')
+                    with xr.open_dataset(path) as opened:
+                        return opened.load()
+                if ext == '.csv':
+                    input_kinds.append('csv')
+                    return _legacy_dataframe_to_dataset(pd.read_csv(path))
+                raise ValueError(f"Unsupported summary input path extension: {ext!r}")
+            raise TypeError(f"Unsupported summary input type: {type(item)}")
 
-        # convert freq_time only if datetime axis
-        freq_time_used = self._as_timedelta64(freq_time) if used_date_axis else freq_time
+        mass_processors = {'mass_budget', 'elimination_event_budget',
+                           'species_transition_budget', 'species_budget'}
 
-        DataArray_ls = [ds[next(iter(ds.data_vars))] for ds in ds_list]
-        target_time = self._make_target_time(
-            DataArray_ls=DataArray_ls,
-            time_name=time_name,
-            start_date=start_date,
-            end_date=end_date,
-            freq_time=freq_time_used,
-            verbose=verbose,)
+        def _convert_dataset_units(ds):
+            ds = ds.copy(deep=False)
+            # Numeric time coordinates must be converted, not just relabelled.
+            # Legacy DataFrames have already been normalized by their adapter.
+            if 'time' in ds.coords and np.issubdtype(ds['time'].dtype, np.number):
+                source_time_unit = (ds['time'].attrs.get('units') or ds.attrs.get('time_output_unit')
+                    or (ds['elapsed_time'].attrs.get('units') if 'elapsed_time' in ds else None))
+                if source_time_unit is None:
+                    raise ValueError('Numeric summary time requires explicit source time units')
+                aliases = {'min': 'm', 'minute': 'm', 'minutes': 'm', 'second': 's',
+                    'seconds': 's', 'hour': 'hr', 'hours': 'hr', 'day': 'd', 'days': 'd'}
+                source_time_unit = aliases.get(str(source_time_unit), str(source_time_unit))
+                destination_time_unit = aliases.get(target_time_unit, target_time_unit)
+                time_factor = self._time_factor(source_time_unit, destination_time_unit)
+                time_attrs = dict(ds['time'].attrs)
+                ds = ds.assign_coords(time=ds['time'].astype('float64') * time_factor)
+                time_attrs['units'] = target_time_unit
+                ds['time'].attrs.update(time_attrs)
+            src_mass = str(ds.attrs.get('mass_output_unit', target_mass_unit)).strip()
+            src_mass = 'ug' if src_mass == 'µg' else src_mass
+            if src_mass not in ('kg', 'g', 'mg', 'ug'):
+                raise ValueError(f"Unsupported source mass unit in summary: {src_mass!r}")
+            mf = self._mass_factor(src_mass, target_mass_unit)
+            for name in list(ds.data_vars):
+                da = ds[name]; attrs = dict(da.attrs)
+                attrs['time_semantics'] = _infer_time_semantics(name, attrs)
+                is_mass = (attrs.get('processor') in mass_processors and
+                    self._canonical_unit_string(attrs.get('units')) == self._canonical_unit_string(src_mass))
+                if is_mass:
+                    ds[name] = da.astype('float64') * mf
+                    attrs['units'] = target_mass_unit
+                    if 'csv_name' in attrs:
+                        attrs['csv_name'] = str(attrs['csv_name']).replace(
+                            f'[{src_mass}]', f'[{target_mass_unit}]').replace('[µg]', f'[{target_mass_unit}]')
+                ds[name].attrs.update(attrs)
+            if 'elapsed_time' in ds:
+                attrs = dict(ds['elapsed_time'].attrs)
+                attrs.update({'units': target_time_unit, 'csv_name': f'time [{target_time_unit}]',
+                              'time_semantics': 'coordinate'})
+                ds['elapsed_time'].attrs.update(attrs)
+            ds.attrs['mass_output_unit'] = target_mass_unit
+            ds.attrs['time_output_unit'] = target_time_unit
+            return ds
 
-        reindexed = [
-            self._reindex_ds(
-                ds=ds,
-                time_name=time_name,
-                target_time=target_time,
-                nearest_tol_time=nearest_tol_time,
-                align_mode=align_mode,
-                clip_to_original=clip_to_original,)
-            for ds in ds_list]
+        def _native_step(time_values):
+            t = np.asarray(time_values)
+            if t.size < 2:
+                return None
+            d = np.diff(t)
+            if np.issubdtype(d.dtype, np.timedelta64):
+                d = d[d > np.timedelta64(0, 'ns')]
+                if not d.size:
+                    return None
+                ns = d.astype('timedelta64[ns]').astype(np.int64)
+                return np.timedelta64(int(np.median(ns)), 'ns')
+            d = np.asarray(d, dtype=np.float64)
+            d = d[np.isfinite(d) & (d > 0)]
+            return float(np.median(d)) if d.size else None
 
-        all_vars = sorted(set().union(*[set(ds.data_vars) for ds in reindexed]))
-        standardized = []
-        for ds in reindexed:
-            for v in all_vars:
-                if v not in ds:
-                    ds[v] = xr.DataArray(
-                        np.full(ds[time_name].shape, np.nan, dtype="float64"),
-                        coords={time_name: ds[time_name]},
-                        dims=(time_name,),)
-            standardized.append(ds[all_vars])
+        def _synthesize_missing_cumulatives(ds):
+            """Ensure every interval_amount mass variable has a cumulative partner."""
+            ds = ds.copy(deep=False)
+            for name in list(ds.data_vars):
+                attrs = dict(ds[name].attrs)
+                if _infer_time_semantics(name, attrs) != 'interval_amount' or not name.endswith('_ts'):
+                    continue
+                cum_name = name[:-3] + '_cumulative'
+                if cum_name in ds:
+                    continue
+                values = ds[name].astype('float64').fillna(0.0).cumsum('time')
+                cattrs = dict(attrs)
+                cattrs.update({'long_name': f'Cumulative {name[:-3].replace("_", " ")}',
+                    'aggregation_mode': 'special', 'time_semantics': 'cumulative'})
+                if 'csv_name' in cattrs:
+                    cattrs['csv_name'] = str(cattrs['csv_name']).replace('_ts ', '_cumulative ')
+                ds[cum_name] = values
+                ds[cum_name].attrs.update(cattrs)
+            return ds
 
-        aligned = xr.align(*standardized, join="exact", copy=False)
+        ds_list = [_synthesize_missing_cumulatives(_convert_dataset_units(_load_summary(item))) for item in df_list]
+        if any('time' not in ds.coords for ds in ds_list):
+            raise ValueError("Every summary input must provide a 'time' coordinate")
+        for i, ds in enumerate(ds_list):
+            if ds.sizes.get('time', 0) == 0:
+                raise ValueError(f"Summary input {i} has an empty time axis")
+            if not ds['time'].to_index().is_monotonic_increasing:
+                ds_list[i] = ds.sortby('time')
+
+        time_is_datetime = [np.issubdtype(ds['time'].dtype, np.datetime64) for ds in ds_list]
+        if len(set(time_is_datetime)) != 1:
+            raise ValueError('Cannot combine datetime and numeric summary time axes')
+        is_datetime = time_is_datetime[0]
+
+        if strict_metadata:
+            semantic_keys = ('units', 'aggregation_mode', 'aggregation_role', 'processor',
+                             'source_variable', 'source_type', 'angular_period', 'time_semantics')
+            all_names0 = sorted(set().union(*(set(ds.data_vars) for ds in ds_list)))
+            for name in all_names0:
+                refs = [(i, ds[name].attrs) for i, ds in enumerate(ds_list) if name in ds]
+                for key in semantic_keys:
+                    vals = [(i, attrs.get(key)) for i, attrs in refs if attrs.get(key) not in (None, '')]
+                    if vals:
+                        first = vals[0][1]
+                        if any(str(v) != str(first) for _, v in vals[1:]):
+                            raise ValueError(f"Incompatible metadata for {name!r}, attribute {key!r}: {vals}")
+
+        def _same_time_axis(source_time, target_time):
+            """True when two time axes are exactly identical."""
+            a = np.asarray(source_time)
+            b = np.asarray(target_time)
+            if a.shape != b.shape:
+                return False
+            if np.issubdtype(a.dtype, np.datetime64):
+                return np.array_equal(
+                    a.astype('datetime64[ns]'), b.astype('datetime64[ns]'))
+            return np.array_equal(a, b)
+
+        steps = [_native_step(ds['time'].values) for ds in ds_list]
+        valid_steps = [s for s in steps if s is not None]
+        if is_datetime:
+            freq_used = self._as_timedelta64(freq_time) if freq_time is not None else None
+            if freq_used is None and valid_steps:
+                freq_used = max(valid_steps, key=lambda x: int(x.astype('timedelta64[ns]').astype(np.int64)))
+            start_used = np.datetime64(pd.to_datetime(start_date), 'ns') if start_date is not None else min(
+                ds['time'].values.min().astype('datetime64[ns]') for ds in ds_list)
+            end_used = np.datetime64(pd.to_datetime(end_date), 'ns') if end_date is not None else max(
+                ds['time'].values.max().astype('datetime64[ns]') for ds in ds_list)
+        else:
+            freq_used = float(freq_time) if freq_time is not None else (max(valid_steps) if valid_steps else None)
+            start_used = float(start_date) if start_date is not None else min(float(ds['time'].values.min()) for ds in ds_list)
+            end_used = float(end_date) if end_date is not None else max(float(ds['time'].values.max()) for ds in ds_list)
+
+        if start_used > end_used:
+            raise ValueError('start_date/time is after end_date/time')
+
+        # Fast path: if all inputs already share the exact same time axis and
+        # no frequency/window requests a different one, preserve that axis verbatim.
+        all_time_axes_identical = all(
+            _same_time_axis(ds_list[0]['time'].values, ds['time'].values)
+            for ds in ds_list[1:])
+        if (all_time_axes_identical and freq_time is None
+                and start_date is None and end_date is None):
+            target_time = ds_list[0]['time'].values.copy()
+            target_step = None
+        elif align_mode == 'exact' and freq_time is None:
+            target_time = np.unique(np.concatenate([ds['time'].values for ds in ds_list]))
+            target_time = target_time[(target_time >= start_used) & (target_time <= end_used)]
+            target_step = None
+        elif freq_used is None:
+            target_time = np.unique(np.concatenate([ds['time'].values for ds in ds_list]))
+            target_time = target_time[(target_time >= start_used) & (target_time <= end_used)]
+            target_step = None
+        else:
+            target_step = freq_used
+            target_time = np.arange(start_used, end_used + target_step, target_step)
+            target_time = target_time[target_time <= end_used]
+            # Preserve the requested/latest endpoint even when it is not exactly
+            # on the regular phase of the inferred target grid. The final
+            # interval may therefore be shorter, but no source endpoint is lost.
+            if target_time.size == 0 or target_time[-1] < end_used:
+                target_time = np.concatenate((target_time, np.asarray([end_used], dtype=target_time.dtype)))
+
+        if target_time.size == 0:
+            raise ValueError('Requested harmonization window produced an empty target time axis')
+
+        # One preceding target point permits correct first differences when a
+        # requested output window starts after the available cumulative history.
+        internal_time = target_time
+        trim_first = False
+        global_min = min(ds['time'].values.min() for ds in ds_list)
+        if target_step is not None and target_time[0] > global_min:
+            internal_time = np.concatenate(([target_time[0] - target_step], target_time))
+            trim_first = True
 
         if verbose:
-            print("Combining datasets...")
-        count_suffix = "__n_valid"
+            print(f"Harmonizing {len(ds_list)} summaries on {len(target_time)} output timestamps")
+            print(f"Time mode: {align_mode}; target step: {target_step}")
 
-        def _sum_da_list(arrays):
-            acc = arrays[0].fillna(0.0)
-            for da in arrays[1:]:
-                acc = acc + da.fillna(0.0)
-            return acc
-        # A value column is treated as a weighted-mean field if a companion
-        # "<value_col>__n_valid" column exists.
-        weighted_mean_value_cols = {
-            v for v in all_vars
-            if (not v.endswith(count_suffix)) and (f"{v}{count_suffix}" in all_vars)}
+        def _first_attrs(name):
+            for ds in ds_list:
+                if name in ds:
+                    return dict(ds[name].attrs)
+            return {}
+
+        all_vars = sorted(set().union(*(set(ds.data_vars) for ds in ds_list)) - {'elapsed_time'})
+        role_by_name = {name: _first_attrs(name).get('aggregation_role') for name in all_vars}
+        mode_by_name = {name: _first_attrs(name).get('aggregation_mode') for name in all_vars}
+        sem_by_name = {name: _infer_time_semantics(name, _first_attrs(name)) for name in all_vars}
+
+        def _zeros(times=internal_time):
+            return xr.DataArray(np.zeros(len(times), dtype=np.float64),
+                                coords={'time': times}, dims=('time',))
+
+        def _map_snapshot(da, target=internal_time):
+            da = da.astype('float64')
+            # Exact time-axis match: preserve stored values without interpolation.
+            if _same_time_axis(da['time'].values, target):
+                return da.copy(deep=False)
+            if align_mode == 'interpolate':
+                out = da.interp(time=target)
+            elif align_mode == 'exact':
+                out = da.reindex(time=target)
+            elif align_mode == 'pad':
+                out = da.reindex(time=target, method='pad')
+            else:
+                kwargs = {}
+                if nearest_tol_time is not None:
+                    kwargs['tolerance'] = self._as_timedelta64(nearest_tol_time) if is_datetime else nearest_tol_time
+                out = da.reindex(time=target, method='nearest', **kwargs)
+            if clip_to_original:
+                tmin, tmax = da['time'].values.min(), da['time'].values.max()
+                out = out.where((out['time'] >= tmin) & (out['time'] <= tmax))
+            return out
+
+        def _map_cumulative(da, native_step, target=internal_time):
+            """Map cumulative curve; 0 before its baseline and constant after its end."""
+            da = da.astype('float64')
+            # Exact time-axis match: preserve the stored cumulative curve exactly.
+            if _same_time_axis(da['time'].values, target):
+                return da.copy(deep=False)
+            if native_step is not None:
+                baseline_time = da['time'].values[0] - native_step
+                baseline = xr.DataArray([0.0], coords={'time': [baseline_time]}, dims=('time',))
+                source = xr.concat([baseline, da], dim='time')
+            else:
+                baseline_time = da['time'].values[0]
+                source = da
+            if align_mode == 'interpolate':
+                out = source.interp(time=target)
+            elif align_mode == 'exact':
+                out = source.reindex(time=target)
+            elif align_mode == 'pad':
+                out = source.reindex(time=target, method='pad')
+            else:
+                kwargs = {}
+                if nearest_tol_time is not None:
+                    kwargs['tolerance'] = self._as_timedelta64(nearest_tol_time) if is_datetime else nearest_tol_time
+                out = source.reindex(time=target, method='nearest', **kwargs)
+            last_t = da['time'].values[-1]
+            last_v = float(da.isel(time=-1).values)
+            out = xr.where(out['time'] < baseline_time, 0.0, out)
+            out = xr.where(out['time'] > last_t, last_v, out)
+            return out.fillna(0.0)
+
+        def _ancillary_by_role(value_name, role):
+            attrs = _first_attrs(value_name)
+            for candidate in str(attrs.get('ancillary_variables', '')).split():
+                if role_by_name.get(candidate) == role:
+                    return candidate
+            for candidate in all_vars:
+                if role_by_name.get(candidate) == role:
+                    cattrs = _first_attrs(candidate)
+                    if cattrs.get('source_variable') == attrs.get('source_variable'):
+                        return candidate
+            return None
 
         combined_vars = {}
-        for v in all_vars:
-            arrays = [ds[v] for ds in aligned]
-            # Companion counts are always additive
-            if v.endswith(count_suffix):
-                combined_vars[v] = _sum_da_list(arrays)
+        handled = set()
+        derived_ratio_names = {n for n in all_vars if mode_by_name.get(n) == 'derived_ratio' or sem_by_name.get(n) == 'derived'}
+
+        # 1) Cumulative process/event variables. These are the authoritative
+        # temporal representation for interval amounts.
+        cumulative_names = [n for n in all_vars if sem_by_name.get(n) == 'cumulative']
+        for name in cumulative_names:
+            acc = _zeros()
+            for ds, step in zip(ds_list, steps):
+                if name in ds:
+                    acc = acc + _map_cumulative(ds[name], step)
+            attrs = _first_attrs(name); attrs['time_semantics'] = 'cumulative'
+            acc.attrs.update(attrs); combined_vars[name] = acc; handled.add(name)
+
+        # 2) Ordinary means: interpolate sufficient statistics, not the mean alone.
+        for name in all_vars:
+            if name in handled or mode_by_name.get(name) not in ('mean', 'mean_nonzero', 'mean_abs_nonzero'):
                 continue
-            # Weighted mean reconstruction:
-            # global_mean = sum(mean_i * count_i) / sum(count_i)
-            if v in weighted_mean_value_cols:
-                count_name = f"{v}{count_suffix}"
-                count_arrays = [ds[count_name] for ds in aligned]
+            count_name = _ancillary_by_role(name, 'valid_count') or f'{name}_n_valid'
+            num_total, den_total = _zeros(), _zeros()
+            for ds in ds_list:
+                if name not in ds:
+                    continue
+                if count_name not in ds:
+                    raise ValueError(f"Summary containing {name!r} is missing {count_name!r}")
+                cnt = ds[count_name].astype('float64').fillna(0.0)
+                num = xr.where((cnt > 0.0) & np.isfinite(ds[name]), ds[name].astype('float64') * cnt, 0.0)
+                num_total = num_total + _map_snapshot(num).fillna(0.0)
+                den_total = den_total + _map_snapshot(cnt).fillna(0.0)
+            attrs = _first_attrs(name); attrs['time_semantics'] = 'snapshot_mean'
+            da = xr.where(den_total > 0.0, num_total / den_total, np.nan); da.attrs.update(attrs)
+            combined_vars[name] = da; handled.add(name)
+            cattrs = _first_attrs(count_name); cattrs.update({'units': '1', 'aggregation_role': 'valid_count',
+                'time_semantics': 'snapshot_mean', 'count_interpretation':
+                'Exact particle count at original timestamps; effective linear-interpolation weight at interpolated timestamps.'})
+            den_total.attrs.update(cattrs); combined_vars[count_name] = den_total; handled.add(count_name)
 
-                numerator = arrays[0].fillna(0.0) * count_arrays[0].fillna(0.0)
-                denominator = count_arrays[0].fillna(0.0)
-
-                for val_da, cnt_da in zip(arrays[1:], count_arrays[1:]):
-                    cnt = cnt_da.fillna(0.0)
-                    numerator = numerator + val_da.fillna(0.0) * cnt
-                    denominator = denominator + cnt
-
-                combined_vars[v] = xr.where(denominator > 0.0, numerator / denominator, np.nan)
+        # 3) Circular means: interpolate vector sufficient statistics.
+        for name in all_vars:
+            if name in handled or mode_by_name.get(name) != 'circular_mean':
                 continue
+            count_name = _ancillary_by_role(name, 'valid_count') or f'{name}_n_valid'
+            sin_name = _ancillary_by_role(name, 'circular_sum_sin')
+            cos_name = _ancillary_by_role(name, 'circular_sum_cos')
+            if not sin_name or not cos_name:
+                raise ValueError(f"Circular mean {name!r} requires sum_sin and sum_cos ancillary variables")
+            total_n, total_sin, total_cos = _zeros(), _zeros(), _zeros()
+            for ds in ds_list:
+                if name not in ds:
+                    continue
+                for req in (count_name, sin_name, cos_name):
+                    if req not in ds:
+                        raise ValueError(f"Summary containing {name!r} is missing {req!r}")
+                total_n += _map_snapshot(ds[count_name].astype('float64').fillna(0.0)).fillna(0.0)
+                total_sin += _map_snapshot(ds[sin_name].astype('float64').fillna(0.0)).fillna(0.0)
+                total_cos += _map_snapshot(ds[cos_name].astype('float64').fillna(0.0)).fillna(0.0)
+            resultant = np.hypot(total_sin, total_cos)
+            angle = np.mod(np.rad2deg(np.arctan2(total_sin, total_cos)), 360.0)
+            angle = xr.where(np.isclose(angle, 360.0, rtol=0.0, atol=1e-10), 0.0, angle)
+            attrs = _first_attrs(name); attrs['time_semantics'] = 'snapshot_circular'
+            da = xr.where((total_n > 0.0) & (resultant > 1e-12 * total_n), angle, np.nan); da.attrs.update(attrs)
+            combined_vars[name] = da; handled.add(name)
+            for anc_name, anc_da, role in ((count_name, total_n, 'valid_count'),
+                    (sin_name, total_sin, 'circular_sum_sin'), (cos_name, total_cos, 'circular_sum_cos')):
+                aattrs = _first_attrs(anc_name); aattrs.update({'units': '1', 'aggregation_role': role,
+                    'time_semantics': 'snapshot_circular'})
+                if role == 'valid_count':
+                    aattrs['count_interpretation'] = ('Exact particle count at original timestamps; '
+                        'effective linear-interpolation weight at interpolated timestamps.')
+                anc_da.attrs.update(aattrs); combined_vars[anc_name] = anc_da; handled.add(anc_name)
 
-            # Default behavior: additive series
-            combined_vars[v] = _sum_da_list(arrays)
+        # 4) Remaining snapshot/count variables: linearly map each input then add.
+        for name in all_vars:
+            if name in handled or name in derived_ratio_names or sem_by_name.get(name) == 'interval_amount':
+                continue
+            role = role_by_name.get(name); mode = mode_by_name.get(name)
+            if sem_by_name.get(name) == 'cumulative':
+                continue
+            acc = _zeros()
+            found = False
+            for ds in ds_list:
+                if name in ds:
+                    acc = acc + _map_snapshot(ds[name]).fillna(0.0); found = True
+            if not found:
+                continue
+            attrs = _first_attrs(name); attrs['time_semantics'] = _infer_time_semantics(name, attrs)
+            if role in ('valid_count', 'positive_infinity_count'):
+                attrs['count_interpretation'] = ('Exact particle count at original timestamps; '
+                    'effective linear-interpolation weight at interpolated timestamps.')
+            acc.attrs.update(attrs); combined_vars[name] = acc; handled.add(name)
 
-        combined = xr.Dataset(combined_vars)
-        out = combined.to_dataframe().reset_index()
+        combined = xr.Dataset(combined_vars, coords={'time': ('time', internal_time)})
+        combined['time'].attrs.update({'standard_name': 'time', 'long_name': 'Combined summary time'})
 
-        # enforce mass closure for denom
-        dst_tag = f"[{UM_mass}]"
-        mw = f"mass_water_ts {dst_tag}"
-        ms = f"mass_sed_ts {dst_tag}"
-        ma = f"mass_actual_ts {dst_tag}"
-        if mw in out.columns and ms in out.columns:
-            out[ma] = (
-                pd.to_numeric(out[mw], errors="coerce").fillna(0.0)
-                + pd.to_numeric(out[ms], errors="coerce").fillna(0.0))
+        # If a preceding target point was added for a requested sub-window,
+        # rebase cumulative outputs to that boundary before differencing. This
+        # preserves the first interval amount while making cumulatives restart
+        # consistently within the selected combined window.
+        if trim_first:
+            for name in cumulative_names:
+                if name in combined:
+                    attrs = dict(combined[name].attrs)
+                    combined[name] = combined[name] - combined[name].isel(time=0)
+                    combined[name].attrs.update(attrs)
 
-        # ensure perc_sp columns exist, then recompute
-        for pc in sorted(perc_sp_cols_union):
-            if pc not in out.columns:
-                out[pc] = np.nan
+        # 5) Regenerate every interval_amount from its harmonized cumulative curve.
+        interval_names = sorted({n for n in all_vars if sem_by_name.get(n) == 'interval_amount'})
+        for ts_name in interval_names:
+            cum_name = ts_name[:-3] + '_cumulative' if ts_name.endswith('_ts') else None
+            if not cum_name or cum_name not in combined:
+                if strict_metadata:
+                    raise ValueError(f"Interval variable {ts_name!r} has no cumulative counterpart")
+                continue
+            cum = combined[cum_name].astype('float64')
+            vals = np.asarray(cum.values, dtype=np.float64)
+            delta = np.empty_like(vals)
+            delta[0] = vals[0]
+            delta[1:] = np.diff(vals)
+            tol = 1e-12 * max(1.0, float(np.nanmax(np.abs(vals))) if np.isfinite(vals).any() else 1.0)
+            if np.nanmin(delta) < -tol:
+                raise ValueError(f"Harmonized cumulative variable {cum_name!r} is not monotonic")
+            delta[(delta < 0.0) & (delta >= -tol)] = 0.0
+            attrs = _first_attrs(ts_name) or dict(combined[cum_name].attrs)
+            attrs.update({'time_semantics': 'interval_amount',
+                'temporal_reconstruction': 'difference of harmonized cumulative curve'})
+            combined[ts_name] = xr.DataArray(delta, coords={'time': internal_time}, dims=('time',))
+            combined[ts_name].attrs.update(attrs)
 
-        out = self._recompute_perc_sp(
-            out,
-            mass_unit=UM_mass,
-            denom_base="mass_actual_ts",
-            normalize_to_100=normalize_perc_to_100,
-            exclude_keys=("sed_buried",),)
+        # 6) Remove the internal preceding point only after differencing.
+        if trim_first:
+            combined = combined.isel(time=slice(1, None))
+        target_time = combined['time'].values
 
-        # ensure perc_elim columns exist, then recompute
-        for pc in sorted(perc_elim_cols_union):
-            if pc not in out.columns:
-                out[pc] = np.nan
+        # Mass snapshots are additive across simulations; restore the exact core closure.
+        if 'mass_water_ts' in combined and 'mass_sed_ts' in combined:
+            attrs = _first_attrs('mass_actual_ts') or {'units': target_mass_unit,
+                'aggregation_mode': 'special', 'processor': 'mass_budget', 'source_type': 'derived',
+                'csv_name': f'mass_actual_ts [{target_mass_unit}]', 'time_semantics': 'snapshot'}
+            combined['mass_actual_ts'] = combined['mass_water_ts'] + combined['mass_sed_ts']
+            combined['mass_actual_ts'].attrs.update(attrs)
 
-        out = self._recompute_perc_elim(
-            out,
-            mass_unit=UM_mass,
-            perc_cols=sorted(perc_elim_cols_union),
-            denom_terms=(
-                "mass_degraded_ts",
-                "mass_volatilized_ts",
-                "mass_adv_out_ts",
-                "mass_stranded_ts",
-                "mass_buried_ts",),)
+        # Recompute species percentages from combined mass snapshots.
+        perc_sp_names = sorted({n for n in derived_ratio_names if n.startswith('perc_sp_')})
+        if 'mass_actual_ts' in combined:
+            den = combined['mass_actual_ts'].astype('float64')
+            computed = []
+            for name in perc_sp_names:
+                mass_name = name.replace('perc_', 'mass_', 1)
+                if mass_name not in combined:
+                    continue
+                da = xr.where(den > 0.0, combined[mass_name].astype('float64') / den * 100.0, 0.0)
+                attrs = _first_attrs(name) or {'units': '%', 'aggregation_mode': 'derived_ratio',
+                    'processor': 'species_budget', 'source_type': 'derived', 'csv_name': f'{name} [%]'}
+                attrs['time_semantics'] = 'derived'; da.attrs.update(attrs); combined[name] = da; computed.append(name)
+            if normalize_perc_to_100 and computed:
+                row_sum = sum((combined[n] for n in computed), start=xr.zeros_like(den))
+                scale = xr.where((den > 0.0) & (row_sum > 0.0), 100.0 / row_sum, 1.0)
+                for name in computed:
+                    attrs = dict(combined[name].attrs); combined[name] = combined[name] * scale; combined[name].attrs.update(attrs)
 
-        # QC
+        # Recompute elimination percentages from regenerated per-timestep masses.
+        perc_elim_names = sorted({n for n in derived_ratio_names if n.startswith('perc_elim_')})
+        elim_den = xr.DataArray(np.zeros(combined.sizes['time']), coords={'time': combined['time']}, dims=('time',))
+        for term in ('mass_degraded_ts', 'mass_volatilized_ts', 'mass_adv_out_ts', 'mass_stranded_ts', 'mass_buried_ts'):
+            if term in combined:
+                elim_den = elim_den + combined[term].astype('float64').fillna(0.0)
+        for name in perc_elim_names:
+            mass_name = name.replace('perc_elim_', '', 1)
+            if mass_name not in combined:
+                continue
+            num = combined[mass_name].astype('float64').fillna(0.0)
+            da = xr.where(elim_den > 0.0, num / elim_den * 100.0, 0.0)
+            attrs = _first_attrs(name) or {'units': '%', 'aggregation_mode': 'derived_ratio',
+                'processor': 'elimination_event_budget', 'source_type': 'derived', 'csv_name': f'{name} [%]'}
+            attrs['time_semantics'] = 'derived'; da.attrs.update(attrs); combined[name] = da
+
+        # Rebuild elapsed time from the combined output axis.
+        unit_seconds = {'s': 1.0, 'm': 60.0, 'min': 60.0, 'h': 3600.0, 'hr': 3600.0, 'd': 86400.0}
+        if is_datetime:
+            dt_ns = (target_time.astype('datetime64[ns]') - target_time[0].astype('datetime64[ns]')).astype('timedelta64[ns]').astype(np.int64)
+            elapsed = dt_ns.astype(np.float64) / 1e9 / unit_seconds[target_time_unit]
+        else:
+            elapsed = np.asarray(target_time, dtype=np.float64) - float(target_time[0])
+        combined['elapsed_time'] = xr.DataArray(elapsed, dims=('time',))
+        combined['elapsed_time'].attrs.update({'long_name': 'Elapsed time since combined summary start',
+            'units': target_time_unit, 'csv_name': f'time [{target_time_unit}]', 'time_semantics': 'coordinate'})
+
+        coarsest = None
+        if valid_steps:
+            if is_datetime:
+                coarsest = str(max(valid_steps, key=lambda x: int(x.astype('timedelta64[ns]').astype(np.int64))))
+            else:
+                coarsest = float(max(valid_steps))
+        upsampled = False
+        if freq_used is not None and valid_steps:
+            if is_datetime:
+                upsampled = int(freq_used.astype('timedelta64[ns]').astype(np.int64)) < max(
+                    int(s.astype('timedelta64[ns]').astype(np.int64)) for s in valid_steps)
+            else:
+                upsampled = float(freq_used) < max(float(s) for s in valid_steps)
+
+        config_values = {str(ds.attrs.get('chemicaldrift_configuration_json')) for ds in ds_list
+                         if ds.attrs.get('chemicaldrift_configuration_json') not in (None, '')}
+        if len(config_values) > 1:
+            warnings.warn('Input summaries were generated with different ChemicalDrift configuration metadata.', RuntimeWarning)
+        histories = [str(ds.attrs.get('history')) for ds in ds_list if ds.attrs.get('history')]
+        input_filters = [ds.attrs.get('summary_filter_json') for ds in ds_list if ds.attrs.get('summary_filter_json')]
+        combined.attrs.update({
+            'title': 'Combined ChemicalDrift summary time series',
+            'source': 'OpenDrift ChemicalDrift', 'Conventions': 'CF-1.10',
+            'chemicaldrift_summary_version': '3', 'chemicaldrift_summary_combination_version': '2',
+            'number_of_input_summaries': len(ds_list), 'mass_output_unit': target_mass_unit,
+            'time_output_unit': target_time_unit,
+            'history': f'{datetime.now(timezone.utc).isoformat()} sum_summary_timeseries combined {len(ds_list)} summaries',
+            'input_summary_kinds_json': json.dumps(input_kinds),
+            'input_summary_filters_json': json.dumps(input_filters, default=str),
+            'input_histories_json': json.dumps(histories, default=str),
+            'time_harmonization_mode': align_mode,
+            'target_time_step': str(freq_used) if freq_used is not None else 'union',
+            'coarsest_input_time_step': str(coarsest),
+            'temporal_upsampling': str(bool(upsampled)).lower(),
+            'temporal_interpolation_assumption': (
+                'Continuous snapshots vary linearly between saved output times. '
+                'Cumulative process/event quantities vary linearly between saved cumulative values, '
+                'equivalent to a constant average process rate within each source output interval.'),
+            'combination_semantics': ('mass snapshots additive after temporal interpolation; arithmetic means '
+                'combined from interpolated sufficient statistics; circular means reconstructed from interpolated '
+                'sine/cosine components; cumulative process masses additive; interval amounts regenerated by '
+                'differencing; derived ratios recomputed'),
+        })
+
+        def _to_dataframe(ds):
+            if np.issubdtype(ds['time'].dtype, np.datetime64):
+                return self._summary_dataset_to_dataframe(ds, target_mass_unit, target_time_unit)
+            data = {f'time [{target_time_unit}]': ds['elapsed_time'].values}
+            for name, da in ds.data_vars.items():
+                if name != 'elapsed_time':
+                    data[da.attrs.get('csv_name', name)] = da.values
+            out = pd.DataFrame(data); out['UM'] = pd.NA
+            if len(out):
+                out.loc[out.index[0], 'UM'] = f'[{target_mass_unit}] [{target_time_unit}]'
+            return out
+
+        out = _to_dataframe(combined)
         qc_report = None
         if qc_check:
-            qc_result = self._speciation_qc_check(
-                out,
-                mass_unit=UM_mass,
-                denom_base="mass_actual_ts",
-                exclude_keys=("sed_buried",),
-                add_qc_columns=add_qc_columns,
-                on_fail=qc_on_fail,
-                return_report=return_qc_report,
-                time_hint_col=(date_col if date_col in out.columns else None),)
-            if return_qc_report:
-                if add_qc_columns:
+            before_qc = set(out.columns)
+            qc_result = self._speciation_qc_check(out, mass_unit=target_mass_unit,
+                denom_base='mass_actual_ts', exclude_keys=('sed_buried',), add_qc_columns=add_qc_columns,
+                on_fail=qc_on_fail, return_report=return_qc_report,
+                time_hint_col=(date_col if date_col in out.columns else None))
+            if add_qc_columns:
+                if return_qc_report:
                     out, qc_report = qc_result
                 else:
-                    qc_report = qc_result
+                    out = qc_result
+                for col in [c for c in out.columns if c not in before_qc and c.startswith('qc_')]:
+                    values = out[col].to_numpy(); combined[col] = xr.DataArray(values, dims=('time',))
+                    combined[col].attrs.update({'source_type': 'derived', 'processor': 'speciation_qc',
+                        'csv_name': col, 'units': '1' if values.dtype == bool else '', 'time_semantics': 'derived'})
+            elif return_qc_report:
+                qc_report = qc_result
 
-        # rebuild time [unit] from date axis, using the exact original label if available
-        if used_date_axis and rebuild_time_from_date and target_time_unit and date_col in out.columns:
-            old_time_cols = [c for c in out.columns if c.startswith("time [") and c.endswith("]")]
-            out = out.drop(columns=old_time_cols, errors="ignore")
-
-            time_col_name = ref_time_col or f"time [{target_time_unit}]"
-            unit = time_col_name[time_col_name.find("[") + 1 : time_col_name.rfind("]")].strip()
-
-            unit_to_ns = {
-                "s": 1e9,
-                "m": 60e9,
-                "min": 60e9,
-                "h": 3600e9,
-                "hr": 3600e9,
-                "d": 86400e9,
-            }
-            if unit not in unit_to_ns:
-                raise ValueError(f"Unsupported target_time_unit for rebuild: {unit!r}")
-
-            t0 = pd.to_datetime(out[date_col]).min()
-            dt_ns = (pd.to_datetime(out[date_col]) - t0).astype("timedelta64[ns]").astype("int64")
-            out.insert(0, time_col_name, dt_ns / unit_to_ns[unit])
-
-        # UM
-        out["UM"] = pd.NA
-        if len(out):
-            out.loc[out.index[0], "UM"] = f"[{UM_mass}] [{UM_time}]"
-
-        # force final DF to contain *all* ref_cols, in the same order
         if ref_cols is not None:
             for c in ref_cols:
                 if c not in out.columns:
                     out[c] = pd.NA
-
-            ordered = list(ref_cols)
-            extras = [c for c in out.columns if c not in set(ordered)]
+            ordered = list(ref_cols); extras = [c for c in out.columns if c not in set(ordered)]
             out = out[ordered + extras]
 
-        return (out, qc_report) if return_qc_report else out
+        if save_files:
+            nc_path, csv_path = self._summary_output_paths(timeseries_file_path, output_format)
+            if nc_path is not None:
+                combined.to_netcdf(nc_path)
+            if csv_path is not None:
+                out.to_csv(csv_path, index=False)
+            return qc_report if return_qc_report else None
+
+        result = out if output_format == 'csv' else combined
+        return (result, qc_report) if return_qc_report else result
 
     ##### Helpers for sum_DataArray_list
     @staticmethod
