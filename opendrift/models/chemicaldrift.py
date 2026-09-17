@@ -635,10 +635,9 @@ class ChemicalDrift(OceanDrift):
             'chemical:transformations:Henry': {'type': 'float', 'default': -1,
                 'min': None, 'max': None, 'units': 'atm m3 mol-1',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Henry constant (uses Tref_Slb as Tref)'},
-            'chemical:transformations:DeltaH_Henry': {'type': 'float', 'default': 0.0,
-                'min': -100000., 'max': 100000., 'units': 'J/mol',
-                'level': CONFIG_LEVEL_ESSENTIAL,
-                'description': 'Effective enthalpy used to temperature-correct a directly supplied Henry constant.'},
+            'chemical:transformations:DeltaH_Henry': {'type': 'float','default': 47000.,    # 8–93 kJ mol https://doi.org/10.1016/S0045-6535(00)00505-1
+                'min': 0., 'max': 100000.,'units': 'J/mol', 'level': CONFIG_LEVEL_ESSENTIAL,
+                'description': 'Enthalpy of air-water volatilization used for temperature correction of Henry constant' },
             # Vapour pressure
             'chemical:transformations:Vpress': {'type': 'float', 'default': -1,
                 'min': None, 'max': None, 'units': 'Pa',
@@ -871,7 +870,7 @@ class ChemicalDrift(OceanDrift):
             'chemical:transformations:T_Max_bio': {'type': 'float', 'default': 50,                # Default from AQUATOX
                 'min': 1, 'max': None, 'units': 'C',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' Maximum temperature at which biodegradation process will occur'},
-            'chemical:transformations:T_Opt_bio': {'type': 'float', 'default': 24,                # Default from AQUATOX
+            'chemical:transformations:T_Opt_bio': {'type': 'float', 'default': 22,                # Default from AQUATOX
                  'min': 1, 'max': None, 'units': 'C',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': 'Optimal temperature for biodegradation'},
             'chemical:transformations:T_Adp_bio': {'type': 'float', 'default': 2,                 # Default from AQUATOX
