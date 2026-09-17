@@ -684,16 +684,16 @@ class ChemicalDrift(OceanDrift):
             'chemical:sediment:desorption_depth': {'type': 'float', 'default': 1,
                 'min': 0, 'max': 100, 'units': 'm',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Distance from seabed where desorbed elements are moved'},
-            'chemical:sediment:desorption_depth_uncert': {'type': 'float', 'default': .5,
+            'chemical:sediment:desorption_depth_uncert': {'type': 'float', 'default': 0.5,
                 'min': 0, 'max': 100, 'units': 'm',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:resuspension_depth': {'type': 'float', 'default': 1,
                 'min': 0, 'max': 100, 'units': 'm',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Distance from seabed where resuspended elements are moved'},
-            'chemical:sediment:resuspension_depth_uncert': {'type': 'float', 'default': .5,
+            'chemical:sediment:resuspension_depth_uncert': {'type': 'float', 'default': 0.5,
                 'min': 0, 'max': 100, 'units': 'm',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': ''},
-            'chemical:sediment:burial_rate': {'type': 'float', 'default': .0003,   # Parnis, J.M. Mackay, D. (2020) # doi.org/10.1201/9780367809829
+            'chemical:sediment:burial_rate': {'type': 'float', 'default': 0.0003,   # Parnis, J.M. Mackay, D. (2020) # doi.org/10.1201/9780367809829
                 'min': 0, 'max': 10, 'units': 'm/year',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Rate of sediment burial'},
             'chemical:sediment:buried_leaking_rate': {'type': 'float', 'default': 0,
@@ -743,7 +743,17 @@ class ChemicalDrift(OceanDrift):
             'chemical:sediment:wave_stress_source': {'type': 'enum',
                 'enum': ['CALCULATED', 'DIRECT'], 'default': 'CALCULATED',
                 'level': CONFIG_LEVEL_BASIC,
-                'description': 'CALCULATED derives wave stress from Hs, peak period, depth and roughness. DIRECT uses reader-supplied sea_floor_wave_stress: a finite non-negative wave-only stress amplitude in Pa. Sources are mutually exclusive.'},
+                'description':
+                    'CALCULATED derives wave-only bed stress from explicitly supplied significant wave height Hs, peak period, depth and roughness. '
+                    'Supplied wave forcing is authoritative: Hs=0 is retained as a valid calm-wave state and is not replaced by a wind-derived estimate; '
+                    'wave direction 0 degrees is retained as a valid geographic bearing. DIRECT uses reader-supplied sea_floor_wave_stress: a finite '
+                    'non-negative wave-only stress amplitude in Pa. Sources are mutually exclusive.'},
+            'chemical:sediment:calm_wave_wind_warning_threshold': {
+                'type': 'float', 'default': 5.0, 'min': -1.0, 'max': 100.0,
+                'units': 'm/s', 'level': CONFIG_LEVEL_ADVANCED,
+                'description':
+                    'For CALCULATED wave stress, emit a one-time forcing-consistency warning when explicitly supplied Hs=0 coincides with local wind speed '
+                    'above this threshold. The supplied Hs remains authoritative and is never replaced. Set a negative value to disable the warning.'},
             'chemical:sediment:wave_height_convention': {'type': 'enum',
                 'enum': ['RMS_EQUIVALENT', 'SIGNIFICANT_HEIGHT'],
                 'default': 'RMS_EQUIVALENT', 'level': CONFIG_LEVEL_ADVANCED,
@@ -839,6 +849,7 @@ class ChemicalDrift(OceanDrift):
                 'min': -1.0, 'max': 10.0, 'units': '', 'level': CONFIG_LEVEL_ADVANCED,
                 'description': 'Exponent b in tau_ce = a * rho_d^b for cohesive sediments.'},
             # Single process degradation
+            #  main implementation from AQUATOX https://www.epa.gov/sites/default/files/2014-03/documents/technical-documentation-3-1.pdf
             'chemical:transformations:Save_single_degr_mass': {'type': 'bool', 'default': False,
                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Toggle save of mass degraded by single mechanism'},
             'chemical:transformations:Photodegradation': {'type': 'bool', 'default': True,
@@ -848,7 +859,7 @@ class ChemicalDrift(OceanDrift):
             'chemical:transformations:Hydrolysis': {'type': 'bool', 'default': True,
                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Toggle hydrolysis'},
             # Biodegradation
-            'chemical:transformations:k_DecayMax_water': {'type': 'float', 'default': 0.054,      # from AQUATOX (0.13 1/day) https://www.google.com/url?sa=t&source=web&rct=j&opi=89978449&url=https://www.epa.gov/sites/default/files/2018-09/documents/aquatox_tech_doc_3.2.pdf&ved=2ahUKEwjAirfT7dGTAxVflP0HHZ6HBeEQFnoECBcQAQ&usg=AOvVaw1drIYKLK3UCdid-gVz4Jgb
+            'chemical:transformations:k_DecayMax_water': {'type': 'float', 'default': 0,          # Default for no aerobic biodegradation
                 'min': 0, 'max': None, 'units': '1/hours',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' Max first-order rate constant for biodegradation in aerobic condition'},
             'chemical:transformations:k_Anaerobic_water': {'type': 'float', 'default': 0,         # Default for no anaerobic biodegradation
@@ -963,18 +974,18 @@ class ChemicalDrift(OceanDrift):
             'chemical:transformations:RadDistr0_bml': {'type': 'float', 'default': 1.6,    # Default from AQUATOX
                  'min': 0, 'max': None, 'units': '',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': 'Standard radiance distribution function below the Mixed Layer'},
-            'chemical:transformations:WaterExt': {'type': 'float', 'default': 0.21,        # Default from AQUATOX
+            'chemical:transformations:WaterExt': {'type': 'float', 'default': 0.02,        # Default from AQUATOX
                  'min': 0, 'max': None, 'units': '1/m',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': 'Extinction coefficient of light in the water with depht due to water'},
-            'chemical:transformations:ExtCoeffDOM': {'type': 'float', 'default': 0.028,    # Default from AQUATOX
+            'chemical:transformations:ExtCoeffDOM': {'type': 'float', 'default': 0.03,    # Default from AQUATOX
                  'min': 0, 'max': None, 'units': '1/(m*g/m3)',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': 'Extinction coefficient of light in the water with depht due to DOM'},
             'chemical:transformations:ExtCoeffSPM': {'type': 'float', 'default': 0.17,     # Default from AQUATOX
                  'min': 0, 'max': None, 'units': '1/(m*g/m3)',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': 'Extinction coefficient of light in the water with depht due to SPM'},
-            'chemical:transformations:ExtCoeffPHY': {'type': 'float', 'default': 0.14,     # Default from AQUATOX
+            'chemical:transformations:ExtCoeffPHY': {'type': 'float', 'default': 0.099,    # Default from AQUATOX
                  'min': 0, 'max': None, 'units': '1/(m*g/m3)',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Extinction coefficient of light in the water with depht due to phytoplankton'},
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Extinction coefficient of light in the water with depht due to blue-gree phytoplankton'},
             'chemical:transformations:C2PHYC': {'type': 'float', 'default': 0.44,          # Default from https://doi.org/10.1007/BF00006636
                  'min': 0, 'max': None, 'units': 'g_Caron/g_Biomass',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': 'Phytoplankton carbon content'},
@@ -1107,8 +1118,6 @@ class ChemicalDrift(OceanDrift):
 
                 if source == 'CALCULATED':
                     req.update(self.WAVE_STRESS_REQUIRED_VARIABLES)
-                    # No generic deep-water fallback in wave calculations.
-                    req['sea_floor_depth_below_sea_level'] = {'fallback': None}
 
                     wave_roughness = self._resolved_wave_roughness_mode()
                     if wave_roughness == 'LOG_Z0':
@@ -1127,7 +1136,7 @@ class ChemicalDrift(OceanDrift):
                     # Wave direction is required for the directional wave-current
                     # combination, but either "to" or "from" direction is sufficient.
                     for name, spec in self.WAVE_DIRECTION_REQUIRED_VARIABLES.items():
-                        if self._has_reader_variable(name):
+                        if self._has_explicit_environment_source(name):
                             req[name] = dict(spec)
                     # Direct scalar current stress still needs a current direction.
                     req.update(self.SEDIMENT_BOTTOM_VELOCITY_REQUIRED_VARIABLES)
@@ -3075,6 +3084,24 @@ class ChemicalDrift(OceanDrift):
         self._reader_variables = reader_vars
         return name in reader_vars
 
+    def _has_explicit_environment_source(self, name):
+        """Return True for an attached reader or an explicit environment constant.
+
+        OpenDrift materializes ``environment:constant:<name>`` as a constant reader
+        during environment finalization. ChemicalDrift also needs to recognize such
+        constants before that lifecycle step, because zero is a valid explicit value
+        for wave height and direction.
+        """
+        if self._has_reader_variable(name):
+            return True
+
+        try:
+            constant = self.get_config(f'environment:constant:{name}')
+        except (KeyError, ValueError):
+            return False
+
+        return constant is not None
+
     def _optional_env_array(self, name, idx=None):
         """
         Return an environment array only if the variable is truly supplied by a reader.
@@ -4103,10 +4130,8 @@ class ChemicalDrift(OceanDrift):
                 return
 
             self.elements.diameter[idx] = self._sample_lognormal_diameter(
-                median_diameter=median_diameter,
-                sigma_ln=sigma_ln,
-                n=n,
-            )
+                median_diameter=median_diameter, sigma_ln=sigma_ln,
+                n=n,)
             logger.debug("Updated %s diameter for %s elements", label, n)
 
         def _assign_constant_or_array(idx, values, label):
@@ -5103,12 +5128,13 @@ class ChemicalDrift(OceanDrift):
     ###########################################################################
 
     def _wave_reader_array(self, name, idx=None):
-        """Reader-supplied field only, preserving masked values as NaN.
+        """Explicitly supplied field only, preserving masked values as NaN.
 
-        Accept scalars/one-element constant fields and aligned per-element arrays.
-        This helper intentionally does not interpret generic fallbacks as data.
+        Accept attached-reader fields and explicit ``environment:constant:*``
+        values, including exact zero. Generic environment fallbacks are never
+        interpreted as supplied wave forcing.
         """
-        if not self._has_reader_variable(name):
+        if not self._has_explicit_environment_source(name):
             return None
         raw = getattr(self.environment, name, None)
         if raw is None:
@@ -5340,27 +5366,70 @@ class ChemicalDrift(OceanDrift):
         return ex, ey
 
     def _wave_water_depth(self, idx=None):
-        """Actual water-column thickness [m]; non-positive values are dry.
-
-        Reader availability for bathymetry is validated before the run starts.
-        Here only the current local values are retrieved and validated. The
-        generic 10000 m environment fallback is never used for wave attenuation.
         """
-        depth = self._required_wave_environment_array(
-            'sea_floor_depth_below_sea_level', idx=idx)
-        depth = np.asarray(depth, dtype=float)
-        if np.any(~np.isfinite(depth)):
-            raise ValueError('Wave-stress bathymetry contains missing/non-finite values.')
+        Return actual water-column thickness [m] for CALCULATED wave stress.
+
+        The generic ChemicalDrift/OpenDrift bathymetry fallback is retained for
+        normal model operation, but it is not valid physical bathymetry for wave
+        attenuation. CALCULATED wave stress therefore rejects local bathymetry
+        values that are missing, negative, or equal to the configured generic
+        bathymetry fallback.
+
+        A non-positive final water-column thickness after applying sea-surface
+        elevation is allowed and represents a locally dry point.
+
+        DIRECT wave stress never calls this routine.
+        """
+        bathy = self._required_wave_environment_array(
+            'sea_floor_depth_below_sea_level',
+            idx=idx,)
+        bathy = np.asarray(bathy, dtype=float)
+
+        bad = ~np.isfinite(bathy) | (bathy < 0.0)
+
+        # The configured generic fallback is a software fallback, not physical
+        # bathymetry for CALCULATED wave attenuation.
+        bathy_fallback = self.get_config(
+            'environment:fallback:sea_floor_depth_below_sea_level')
+
+        if bathy_fallback is not None:
+            try:
+                bathy_fallback = float(bathy_fallback)
+            except (TypeError, ValueError):
+                bathy_fallback = np.nan
+
+            if np.isfinite(bathy_fallback):
+                bad |= np.isclose(bathy,
+                    bathy_fallback, rtol=0.0, atol=1.0e-12)
+
+        if np.any(bad):
+            raise ValueError(
+                'CALCULATED wave stress requires valid physical bathymetry; '
+                f'{int(np.count_nonzero(bad))} element(s) contain missing, '
+                'negative, or fallback-valued sea_floor_depth_below_sea_level.')
+
         mode = self.get_config('chemical:sediment:wave_depth_convention')
+
         if mode == 'MEAN_SEA_LEVEL':
-            eta = self._wave_reader_array('sea_surface_height', idx=idx)
+            eta = self._wave_reader_array('sea_surface_height', idx=idx,)
+
             if eta is None:
-                eta = np.asarray(self._env_array('sea_surface_height', 0.0, idx=idx), dtype=float)
+                eta = np.asarray( self._env_array('sea_surface_height',
+                        0.0, idx=idx,), dtype=float,)
+
             if np.any(~np.isfinite(eta)):
-                raise ValueError('Wave-stress surface elevation contains non-finite values.')
-            depth = depth + eta
-        elif mode != 'INSTANTANEOUS':
-            raise ValueError(f'Unknown wave_depth_convention: {mode!r}')
+                raise ValueError(
+                    'Wave-stress surface elevation contains non-finite values.')
+
+            depth = bathy + eta
+
+        elif mode == 'INSTANTANEOUS':
+            depth = bathy.copy()
+
+        else:
+            raise ValueError(
+                f'Unknown wave_depth_convention: {mode!r}')
+
         return depth
 
     def _wave_number(self, period, depth):
@@ -5473,6 +5542,114 @@ class ChemicalDrift(OceanDrift):
             raise ValueError(f'Unknown wave_stress_source: {source!r}')
         return source
 
+    def _wave_forcing_active(self):
+        """Whether wave bed stress can participate in sediment exchange."""
+        return (
+            bool(self.get_config('chemical:sediment:include_wave_stress'))
+            and (
+                bool(self.get_config('chemical:sediment:enable_deposition'))
+                or bool(self.get_config('chemical:sediment:enable_resuspension'))
+            )
+        )
+
+    def _warn_calm_wave_with_wind(self):
+        """Warn once about Hs=0 with substantial wind; never alter forcing."""
+        if getattr(self, '_calm_wave_wind_warning_emitted', False):
+            return
+        if self._wave_stress_source() != 'CALCULATED':
+            return
+
+        threshold = float(self.get_config(
+            'chemical:sediment:calm_wave_wind_warning_threshold'))
+        if threshold < 0.0:
+            return
+
+        height = self._required_wave_environment_array(
+            'sea_surface_wave_significant_height')
+        height = np.asarray(height, dtype=float)
+        x_wind = np.asarray(self._env_array('x_wind', 0.0), dtype=float)
+        y_wind = np.asarray(self._env_array('y_wind', 0.0), dtype=float)
+        wind_speed = np.hypot(x_wind, y_wind)
+
+        calm_with_wind = (
+            np.isfinite(height)
+            & (height == 0.0)
+            & np.isfinite(wind_speed)
+            & (wind_speed > threshold)
+        )
+        if np.any(calm_with_wind):
+            self._calm_wave_wind_warning_emitted = True
+            logger.warning(
+                'CALCULATED wave stress received explicitly supplied Hs=0 for '
+                '%d active element(s) while local wind speed exceeds %.3g m/s '
+                '(maximum %.3g m/s). The supplied wave field is authoritative: '
+                'Hs remains zero and no wind-derived wave height is generated.',
+                int(np.count_nonzero(calm_with_wind)),
+                threshold,
+                float(np.nanmax(wind_speed[calm_with_wind])),
+            )
+
+    def calculate_missing_environment_variables(self):
+        """Preserve explicit wave forcing against wind-derived substitution.
+
+        OpenDrift generic missing-environment handling may interpret all-zero wave
+        fields as missing and derive significant wave height or wave-from direction
+        from wind. ChemicalDrift instead treats explicitly supplied wave forcing as
+        authoritative:
+
+        * Hs == 0 is a valid supplied calm-wave state;
+        * wave direction == 0 degrees is a valid geographic bearing;
+        * zero local wind does not imply zero waves, and non-zero wind does not
+          authorize replacement of an explicitly supplied zero Hs.
+
+        The parent processing is retained for all other environment variables.
+        """
+        if not self._wave_forcing_active():
+            return super(
+                ChemicalDrift, self
+            ).calculate_missing_environment_variables()
+
+        protected_names = []
+        if self._wave_stress_source() == 'CALCULATED':
+            protected_names.extend((
+                'sea_surface_wave_significant_height',
+                'sea_surface_wave_period_at_variance_spectral_density_maximum',
+            ))
+
+        # Direction may be needed by SOULSBY_CLARKE for either wave-stress source.
+        protected_names.extend((
+            'sea_surface_wave_to_direction',
+            'sea_surface_wave_from_direction',
+        ))
+
+        protected = {}
+        for name in protected_names:
+            if not self._has_explicit_environment_source(name):
+                continue
+            raw = getattr(self.environment, name, None)
+            if raw is None:
+                continue
+            try:
+                protected[name] = raw.copy()
+            except AttributeError:
+                protected[name] = raw
+
+        try:
+            result = super(
+                ChemicalDrift, self
+            ).calculate_missing_environment_variables()
+        finally:
+            for name, value in protected.items():
+                setattr(self.environment, name, value)
+
+        if (
+            self._wave_stress_source() == 'CALCULATED'
+            and 'sea_surface_wave_significant_height' in protected
+        ):
+            self._warn_calm_wave_with_wind()
+
+        return result
+
     def _validate_wave_stress_source(self):
         """
         Validate wave-reader capability once before the simulation starts.
@@ -5484,17 +5661,29 @@ class ChemicalDrift(OceanDrift):
         if source == 'DIRECT':
             names = ('sea_floor_wave_stress',)
         else:
+            try:
+                use_tabularised_stokes = bool(
+                    self.get_config('drift:use_tabularised_stokes_drift'))
+            except (KeyError, ValueError):
+                use_tabularised_stokes = False
+
+            if use_tabularised_stokes:
+                raise ValueError(
+                    "chemical:sediment:wave_stress_source='CALCULATED' is "
+                    "incompatible with drift:use_tabularised_stokes_drift=True. "
+                    "CALCULATED wave stress requires explicitly supplied wave "
+                    "forcing and does not permit wind-derived Hs replacement."
+                )
+
             names = (
                 'sea_surface_wave_significant_height',
                 'sea_surface_wave_period_at_variance_spectral_density_maximum',
-                'sea_floor_depth_below_sea_level',
-            )
+                'sea_floor_depth_below_sea_level',)
         for name in names:
-            if not self._has_reader_variable(name):
+            if not self._has_explicit_environment_source(name):
                 raise ValueError(
-                    f'{source} wave stress requires a reader for {name}; '
-                    'constant readers are allowed.'
-                )
+                    f'{source} wave stress requires an explicit source for {name}; '
+                    'attached readers and environment constants are allowed.')
         logger.info('Wave stress source=%s; combination=%s', source,
                     self.get_config('chemical:sediment:shear_stress_combination'))
         if source == 'CALCULATED':
@@ -5503,20 +5692,18 @@ class ChemicalDrift(OceanDrift):
                         self.get_config('chemical:sediment:wave_depth_convention'),
                         self._resolved_wave_roughness_mode())
         combo = self.get_config(
-            'chemical:sediment:shear_stress_combination'
-        )
+            'chemical:sediment:shear_stress_combination')
 
         if combo == 'SOULSBY_CLARKE':
-            has_to = self._has_reader_variable(
+            has_to = self._has_explicit_environment_source(
                 'sea_surface_wave_to_direction')
-            has_from = self._has_reader_variable(
+            has_from = self._has_explicit_environment_source(
                 'sea_surface_wave_from_direction')
             if not (has_to or has_from):
                 raise ValueError(
                     'SOULSBY_CLARKE requires a reader supplying either '
                     'sea_surface_wave_to_direction or '
-                    'sea_surface_wave_from_direction.'
-                )
+                    'sea_surface_wave_from_direction.')
 
     def _wave_stress(self, rho, idx=None):
         """Return one wave-stress source and its available diagnostics.
@@ -7245,12 +7432,9 @@ class ChemicalDrift(OceanDrift):
         """
         oxygen = self._env_array(
             'mole_concentration_of_dissolved_molecular_oxygen_in_sea_water',
-            225.0,
-            idx=idx,
-        )
+            225.0, idx=idx,)
         return self._validate_array_param(
-            "bottom_water_oxygen", oxygen, ge=0.0
-        )
+            "bottom_water_oxygen", oxygen, ge=0.0)
 
     def _local_active_sediment_layer_thickness(self, idx):
         """
