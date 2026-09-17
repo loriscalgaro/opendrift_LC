@@ -2127,6 +2127,36 @@ class ChemicalDrift(OceanDrift):
         for var_name in sorted(k for k in vars(self) if k.startswith('num_')):
             self.result[var_name] = getattr(self, var_name)
 
+    def _resolve_reader_dependent_requirements(self):
+        """Finalize reader-dependent environmental requirements for this run.
+
+        OpenDrift allocates the trajectory/output schema before ``prepare_run()``
+        is called. Reader-dependent variables therefore have to be promoted into
+        ``required_variables`` before entering ``OceanDrift.run()`` if they are
+        to be stored in the trajectory NetCDF as well as used by the physics.
+
+        At present the only reader-dependent source choice is the optional direct
+        current bed stress. Keeping the resolution in one helper makes the pre-run
+        and ``prepare_run()`` paths identical and idempotent.
+        """
+        self._reader_variables = set()
+        for _, reader in self.env.readers.items():
+            self._reader_variables.update(getattr(reader, 'variables', []))
+
+        self._resolve_current_stress_source()
+        return self._sync_required_variables_from_config()
+
+    def run(self, *args, **kwargs):
+        """Finalize reader-dependent requirements before OpenDrift builds output.
+
+        ``BaseModel.run()`` creates ``self.result`` from the then-current
+        ``required_variables`` before it calls ``prepare_run()``. Resolving the
+        optional direct-current-stress source here ensures that a reader-supplied
+        ``sea_floor_current_stress`` field is included in that output schema.
+        """
+        self._resolve_reader_dependent_requirements()
+        return super(ChemicalDrift, self).run(*args, **kwargs)
+
     def prepare_run(self):
         self._configure_element_type_from_config()
         if not hasattr(self, "name_species"):
@@ -2134,20 +2164,10 @@ class ChemicalDrift(OceanDrift):
         if not hasattr(self, "transfer_rates"):
             self.init_transfer_rates()
 
-        # Cache the variables actually advertised by attached readers, then
-        # resolve the optional preferred direct-current-stress source exactly
-        # once for this run.  Runtime stress calculations use this frozen choice
-        # and validate only the local data values.
-        self._reader_variables = set()
-        for _, reader in self.env.readers.items():
-            self._reader_variables.update(getattr(reader, 'variables', []))
-        self._resolve_current_stress_source()
-
-        # Finalize required environmental variables after config/species/source
-        # resolution, but before OceanDrift.prepare_run() prepares/interpolates
-        # readers.  sea_floor_current_stress is included only when the source
-        # resolved above is DIRECT.
-        self._sync_required_variables_from_config()
+        # Normally already resolved immediately before OceanDrift.run() creates
+        # the trajectory/output schema. Repeat the same idempotent resolution
+        # here to protect direct prepare_run() use during testing/development.
+        self._resolve_reader_dependent_requirements()
 
         logger.info('Required variables for this run:')
         for name in sorted(self.required_variables):
