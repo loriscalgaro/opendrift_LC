@@ -106,10 +106,19 @@ class Chemical(Lagrangian3DArray):
     # selected oxygen model is added to the element type when requested.
     SEDIMENT_OXYGEN_DIAGNOSTIC_DEFINITIONS = {
         'sed_o2_used': {'dtype': np.float32, 'units': 'mmol/m3', 'seed': True, 'default': np.nan},
+        'sed_o2_biodegradation_weight': {'dtype': np.float32, 'units': '1', 'seed': True, 'default': np.nan},
         'sed_o2_bottom': {'dtype': np.float32, 'units': 'mmol/m3', 'seed': True, 'default': np.nan},
         'sed_o2_active_layer_thickness': {'dtype': np.float32, 'units': 'm', 'seed': True, 'default': np.nan},
         'sed_o2_porosity': {'dtype': np.float32, 'units': '1', 'seed': True, 'default': np.nan},
         'sed_o2_diffusivity': {'dtype': np.float32, 'units': 'm2/s', 'seed': True, 'default': np.nan},
+        'sed_o2_diffusivity_molecular': {'dtype': np.float32, 'units': 'm2/s', 'seed': True, 'default': np.nan},
+        'sed_o2_permeability': {'dtype': np.float32, 'units': 'm2', 'seed': True, 'default': np.nan},
+        'sed_o2_dispersion_factor': {'dtype': np.float32, 'units': '1', 'seed': True, 'default': np.nan},
+        'sed_o2_ustar': {'dtype': np.float32, 'units': 'm/s', 'seed': True, 'default': np.nan},
+        'sed_o2_bioirrigation_alpha0': {'dtype': np.float32, 'units': 's-1', 'seed': True, 'default': np.nan},
+        'sed_o2_bioirrigation_depth_scale': {'dtype': np.float32, 'units': 'm', 'seed': True, 'default': np.nan},
+        'sed_o2_bioirrigation_flux': {'dtype': np.float32, 'units': 'mmol O2 m-2 s-1', 'seed': True, 'default': np.nan},
+        'sed_o2_total_oxygen_uptake': {'dtype': np.float32, 'units': 'mmol O2 m-2 s-1', 'seed': True, 'default': np.nan},
         'sed_o2_dbl_thickness': {'dtype': np.float32, 'units': 'm', 'seed': True, 'default': np.nan},
         'sed_o2_k_bl': {'dtype': np.float32, 'units': 'm/s', 'seed': True, 'default': np.nan},
         'sed_o2_surface': {'dtype': np.float32, 'units': 'mmol/m3', 'seed': True, 'default': np.nan},
@@ -123,14 +132,34 @@ class Chemical(Lagrangian3DArray):
 
     @classmethod
     def sediment_oxygen_diagnostic_variable_names(
-            cls, oxygen_model, oxygen_demand_mode='VOLUMETRIC_RATE'):
+            cls, oxygen_model, oxygen_demand_mode='VOLUMETRIC_RATE',
+            porewater_transport='MOLECULAR', bioirrigation_mode='NONE'):
         """Return the exact diagnostic schema for one sediment-O2 setup."""
-        common = ['sed_o2_used', 'sed_o2_bottom']
+        common = ['sed_o2_used', 'sed_o2_biodegradation_weight', 'sed_o2_bottom']
         geometry = ['sed_o2_active_layer_thickness']
         transport = ['sed_o2_porosity', 'sed_o2_diffusivity']
+        dispersion = [
+            'sed_o2_diffusivity_molecular', 'sed_o2_permeability',
+            'sed_o2_dispersion_factor', 'sed_o2_ustar',
+        ]
+        bioirrigation = [
+            'sed_o2_bioirrigation_alpha0',
+            'sed_o2_bioirrigation_depth_scale',
+            'sed_o2_bioirrigation_flux',
+            'sed_o2_total_oxygen_uptake',
+        ]
         penetration = ['sed_o2_penetration_depth']
         flux = ['sed_o2_flux']
         dbl = ['sed_o2_dbl_thickness', 'sed_o2_k_bl', 'sed_o2_surface']
+
+        if porewater_transport not in ('MOLECULAR', 'PERMEABILITY_DISPERSION'):
+            raise ValueError(
+                f'Unknown sediment oxygen porewater transport: {porewater_transport!r}'
+            )
+        if bioirrigation_mode not in ('NONE', 'RADI_GAUSSIAN'):
+            raise ValueError(
+                f'Unknown sediment oxygen bioirrigation mode: {bioirrigation_mode!r}'
+            )
 
         if oxygen_model == 'FIXED_FRACTION':
             names = common
@@ -143,6 +172,10 @@ class Chemical(Lagrangian3DArray):
                     f'{oxygen_demand_mode!r}'
                 )
             names = common + geometry + transport
+            if porewater_transport == 'PERMEABILITY_DISPERSION':
+                names += dispersion
+            if bioirrigation_mode != 'NONE':
+                names += bioirrigation
             if oxygen_model == 'ZERO_ORDER_DBL':
                 names += dbl
             names += penetration
@@ -150,8 +183,13 @@ class Chemical(Lagrangian3DArray):
                 names += ['sed_o2_consumption_rate']
             names += flux
         elif oxygen_model == 'TWO_LAYER_DBL':
-            names = (
-                common + geometry + transport + dbl + penetration + flux
+            names = common + geometry + transport
+            if porewater_transport == 'PERMEABILITY_DISPERSION':
+                names += dispersion
+            if bioirrigation_mode != 'NONE':
+                names += bioirrigation
+            names += (
+                dbl + penetration + flux
                 + ['sed_o2_R_upper', 'sed_o2_R_lower',
                    'sed_o2_transition_depth']
             )
@@ -170,10 +208,12 @@ class Chemical(Lagrangian3DArray):
 
     @classmethod
     def sediment_oxygen_diagnostic_variables(
-            cls, oxygen_model, oxygen_demand_mode='VOLUMETRIC_RATE'):
+            cls, oxygen_model, oxygen_demand_mode='VOLUMETRIC_RATE',
+            porewater_transport='MOLECULAR', bioirrigation_mode='NONE'):
         """Return Lagrangian variable definitions for the selected schema."""
         names = cls.sediment_oxygen_diagnostic_variable_names(
-            oxygen_model, oxygen_demand_mode
+            oxygen_model, oxygen_demand_mode, porewater_transport,
+            bioirrigation_mode,
         )
         return [
             (name, dict(cls.SEDIMENT_OXYGEN_DIAGNOSTIC_DEFINITIONS[name]))
@@ -182,14 +222,19 @@ class Chemical(Lagrangian3DArray):
 
     @classmethod
     def sediment_oxygen_diagnostic_schema_key(
-            cls, oxygen_model, oxygen_demand_mode='VOLUMETRIC_RATE'):
+            cls, oxygen_model, oxygen_demand_mode='VOLUMETRIC_RATE',
+            porewater_transport='MOLECULAR', bioirrigation_mode='NONE'):
         """Return the configuration components that change output schema."""
         # Validation is delegated to the schema builder.
         cls.sediment_oxygen_diagnostic_variable_names(
-            oxygen_model, oxygen_demand_mode
+            oxygen_model, oxygen_demand_mode, porewater_transport,
+            bioirrigation_mode,
         )
         if oxygen_model in ('ZERO_ORDER', 'ZERO_ORDER_DBL'):
-            return (oxygen_model, oxygen_demand_mode)
+            return (oxygen_model, oxygen_demand_mode, porewater_transport,
+                    bioirrigation_mode)
+        if oxygen_model == 'TWO_LAYER_DBL':
+            return (oxygen_model, porewater_transport, bioirrigation_mode)
         return (oxygen_model,)
 
     @classmethod
@@ -200,6 +245,8 @@ class Chemical(Lagrangian3DArray):
         save_sediment_oxygen_diagnostics=False,
         sediment_oxygen_model='FIXED_FRACTION',
         sediment_oxygen_demand_mode='VOLUMETRIC_RATE',
+        sediment_oxygen_porewater_transport='MOLECULAR',
+        sediment_oxygen_bioirrigation_mode='NONE',
     ):
         """
         Build a concrete Lagrangian3DArray element type from the active
@@ -216,6 +263,8 @@ class Chemical(Lagrangian3DArray):
             variables.extend(cls.sediment_oxygen_diagnostic_variables(
                 sediment_oxygen_model,
                 sediment_oxygen_demand_mode,
+                sediment_oxygen_porewater_transport,
+                sediment_oxygen_bioirrigation_mode,
             ))
         class ChemicalElement(Lagrangian3DArray):
             """Concrete Chemical element type for this run configuration."""
@@ -376,7 +425,19 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         'sea_floor_porosity': {'fallback': np.nan,
             'important': False,'profiles': False,},  # 1, m3 pore water / m3 bulk sediment
         'sediment_oxygen_diffusivity': {'fallback': np.nan,
-            'important': False, 'profiles': False,},  # m2/s, effective pore-water diffusivity
+            'important': False, 'profiles': False,},  # m2/s, effective molecular pore-water diffusivity
+    }
+
+    SEDIMENT_OXYGEN_PERMEABILITY_REQUIRED_VARIABLES = {
+        'sea_floor_permeability': {'fallback': np.nan,
+            'important': False, 'profiles': False,},  # m2
+    }
+
+    SEDIMENT_OXYGEN_BIOIRRIGATION_REQUIRED_VARIABLES = {
+        'sediment_bioirrigation_alpha0': {'fallback': np.nan,
+            'important': False, 'profiles': False,},  # s-1
+        'sediment_bioirrigation_depth_scale': {'fallback': np.nan,
+            'important': False, 'profiles': False,},  # m
     }
 
     SEDIMENT_OXYGEN_VOLUMETRIC_REQUIRED_VARIABLES = {
@@ -438,6 +499,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         SEDIMENT_OXYGEN_GEOMETRY_REQUIRED_VARIABLES,
         SEDIMENT_OXYGEN_OPD_REQUIRED_VARIABLES,
         SEDIMENT_OXYGEN_TRANSPORT_REQUIRED_VARIABLES,
+        SEDIMENT_OXYGEN_PERMEABILITY_REQUIRED_VARIABLES,
+        SEDIMENT_OXYGEN_BIOIRRIGATION_REQUIRED_VARIABLES,
         SEDIMENT_OXYGEN_VOLUMETRIC_REQUIRED_VARIABLES,
         SEDIMENT_OXYGEN_FLUX_REQUIRED_VARIABLES,
         SEDIMENT_OXYGEN_DBL_REQUIRED_VARIABLES,
@@ -861,13 +924,29 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             # Biodegradation
             'chemical:transformations:k_DecayMax_water': {'type': 'float', 'default': 0,          # Default for no aerobic biodegradation
                 'min': 0, 'max': None, 'units': '1/hours',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ' Max first-order rate constant for biodegradation in aerobic condition'},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Maximum first-order aerobic biodegradation rate constant in water.'},
+            'chemical:transformations:sediment_aerobic_rate_mode': {'type': 'enum',
+                'enum': ['WATER_MULTIPLIER', 'DIRECT'], 'default': 'WATER_MULTIPLIER',
+                'level': CONFIG_LEVEL_ADVANCED,
+                'description': ('Resolve the aerobic sediment biodegradation endpoint either as a multiplier of '
+                    'k_DecayMax_water or from k_DecayMax_sediment directly.')},
+            'chemical:transformations:sediment_aerobic_rate_multiplier': {'type': 'float', 'default': 4.0,
+                'min': 0.0, 'max': None, 'units': '', 'level': CONFIG_LEVEL_ADVANCED,
+                'description': ('Multiplier applied to k_DecayMax_water when sediment_aerobic_rate_mode '
+                    'is WATER_MULTIPLIER. The default preserves the AQUATOX-derived factor used previously.')},
+            'chemical:transformations:k_DecayMax_sediment': {'type': 'float', 'default': 0.0,
+                'min': 0.0, 'max': None, 'units': '1/hours', 'level': CONFIG_LEVEL_ADVANCED,
+                'description': ('Direct maximum first-order aerobic biodegradation rate constant in sediment. '
+                    'Used only when sediment_aerobic_rate_mode is DIRECT.')},
             'chemical:transformations:k_Anaerobic_water': {'type': 'float', 'default': 0,         # Default for no anaerobic biodegradation
                 'min': 0, 'max': None, 'units': '1/hours',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ' Max first-order rate constant for biodegradation in anaerobic condition '},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Maximum first-order anaerobic biodegradation rate constant used in water and sediment.'},
             'chemical:transformations:HalfSatO_w': {'type': 'float', 'default': 0.5,              # Default from AQUATOX
                 'min': 0.01, 'max': None, 'units': 'g/m3',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': ' Half-saturation constant for oxygen'},
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Water-column dissolved-oxygen half-saturation constant for biodegradation.'},
+            'chemical:transformations:HalfSatO_s': {'type': 'float', 'default': 8.0,              # AQUATOX sedimented detritus default
+                'min': 0.01, 'max': None, 'units': 'g/m3',
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Sediment dissolved-oxygen half-saturation constant for biodegradation.'},
             'chemical:transformations:T_Max_bio': {'type': 'float', 'default': 50,                # Default from AQUATOX
                 'min': 1, 'max': None, 'units': 'C',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': ' Maximum temperature at which biodegradation process will occur'},
@@ -932,6 +1011,37 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'units': 'm2/s', 'level': CONFIG_LEVEL_ADVANCED,
                 'description': ('Molecular diffusivity of dissolved oxygen in free water used '
                     'to derive sediment diffusivity when no valid sediment_oxygen_diffusivity map is supplied.'),},
+            'chemical:sediment:oxygen_porewater_transport': {'type': 'enum',
+                'enum': ['MOLECULAR', 'PERMEABILITY_DISPERSION'], 'default': 'MOLECULAR',
+                'level': CONFIG_LEVEL_ADVANCED,
+                'description': ('Porewater oxygen transport mode. PERMEABILITY_DISPERSION enhances '
+                    'effective sediment diffusivity above a permeability threshold using current shear velocity.')},
+            'chemical:sediment:oxygen_permeability': {'type': 'float', 'default': -1.0,
+                'min': -1.0, 'max': None, 'units': 'm2', 'level': CONFIG_LEVEL_ADVANCED,
+                'description': ('Uniform fallback sediment permeability for PERMEABILITY_DISPERSION. '
+                    'A negative value requires a valid sea_floor_permeability map.')},
+            'chemical:sediment:oxygen_permeability_threshold': {'type': 'float', 'default': 1.0e-12,
+                'min': 1.0e-20, 'max': None, 'units': 'm2', 'level': CONFIG_LEVEL_ADVANCED,
+                'description': 'Permeability threshold above which porewater dispersion is applied.'},
+            'chemical:sediment:oxygen_dispersion_alpha': {'type': 'float', 'default': 1000.0,
+                'min': 0.0, 'max': None, 'units': 's/m', 'level': CONFIG_LEVEL_ADVANCED,
+                'description': ('SI empirical dispersion coefficient. 1000 s/m corresponds to '
+                    'alpha=1 s/mm when shear velocity is expressed in mm/s.')},
+            'chemical:sediment:oxygen_bioirrigation_mode': {'type': 'enum',
+                'enum': ['NONE', 'RADI_GAUSSIAN'], 'default': 'NONE',
+                'level': CONFIG_LEVEL_ADVANCED,
+                'description': ('Optional non-local porewater exchange with bottom water. '
+                    'RADI_GAUSSIAN uses alpha(z)=alpha0*exp(-(z/lambda_i)^2).')},
+            'chemical:sediment:oxygen_bioirrigation_alpha0': {'type': 'float',
+                'default': -1.0, 'min': -1.0, 'max': None, 'units': 's-1',
+                'level': CONFIG_LEVEL_ADVANCED,
+                'description': ('Uniform surface bioirrigation coefficient. A negative value '
+                    'requires sediment_bioirrigation_alpha0 from a reader when bioirrigation is enabled.')},
+            'chemical:sediment:oxygen_bioirrigation_depth_scale': {'type': 'float',
+                'default': 0.05, 'min': 1.0e-6, 'max': 100.0, 'units': 'm',
+                'level': CONFIG_LEVEL_ADVANCED,
+                'description': ('Characteristic bioirrigation depth lambda_i for the Gaussian '
+                    'RADI/Archer profile; mapped sediment_bioirrigation_depth_scale is preferred.')},
             'chemical:sediment:oxygen_dbl_thickness': {'type': 'float',
                 'default': 0.001, 'min': 1.0e-6, 'max': 0.1, 'units': 'm',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': ('Uniform fallback diffusive boundary-layer thickness used in '
@@ -999,6 +1109,30 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         self._set_config_default('drift:vertical_advection_at_surface', True)
         self._sync_required_variables_from_config()
 
+    def _oxygen_permeability_dispersion_active(self):
+        """Return True when runtime biodegradation uses permeability dispersion."""
+        return bool(
+            self.get_config('chemical:transformations:degradation')
+            and self.get_config('chemical:transformations:degradation_mode') == 'SingleRateConstants'
+            and self.get_config('chemical:transformations:Biodegradation')
+            and self.get_config('chemical:sediment:oxygen_model') in (
+                'ZERO_ORDER', 'ZERO_ORDER_DBL', 'TWO_LAYER_DBL'
+            )
+            and self.get_config('chemical:sediment:oxygen_porewater_transport')
+                == 'PERMEABILITY_DISPERSION'
+        )
+
+    def _oxygen_bioirrigation_active(self):
+        """Return True when sediment biodegradation uses numerical bioirrigation."""
+        return bool(
+            self.get_config('chemical:transformations:degradation')
+            and self.get_config('chemical:transformations:degradation_mode')
+                == 'SingleRateConstants'
+            and self.get_config('chemical:transformations:Biodegradation')
+            and self.get_config('chemical:sediment:oxygen_bioirrigation_mode')
+                != 'NONE'
+        )
+
     def _build_required_variables(self):
         """
         Build required_variables from active configuration.
@@ -1034,6 +1168,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             self.get_config('chemical:sediment:include_other_stress')
         )
         stress_mode = self.get_config('chemical:sediment:stress_param_mode')
+        oxygen_dispersion_active = self._oxygen_permeability_dispersion_active()
+        oxygen_bioirrigation_active = self._oxygen_bioirrigation_active()
         resuspension_critstress_mode = self.get_config(
             'chemical:sediment:resuspension_critstress_mode'
         )
@@ -1057,6 +1193,10 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 elif sediment_oxygen_model in ('ZERO_ORDER', 'ZERO_ORDER_DBL'):
                     req.update(self.SEDIMENT_OXYGEN_GEOMETRY_REQUIRED_VARIABLES)
                     req.update(self.SEDIMENT_OXYGEN_TRANSPORT_REQUIRED_VARIABLES)
+                    if oxygen_dispersion_active:
+                        req.update(self.SEDIMENT_OXYGEN_PERMEABILITY_REQUIRED_VARIABLES)
+                    if oxygen_bioirrigation_active:
+                        req.update(self.SEDIMENT_OXYGEN_BIOIRRIGATION_REQUIRED_VARIABLES)
 
                     oxygen_demand_mode = self.get_config('chemical:sediment:oxygen_demand_mode')
                     if oxygen_demand_mode == 'VOLUMETRIC_RATE':
@@ -1070,12 +1210,32 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 elif sediment_oxygen_model == 'TWO_LAYER_DBL':
                     req.update(self.SEDIMENT_OXYGEN_GEOMETRY_REQUIRED_VARIABLES)
                     req.update(self.SEDIMENT_OXYGEN_TRANSPORT_REQUIRED_VARIABLES)
+                    if oxygen_dispersion_active:
+                        req.update(self.SEDIMENT_OXYGEN_PERMEABILITY_REQUIRED_VARIABLES)
+                    if oxygen_bioirrigation_active:
+                        req.update(self.SEDIMENT_OXYGEN_BIOIRRIGATION_REQUIRED_VARIABLES)
                     req.update(self.SEDIMENT_OXYGEN_DBL_REQUIRED_VARIABLES)
                     req.update(self.SEDIMENT_OXYGEN_TWO_LAYER_REQUIRED_VARIABLES)
             if bool(self.get_config('chemical:transformations:Photodegradation')):
                 req.update(self.PHOTODEGRADATION_REQUIRED_VARIABLES)
             if bool(self.get_config('chemical:transformations:Hydrolysis')):
                 req.update(self.HYDROLYSIS_REQUIRED_VARIABLES)
+        # Permeability-driven O2 dispersion needs current shear even when
+        # deposition and resuspension are both disabled. Request only current
+        # stress inputs here; wave/other stress remains unrelated to this path.
+        if oxygen_dispersion_active:
+            if bool(getattr(self, '_direct_current_stress_reader_available', False)):
+                req.update(self.DIRECT_CURRENT_STRESS_REQUIRED_VARIABLES)
+            else:
+                if stress_mode in ('LOG_Z0', 'GRAIN_D50'):
+                    req.update(self.SEDIMENT_BOTTOM_VELOCITY_REQUIRED_VARIABLES)
+                if stress_mode == 'LOG_Z0':
+                    req.update(self.SEDIMENT_LOG_Z0_REQUIRED_VARIABLES)
+                if stress_mode == 'GRAIN_D50':
+                    req.update(self.SEDIMENT_GRAIN_D50_REQUIRED_VARIABLES)
+                if stress_mode in ('MANNING', 'CHEZY', 'WHITE_COLEBROOK'):
+                    req.update(self.SEDIMENT_BULK_FLOW_REQUIRED_VARIABLES)
+
         if volatilization_enabled:
             req.update(self.VOLATILIZATION_REQUIRED_VARIABLES)
         if sediment_exchange_enabled:
@@ -1294,9 +1454,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'chemical:transformations:Biodegradation=True.'
             )
 
-        k_aer = float(self.get_config(
-            'chemical:transformations:k_DecayMax_water'
-        ))
+        k_aer = float(self._resolved_sediment_aerobic_biodegradation_rate())
         k_ana = float(self.get_config(
             'chemical:transformations:k_Anaerobic_water'
         ))
@@ -1311,7 +1469,94 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         Chemical.sediment_oxygen_diagnostic_schema_key(
             self.get_config('chemical:sediment:oxygen_model'),
             self.get_config('chemical:sediment:oxygen_demand_mode'),
+            self.get_config('chemical:sediment:oxygen_porewater_transport'),
+            self.get_config('chemical:sediment:oxygen_bioirrigation_mode'),
         )
+
+    def _validate_sediment_oxygen_transport_config(self):
+        """Validate active sediment-O2 transport choices before runtime."""
+        if not bool(self.get_config('chemical:transformations:degradation')):
+            return
+        if self.get_config(
+                'chemical:transformations:degradation_mode'
+                ) != 'SingleRateConstants':
+            return
+        if not bool(self.get_config('chemical:transformations:Biodegradation')):
+            return
+
+        model = self.get_config('chemical:sediment:oxygen_model')
+        transport = self.get_config('chemical:sediment:oxygen_porewater_transport')
+        bio_mode = self.get_config('chemical:sediment:oxygen_bioirrigation_mode')
+
+        if transport not in ('MOLECULAR', 'PERMEABILITY_DISPERSION'):
+            raise ValueError(
+                'Unknown chemical:sediment:oxygen_porewater_transport: '
+                f'{transport!r}'
+            )
+        if bio_mode not in ('NONE', 'RADI_GAUSSIAN'):
+            raise ValueError(
+                'Unknown chemical:sediment:oxygen_bioirrigation_mode: '
+                f'{bio_mode!r}'
+            )
+
+        mechanistic = model in ('ZERO_ORDER', 'ZERO_ORDER_DBL', 'TWO_LAYER_DBL')
+        if transport == 'PERMEABILITY_DISPERSION' and not mechanistic:
+            raise ValueError(
+                'PERMEABILITY_DISPERSION requires a mechanistic sediment-O2 '
+                'model: ZERO_ORDER, ZERO_ORDER_DBL, or TWO_LAYER_DBL. '
+                f'Got {model!r}.'
+            )
+        if bio_mode != 'NONE' and not mechanistic:
+            raise ValueError(
+                'Bioirrigation requires ZERO_ORDER, ZERO_ORDER_DBL, or '
+                f'TWO_LAYER_DBL. Got {model!r}.'
+            )
+        if (bio_mode != 'NONE' and model in ('ZERO_ORDER', 'ZERO_ORDER_DBL')
+                and self.get_config('chemical:sediment:oxygen_demand_mode')
+                != 'VOLUMETRIC_RATE'):
+            raise ValueError(
+                'Bioirrigation with ZERO_ORDER or ZERO_ORDER_DBL requires '
+                "chemical:sediment:oxygen_demand_mode='VOLUMETRIC_RATE'."
+            )
+
+        if transport == 'PERMEABILITY_DISPERSION':
+            self._validate_scalar_param(
+                'chemical:sediment:oxygen_permeability_threshold',
+                self.get_config('chemical:sediment:oxygen_permeability_threshold'),
+                gt=0.0,
+            )
+            self._validate_scalar_param(
+                'chemical:sediment:oxygen_dispersion_alpha',
+                self.get_config('chemical:sediment:oxygen_dispersion_alpha'),
+                ge=0.0,
+            )
+            fallback = float(self.get_config('chemical:sediment:oxygen_permeability'))
+            has_map = self._has_reader_variable('sea_floor_permeability')
+            if not (np.isfinite(fallback) and fallback > 0.0) and not has_map:
+                raise ValueError(
+                    'PERMEABILITY_DISPERSION requires either a positive '
+                    'chemical:sediment:oxygen_permeability fallback or a reader '
+                    'that supplies sea_floor_permeability.'
+                )
+
+        if bio_mode != 'NONE':
+            self._validate_scalar_param(
+                'chemical:sediment:oxygen_bioirrigation_depth_scale',
+                self.get_config('chemical:sediment:oxygen_bioirrigation_depth_scale'),
+                gt=0.0,
+            )
+            alpha0 = float(self.get_config(
+                'chemical:sediment:oxygen_bioirrigation_alpha0'
+            ))
+            has_alpha_map = self._has_reader_variable(
+                'sediment_bioirrigation_alpha0'
+            )
+            if not (np.isfinite(alpha0) and alpha0 >= 0.0) and not has_alpha_map:
+                raise ValueError(
+                    'Enabled bioirrigation requires a non-negative '
+                    'chemical:sediment:oxygen_bioirrigation_alpha0 or a reader '
+                    'that supplies sediment_bioirrigation_alpha0.'
+                )
 
     def _configure_element_type_from_config(self):
         save_single = bool(
@@ -1328,14 +1573,22 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         oxygen_demand_mode = self.get_config(
             'chemical:sediment:oxygen_demand_mode'
         )
+        oxygen_porewater_transport = self.get_config(
+            'chemical:sediment:oxygen_porewater_transport'
+        )
+        oxygen_bioirrigation_mode = self.get_config(
+            'chemical:sediment:oxygen_bioirrigation_mode'
+        )
 
         if save_o2:
             self._validate_sediment_oxygen_diagnostics_config()
             o2_schema_key = Chemical.sediment_oxygen_diagnostic_schema_key(
-                oxygen_model, oxygen_demand_mode
+                oxygen_model, oxygen_demand_mode, oxygen_porewater_transport,
+                oxygen_bioirrigation_mode,
             )
             o2_names = Chemical.sediment_oxygen_diagnostic_variable_names(
-                oxygen_model, oxygen_demand_mode
+                oxygen_model, oxygen_demand_mode, oxygen_porewater_transport,
+                oxygen_bioirrigation_mode,
             )
         else:
             o2_schema_key = None
@@ -1361,7 +1614,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                     'Set chemical:transformations:Save_single_degr_mass, '
                     'chemical:sediment:save_bed_interaction, '
                     'chemical:sediment:save_oxygen_diagnostics, oxygen_model, and '
-                    'oxygen_demand_mode before seed_elements().'
+                    'oxygen_demand_mode/oxygen_porewater_transport/'
+                    'oxygen_bioirrigation_mode before '
+                    'seed_elements().'
                 )
 
             self.ElementType = Chemical.make_element_type(
@@ -1370,6 +1625,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 save_sediment_oxygen_diagnostics=save_o2,
                 sediment_oxygen_model=oxygen_model,
                 sediment_oxygen_demand_mode=oxygen_demand_mode,
+                sediment_oxygen_porewater_transport=oxygen_porewater_transport,
+                sediment_oxygen_bioirrigation_mode=oxygen_bioirrigation_mode,
             )
             self._chemical_element_type_key = key
 
@@ -2169,6 +2426,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         # the trajectory/output schema. Repeat the same idempotent resolution
         # here to protect direct prepare_run() use during testing/development.
         self._resolve_reader_dependent_requirements()
+        self._validate_sediment_oxygen_transport_config()
 
         logger.info('Required variables for this run:')
         for name in sorted(self.required_variables):
@@ -5271,14 +5529,17 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             self.get_config('chemical:sediment:enable_deposition') or
             self.get_config('chemical:sediment:enable_resuspension')
         )
+        current_stress_needed = bool(
+            sediment_exchange_enabled or self._oxygen_permeability_dispersion_active()
+        )
         has_direct = bool(
-            sediment_exchange_enabled and
+            current_stress_needed and
             self._has_reader_variable('sea_floor_current_stress')
         )
         self._direct_current_stress_reader_available = has_direct
         self._current_stress_source = 'DIRECT' if has_direct else 'CALCULATED'
 
-        if sediment_exchange_enabled:
+        if current_stress_needed:
             if has_direct:
                 logger.info(
                     'Current bed-stress source=DIRECT (reader-supplied '
@@ -5936,7 +6197,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             raise ValueError('Wave friction requires positive, finite roughness z0.')
         return z0
 
-    def compute_bottom_shear_stress(self, idx=None):
+    def compute_bottom_shear_stress(self, idx=None, current_only=False):
         """
         Compute bed shear stress.
           1) use direct hydro-model current bed stress if available: sea_floor_current_stress
@@ -5948,6 +6209,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                (or sea depth as fallback approximation)
 
         Wave stress uses the selected CALCULATED (default) or DIRECT source.
+        When current_only=True, wave and other stresses are excluded. This path
+        is used by the sediment-O2 permeability-dispersion parameterization.
         sum/max/rss are scalar heuristic combinations. Their vector diagnostics
         use a surrogate current direction (or wave axis if current is absent).
         SOULSBY_CLARKE is used to name the simplified Soulsby peak formulation applied,
@@ -5961,6 +6224,10 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             idx = np.arange(self.num_elements_active(), dtype=np.int64)
         else:
             idx = np.asarray(idx, dtype=np.int64).ravel()
+
+        current_only = bool(current_only)
+        use_wave = bool(self.get_config('chemical:sediment:include_wave_stress')) and not current_only
+        use_other = bool(self.get_config('chemical:sediment:include_other_stress')) and not current_only
 
         n = idx.size
         if n == 0:
@@ -6028,14 +6295,41 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         tau_c = self._direct_current_stress_array(idx=idx)
 
         if tau_c is not None:
-            # Preserve current-only behavior; wave-enabled runs need local validity.
+            if current_only:
+                zeros = np.zeros(n, dtype=float)
+                nan = np.full(n, np.nan, dtype=float)
+                ustar_current = np.sqrt(
+                    np.maximum(tau_c, 0.0) / np.maximum(rho, eps)
+                )
+                return {
+                    'tau_bx': zeros.copy(),
+                    'tau_by': zeros.copy(),
+                    'tau_current': tau_c,
+                    'tau_effective': tau_c.copy(),
+                    'tau_effective_x': zeros.copy(),
+                    'tau_effective_y': zeros.copy(),
+                    'ustar_effective': ustar_current,
+                    'rho': rho,
+                    'Cd': nan.copy(),
+                    'speed': nan.copy(),
+                    'z_ref': nan.copy(),
+                    'z0': nan.copy(),
+                    'tau_wave': zeros.copy(),
+                    'wave_orbital_velocity': nan.copy(),
+                    'wave_excursion': nan.copy(),
+                    'wave_number': nan.copy(),
+                    'wave_friction_factor': nan.copy(),
+                    'wave_z0': nan.copy(),
+                    'wave_water_depth': nan.copy(),
+                }
+            # Preserve normal behavior; wave-enabled runs need local validity.
             u_ref, v_ref = self._bottom_velocity_components(idx=idx)
             if u_ref is None or v_ref is None:
                 u_ref, v_ref = self._depth_averaged_velocity_components(idx=idx)
             if u_ref is None or v_ref is None:
                 u_ref = np.zeros(n, dtype=float)
                 v_ref = np.zeros(n, dtype=float)
-            if self.get_config('chemical:sediment:include_wave_stress'):
+            if use_wave:
                 u_ref = np.asarray(u_ref, dtype=float).copy()
                 v_ref = np.asarray(v_ref, dtype=float).copy()
                 invalid = ~np.isfinite(u_ref) | ~np.isfinite(v_ref) | (np.hypot(u_ref, v_ref) <= eps)
@@ -6134,8 +6428,6 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 raise ValueError(f"Unknown stress_param_mode: {Param_mode!r}")
 
         combo = self.get_config('chemical:sediment:shear_stress_combination')
-        use_wave = self.get_config('chemical:sediment:include_wave_stress')
-        use_other = self.get_config('chemical:sediment:include_other_stress')
 
         tau_other = self._bed_stress_array('sea_floor_other_stress', idx=idx) if use_other else None
 
@@ -7491,56 +7783,541 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             le=1.0,
         )
 
-    def _local_sediment_oxygen_diffusivity(self, idx, porosity=None):
-        """
-        Return effective O2 diffusivity in sediment pore water D_s [m2/s].
+    def _local_sediment_permeability(self, idx):
+        """Return sediment permeability [m2] for dispersion mode.
 
-        If sediment_oxygen_diffusivity is genuinely mapped and positive, use it.
-        Otherwise derive D_s from the configured free-water molecular
-        diffusivity D_0 and porosity using Boudreau (1996):
-
-            theta^2 = 1 - ln(phi^2)
-            D_s     = D_0 / theta^2
-
-        Source:
-          Boudreau, B.P. (1996), Geochimica et Cosmochimica Acta 60,
-          3139-3142. DOI: 10.1016/0016-7037(96)00158-5
+        Valid mapped values are preferred. Invalid or missing mapped values use
+        chemical:sediment:oxygen_permeability when that fallback is positive.
+        A negative configured value is an explicit no-fallback sentinel.
         """
         idx = np.asarray(idx, dtype=np.int64).ravel()
         if idx.size == 0:
             return np.empty(0, dtype=float)
 
+        fallback = float(self.get_config('chemical:sediment:oxygen_permeability'))
+        fallback_ok = np.isfinite(fallback) and fallback > 0.0
+        mapped = self._optional_env_array('sea_floor_permeability', idx=idx)
+        if mapped is None:
+            if not fallback_ok:
+                raise ValueError(
+                    'PERMEABILITY_DISPERSION requires positive '
+                    'chemical:sediment:oxygen_permeability or a valid '
+                    'sea_floor_permeability reader field.'
+                )
+            return np.full(idx.size, fallback, dtype=float)
+
+        mapped = np.asarray(mapped, dtype=float)
+        valid = np.isfinite(mapped) & (mapped > 0.0)
+        if np.all(valid):
+            return mapped.copy()
+        if not fallback_ok:
+            raise ValueError(
+                'sea_floor_permeability contains invalid values and '
+                'chemical:sediment:oxygen_permeability is not a positive fallback.'
+            )
+        out = mapped.copy()
+        out[~valid] = fallback
+        return out
+
+    def _local_sediment_oxygen_transport(self, idx, porosity=None):
+        """Return molecular/effective sediment O2 transport coefficients.
+
+        MOLECULAR returns the Boudreau-corrected or mapped molecular sediment
+        diffusivity. PERMEABILITY_DISPERSION applies the RADIv2/McGinnis-type
+        apparent-diffusivity relation above the configured permeability threshold:
+
+            D_eff = D_s * exp(alpha_SI * kappa * u_star)
+
+        where u_star is in m/s and alpha_SI is in s/m. The default alpha_SI=1000
+        corresponds to alpha=1 when u_star is expressed in mm/s.
+        """
+        idx = np.asarray(idx, dtype=np.int64).ravel()
+        if idx.size == 0:
+            empty = np.empty(0, dtype=float)
+            return {
+                'effective': empty,
+                'molecular': empty,
+                'permeability': empty,
+                'dispersion_factor': empty,
+                'ustar': empty,
+            }
+
         if porosity is None:
             porosity = self._local_sediment_oxygen_porosity(idx)
         porosity = self._validate_array_param(
-            "sediment_oxygen_porosity", porosity, gt=0.0, le=1.0
+            'sediment_oxygen_porosity', porosity, gt=0.0, le=1.0
         )
 
         D0 = self._validate_scalar_param(
-            "chemical:sediment:oxygen_molecular_diffusivity",
+            'chemical:sediment:oxygen_molecular_diffusivity',
             self.get_config('chemical:sediment:oxygen_molecular_diffusivity'),
             gt=0.0,
         )
-
         theta2 = 1.0 - np.log(porosity * porosity)
         derived = D0 / theta2
 
         mapped = self._optional_env_array('sediment_oxygen_diffusivity', idx=idx)
-        if mapped is None:
-            return derived
+        molecular = derived.copy()
+        if mapped is not None:
+            mapped = np.asarray(mapped, dtype=float)
+            valid = np.isfinite(mapped) & (mapped > 0.0)
+            molecular[valid] = mapped[valid]
+            if np.any(~valid):
+                logger.debug(
+                    'sediment_oxygen_diffusivity: replaced %d invalid mapped '
+                    'value(s) with Boudreau-derived D_s',
+                    int(np.count_nonzero(~valid)),
+                )
 
-        mapped = np.asarray(mapped, dtype=float)
-        valid = np.isfinite(mapped) & (mapped > 0.0)
-        out = derived.copy()
-        out[valid] = mapped[valid]
-
-        if np.any(~valid):
-            logger.debug(
-                "sediment_oxygen_diffusivity: replaced %d invalid mapped "
-                "value(s) with Boudreau-derived D_s",
-                int(np.count_nonzero(~valid)),
+        mode = self.get_config('chemical:sediment:oxygen_porewater_transport')
+        if mode == 'MOLECULAR':
+            return {
+                'effective': molecular,
+                'molecular': molecular,
+                'permeability': np.full(idx.size, np.nan, dtype=float),
+                'dispersion_factor': np.ones(idx.size, dtype=float),
+                'ustar': np.full(idx.size, np.nan, dtype=float),
+            }
+        if mode != 'PERMEABILITY_DISPERSION':
+            raise ValueError(
+                'Unknown chemical:sediment:oxygen_porewater_transport: '
+                f'{mode!r}'
             )
+
+        permeability = self._local_sediment_permeability(idx)
+        threshold = self._validate_scalar_param(
+            'chemical:sediment:oxygen_permeability_threshold',
+            self.get_config('chemical:sediment:oxygen_permeability_threshold'),
+            gt=0.0,
+        )
+        alpha_si = self._validate_scalar_param(
+            'chemical:sediment:oxygen_dispersion_alpha',
+            self.get_config('chemical:sediment:oxygen_dispersion_alpha'),
+            ge=0.0,
+        )
+
+        # The empirical relation is current-shear based. Do not include wave or
+        # non-directional 'other' stress in u_star for this parameterization.
+        stress = self.compute_bottom_shear_stress(idx=idx, current_only=True)
+        tau_current = self._validate_array_param(
+            'oxygen_dispersion_current_stress', stress['tau_current'], ge=0.0
+        )
+        rho = self._validate_array_param(
+            'oxygen_dispersion_water_density', stress['rho'], gt=0.0
+        )
+        ustar = np.sqrt(tau_current / rho)
+
+        factor = np.ones(idx.size, dtype=float)
+        permeable = permeability > threshold
+        if np.any(permeable):
+            kappa = 0.40
+            exponent = alpha_si * kappa * ustar[permeable]
+            if np.any(~np.isfinite(exponent)) or np.any(exponent > 700.0):
+                raise ValueError('Porewater-dispersion exponent is non-finite or too large.')
+            factor[permeable] = np.exp(exponent)
+
+        effective = molecular * factor
+        if np.any(~np.isfinite(effective)) or np.any(effective <= 0.0):
+            raise ValueError('Calculated effective sediment O2 diffusivity is invalid.')
+
+        return {
+            'effective': effective,
+            'molecular': molecular,
+            'permeability': permeability,
+            'dispersion_factor': factor,
+            'ustar': ustar,
+        }
+
+    def _local_sediment_oxygen_diffusivity(self, idx, porosity=None):
+        """Return the final sediment O2 diffusivity used by the selected transport mode."""
+        return self._local_sediment_oxygen_transport(
+            idx, porosity=porosity
+        )['effective']
+
+    def _local_sediment_bioirrigation_inputs(self, idx):
+        """Return local RADI-style bioirrigation alpha0 [s-1] and depth scale [m]."""
+        idx = np.asarray(idx, dtype=np.int64).ravel()
+        if idx.size == 0:
+            empty = np.empty(0, dtype=float)
+            return empty, empty
+
+        alpha_cfg = float(self.get_config(
+            'chemical:sediment:oxygen_bioirrigation_alpha0'
+        ))
+        alpha_cfg_ok = np.isfinite(alpha_cfg) and alpha_cfg >= 0.0
+        mapped_alpha = self._optional_env_array(
+            'sediment_bioirrigation_alpha0', idx=idx
+        )
+        if mapped_alpha is None:
+            if not alpha_cfg_ok:
+                raise ValueError(
+                    'Enabled bioirrigation requires non-negative '
+                    'chemical:sediment:oxygen_bioirrigation_alpha0 or a valid '
+                    'sediment_bioirrigation_alpha0 reader field.'
+                )
+            alpha0 = np.full(idx.size, alpha_cfg, dtype=float)
+        else:
+            mapped_alpha = np.asarray(mapped_alpha, dtype=float)
+            valid = np.isfinite(mapped_alpha) & (mapped_alpha >= 0.0)
+            if np.any(~valid) and not alpha_cfg_ok:
+                raise ValueError(
+                    'sediment_bioirrigation_alpha0 contains invalid values and '
+                    'no non-negative configuration fallback is available.'
+                )
+            alpha0 = mapped_alpha.copy()
+            if np.any(~valid):
+                alpha0[~valid] = alpha_cfg
+
+        depth_scale = self._sediment_oxygen_map_or_config(
+            'sediment_bioirrigation_depth_scale',
+            'chemical:sediment:oxygen_bioirrigation_depth_scale',
+            idx,
+            gt=0.0,
+        )
+        return alpha0, depth_scale
+
+    @staticmethod
+    def _solve_tridiagonal_batch(lower, diagonal, upper, rhs):
+        """Solve independent tridiagonal systems stored row-wise."""
+        lower = np.asarray(lower, dtype=float).copy()
+        diagonal = np.asarray(diagonal, dtype=float).copy()
+        upper = np.asarray(upper, dtype=float).copy()
+        rhs = np.asarray(rhs, dtype=float).copy()
+        if not (lower.shape == diagonal.shape == upper.shape == rhs.shape):
+            raise ValueError('Tridiagonal batch arrays must have identical shapes.')
+        n_systems, n_grid = diagonal.shape
+        if n_grid < 3:
+            raise ValueError('Bioirrigation solver requires at least three grid points.')
+
+        tiny = np.finfo(float).tiny
+        for j in range(1, n_grid):
+            pivot = diagonal[:, j - 1]
+            if np.any(~np.isfinite(pivot)) or np.any(np.abs(pivot) <= tiny):
+                raise ValueError('Singular tridiagonal system in bioirrigation solver.')
+            factor = lower[:, j] / pivot
+            diagonal[:, j] -= factor * upper[:, j - 1]
+            rhs[:, j] -= factor * rhs[:, j - 1]
+
+        if np.any(~np.isfinite(diagonal[:, -1])) or np.any(
+                np.abs(diagonal[:, -1]) <= tiny):
+            raise ValueError('Singular tridiagonal system in bioirrigation solver.')
+        out = np.empty_like(rhs)
+        out[:, -1] = rhs[:, -1] / diagonal[:, -1]
+        for j in range(n_grid - 2, -1, -1):
+            out[:, j] = (
+                rhs[:, j] - upper[:, j] * out[:, j + 1]
+            ) / diagonal[:, j]
+        if np.any(~np.isfinite(out)):
+            raise ValueError('Bioirrigation solver produced non-finite concentrations.')
         return out
+
+    @classmethod
+    def _solve_bioirrigated_oxygen_profiles(
+            cls, C_bottom, H_active, porosity, D_s, alpha0, depth_scale,
+            R_upper, half_sat_mmol_m3, *, R_lower=None,
+            transition_depth=None, k_bl=None):
+        """Solve steady 1-D O2 profiles with non-local bioirrigation exchange.
+
+        The porewater equation is
+
+            D_s d2C/dz2 + alpha(z) (C_bottom - C) - R(z)/phi = 0,
+
+        with alpha(z)=alpha0*exp(-(z/lambda_i)^2). A projected active-set
+        treatment enforces C >= 0 for zero-order oxygen demand. The surface is
+        Dirichlet when k_bl is None and Robin/DBL otherwise. The bottom boundary
+        is no-gradient. A quadratic depth grid resolves steep near-surface
+        gradients while retaining the irrigation depth range.
+        """
+        arrays = np.broadcast_arrays(
+            np.asarray(C_bottom, dtype=float),
+            np.asarray(H_active, dtype=float),
+            np.asarray(porosity, dtype=float),
+            np.asarray(D_s, dtype=float),
+            np.asarray(alpha0, dtype=float),
+            np.asarray(depth_scale, dtype=float),
+            np.asarray(R_upper, dtype=float),
+        )
+        C_bottom, H_active, porosity, D_s, alpha0, depth_scale, R_upper = [
+            np.asarray(v, dtype=float).ravel() for v in arrays
+        ]
+        n = C_bottom.size
+        if R_lower is None:
+            R_lower = R_upper.copy()
+            transition_depth = np.zeros(n, dtype=float)
+            two_layer = False
+        else:
+            R_lower = np.broadcast_to(np.asarray(R_lower, dtype=float), (n,)).copy()
+            transition_depth = np.broadcast_to(
+                np.asarray(transition_depth, dtype=float), (n,)
+            ).copy()
+            two_layer = True
+        if k_bl is not None:
+            k_bl = np.broadcast_to(np.asarray(k_bl, dtype=float), (n,)).copy()
+
+        if np.any(C_bottom < 0.0) or np.any(~np.isfinite(C_bottom)):
+            raise ValueError('C_bottom must be finite and >= 0.')
+        if np.any(H_active < 0.0) or np.any(~np.isfinite(H_active)):
+            raise ValueError('H_active must be finite and >= 0.')
+        if np.any((porosity <= 0.0) | (porosity > 1.0) | ~np.isfinite(porosity)):
+            raise ValueError('porosity must satisfy 0 < phi <= 1.')
+        if np.any((D_s <= 0.0) | ~np.isfinite(D_s)):
+            raise ValueError('D_s must be finite and > 0.')
+        if np.any((alpha0 < 0.0) | ~np.isfinite(alpha0)):
+            raise ValueError('alpha0 must be finite and >= 0.')
+        if np.any((depth_scale <= 0.0) | ~np.isfinite(depth_scale)):
+            raise ValueError('Bioirrigation depth scale must be finite and > 0.')
+        if np.any((R_upper < 0.0) | (R_lower < 0.0)):
+            raise ValueError('Zero-order oxygen demand must be >= 0.')
+        if two_layer and np.any(transition_depth < 0.0):
+            raise ValueError('transition_depth must be >= 0.')
+        if k_bl is not None and np.any((k_bl <= 0.0) | ~np.isfinite(k_bl)):
+            raise ValueError('k_bl must be finite and > 0.')
+
+        K = float(half_sat_mmol_m3)
+        if not np.isfinite(K) or K <= 0.0:
+            raise ValueError('half_sat_mmol_m3 must be finite and > 0.')
+
+        mean_o2 = np.zeros(n, dtype=float)
+        mean_weight = np.zeros(n, dtype=float)
+        surface = np.zeros(n, dtype=float)
+        penetration = np.zeros(n, dtype=float)
+        surface_flux = np.zeros(n, dtype=float)
+        irrigation_flux = np.zeros(n, dtype=float)
+
+        # 201 nodes are an implementation choice, not a scientific parameter.
+        n_grid = 201
+        xi = np.linspace(0.0, 1.0, n_grid) ** 2
+        chunk_size = 256
+
+        for start in range(0, n, chunk_size):
+            stop = min(start + chunk_size, n)
+            sl = slice(start, stop)
+            m = stop - start
+            Cb = C_bottom[sl]
+            H = H_active[sl]
+            phi = porosity[sl]
+            Ds = D_s[sl]
+            a0 = alpha0[sl]
+            lam = depth_scale[sl]
+            R1 = R_upper[sl]
+            R2 = R_lower[sl]
+            h1 = transition_depth[sl]
+            kb = None if k_bl is None else k_bl[sl]
+
+            # A no-irrigation penetration estimate supplies a conservative
+            # numerical domain. Four irrigation depth scales resolve >99.999%
+            # of the Gaussian exchange profile.
+            if two_layer:
+                L_est = h1.copy()
+                lower_reactive = R2 > 0.0
+                L_est[lower_reactive] += np.sqrt(
+                    2.0 * phi[lower_reactive] * Ds[lower_reactive]
+                    * Cb[lower_reactive] / R2[lower_reactive]
+                )
+                upper_only = (~lower_reactive) & (R1 > 0.0)
+                if np.any(upper_only):
+                    L_est[upper_only] = np.maximum(
+                        h1[upper_only],
+                        np.sqrt(
+                            2.0 * phi[upper_only] * Ds[upper_only]
+                            * Cb[upper_only] / R1[upper_only]
+                        ),
+                    )
+            else:
+                L_est = np.zeros(m, dtype=float)
+                reactive = R1 > 0.0
+                if np.any(reactive):
+                    L_est[reactive] = np.sqrt(
+                        2.0 * phi[reactive] * Ds[reactive]
+                        * Cb[reactive] / R1[reactive]
+                    )
+
+            domain = np.maximum.reduce([
+                np.full(m, 0.02, dtype=float),
+                1.25 * H,
+                4.0 * lam,
+                4.0 * L_est + (h1 if two_layer else 0.0),
+            ])
+            # Avoid pathological domains from vanishingly small demand while
+            # never truncating the represented active layer or irrigation zone.
+            domain_cap = np.maximum.reduce([
+                np.full(m, 20.0, dtype=float),
+                2.0 * H,
+                8.0 * lam,
+            ])
+            domain = np.minimum(domain, domain_cap)
+            z = domain[:, None] * xi[None, :]
+            h_left = z[:, 1:-1] - z[:, :-2]
+            h_right = z[:, 2:] - z[:, 1:-1]
+
+            alpha = a0[:, None] * np.exp(-(
+                z / lam[:, None]
+            ) ** 2)
+            if two_layer:
+                R = np.where(
+                    z < h1[:, None], R1[:, None], R2[:, None]
+                )
+            else:
+                R = np.broadcast_to(R1[:, None], z.shape).copy()
+
+            lower_base = np.zeros((m, n_grid), dtype=float)
+            diag_base = np.zeros((m, n_grid), dtype=float)
+            upper_base = np.zeros((m, n_grid), dtype=float)
+            rhs_base = np.zeros((m, n_grid), dtype=float)
+
+            aa = 2.0 * Ds[:, None] / (
+                h_left * (h_left + h_right)
+            )
+            cc = 2.0 * Ds[:, None] / (
+                h_right * (h_left + h_right)
+            )
+            lower_base[:, 1:-1] = aa
+            upper_base[:, 1:-1] = cc
+            diag_base[:, 1:-1] = -aa - cc - alpha[:, 1:-1]
+            rhs_base[:, 1:-1] = (
+                R[:, 1:-1] / phi[:, None]
+                - alpha[:, 1:-1] * Cb[:, None]
+            )
+
+            if kb is None:
+                diag_base[:, 0] = 1.0
+                rhs_base[:, 0] = Cb
+            else:
+                h0 = z[:, 1] - z[:, 0]
+                conductance = phi * Ds / h0
+                diag_base[:, 0] = conductance + kb
+                upper_base[:, 0] = -conductance
+                rhs_base[:, 0] = kb * Cb
+
+            lower_base[:, -1] = -1.0
+            diag_base[:, -1] = 1.0
+            rhs_base[:, -1] = 0.0
+
+            reaction_active = R[:, 1:-1] > 0.0
+            concentration = np.zeros((m, n_grid), dtype=float)
+            for _ in range(80):
+                lower = lower_base.copy()
+                diag = diag_base.copy()
+                upper = upper_base.copy()
+                rhs = rhs_base.copy()
+
+                inactive = ~reaction_active
+                if np.any(inactive):
+                    rows, cols0 = np.nonzero(inactive)
+                    cols = cols0 + 1
+                    lower[rows, cols] = 0.0
+                    diag[rows, cols] = 1.0
+                    upper[rows, cols] = 0.0
+                    rhs[rows, cols] = 0.0
+
+                concentration = cls._solve_tridiagonal_batch(
+                    lower, diag, upper, rhs
+                )
+                scale = np.maximum(Cb[:, None], 1.0)
+                negative = reaction_active & (
+                    concentration[:, 1:-1] < -1.0e-11 * scale
+                )
+                new_active = reaction_active.copy()
+                new_active[negative] = False
+                concentration = np.maximum(concentration, 0.0)
+
+                # A zero-concentration node can become oxic when diffusive plus
+                # irrigation supply exceeds its maximum zero-order demand.
+                inactive_now = ~new_active
+                if np.any(inactive_now):
+                    supply = (
+                        aa * concentration[:, :-2]
+                        + cc * concentration[:, 2:]
+                        + alpha[:, 1:-1] * Cb[:, None]
+                    )
+                    demand = R[:, 1:-1] / phi[:, None]
+                    reactivate = inactive_now & (
+                        supply > demand + 1.0e-12 * np.maximum(1.0, demand)
+                    )
+                    new_active[reactivate] = True
+
+                if np.array_equal(new_active, reaction_active):
+                    reaction_active = new_active
+                    break
+                reaction_active = new_active
+            else:
+                raise RuntimeError(
+                    'Bioirrigation oxygen active-set solver did not converge.'
+                )
+
+            upper_bound = Cb[:, None] * (1.0 + 1.0e-7) + 1.0e-12
+            if np.any(concentration > upper_bound):
+                raise ValueError(
+                    'Bioirrigation solver produced O2 above bottom-water concentration.'
+                )
+            concentration = np.minimum(concentration, Cb[:, None])
+
+            for local in range(m):
+                zr = z[local]
+                cr = concentration[local]
+                h = H[local]
+                if h == 0.0:
+                    mean_o2[start + local] = cr[0]
+                    mean_weight[start + local] = cr[0] / (K + cr[0])
+                else:
+                    j = int(np.searchsorted(zr, h, side='right'))
+                    j = min(max(j, 1), n_grid - 1)
+                    z_use = np.concatenate((zr[:j], [h]))
+                    c_h = np.interp(h, zr[j - 1:j + 1], cr[j - 1:j + 1])
+                    c_use = np.concatenate((cr[:j], [c_h]))
+                    dz_use = np.diff(z_use)
+                    mean_o2[start + local] = np.sum(
+                        0.5 * (c_use[:-1] + c_use[1:]) * dz_use
+                    ) / h
+                    w_use = c_use / (K + c_use)
+                    mean_weight[start + local] = np.sum(
+                        0.5 * (w_use[:-1] + w_use[1:]) * dz_use
+                    ) / h
+
+                tol = max(1.0e-10, 1.0e-8 * Cb[local])
+                positive = np.flatnonzero(cr > tol)
+                if positive.size == 0:
+                    penetration[start + local] = 0.0
+                elif positive[-1] == n_grid - 1:
+                    penetration[start + local] = np.inf
+                else:
+                    penetration[start + local] = zr[positive[-1] + 1]
+
+            surface[sl] = concentration[:, 0]
+            if kb is None:
+                h0 = z[:, 1] - z[:, 0]
+                surface_flux[sl] = np.maximum(
+                    phi * Ds * (concentration[:, 0] - concentration[:, 1]) / h0,
+                    0.0,
+                )
+            else:
+                surface_flux[sl] = np.maximum(
+                    kb * (Cb - concentration[:, 0]), 0.0
+                )
+
+            irrigation_source = (
+                phi[:, None] * alpha * (Cb[:, None] - concentration)
+            )
+            dz_grid = np.diff(z, axis=1)
+            irrigation_flux[sl] = np.maximum(
+                np.sum(
+                    0.5 * (
+                        irrigation_source[:, :-1] + irrigation_source[:, 1:]
+                    ) * dz_grid,
+                    axis=1,
+                ),
+                0.0,
+            )
+
+        return {
+            'mean_oxygen': np.clip(mean_o2, 0.0, C_bottom),
+            'mean_biodegradation_weight': np.clip(mean_weight, 0.0, 1.0),
+            'surface': np.clip(surface, 0.0, C_bottom),
+            'penetration_depth': penetration,
+            'surface_flux': surface_flux,
+            'bioirrigation_flux': irrigation_flux,
+            'total_oxygen_uptake': surface_flux + irrigation_flux,
+        }
 
     @staticmethod
     def _mean_parabolic_sediment_oxygen(C_surface, H_active, L_oxygen):
@@ -7618,6 +8395,68 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         # Protect against tiny floating-point excursions outside physical bounds.
         return np.clip(out, 0.0, C_surface)
+
+    @staticmethod
+    def _mean_parabolic_sediment_monod_weight(
+            C_surface, H_active, L_oxygen, half_sat_mmol_m3):
+        """Return the exact active-layer mean of C/(K+C) for a parabolic O2 profile.
+
+        The oxygen profile is the same zero-order profile used by
+        _mean_parabolic_sediment_oxygen(). Oxygen below L is zero. The exact
+        integral avoids applying the nonlinear Monod function to the mean O2
+        concentration.
+        """
+        C_surface, H_active, L_oxygen, K = np.broadcast_arrays(
+            np.asarray(C_surface, dtype=float),
+            np.asarray(H_active, dtype=float),
+            np.asarray(L_oxygen, dtype=float),
+            np.asarray(half_sat_mmol_m3, dtype=float),
+        )
+        if np.any(~np.isfinite(C_surface)) or np.any(C_surface < 0.0):
+            raise ValueError('C_surface must be finite and >= 0')
+        if np.any(~np.isfinite(H_active)) or np.any(H_active < 0.0):
+            raise ValueError('H_active must be finite and >= 0')
+        if np.any(np.isnan(L_oxygen)) or np.any(L_oxygen < 0.0):
+            raise ValueError('L_oxygen must be >= 0 or +inf')
+        if np.any(~np.isfinite(K)) or np.any(K <= 0.0):
+            raise ValueError('half_sat_mmol_m3 must be finite and > 0')
+
+        out = np.zeros_like(C_surface, dtype=float)
+        usable = (C_surface > 0.0) & (L_oxygen > 0.0)
+        if not np.any(usable):
+            return out
+
+        # H -> 0 is the sediment-surface limit.
+        surface_limit = usable & (H_active == 0.0)
+        out[surface_limit] = (
+            C_surface[surface_limit]
+            / (K[surface_limit] + C_surface[surface_limit])
+        )
+
+        # L = +inf is the nonreactive constant-concentration limit.
+        constant_profile = usable & (H_active > 0.0) & np.isinf(L_oxygen)
+        out[constant_profile] = (
+            C_surface[constant_profile]
+            / (K[constant_profile] + C_surface[constant_profile])
+        )
+
+        finite = usable & (H_active > 0.0) & np.isfinite(L_oxygen)
+        if np.any(finite):
+            Cs = C_surface[finite]
+            H = H_active[finite]
+            L = L_oxygen[finite]
+            Kf = K[finite]
+            h_oxic = np.minimum(H, L)
+            y_end = 1.0 - h_oxic / L
+            root_ratio = np.sqrt(Cs / Kf)
+            correction = (
+                L * np.sqrt(Kf / Cs)
+                * (np.arctan(root_ratio) - np.arctan(root_ratio * y_end))
+            )
+            integral = np.maximum(h_oxic - correction, 0.0)
+            out[finite] = integral / H
+
+        return np.clip(out, 0.0, 1.0)
 
     @staticmethod
     def _zero_order_dbl_surface_depth(C_bottom, porosity, D_s, R_oxygen, k_bl):
@@ -7763,7 +8602,10 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         C_bottom = self._bottom_water_oxygen_for_sediment(idx)
         H_active = self._local_active_sediment_layer_thickness(idx)
         porosity = self._local_sediment_oxygen_porosity(idx)
-        D_s = self._local_sediment_oxygen_diffusivity(idx, porosity=porosity)
+        transport = self._local_sediment_oxygen_transport(
+            idx, porosity=porosity
+        )
+        D_s = transport['effective']
 
         L_oxygen = np.full(idx.size, np.inf, dtype=float)
         oxygen_flux = np.zeros(idx.size, dtype=float)
@@ -7821,6 +8663,15 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             'sed_o2_penetration_depth': L_oxygen,
             'sed_o2_flux': oxygen_flux,
         }
+        if self.get_config(
+                'chemical:sediment:oxygen_porewater_transport'
+                ) == 'PERMEABILITY_DISPERSION':
+            diagnostics.update({
+                'sed_o2_diffusivity_molecular': transport['molecular'],
+                'sed_o2_permeability': transport['permeability'],
+                'sed_o2_dispersion_factor': transport['dispersion_factor'],
+                'sed_o2_ustar': transport['ustar'],
+            })
         if demand_mode == 'VOLUMETRIC_RATE':
             diagnostics['sed_o2_consumption_rate'] = R_oxygen
         return oxygen, diagnostics
@@ -7844,7 +8695,10 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         C_bottom = self._bottom_water_oxygen_for_sediment(idx)
         H_active = self._local_active_sediment_layer_thickness(idx)
         porosity = self._local_sediment_oxygen_porosity(idx)
-        D_s = self._local_sediment_oxygen_diffusivity(idx, porosity=porosity)
+        transport = self._local_sediment_oxygen_transport(
+            idx, porosity=porosity
+        )
+        D_s = transport['effective']
 
         D0 = self._validate_scalar_param(
             "chemical:sediment:oxygen_molecular_diffusivity",
@@ -7923,6 +8777,15 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             'sed_o2_penetration_depth': L_oxygen,
             'sed_o2_flux': oxygen_flux,
         }
+        if self.get_config(
+                'chemical:sediment:oxygen_porewater_transport'
+                ) == 'PERMEABILITY_DISPERSION':
+            diagnostics.update({
+                'sed_o2_diffusivity_molecular': transport['molecular'],
+                'sed_o2_permeability': transport['permeability'],
+                'sed_o2_dispersion_factor': transport['dispersion_factor'],
+                'sed_o2_ustar': transport['ustar'],
+            })
         if demand_mode == 'VOLUMETRIC_RATE':
             diagnostics['sed_o2_consumption_rate'] = R_oxygen
         return oxygen, diagnostics
@@ -8082,6 +8945,141 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         return np.clip(out, 0.0, C_surface)
 
+    @classmethod
+    def _mean_two_layer_sediment_monod_weight(
+            cls, C_surface, H_active, L_oxygen, porosity, D_s,
+            R_upper, R_lower, transition_depth, half_sat_mmol_m3):
+        """Return active-layer mean C/(K+C) for TWO_LAYER_DBL.
+
+        A fixed Gauss-Legendre rule integrates the smooth rational response in
+        each quadratic profile segment. Segment splitting at the reactivity
+        transition avoids integrating across the derivative change.
+        """
+        arrays = np.broadcast_arrays(
+            *[np.asarray(v, dtype=float) for v in (
+                C_surface, H_active, L_oxygen, porosity, D_s, R_upper,
+                R_lower, transition_depth, half_sat_mmol_m3
+            )]
+        )
+        (C_surface, H_active, L_oxygen, porosity, D_s, R_upper,
+         R_lower, transition_depth, K) = arrays
+        if np.any(~np.isfinite(C_surface)) or np.any(C_surface < 0.0):
+            raise ValueError('C_surface must be finite and >= 0')
+        if np.any(~np.isfinite(H_active)) or np.any(H_active < 0.0):
+            raise ValueError('H_active must be finite and >= 0')
+        if np.any(np.isnan(L_oxygen)) or np.any(L_oxygen < 0.0):
+            raise ValueError('L_oxygen must be >= 0 or +inf')
+        if np.any(~np.isfinite(porosity)) or np.any(porosity <= 0.0):
+            raise ValueError('porosity must be finite and > 0')
+        if np.any(~np.isfinite(D_s)) or np.any(D_s <= 0.0):
+            raise ValueError('D_s must be finite and > 0')
+        if np.any(~np.isfinite(K)) or np.any(K <= 0.0):
+            raise ValueError('half_sat_mmol_m3 must be finite and > 0')
+
+        out = np.zeros_like(C_surface, dtype=float)
+        oxygenated = (C_surface > 0.0) & (L_oxygen > 0.0)
+        surface = oxygenated & (H_active == 0.0)
+        out[surface] = C_surface[surface] / (K[surface] + C_surface[surface])
+
+        # If oxygen is exhausted in the upper layer, use the exact parabolic
+        # result rather than numerical quadrature.
+        upper_only = oxygenated & (H_active > 0.0) & np.isfinite(L_oxygen) & (L_oxygen <= transition_depth)
+        if np.any(upper_only):
+            out[upper_only] = cls._mean_parabolic_sediment_monod_weight(
+                C_surface[upper_only], H_active[upper_only],
+                L_oxygen[upper_only], K[upper_only]
+            )
+
+        # 16-point Gauss-Legendre is deterministic and highly accurate for the
+        # smooth Monod response over each quadratic segment.
+        nodes, weights = np.polynomial.legendre.leggauss(16)
+
+        def integrate_segment(mask, z0, z1, profile_kind):
+            ids = np.flatnonzero(mask)
+            if ids.size == 0:
+                return np.empty(0, dtype=float), ids
+            total = np.zeros(ids.size, dtype=float)
+            chunk = 10000
+            for start in range(0, ids.size, chunk):
+                jj = ids[start:start + chunk]
+                a = np.asarray(z0[jj], dtype=float)
+                b = np.asarray(z1[jj], dtype=float)
+                half = 0.5 * (b - a)
+                mid = 0.5 * (a + b)
+                z = mid[:, None] + half[:, None] * nodes[None, :]
+                if profile_kind == 'finite_upper':
+                    h1 = transition_depth[jj, None]
+                    L = L_oxygen[jj, None]
+                    phi = porosity[jj, None]
+                    Ds = D_s[jj, None]
+                    R1 = R_upper[jj, None]
+                    R2 = R_lower[jj, None]
+                    a1 = R1 / (2.0 * phi * Ds)
+                    a2 = R2 / (2.0 * phi * Ds)
+                    C_h = a2 * (L - h1) ** 2
+                    g_h = -R2 * (L - h1) / (phi * Ds)
+                    u = z - h1
+                    C = C_h + g_h * u + a1 * u * u
+                elif profile_kind == 'finite_lower':
+                    L = L_oxygen[jj, None]
+                    phi = porosity[jj, None]
+                    Ds = D_s[jj, None]
+                    R2 = R_lower[jj, None]
+                    C = R2 / (2.0 * phi * Ds) * (L - z) ** 2
+                elif profile_kind == 'infinite_upper':
+                    h1 = transition_depth[jj, None]
+                    phi = porosity[jj, None]
+                    Ds = D_s[jj, None]
+                    R1 = R_upper[jj, None]
+                    a1 = R1 / (2.0 * phi * Ds)
+                    C_h = np.maximum(C_surface[jj, None] - a1 * h1 * h1, 0.0)
+                    C = C_h + a1 * (z - h1) ** 2
+                elif profile_kind == 'infinite_lower':
+                    h1 = transition_depth[jj]
+                    a1 = R_upper[jj] / (2.0 * porosity[jj] * D_s[jj])
+                    C_h = np.maximum(C_surface[jj] - a1 * h1 * h1, 0.0)
+                    C = np.broadcast_to(C_h[:, None], z.shape)
+                else:
+                    raise RuntimeError(profile_kind)
+                C = np.maximum(C, 0.0)
+                f = C / (K[jj, None] + C)
+                total[start:start + jj.size] = half * np.sum(
+                    f * weights[None, :], axis=1
+                )
+            return total, ids
+
+        finite_lower = oxygenated & (H_active > 0.0) & np.isfinite(L_oxygen) & (L_oxygen > transition_depth)
+        if np.any(finite_lower):
+            upper_end = np.minimum(np.minimum(H_active, transition_depth), L_oxygen)
+            mask_up = finite_lower & (upper_end > 0.0)
+            integ_up, ids = integrate_segment(mask_up, np.zeros_like(H_active), upper_end, 'finite_upper')
+            totals = np.zeros_like(C_surface)
+            totals[ids] += integ_up
+            lower_start = transition_depth
+            lower_end = np.minimum(H_active, L_oxygen)
+            mask_low = finite_lower & (lower_end > lower_start)
+            integ_low, ids = integrate_segment(mask_low, lower_start, lower_end, 'finite_lower')
+            totals[ids] += integ_low
+            ids_all = np.flatnonzero(finite_lower)
+            out[ids_all] = totals[ids_all] / H_active[ids_all]
+
+        infinite = oxygenated & (H_active > 0.0) & np.isinf(L_oxygen)
+        if np.any(infinite):
+            upper_end = np.minimum(H_active, transition_depth)
+            mask_up = infinite & (upper_end > 0.0)
+            integ_up, ids = integrate_segment(mask_up, np.zeros_like(H_active), upper_end, 'infinite_upper')
+            totals = np.zeros_like(C_surface)
+            totals[ids] += integ_up
+            lower_start = transition_depth
+            lower_end = H_active
+            mask_low = infinite & (lower_end > lower_start)
+            integ_low, ids = integrate_segment(mask_low, lower_start, lower_end, 'infinite_lower')
+            totals[ids] += integ_low
+            ids_all = np.flatnonzero(infinite)
+            out[ids_all] = totals[ids_all] / H_active[ids_all]
+
+        return np.clip(out, 0.0, 1.0)
+
     def _sediment_oxygen_two_layer_dbl(self, idx, return_diagnostics=False):
         """
         TWO_LAYER_DBL: two zero-order sediment reactivities plus a DBL.
@@ -8110,7 +9108,10 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         C_bottom = self._bottom_water_oxygen_for_sediment(idx)
         H_active = self._local_active_sediment_layer_thickness(idx)
         porosity = self._local_sediment_oxygen_porosity(idx)
-        D_s = self._local_sediment_oxygen_diffusivity(idx, porosity=porosity)
+        transport = self._local_sediment_oxygen_transport(
+            idx, porosity=porosity
+        )
+        D_s = transport['effective']
 
         D0 = self._validate_scalar_param(
             "chemical:sediment:oxygen_molecular_diffusivity",
@@ -8250,7 +9251,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'TWO_LAYER_DBL diagnostic flux does not satisfy the DBL balance.'
             )
 
-        return oxygen, {
+        diagnostics = {
             'sed_o2_bottom': C_bottom,
             'sed_o2_active_layer_thickness': H_active,
             'sed_o2_porosity': porosity,
@@ -8264,6 +9265,173 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             'sed_o2_R_lower': R_lower,
             'sed_o2_transition_depth': h1,
         }
+        if self.get_config(
+                'chemical:sediment:oxygen_porewater_transport'
+                ) == 'PERMEABILITY_DISPERSION':
+            diagnostics.update({
+                'sed_o2_diffusivity_molecular': transport['molecular'],
+                'sed_o2_permeability': transport['permeability'],
+                'sed_o2_dispersion_factor': transport['dispersion_factor'],
+                'sed_o2_ustar': transport['ustar'],
+            })
+        return oxygen, diagnostics
+
+    def _sediment_oxygen_bioirrigation(self, idx, return_diagnostics=False):
+        """Numerical steady O2 path with RADI-style non-local bioirrigation."""
+        idx = np.asarray(idx, dtype=np.int64).ravel()
+        model = self.get_config('chemical:sediment:oxygen_model')
+        if model not in ('ZERO_ORDER', 'ZERO_ORDER_DBL', 'TWO_LAYER_DBL'):
+            raise ValueError(
+                'Bioirrigation requires ZERO_ORDER, ZERO_ORDER_DBL, or '
+                f'TWO_LAYER_DBL. Got {model!r}.'
+            )
+        if (model in ('ZERO_ORDER', 'ZERO_ORDER_DBL') and
+                self.get_config('chemical:sediment:oxygen_demand_mode')
+                != 'VOLUMETRIC_RATE'):
+            raise ValueError(
+                'Bioirrigation with ZERO_ORDER or ZERO_ORDER_DBL requires '
+                "chemical:sediment:oxygen_demand_mode='VOLUMETRIC_RATE'."
+            )
+
+        if model == 'ZERO_ORDER':
+            base_oxygen, diagnostics = self._sediment_oxygen_zero_order(
+                idx, return_diagnostics=True
+            )
+        elif model == 'ZERO_ORDER_DBL':
+            base_oxygen, diagnostics = self._sediment_oxygen_zero_order_dbl(
+                idx, return_diagnostics=True
+            )
+        else:
+            base_oxygen, diagnostics = self._sediment_oxygen_two_layer_dbl(
+                idx, return_diagnostics=True
+            )
+
+        alpha0, depth_scale = self._local_sediment_bioirrigation_inputs(idx)
+        diagnostics['sed_o2_bioirrigation_alpha0'] = alpha0
+        diagnostics['sed_o2_bioirrigation_depth_scale'] = depth_scale
+        diagnostics['sed_o2_bioirrigation_flux'] = np.zeros(idx.size, dtype=float)
+        diagnostics['sed_o2_total_oxygen_uptake'] = np.asarray(
+            diagnostics['sed_o2_flux'], dtype=float
+        ).copy()
+
+        half_sat_g = self._validate_scalar_param(
+            'chemical:transformations:HalfSatO_s',
+            self.get_config('chemical:transformations:HalfSatO_s'),
+            gt=0.0,
+        )
+        half_sat_mmol = half_sat_g / 31.9988e-3
+        weight = self._active_sediment_biodegradation_weight(
+            base_oxygen, diagnostics, half_sat_g
+        )
+        oxygen = np.asarray(base_oxygen, dtype=float).copy()
+
+        irrigated = alpha0 > 0.0
+        if np.any(irrigated):
+            sel = np.flatnonzero(irrigated)
+            R_upper = (
+                np.asarray(diagnostics['sed_o2_R_upper'], dtype=float)[sel]
+                if model == 'TWO_LAYER_DBL'
+                else np.asarray(
+                    diagnostics['sed_o2_consumption_rate'], dtype=float
+                )[sel]
+            )
+            R_lower = None
+            transition = None
+            if model == 'TWO_LAYER_DBL':
+                R_lower = np.asarray(
+                    diagnostics['sed_o2_R_lower'], dtype=float
+                )[sel]
+                transition = np.asarray(
+                    diagnostics['sed_o2_transition_depth'], dtype=float
+                )[sel]
+            k_bl = None
+            if model in ('ZERO_ORDER_DBL', 'TWO_LAYER_DBL'):
+                k_bl = np.asarray(
+                    diagnostics['sed_o2_k_bl'], dtype=float
+                )[sel]
+
+            solved = self._solve_bioirrigated_oxygen_profiles(
+                np.asarray(diagnostics['sed_o2_bottom'], dtype=float)[sel],
+                np.asarray(
+                    diagnostics['sed_o2_active_layer_thickness'], dtype=float
+                )[sel],
+                np.asarray(diagnostics['sed_o2_porosity'], dtype=float)[sel],
+                np.asarray(diagnostics['sed_o2_diffusivity'], dtype=float)[sel],
+                alpha0[sel],
+                depth_scale[sel],
+                R_upper,
+                half_sat_mmol,
+                R_lower=R_lower,
+                transition_depth=transition,
+                k_bl=k_bl,
+            )
+            oxygen[sel] = solved['mean_oxygen']
+            weight[sel] = solved['mean_biodegradation_weight']
+            diagnostics['sed_o2_penetration_depth'][sel] = (
+                solved['penetration_depth']
+            )
+            diagnostics['sed_o2_flux'][sel] = solved['surface_flux']
+            diagnostics['sed_o2_bioirrigation_flux'][sel] = (
+                solved['bioirrigation_flux']
+            )
+            diagnostics['sed_o2_total_oxygen_uptake'][sel] = (
+                solved['total_oxygen_uptake']
+            )
+            if 'sed_o2_surface' in diagnostics:
+                diagnostics['sed_o2_surface'][sel] = solved['surface']
+
+        diagnostics['sed_o2_biodegradation_weight'] = np.clip(
+            weight, 0.0, 1.0
+        )
+        oxygen = self._validate_array_param(
+            'bioirrigated_active_sediment_oxygen', oxygen, ge=0.0
+        )
+        if return_diagnostics:
+            return oxygen, diagnostics
+        return oxygen
+
+    def _active_sediment_biodegradation_weight(
+            self, oxygen_mmol_m3, diagnostics, half_sat_o2_g_m3):
+        """Return the active-layer mean oxygen limitation used by biodegradation."""
+        oxygen = self._validate_array_param(
+            'active_sediment_oxygen', oxygen_mmol_m3, ge=0.0
+        )
+        half_sat_g = self._validate_scalar_param(
+            'chemical:transformations:HalfSatO_s', half_sat_o2_g_m3, gt=0.0
+        )
+        if 'sed_o2_biodegradation_weight' in diagnostics:
+            return self._validate_array_param(
+                'sed_o2_biodegradation_weight',
+                diagnostics['sed_o2_biodegradation_weight'],
+                ge=0.0,
+                le=1.0,
+            )
+        # g m-3 / (g mmol-1) -> mmol m-3.
+        K = half_sat_g / 31.9988e-3
+        model = self.get_config('chemical:sediment:oxygen_model')
+
+        if model == 'FIXED_FRACTION':
+            return np.clip(oxygen / (K + oxygen), 0.0, 1.0)
+
+        H = diagnostics['sed_o2_active_layer_thickness']
+        L = diagnostics['sed_o2_penetration_depth']
+        if model in ('PRESCRIBED_OPD', 'ZERO_ORDER'):
+            Cs = diagnostics['sed_o2_bottom']
+            return self._mean_parabolic_sediment_monod_weight(Cs, H, L, K)
+        if model == 'ZERO_ORDER_DBL':
+            Cs = diagnostics['sed_o2_surface']
+            return self._mean_parabolic_sediment_monod_weight(Cs, H, L, K)
+        if model == 'TWO_LAYER_DBL':
+            return self._mean_two_layer_sediment_monod_weight(
+                diagnostics['sed_o2_surface'], H, L,
+                diagnostics['sed_o2_porosity'],
+                diagnostics['sed_o2_diffusivity'],
+                diagnostics['sed_o2_R_upper'],
+                diagnostics['sed_o2_R_lower'],
+                diagnostics['sed_o2_transition_depth'],
+                K,
+            )
+        raise ValueError(f'Unknown chemical:sediment:oxygen_model: {model!r}')
 
     def calculate_active_sediment_oxygen(self, idx, return_diagnostics=False):
         """
@@ -8283,8 +9451,13 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             return empty
 
         model = self.get_config('chemical:sediment:oxygen_model')
+        bio_mode = self.get_config('chemical:sediment:oxygen_bioirrigation_mode')
 
-        if model == 'FIXED_FRACTION':
+        if bio_mode != 'NONE':
+            result = self._sediment_oxygen_bioirrigation(
+                idx, return_diagnostics=return_diagnostics
+            )
+        elif model == 'FIXED_FRACTION':
             result = self._sediment_oxygen_fixed_fraction(
                 idx, return_diagnostics=return_diagnostics
             )
@@ -8323,10 +9496,14 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             return oxygen
 
         demand_mode = self.get_config('chemical:sediment:oxygen_demand_mode')
+        porewater_transport = self.get_config(
+            'chemical:sediment:oxygen_porewater_transport'
+        )
+        bio_mode = self.get_config('chemical:sediment:oxygen_bioirrigation_mode')
         expected = set(Chemical.sediment_oxygen_diagnostic_variable_names(
-            model, demand_mode
-        )) - {'sed_o2_used'}
-        actual = set(diagnostics)
+            model, demand_mode, porewater_transport, bio_mode
+        )) - {'sed_o2_used', 'sed_o2_biodegradation_weight'}
+        actual = set(diagnostics) - {'sed_o2_biodegradation_weight'}
         if actual != expected:
             missing = sorted(expected - actual)
             extra = sorted(actual - expected)
@@ -8342,6 +9519,32 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
     ###########################################################################
 
     ### Biodegradation
+    def _resolved_sediment_aerobic_biodegradation_rate(self):
+        """Return the configured aerobic sediment biodegradation endpoint [1/h]."""
+        mode = self.get_config('chemical:transformations:sediment_aerobic_rate_mode')
+        if mode == 'WATER_MULTIPLIER':
+            k_water = self._validate_scalar_param(
+                'chemical:transformations:k_DecayMax_water',
+                self.get_config('chemical:transformations:k_DecayMax_water'),
+                ge=0.0,
+            )
+            multiplier = self._validate_scalar_param(
+                'chemical:transformations:sediment_aerobic_rate_multiplier',
+                self.get_config('chemical:transformations:sediment_aerobic_rate_multiplier'),
+                ge=0.0,
+            )
+            return k_water * multiplier
+        if mode == 'DIRECT':
+            return self._validate_scalar_param(
+                'chemical:transformations:k_DecayMax_sediment',
+                self.get_config('chemical:transformations:k_DecayMax_sediment'),
+                ge=0.0,
+            )
+        raise ValueError(
+            'Unknown chemical:transformations:sediment_aerobic_rate_mode: '
+            f'{mode!r}'
+        )
+
     def calc_DO_biodegradation_rate(
             self,
             HalfSatO_w,
@@ -8381,15 +9584,16 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         Parameters
         ----------
-        HalfSatO_w : float
-            Oxygen half-saturation constant [g/m3]. Must be > 0.
+        HalfSatO_w/s : float
+            Oxygen half-saturation constant [g/m3]. Must be > 0. 
+            Water calls pass HalfSatO_w and sediment calls pass HalfSatO_s.
         k_Anaerobic_water : float
             Anaerobic biodegradation rate constant [1/h]. Must be >= 0.
             The same constant is used for water and sediment.
         k_Aerobic : float
             Aerobic endpoint rate constant [1/h]. Must be >= 0.
-            For water this is k_DecayMax_water.
-            For sediment this is 4 * k_DecayMax_water.
+            For water this is k_DecayMax_water. For sediment it is resolved
+            from sediment_aerobic_rate_mode.
         Ox : array-like
             Dissolved oxygen concentration [g/m3]. Must be >= 0.
 
@@ -8444,39 +9648,35 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
     def _debug_biodegradation_rate_regime(
             self,
             k_DecayMax_water,
-            k_Anaerobic_water):
-        """
-        Log unusual aerobic/anaerobic rate relationships at DEBUG level only.
-
-        These relationships are scientifically permitted and are therefore
-        not validation errors. Messages are emitted only when DEBUG logging is
-        enabled and only once for each parameter pair, preventing repeated
-        messages at every model timestep.
-        """
+            k_Anaerobic_water,
+            k_DecayMax_sediment=None):
+        """Log unusual aerobic/anaerobic endpoint relationships at DEBUG level."""
         if not logger.isEnabledFor(logging.DEBUG):
             return
 
         k_DecayMax_water = float(k_DecayMax_water)
         k_Anaerobic_water = float(k_Anaerobic_water)
-        key = (k_DecayMax_water, k_Anaerobic_water)
+        if k_DecayMax_sediment is None:
+            k_DecayMax_sediment = (
+                self._resolved_sediment_aerobic_biodegradation_rate()
+            )
+        k_DecayMax_sediment = float(k_DecayMax_sediment)
+        key = (k_DecayMax_water, k_Anaerobic_water, k_DecayMax_sediment)
 
         if getattr(self, '_biodegradation_rate_debug_key', None) == key:
             return
 
-        k_DecayMax_sediment = 4.0 * k_DecayMax_water
-
         if k_DecayMax_water == 0.0 and k_Anaerobic_water == 0.0:
             logger.debug(
-                "Biodegradation is enabled but both k_DecayMax_water and "
-                "k_Anaerobic_water are 0 1/h; biodegradation rate is zero."
+                "Water-column biodegradation endpoints are both 0 1/h."
             )
 
         elif k_DecayMax_water == 0.0 and k_Anaerobic_water > 0.0:
             logger.debug(
                 "Biodegradation parameter note: k_DecayMax_water is 0 1/h "
                 "while k_Anaerobic_water=%g 1/h. This is permitted; the "
-                "oxygen interpolation gives maximum degradation at O2=0 and "
-                "approaches zero under strongly aerobic conditions.",
+                "water oxygen interpolation approaches zero under strongly "
+                "aerobic conditions.",
                 k_Anaerobic_water,
             )
 
@@ -8484,8 +9684,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             logger.debug(
                 "Biodegradation parameter note: k_Anaerobic_water=%g 1/h "
                 "exceeds the aerobic water endpoint k_DecayMax_water=%g 1/h. "
-                "This is permitted; water biodegradation decreases with "
-                "increasing O2 between these endpoints.",
+                "This is permitted.",
                 k_Anaerobic_water,
                 k_DecayMax_water,
             )
@@ -8493,10 +9692,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         if k_Anaerobic_water > k_DecayMax_sediment:
             logger.debug(
                 "Biodegradation parameter note: k_Anaerobic_water=%g 1/h "
-                "exceeds the aerobic sediment endpoint "
-                "4*k_DecayMax_water=%g 1/h. This is permitted; sediment "
-                "biodegradation decreases with increasing O2 between these "
-                "endpoints.",
+                "exceeds the resolved aerobic sediment endpoint=%g 1/h. "
+                "This is permitted.",
                 k_Anaerobic_water,
                 k_DecayMax_sediment,
             )
@@ -9152,15 +10349,24 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
                 k_Photo = self.get_config('chemical:transformations:k_Photo')
                 k_DecayMax_water = self.get_config('chemical:transformations:k_DecayMax_water')
+                k_DecayMax_sediment = self._resolved_sediment_aerobic_biodegradation_rate()
                 k_Anaerobic_water = self.get_config('chemical:transformations:k_Anaerobic_water')
 
-                # Biodegradation is active when at least one endpoint rate is
-                # positive. Do not require the aerobic endpoint to be > 0:
-                # an anaerobic-only compound is a valid case.
-                bio_rate_enabled = (
+                # Water and sediment have independent aerobic endpoints. The
+                # shared anaerobic endpoint can activate either compartment.
+                water_bio_rate_enabled = (
                     Bio_degr is True and (
-                        k_DecayMax_water > 0.0
-                        or k_Anaerobic_water > 0.0))
+                        k_DecayMax_water > 0.0 or k_Anaerobic_water > 0.0
+                    )
+                )
+                sediment_bio_rate_enabled = (
+                    Bio_degr is True and (
+                        k_DecayMax_sediment > 0.0 or k_Anaerobic_water > 0.0
+                    )
+                )
+                any_bio_rate_enabled = (
+                    water_bio_rate_enabled or sediment_bio_rate_enabled
+                )
 
                 if k_Photo == 0:
                     logger.debug(
@@ -9171,7 +10377,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                     # This helper uses logger.debug only. No warning/error is
                     # raised when anaerobic degradation exceeds aerobic degradation.
                     self._debug_biodegradation_rate_regime(
-                        k_DecayMax_water, k_Anaerobic_water,
+                        k_DecayMax_water, k_Anaerobic_water, k_DecayMax_sediment,
                     )
 
                 if k_Anaerobic_water == 0:
@@ -9184,8 +10390,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                     Tref_kSt = self.get_config('chemical:transformations:Tref_kSt')
                     DH_kSt = self.get_config('chemical:transformations:DeltaH_kSt')
 
-                    if bio_rate_enabled:
+                    if any_bio_rate_enabled:
                         HalfSatO_w = self.get_config('chemical:transformations:HalfSatO_w')
+                        HalfSatO_s = self.get_config('chemical:transformations:HalfSatO_s')
                         T_Max_bio = self.get_config('chemical:transformations:T_Max_bio')
                         T_Opt_bio = self.get_config('chemical:transformations:T_Opt_bio')
                         T_Adp_bio = self.get_config('chemical:transformations:T_Adp_bio')
@@ -9244,7 +10451,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                         # Concentration of DOC (mmol[C]/Kg)
                         concDOC = self._doc_mmolkg(idx_W)
 
-                    if bio_rate_enabled or Hydro_degr is True:
+                    if water_bio_rate_enabled or Hydro_degr is True:
                         # pH water
                         pH_water = self._env_array('sea_water_ph_reported_on_total_scale',
                             8.1, idx=idx_W)
@@ -9254,7 +10461,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                             logger.debug("pH_water in degradation was 0, set to median value")
 
                     # Calculate correction factors for degradation rates
-                    if bio_rate_enabled:
+                    if water_bio_rate_enabled:
                         # Direct aerobic/anaerobic interpolation [1/h].
                         # This formulation permits k_Anaerobic_water to exceed k_DecayMax_water and remains valid when the aerobic
                         # endpoint is exactly zero.
@@ -9315,17 +10522,17 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                     #     TS[TS==0]=np.median(TS)
                     #     logger.debug("Temperature in degradation was 0, set to median value")
 
-                    if bio_rate_enabled or Hydro_degr is True:
+                    if sediment_bio_rate_enabled or Hydro_degr is True:
                         # pH sediments
                         pH_sed = self._env_array('pH_sediment', 6.9, idx=idx_S)
                         if np.any(pH_sed == 0):
                             pH_sed[pH_sed == 0] = np.median(pH_sed)
                             logger.debug("pH_sed in degradation was 0, set to median value")
 
-                    if bio_rate_enabled:
-                        # Only the aerobic endpoint is increased in sediment.
-                        # The anaerobic endpoint remains exactly the configured k_Anaerobic_water value.
-                        k_DecayMax_sediment = 4.0 * k_DecayMax_water
+                    if sediment_bio_rate_enabled:
+                        # The aerobic sediment endpoint was resolved independently
+                        # from the water-column endpoint above. The anaerobic
+                        # endpoint remains the shared configured value.
 
                         # Build one sediment-O2 array aligned with idx_S.
                         # Active sediment uses the selected reduced-order oxygen
@@ -9338,49 +10545,49 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                         S_is_active = ~S_is_buried
 
                         Ox_sed_mmol_m3 = np.zeros(idx_S.size, dtype=float)
+                        sed_bio_weight = np.zeros(idx_S.size, dtype=float)
                         save_o2_diag = self._save_sediment_oxygen_diagnostics()
 
                         if np.any(S_is_active):
                             idx_S_active = idx_S[S_is_active]
-                            if save_o2_diag:
-                                active_oxygen, active_o2_diag = (
-                                    self.calculate_active_sediment_oxygen(
-                                        idx_S_active,
-                                        return_diagnostics=True,
-                                    )
+                            # The profile diagnostics are also the compact
+                            # representation needed to integrate the nonlinear
+                            # Monod response. Compute them even when they are not
+                            # written to output.
+                            active_oxygen, active_o2_diag = (
+                                self.calculate_active_sediment_oxygen(
+                                    idx_S_active,
+                                    return_diagnostics=True,
                                 )
-                                Ox_sed_mmol_m3[S_is_active] = active_oxygen
+                            )
+                            active_weight = self._active_sediment_biodegradation_weight(
+                                active_oxygen, active_o2_diag, HalfSatO_s
+                            )
+                            Ox_sed_mmol_m3[S_is_active] = active_oxygen
+                            sed_bio_weight[S_is_active] = active_weight
+                            if save_o2_diag:
                                 self._store_sediment_oxygen_diagnostics(
                                     idx_S_active, active_o2_diag
                                 )
-                            else:
-                                Ox_sed_mmol_m3[S_is_active] = (
-                                    self.calculate_active_sediment_oxygen(
-                                        idx_S_active
-                                    )
-                                )
 
                         if save_o2_diag:
-                            # This is the O2 value actually passed to sediment
-                            # biodegradation: active-layer mean for active sediment,
-                            # exactly zero for Sediment_buried. Non-sediment
-                            # particles remain NaN after the timestep reset.
+                            # sed_o2_used remains the active-layer mean O2
+                            # concentration. The nonlinear biodegradation weight
+                            # is stored separately. Buried sediment receives zero
+                            # for both quantities.
                             self._store_sediment_oxygen_diagnostics(
                                 idx_S,
-                                {'sed_o2_used': Ox_sed_mmol_m3},
+                                {
+                                    'sed_o2_used': Ox_sed_mmol_m3,
+                                    'sed_o2_biodegradation_weight': sed_bio_weight,
+                                },
                             )
 
-                        # The biodegradation oxygen interpolation uses O2 in g/m3.
-                        # Molecular weight O2 = 31.9988 g/mol:
-                        # mmol/m3 * 31.9988e-3 = g/m3.
-                        Ox_sed = Ox_sed_mmol_m3 * 31.9988e-3
-
-                        # Direct aerobic/anaerobic interpolation [1/h].
-                        # At O2 = 0 this returns exactly k_Anaerobic_water,
-                        # irrespective of the fourfold aerobic sediment factor.
-                        k_S_bio = self.calc_DO_biodegradation_rate(
-                            HalfSatO_w=HalfSatO_w, k_Anaerobic_water=k_Anaerobic_water,
-                            k_Aerobic=k_DecayMax_sediment, Ox=Ox_sed,
+                        # Apply the depth-averaged Monod weight directly. This is
+                        # not equivalent to applying Monod kinetics to mean O2.
+                        k_S_bio = (
+                            sed_bio_weight * k_DecayMax_sediment
+                            + (1.0 - sed_bio_weight) * k_Anaerobic_water
                         )
 
                         k_S_bio = k_S_bio * self.calc_pHCorr(
@@ -9435,7 +10642,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                             if W_deg:
                                 self.elements.mass_photodegraded[W] += photo_degraded_now[W]
 
-                    if bio_rate_enabled:
+                    if any_bio_rate_enabled:
                         missing = [name for name in ['mass_biodegraded', 'mass_biodegraded_water', 'mass_biodegraded_sediment',] if not hasattr(self.elements, name)]
                         if missing:
                             raise RuntimeError(
