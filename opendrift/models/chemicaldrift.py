@@ -64,6 +64,127 @@ class Chemical(Lagrangian3DArray):
     'mass_hydrolyzed', 'mass_hydrolyzed_water', 'mass_hydrolyzed_sediment',
         )
 
+    # Optional instantaneous degradation diagnostics. The concrete subset is
+    # selected from enabled SingleRateConstants processes before seeding.
+    DEGRADATION_DIAGNOSTIC_DEFINITIONS = {
+        # Shared dimensionless Arrhenius multipliers used by active degradation
+        # pathways. These are instantaneous process factors, not cumulative state.
+        'degr_arrhenius_factor_water': {
+            'dtype': np.float32, 'units': '1', 'seed': True, 'default': np.nan},
+        'degr_arrhenius_factor_sediment': {
+            'dtype': np.float32, 'units': '1', 'seed': True, 'default': np.nan},
+        # Photolysis optical state/factors and final first-order water rate.
+        'photo_extinction_coefficient': {
+            'dtype': np.float32, 'units': '1/m', 'seed': True, 'default': np.nan},
+        'photo_light_factor': {
+            'dtype': np.float32, 'units': '1', 'seed': True, 'default': np.nan},
+        'photo_screening_factor': {
+            'dtype': np.float32, 'units': '1', 'seed': True, 'default': np.nan},
+        'k_photo_water': {
+            'dtype': np.float32, 'units': '1/h', 'seed': True, 'default': np.nan},
+        # Hydrolysis rates before and after the compartment Arrhenius factor.
+        # The pre-temperature rates are already pH-combined and non-negative
+        # because they are exact outputs of calc_k_hydro_water/sed().
+        'k_hydro_water_pretemp': {
+            'dtype': np.float32, 'units': '1/h', 'seed': True, 'default': np.nan},
+        'k_hydro_water': {
+            'dtype': np.float32, 'units': '1/h', 'seed': True, 'default': np.nan},
+        'k_hydro_sediment_pretemp': {
+            'dtype': np.float32, 'units': '1/h', 'seed': True, 'default': np.nan},
+        'k_hydro_sediment': {
+            'dtype': np.float32, 'units': '1/h', 'seed': True, 'default': np.nan},
+        # Water biodegradation process-state diagnostics: Monod oxygen
+        # interpolation, oxygen-interpolated rate, pH/T factors, and final rate.
+        'bio_oxygen_weight_water': {
+            'dtype': np.float32, 'units': '1', 'seed': True, 'default': np.nan},
+        'k_bio_water_oxygen': {
+            'dtype': np.float32, 'units': '1/h', 'seed': True, 'default': np.nan},
+        'bio_pH_factor_water': {
+            'dtype': np.float32, 'units': '1', 'seed': True, 'default': np.nan},
+        'bio_temperature_factor_water': {
+            'dtype': np.float32, 'units': '1', 'seed': True, 'default': np.nan},
+        'k_bio_water': {
+            'dtype': np.float32, 'units': '1/h', 'seed': True, 'default': np.nan},
+    }
+    DEGRADATION_DIAGNOSTIC_SHARED_WATER = ('degr_arrhenius_factor_water',)
+    DEGRADATION_DIAGNOSTIC_SHARED_SEDIMENT = ('degr_arrhenius_factor_sediment',)
+    DEGRADATION_DIAGNOSTIC_PHOTOLYSIS = (
+        'photo_extinction_coefficient',
+        'photo_light_factor',
+        'photo_screening_factor',
+        'k_photo_water',
+    )
+    DEGRADATION_DIAGNOSTIC_HYDROLYSIS_WATER = (
+        'k_hydro_water_pretemp', 'k_hydro_water',
+    )
+    DEGRADATION_DIAGNOSTIC_HYDROLYSIS_SEDIMENT = (
+        'k_hydro_sediment_pretemp', 'k_hydro_sediment',
+    )
+    DEGRADATION_DIAGNOSTIC_BIODEGRADATION_WATER = (
+        'bio_oxygen_weight_water',
+        'k_bio_water_oxygen',
+        'bio_pH_factor_water',
+        'bio_temperature_factor_water',
+        'k_bio_water',
+    )
+
+    @classmethod
+    def degradation_diagnostic_variable_names(
+            cls, photodegradation=False, biodegradation=False, hydrolysis=False):
+        """Return the exact instantaneous degradation diagnostic schema."""
+        photodegradation = bool(photodegradation)
+        biodegradation = bool(biodegradation)
+        hydrolysis = bool(hydrolysis)
+
+        names = []
+        if photodegradation or hydrolysis:
+            names.extend(cls.DEGRADATION_DIAGNOSTIC_SHARED_WATER)
+        if hydrolysis or biodegradation:
+            names.extend(cls.DEGRADATION_DIAGNOSTIC_SHARED_SEDIMENT)
+        if photodegradation:
+            names.extend(cls.DEGRADATION_DIAGNOSTIC_PHOTOLYSIS)
+        if hydrolysis:
+            names.extend(cls.DEGRADATION_DIAGNOSTIC_HYDROLYSIS_WATER)
+            names.extend(cls.DEGRADATION_DIAGNOSTIC_HYDROLYSIS_SEDIMENT)
+        if biodegradation:
+            names.extend(cls.DEGRADATION_DIAGNOSTIC_BIODEGRADATION_WATER)
+
+        if len(names) != len(set(names)):
+            raise RuntimeError(
+                'Duplicate instantaneous degradation diagnostic variable in schema.'
+            )
+        missing = [
+            name for name in names
+            if name not in cls.DEGRADATION_DIAGNOSTIC_DEFINITIONS
+        ]
+        if missing:
+            raise RuntimeError(
+                'Missing instantaneous degradation diagnostic definition(s): '
+                + ', '.join(missing)
+            )
+        return tuple(names)
+
+    @classmethod
+    def degradation_diagnostic_variables(
+            cls, photodegradation=False, biodegradation=False, hydrolysis=False):
+        """Return Lagrangian variable definitions for the selected schema."""
+        names = cls.degradation_diagnostic_variable_names(
+            photodegradation, biodegradation, hydrolysis
+        )
+        return [
+            (name, dict(cls.DEGRADATION_DIAGNOSTIC_DEFINITIONS[name]))
+            for name in names
+        ]
+
+    @classmethod
+    def degradation_diagnostic_schema_key(
+            cls, photodegradation=False, biodegradation=False, hydrolysis=False):
+        """Return only configuration components that alter this output schema."""
+        cls.degradation_diagnostic_variable_names(
+            photodegradation, biodegradation, hydrolysis
+        )
+        return (bool(photodegradation), bool(biodegradation), bool(hydrolysis))
+
     BED_INTERACTION_VARIABLES = [
         ('tau_bx', {'dtype': np.float32, 'units': 'Pa', 'seed': True, 'default': np.nan}),
         ('tau_by', {'dtype': np.float32, 'units': 'Pa', 'seed': True, 'default': np.nan}),
@@ -241,6 +362,10 @@ class Chemical(Lagrangian3DArray):
     def make_element_type(
         cls,
         save_single_degr_mass=False,
+        save_degradation_diagnostics=False,
+        degradation_photodegradation=False,
+        degradation_biodegradation=False,
+        degradation_hydrolysis=False,
         save_bed_interaction=False,
         save_sediment_oxygen_diagnostics=False,
         sediment_oxygen_model='FIXED_FRACTION',
@@ -257,6 +382,12 @@ class Chemical(Lagrangian3DArray):
         variables = list(cls.BASE_CHEMICAL_VARIABLES)
         if save_single_degr_mass:
             variables.extend(cls.SINGLE_DEGRADATION_VARIABLES)
+        if save_degradation_diagnostics:
+            variables.extend(cls.degradation_diagnostic_variables(
+                degradation_photodegradation,
+                degradation_biodegradation,
+                degradation_hydrolysis,
+            ))
         if save_bed_interaction:
             variables.extend(cls.BED_INTERACTION_VARIABLES)
         if save_sediment_oxygen_diagnostics:
@@ -295,6 +426,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
     ElementType = Chemical.make_element_type(
         save_single_degr_mass=False,
+        save_degradation_diagnostics=False,
         save_bed_interaction=False,
         save_sediment_oxygen_diagnostics=False,
     )
@@ -915,6 +1047,11 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             #  main implementation from AQUATOX https://www.epa.gov/sites/default/files/2014-03/documents/technical-documentation-3-1.pdf
             'chemical:transformations:Save_single_degr_mass': {'type': 'bool', 'default': False,
                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Toggle save of mass degraded by single mechanism'},
+            'chemical:transformations:save_degradation_diagnostics': {
+                'type': 'bool', 'default': False,
+                'level': CONFIG_LEVEL_BASIC,
+                'description': ('Save optional per-element instantaneous degradation factors '
+                    'and effective process rates for enabled single-rate degradation pathways.')},
             'chemical:transformations:Photodegradation': {'type': 'bool', 'default': True,
                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Toggle photodegradation'},
             'chemical:transformations:Biodegradation': {'type': 'bool', 'default': True,
@@ -1420,10 +1557,48 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             f"Chemical element buffer '{attr_name}' already contains {n} element(s) "
             f"but is missing required optional variable(s): {missing}. "
             'Set chemical:transformations:Save_single_degr_mass, '
+            'chemical:transformations:save_degradation_diagnostics, '
             'chemical:sediment:save_bed_interaction, and '
             'chemical:sediment:save_oxygen_diagnostics before any seeding, '
             'or restart the model.'
         )
+
+    def _validate_degradation_diagnostics_config(self):
+        """Reject instantaneous degradation diagnostics that cannot populate."""
+        if not bool(self.get_config(
+                'chemical:transformations:save_degradation_diagnostics')):
+            return
+
+        transfer_setup = self.get_config('chemical:transfer_setup')
+        if transfer_setup not in ('organics', 'custom'):
+            raise ValueError(
+                'chemical:transformations:save_degradation_diagnostics=True '
+                "requires chemical:transfer_setup to be 'organics' or 'custom', "
+                'because degradation() is otherwise not called by ChemicalDrift.update().'
+            )
+        if not bool(self.get_config('chemical:transformations:degradation')):
+            raise ValueError(
+                'chemical:transformations:save_degradation_diagnostics=True '
+                'requires chemical:transformations:degradation=True.'
+            )
+        if self.get_config(
+                'chemical:transformations:degradation_mode'
+                ) != 'SingleRateConstants':
+            raise ValueError(
+                'chemical:transformations:save_degradation_diagnostics=True '
+                "requires chemical:transformations:degradation_mode='SingleRateConstants'."
+            )
+
+        photo = bool(self.get_config('chemical:transformations:Photodegradation'))
+        bio = bool(self.get_config('chemical:transformations:Biodegradation'))
+        hydro = bool(self.get_config('chemical:transformations:Hydrolysis'))
+        if not (photo or bio or hydro):
+            raise ValueError(
+                'chemical:transformations:save_degradation_diagnostics=True '
+                'requires at least one of Photodegradation, Biodegradation, or '
+                'Hydrolysis to be enabled.'
+            )
+        Chemical.degradation_diagnostic_schema_key(photo, bio, hydro)
 
     def _validate_sediment_oxygen_diagnostics_config(self):
         """Reject diagnostic configurations that would never be populated."""
@@ -1562,11 +1737,24 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         save_single = bool(
             self.get_config('chemical:transformations:Save_single_degr_mass')
         )
+        save_deg_diag = bool(
+            self.get_config('chemical:transformations:save_degradation_diagnostics')
+        )
         save_bed = bool(
             self.get_config('chemical:sediment:save_bed_interaction')
         )
         save_o2 = bool(
             self.get_config('chemical:sediment:save_oxygen_diagnostics')
+        )
+
+        degradation_photo = bool(
+            self.get_config('chemical:transformations:Photodegradation')
+        )
+        degradation_bio = bool(
+            self.get_config('chemical:transformations:Biodegradation')
+        )
+        degradation_hydro = bool(
+            self.get_config('chemical:transformations:Hydrolysis')
         )
 
         oxygen_model = self.get_config('chemical:sediment:oxygen_model')
@@ -1579,6 +1767,18 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         oxygen_bioirrigation_mode = self.get_config(
             'chemical:sediment:oxygen_bioirrigation_mode'
         )
+
+        if save_deg_diag:
+            self._validate_degradation_diagnostics_config()
+            degradation_schema_key = Chemical.degradation_diagnostic_schema_key(
+                degradation_photo, degradation_bio, degradation_hydro
+            )
+            degradation_names = Chemical.degradation_diagnostic_variable_names(
+                degradation_photo, degradation_bio, degradation_hydro
+            )
+        else:
+            degradation_schema_key = None
+            degradation_names = ()
 
         if save_o2:
             self._validate_sediment_oxygen_diagnostics_config()
@@ -1597,11 +1797,13 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         # Only configuration changes that alter the concrete element schema
         # participate in this key. For example, oxygen_demand_mode does not
         # change the schema for FIXED_FRACTION, PRESCRIBED_OPD, or TWO_LAYER_DBL.
-        key = (save_single, save_bed, o2_schema_key)
+        key = (save_single, degradation_schema_key, save_bed, o2_schema_key)
 
         required_names = []
         if save_single:
             required_names.extend(Chemical.SINGLE_DEGRADATION_VARIABLE_NAMES)
+        if save_deg_diag:
+            required_names.extend(degradation_names)
         if save_bed:
             required_names.extend(Chemical.BED_INTERACTION_VARIABLE_NAMES)
         if save_o2:
@@ -1612,6 +1814,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 raise RuntimeError(
                     'Cannot change optional Chemical element variables after seeding. '
                     'Set chemical:transformations:Save_single_degr_mass, '
+                    'chemical:transformations:save_degradation_diagnostics, '
                     'chemical:sediment:save_bed_interaction, '
                     'chemical:sediment:save_oxygen_diagnostics, oxygen_model, and '
                     'oxygen_demand_mode/oxygen_porewater_transport/'
@@ -1621,6 +1824,10 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
             self.ElementType = Chemical.make_element_type(
                 save_single_degr_mass=save_single,
+                save_degradation_diagnostics=save_deg_diag,
+                degradation_photodegradation=degradation_photo,
+                degradation_biodegradation=degradation_bio,
+                degradation_hydrolysis=degradation_hydro,
                 save_bed_interaction=save_bed,
                 save_sediment_oxygen_diagnostics=save_o2,
                 sediment_oxygen_model=oxygen_model,
@@ -7636,6 +7843,60 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         )
 
     ###########################################################################
+    # Helpers for optional instantaneous degradation diagnostics
+    ###########################################################################
+
+    def _save_degradation_diagnostics(self):
+        """Return True when an instantaneous degradation schema is allocated."""
+        if not bool(self.get_config(
+                'chemical:transformations:save_degradation_diagnostics')):
+            return False
+        return any(
+            hasattr(self.elements, name)
+            for name in Chemical.DEGRADATION_DIAGNOSTIC_DEFINITIONS
+        )
+
+    def _reset_degradation_diagnostics(self):
+        """Reset allocated instantaneous degradation diagnostics to NaN."""
+        if not self._save_degradation_diagnostics():
+            return
+        for name in Chemical.DEGRADATION_DIAGNOSTIC_DEFINITIONS:
+            if hasattr(self.elements, name):
+                getattr(self.elements, name).fill(np.nan)
+
+    def _store_degradation_diagnostics(self, idx, diagnostics):
+        """Store compact degradation diagnostics at global element indices."""
+        if not self._save_degradation_diagnostics():
+            return
+
+        idx = np.asarray(idx, dtype=np.int64).ravel()
+        if idx.size == 0:
+            return
+
+        for name, values in diagnostics.items():
+            if name not in Chemical.DEGRADATION_DIAGNOSTIC_DEFINITIONS:
+                raise RuntimeError(
+                    f'Unknown instantaneous degradation diagnostic {name!r}.'
+                )
+            if not hasattr(self.elements, name):
+                raise RuntimeError(
+                    'Instantaneous degradation diagnostic schema mismatch: '
+                    f'calculation produced {name!r}, but that variable is not allocated.'
+                )
+
+            values = np.asarray(values, dtype=float)
+            if values.ndim == 0:
+                values = np.full(idx.size, float(values), dtype=float)
+            else:
+                values = values.ravel()
+                if values.size != idx.size:
+                    raise ValueError(
+                        f'Degradation diagnostic {name!r} has {values.size} '
+                        f'value(s) for {idx.size} element index/indices.'
+                    )
+            getattr(self.elements, name)[idx] = values
+
+    ###########################################################################
     # Helpers for optional sediment-oxygen diagnostics
     ###########################################################################
 
@@ -9550,7 +9811,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             HalfSatO_w,
             k_Anaerobic_water,
             k_Aerobic,
-            Ox):
+            Ox,
+            return_weight=False):
         """
         Return the dissolved-oxygen-dependent biodegradation rate [1/h]
         before pH and temperature corrections.
@@ -9615,6 +9877,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         original_shape = Ox.shape
         Ox_flat = Ox.ravel()
         k_eff_flat = np.empty_like(Ox_flat, dtype=float)
+        f_O2_flat = np.empty_like(Ox_flat, dtype=float)
 
         chunk_size = int(1e5)
         for i in range(0, Ox_flat.size, chunk_size):
@@ -9622,6 +9885,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             Ox_chunk = Ox_flat[i:end]
 
             f_O2 = Ox_chunk / (HalfSatO_w + Ox_chunk)
+            f_O2_flat[i:end] = f_O2
 
             k_eff_flat[i:end] = (
                 f_O2 * k_Aerobic
@@ -9643,7 +9907,10 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 "Calculated dissolved-oxygen biodegradation rate is negative."
             )
 
-        return np.maximum(k_eff, 0.0)
+        k_eff = np.maximum(k_eff, 0.0)
+        if return_weight:
+            return k_eff, f_O2_flat.reshape(original_shape)
+        return k_eff
 
     def _debug_biodegradation_rate_regime(
             self,
@@ -10214,6 +10481,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         # them every degradation call so particles that leave the sediment do
         # not retain values from the previous timestep.
         self._reset_sediment_oxygen_diagnostics()
+        self._reset_degradation_diagnostics()
 
         if self.get_config('chemical:transformations:degradation') is True:
 
@@ -10346,6 +10614,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
                 W_deg = idx_W.size > 0
                 S_deg = idx_S.size > 0
+                save_deg_diag = self._save_degradation_diagnostics()
 
                 k_Photo = self.get_config('chemical:transformations:k_Photo')
                 k_DecayMax_water = self.get_config('chemical:transformations:k_DecayMax_water')
@@ -10368,10 +10637,24 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                     water_bio_rate_enabled or sediment_bio_rate_enabled
                 )
 
+                if (save_deg_diag and Bio_degr is True and W_deg
+                        and not water_bio_rate_enabled):
+                    # Both water biodegradation endpoints are zero. The final
+                    # rate is known to be zero; unevaluated factors remain NaN.
+                    self._store_degradation_diagnostics(
+                        idx_W, {'k_bio_water': np.zeros(idx_W.size)}
+                    )
+
                 if k_Photo == 0:
                     logger.debug(
                         "k_Photo is set to 0 1/h, therefore no photodegradation occurs"
                     )
+                    if save_deg_diag and Photo_degr is True and W_deg:
+                        # The final photolysis rate is known without evaluating
+                        # light/extinction factors. Leave unevaluated factors NaN.
+                        self._store_degradation_diagnostics(
+                            idx_W, {'k_photo_water': np.zeros(idx_W.size)}
+                        )
 
                 if Bio_degr is True:
                     # This helper uses logger.debug only. No warning/error is
@@ -10460,45 +10743,113 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                             pH_water[pH_water == 0] = np.median(pH_water)
                             logger.debug("pH_water in degradation was 0, set to median value")
 
-                    # Calculate correction factors for degradation rates
+                    # Calculate correction factors for degradation rates.
+                    # Water photolysis and hydrolysis share the same Arrhenius
+                    # correction; calculate it lazily so the original short-
+                    # circuit behavior and dependency evaluation are preserved.
+                    water_arrhenius_factor = None
+
                     if water_bio_rate_enabled:
-                        # Direct aerobic/anaerobic interpolation [1/h].
-                        # This formulation permits k_Anaerobic_water to exceed k_DecayMax_water and remains valid when the aerobic
-                        # endpoint is exactly zero.
-                        k_W_bio = self.calc_DO_biodegradation_rate(
-                            HalfSatO_w=HalfSatO_w, k_Anaerobic_water=k_Anaerobic_water,
-                            k_Aerobic=k_DecayMax_water, Ox=Ox_water,
-                        )
+                        # Direct aerobic/anaerobic interpolation [1/h]. The
+                        # optional return exposes the exact Monod interpolation
+                        # weight without duplicating the production calculation.
+                        if save_deg_diag:
+                            k_W_bio_oxygen, bio_oxygen_weight = (
+                                self.calc_DO_biodegradation_rate(
+                                    HalfSatO_w=HalfSatO_w,
+                                    k_Anaerobic_water=k_Anaerobic_water,
+                                    k_Aerobic=k_DecayMax_water,
+                                    Ox=Ox_water,
+                                    return_weight=True,
+                                )
+                            )
+                        else:
+                            k_W_bio_oxygen = self.calc_DO_biodegradation_rate(
+                                HalfSatO_w=HalfSatO_w,
+                                k_Anaerobic_water=k_Anaerobic_water,
+                                k_Aerobic=k_DecayMax_water,
+                                Ox=Ox_water,
+                            )
+                            bio_oxygen_weight = None
 
-                        k_W_bio = k_W_bio * self.calc_pHCorr(
+                        bio_pH_factor = self.calc_pHCorr(
                             pH_min_bio, pH_max_bio, pH_water,
-                            )
-                        k_W_bio = k_W_bio * self.calc_TCorr(
-                            T_Max_bio, T_Opt_bio, T_Adp_bio, Max_Accl_bio, Dec_Accl_bio, Q10_bio, TW,
-                            )
-
+                        )
+                        bio_temperature_factor = self.calc_TCorr(
+                            T_Max_bio, T_Opt_bio, T_Adp_bio,
+                            Max_Accl_bio, Dec_Accl_bio, Q10_bio, TW,
+                        )
+                        k_W_bio = k_W_bio_oxygen * bio_pH_factor
+                        k_W_bio = k_W_bio * bio_temperature_factor
                         k_W_bio = np.maximum(k_W_bio, 0.0)
+
+                        if save_deg_diag:
+                            self._store_degradation_diagnostics(
+                                idx_W,
+                                {
+                                    'bio_oxygen_weight_water': bio_oxygen_weight,
+                                    'k_bio_water_oxygen': k_W_bio_oxygen,
+                                    'bio_pH_factor_water': bio_pH_factor,
+                                    'bio_temperature_factor_water': bio_temperature_factor,
+                                    'k_bio_water': k_W_bio,
+                                },
+                            )
                     else:
                         k_W_bio = np.zeros_like(TW)
 
                     if Photo_degr is True and k_Photo > 0:
-                        k_W_photo = k_Photo * self.calc_LightFactor(AveSolar=AveSolar,
-                            Solar_ly_day=Solar_ly_day, Depth=Depth, MLDepth=MLDepth, Alpha=Alpha)
-
-                        k_W_photo = k_W_photo * self.calc_ScreeningFactor(
+                        photo_light_factor = self.calc_LightFactor(
+                            AveSolar=AveSolar, Solar_ly_day=Solar_ly_day,
+                            Depth=Depth, MLDepth=MLDepth, Alpha=Alpha,
+                        )
+                        photo_screening_factor = self.calc_ScreeningFactor(
                             RadDistr, RadDistr0_ml, RadDistr0_bml, WaterExt,
                             ExtCoeffDOM, ExtCoeffSPM, ExtCoeffPHY, C2PHYC,
-                            concDOC, concSPM, Conc_Phyto_water, Depth, MLDepth)
-
-                        k_W_photo = k_W_photo * self.tempcorr("Arrhenius", DH_kWt, TW, Tref_kWt)
+                            concDOC, concSPM, Conc_Phyto_water, Depth, MLDepth,
+                        )
+                        k_W_photo = k_Photo * photo_light_factor
+                        k_W_photo = k_W_photo * photo_screening_factor
+                        if water_arrhenius_factor is None:
+                            water_arrhenius_factor = self.tempcorr(
+                                "Arrhenius", DH_kWt, TW, Tref_kWt
+                            )
+                        k_W_photo = k_W_photo * water_arrhenius_factor
                         k_W_photo = np.maximum(k_W_photo, 0.0)
+
+                        if save_deg_diag:
+                            self._store_degradation_diagnostics(
+                                idx_W,
+                                {
+                                    'photo_extinction_coefficient': Alpha,
+                                    'photo_light_factor': photo_light_factor,
+                                    'photo_screening_factor': photo_screening_factor,
+                                    'degr_arrhenius_factor_water': water_arrhenius_factor,
+                                    'k_photo_water': k_W_photo,
+                                },
+                            )
                     else:
                         k_W_photo = np.zeros_like(TW)
 
                     if Hydro_degr is True:
-                        k_W_hydro = self.calc_k_hydro_water(k_Acid, k_Base, k_Hydr_Uncat, pH_water)
-                        k_W_hydro = k_W_hydro * self.tempcorr("Arrhenius", DH_kWt, TW, Tref_kWt)
+                        k_W_hydro_pretemp = self.calc_k_hydro_water(
+                            k_Acid, k_Base, k_Hydr_Uncat, pH_water
+                        )
+                        if water_arrhenius_factor is None:
+                            water_arrhenius_factor = self.tempcorr(
+                                "Arrhenius", DH_kWt, TW, Tref_kWt
+                            )
+                        k_W_hydro = k_W_hydro_pretemp * water_arrhenius_factor
                         k_W_hydro = np.maximum(k_W_hydro, 0.0)
+
+                        if save_deg_diag:
+                            self._store_degradation_diagnostics(
+                                idx_W,
+                                {
+                                    'k_hydro_water_pretemp': k_W_hydro_pretemp,
+                                    'degr_arrhenius_factor_water': water_arrhenius_factor,
+                                    'k_hydro_water': k_W_hydro,
+                                },
+                            )
                     else:
                         k_W_hydro = np.zeros_like(TW)
 
@@ -10518,6 +10869,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 # Sediment degradation
                 if S_deg:
                     TS = self._env_array('sea_water_temperature', 10.0, idx=idx_S)
+                    sediment_arrhenius_factor = None
                     # if np.any(TS==0):
                     #     TS[TS==0]=np.median(TS)
                     #     logger.debug("Temperature in degradation was 0, set to median value")
@@ -10593,17 +10945,43 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                         k_S_bio = k_S_bio * self.calc_pHCorr(
                             pH_min_bio, pH_max_bio, pH_sed,
                         )
-                        k_S_bio = k_S_bio * self.tempcorr(
-                            "Arrhenius", DH_kSt, TS, Tref_kSt,
-                        )
+                        if sediment_arrhenius_factor is None:
+                            sediment_arrhenius_factor = self.tempcorr(
+                                "Arrhenius", DH_kSt, TS, Tref_kSt,
+                            )
+                        k_S_bio = k_S_bio * sediment_arrhenius_factor
                         k_S_bio = np.maximum(k_S_bio, 0.0)
+
+                        if save_deg_diag:
+                            self._store_degradation_diagnostics(
+                                idx_S,
+                                {
+                                    'degr_arrhenius_factor_sediment': sediment_arrhenius_factor,
+                                },
+                            )
 
                     else:
                         k_S_bio = np.zeros_like(TS)
 
                     if Hydro_degr is True:
-                        k_S_hydro = self.calc_k_hydro_sed(k_Acid, k_Base, k_Hydr_Uncat, pH_sed)
-                        k_S_hydro = k_S_hydro * self.tempcorr("Arrhenius", DH_kSt, TS, Tref_kSt)
+                        k_S_hydro_pretemp = self.calc_k_hydro_sed(
+                            k_Acid, k_Base, k_Hydr_Uncat, pH_sed
+                        )
+                        if sediment_arrhenius_factor is None:
+                            sediment_arrhenius_factor = self.tempcorr(
+                                "Arrhenius", DH_kSt, TS, Tref_kSt
+                            )
+                        k_S_hydro = k_S_hydro_pretemp * sediment_arrhenius_factor
+
+                        if save_deg_diag:
+                            self._store_degradation_diagnostics(
+                                idx_S,
+                                {
+                                    'k_hydro_sediment_pretemp': k_S_hydro_pretemp,
+                                    'degr_arrhenius_factor_sediment': sediment_arrhenius_factor,
+                                    'k_hydro_sediment': k_S_hydro,
+                                },
+                            )
                     else:
                         k_S_hydro = np.zeros_like(TS)
 

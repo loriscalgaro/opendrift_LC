@@ -13377,6 +13377,7 @@ class ChemicalDriftPostProcessMixin:
         for _name, _definition in (
             list(chemical_definition_cls.BASE_CHEMICAL_VARIABLES)
             + list(chemical_definition_cls.SINGLE_DEGRADATION_VARIABLES)
+            + list(chemical_definition_cls.DEGRADATION_DIAGNOSTIC_DEFINITIONS.items())
             + list(chemical_definition_cls.BED_INTERACTION_VARIABLES)
         ):
             registry[_name] = {
@@ -13898,6 +13899,7 @@ class ChemicalDriftPostProcessMixin:
             name for name, _ in (
                 list(chemical_definition_cls.BASE_CHEMICAL_VARIABLES)
                 + list(chemical_definition_cls.SINGLE_DEGRADATION_VARIABLES)
+                + list(chemical_definition_cls.DEGRADATION_DIAGNOSTIC_DEFINITIONS.items())
                 + list(chemical_definition_cls.BED_INTERACTION_VARIABLES)
             )
         }
