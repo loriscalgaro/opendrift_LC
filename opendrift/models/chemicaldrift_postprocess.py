@@ -8903,6 +8903,137 @@ class ChemicalDriftPostProcessMixin:
 
     ##### Helpers for seed_from_NETCDF ###
     @staticmethod
+    def _get_number_of_elements(g_mode, mass_element_ug=None, data_point=None, n_elements=None):
+        """
+        Returns number of elements to generate.
+        For g_mode == "mass":
+            Checks inputs. Number of full elements and residuals
+            are handles speparately.
+        For g_mode == "fixed":
+            Returns n_elements.
+        """
+        import numpy as np
+
+        if g_mode == "mass":
+            if mass_element_ug is None or data_point is None:
+                raise ValueError("'mass' mode requires mass_element_ug and data_point")
+            if isinstance(mass_element_ug, (bool, np.bool_)):
+                raise ValueError("'mass' mode requires mass_element_ug to be a finite number > 0")
+            try:
+                mass_element_value = float(mass_element_ug)
+                data_point_value = float(data_point)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "'mass' mode requires numeric mass_element_ug and data_point"
+                ) from exc
+            if not np.isfinite(mass_element_value) or mass_element_value <= 0:
+                raise ValueError("'mass' mode requires mass_element_ug to be finite and > 0")
+            if not np.isfinite(data_point_value):
+                raise ValueError("'mass' mode requires data_point to be finite")
+            number_full, _ = ChemicalDriftPostProcessMixin._plan_mass_generation(
+                data_point=data_point_value,
+                mass_element_ug=mass_element_value,
+            )
+            return number_full
+        elif g_mode == "fixed":
+            if n_elements is None or isinstance(n_elements, (bool, np.bool_)):
+                raise ValueError(
+                    "fixed mode requires n_elements to be a positive non-boolean integer"
+                )
+            if not isinstance(n_elements, (int, float, np.integer, np.floating)):
+                raise ValueError(
+                    "fixed mode requires n_elements to be a positive non-boolean integer"
+                )
+            n_value = float(n_elements)
+            if not np.isfinite(n_value) or n_value <= 0 or not n_value.is_integer():
+                raise ValueError(
+                    "fixed mode requires n_elements to be a positive non-boolean integer"
+                )
+            return int(n_value)
+        else:
+            raise ValueError("Incorrect combination of mode and input - undefined inputs")
+
+    @staticmethod
+    def _plan_mass_generation(data_point, mass_element_ug):
+        """Return a numerically stable (full_element_count, residual_mass_ug) plan."""
+        import numpy as np
+
+        if isinstance(mass_element_ug, (bool, np.bool_)):
+            raise ValueError("mass_element_ug must be a finite number > 0")
+        try:
+            mass_value = float(data_point)
+            element_value = float(mass_element_ug)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("data_point and mass_element_ug must be numeric") from exc
+
+        if not np.isfinite(mass_value):
+            raise ValueError("data_point must be finite")
+        if not np.isfinite(element_value) or element_value <= 0.0:
+            raise ValueError("mass_element_ug must be finite and > 0")
+        if mass_value <= 0.0:
+            return 0, 0.0
+
+        quotient = mass_value / element_value
+        nearest = float(np.rint(quotient))
+        quotient_scale = max(abs(quotient), 1.0)
+        quotient_tol = 4.0 * abs(float(np.spacing(quotient_scale)))
+        if abs(quotient - nearest) <= quotient_tol:
+            quotient_for_floor = nearest
+        else:
+            quotient_for_floor = quotient
+
+        number_full = int(np.floor(quotient_for_floor))
+        full_mass = float(number_full) * element_value
+        residual = mass_value - full_mass
+
+        # Residual cancellation is relative to the subtraction operands, not
+        # to the nominal element mass. Including element_value here would
+        # incorrectly erase a real residual when total mass << element mass.
+        mass_scale = max(abs(mass_value), abs(full_mass))
+        mass_tol = 4.0 * abs(float(np.spacing(mass_scale)))
+        if abs(residual) <= mass_tol:
+            residual = 0.0
+        elif residual < 0.0:
+            # A materially negative residual indicates an internal planning error,
+            # not a residual that can be safely seeded.
+            raise ArithmeticError(
+                "Mass generation produced a negative residual outside floating-point tolerance: "
+                f"mass={mass_value}, element_mass={element_value}, count={number_full}, "
+                f"residual={residual}."
+            )
+
+        return number_full, float(residual)
+
+    @staticmethod
+    def _validate_generation_settings(gen_mode, mass_element_ug=None, number_of_elements=None):
+        """Validate generation settings that are global to a seed_from_NETCDF call."""
+        import numpy as np
+
+        if gen_mode not in ("mass", "fixed"):
+            raise ValueError("gen_mode must be 'mass' or 'fixed'")
+
+        if gen_mode == "mass":
+            if mass_element_ug is None or isinstance(mass_element_ug, (bool, np.bool_)):
+                raise ValueError(
+                    "gen_mode='mass' requires mass_element_ug to be a finite number > 0"
+                )
+            if not isinstance(mass_element_ug, (int, float, np.integer, np.floating)):
+                raise ValueError(
+                    "gen_mode='mass' requires mass_element_ug to be a finite number > 0"
+                )
+            mass_value = float(mass_element_ug)
+            if not np.isfinite(mass_value) or mass_value <= 0:
+                raise ValueError(
+                    "gen_mode='mass' requires mass_element_ug to be finite and > 0"
+                )
+            return
+
+        ChemicalDriftPostProcessMixin._get_number_of_elements(
+            g_mode="fixed",
+            n_elements=number_of_elements,
+        )
+
+    @staticmethod
     def _validate_z_placement(
         mode,
         number,
