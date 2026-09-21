@@ -8903,34 +8903,7 @@ class ChemicalDriftPostProcessMixin:
 
     ##### Helpers for seed_from_NETCDF ###
     @staticmethod
-    def _get_number_of_elements(g_mode, mass_element_ug=None, data_point=None, n_elements=None):
-        """
-        Returns number of elements to generate.
-        For g_mode == "mass":
-            Checks inputs. Number of full elements and residuals
-            are handles speparately.
-        For g_mode == "fixed":
-            Returns n_elements.
-        """
-        import numpy as np
-
-        if g_mode == "mass":
-            if mass_element_ug is None or data_point is None:
-                raise ValueError("'mass' mode requires mass_element_ug and data_point")
-            if mass_element_ug <= 0:
-                raise ValueError("'mass' mode requires mass_element_ug > 0")
-            if data_point <= 0:
-                return 0
-            return int(np.floor(float(data_point) / float(mass_element_ug)))
-        elif g_mode == "fixed":
-            if n_elements is None or n_elements <= 0:
-                raise ValueError("fixed mode requires n_elements > 0")
-            return int(n_elements)
-        else:
-            raise ValueError("Incorrect combination of mode and input - undefined inputs")
-
-    @staticmethod
-    def _get_z(
+    def _validate_z_placement(
         mode,
         number,
         NETCDF_data_dim_names,
@@ -8939,12 +8912,11 @@ class ChemicalDriftPostProcessMixin:
         emission_seafloor_eps=None,
         emission_depth_value=None,
     ):
-        """
-        Compute initial vertical positions (z) for seeded elements.
-        Returns:
-          - np.ndarray of shape (number,) with negative depths (meters) for
-            water_conc / emission / emission_depth
-          - a string "seafloor+X" for sed_conc or emission when requested
+        """Validate vertical placement and return a deterministic descriptor.
+
+        This helper never consumes random numbers and never allocates a
+        particle-length stochastic array.  ``_get_z`` materializes the
+        descriptor for real seeding.
         """
         import numpy as np
 
@@ -8953,15 +8925,22 @@ class ChemicalDriftPostProcessMixin:
         number = int(number)
         if number < 0:
             raise ValueError(f"number must be >= 0, got {number}")
+
         if number == 0:
             if mode == "sed_conc":
-                return "seafloor+0.0"
+                return {"kind": "seafloor", "number": 0, "value": "seafloor+0.0"}
             if mode == "emission" and emission_placement == "seafloor":
                 eps = emission_seafloor_eps
                 if eps is None or not np.isfinite(eps) or eps < 0:
-                    raise ValueError(f"emission_seafloor_eps must be finite and >= 0, got {eps}")
-                return f"seafloor+{float(eps)}"
-            return np.empty((0,), dtype=float)
+                    raise ValueError(
+                        f"emission_seafloor_eps must be finite and >= 0, got {eps}"
+                    )
+                return {
+                    "kind": "seafloor",
+                    "number": 0,
+                    "value": f"seafloor+{float(eps)}",
+                }
+            return {"kind": "empty", "number": 0}
 
         dim_names = set(NETCDF_data_dim_names or [])
 
@@ -8974,10 +8953,12 @@ class ChemicalDriftPostProcessMixin:
             if "depth" in dim_names:
                 if depth_min is None or depth_max is None:
                     raise ValueError(
-                        "depth_min and depth_max must be provided when 'depth' is a dimension.")
+                        "depth_min and depth_max must be provided when 'depth' is a dimension."
+                    )
                 if (not np.isfinite(depth_min)) or (not np.isfinite(depth_max)):
                     raise ValueError(
-                        f"depth_min/depth_max must be finite, got {depth_min}, {depth_max}")
+                        f"depth_min/depth_max must be finite, got {depth_min}, {depth_max}"
+                    )
 
                 lo = float(depth_min)
                 hi = float(depth_max)
@@ -8986,21 +8967,34 @@ class ChemicalDriftPostProcessMixin:
 
                 eps = 1e-4
                 if hi - lo <= eps:
-                    zpos = max(lo, eps)
-                    return -np.full(number, zpos, dtype=float)
+                    return {
+                        "kind": "fixed",
+                        "number": number,
+                        "depth_m": float(max(lo, eps)),
+                    }
 
                 lo2 = max(lo, eps)
                 hi2 = max(hi, lo2 + eps)
-                return -np.random.uniform(lo2, hi2, number)
+                return {
+                    "kind": "uniform",
+                    "number": number,
+                    "low_m": float(lo2),
+                    "high_m": float(hi2),
+                }
 
             eps = 1e-4
             hi = float(depth_seed) - eps
             if not np.isfinite(hi) or hi <= eps:
-                return -np.full(number, eps, dtype=float)
-            return -np.random.uniform(eps, hi, number)
+                return {"kind": "fixed", "number": number, "depth_m": float(eps)}
+            return {
+                "kind": "uniform",
+                "number": number,
+                "low_m": float(eps),
+                "high_m": float(hi),
+            }
 
         if mode == "sed_conc":
-            return "seafloor+0.0"
+            return {"kind": "seafloor", "number": number, "value": "seafloor+0.0"}
 
         if mode == "emission":
             if emission_placement == "upper_1m":
@@ -9015,23 +9009,33 @@ class ChemicalDriftPostProcessMixin:
                     hi = min(hi, float(depth_seed) - eps)
 
                 if hi <= eps:
-                    return -np.full(number, eps, dtype=float)
-
-                return -np.random.uniform(eps, hi, number)
+                    return {"kind": "fixed", "number": number, "depth_m": float(eps)}
+                return {
+                    "kind": "uniform",
+                    "number": number,
+                    "low_m": float(eps),
+                    "high_m": float(hi),
+                }
 
             if emission_placement == "seafloor":
                 eps = emission_seafloor_eps
                 if eps is None or not np.isfinite(eps) or eps < 0:
-                    raise ValueError(f"emission_seafloor_eps must be finite and >= 0, got {eps}")
-                return f"seafloor+{float(eps)}"
+                    raise ValueError(
+                        f"emission_seafloor_eps must be finite and >= 0, got {eps}"
+                    )
+                return {
+                    "kind": "seafloor",
+                    "number": number,
+                    "value": f"seafloor+{float(eps)}",
+                }
 
             raise ValueError(
                 f"Unsupported emission_placement '{emission_placement}', "
-                f"use 'upper_1m' or 'seafloor'")
+                f"use 'upper_1m' or 'seafloor'"
+            )
 
         if mode == "emission_depth":
             eps = 1e-4
-
             if emission_depth_value is None:
                 raise ValueError("emission_depth requires emission_depth_value.")
             if not np.isfinite(emission_depth_value) or float(emission_depth_value) < 0.0:
@@ -9040,7 +9044,6 @@ class ChemicalDriftPostProcessMixin:
                 )
 
             zpos = float(emission_depth_value)
-
             if depth_seed is not None:
                 if not np.isfinite(depth_seed) or float(depth_seed) <= 0.0:
                     raise ValueError(
@@ -9051,10 +9054,52 @@ class ChemicalDriftPostProcessMixin:
                         f"Requested emission_depth_value={zpos} exceeds local water depth {depth_seed}."
                     )
 
-            zpos = max(zpos, eps)
-            return -np.full(number, zpos, dtype=float)
+            return {
+                "kind": "fixed",
+                "number": number,
+                "depth_m": float(max(zpos, eps)),
+            }
 
         raise ValueError(f"Unsupported mode '{mode}' in _get_z")
+
+    @staticmethod
+    def _get_z(
+        mode,
+        number,
+        NETCDF_data_dim_names,
+        depth_seed=None, depth_min=None, depth_max=None,
+        emission_placement="upper_1m",
+        emission_seafloor_eps=None,
+        emission_depth_value=None,
+    ):
+        """Materialize validated vertical placement for real seeding."""
+        import numpy as np
+
+        plan = ChemicalDriftPostProcessMixin._validate_z_placement(
+            mode=mode,
+            number=number,
+            NETCDF_data_dim_names=NETCDF_data_dim_names,
+            depth_seed=depth_seed,
+            depth_min=depth_min,
+            depth_max=depth_max,
+            emission_placement=emission_placement,
+            emission_seafloor_eps=emission_seafloor_eps,
+            emission_depth_value=emission_depth_value,
+        )
+        kind = plan["kind"]
+        if kind == "empty":
+            return np.empty((0,), dtype=float)
+        if kind == "seafloor":
+            return plan["value"]
+        if kind == "fixed":
+            return -np.full(int(plan["number"]), float(plan["depth_m"]), dtype=float)
+        if kind == "uniform":
+            return -np.random.uniform(
+                float(plan["low_m"]),
+                float(plan["high_m"]),
+                int(plan["number"]),
+            )
+        raise RuntimeError(f"Unsupported placement descriptor kind {kind!r}")
 
     @staticmethod
     def _speciation_is_explicit(speciation):
@@ -9102,7 +9147,10 @@ class ChemicalDriftPostProcessMixin:
         if not np.all(np.isfinite(raw)):
             raise ValueError("NETCDF_data depth coordinate contains non-finite values.")
 
-        depth_abs = np.sort(np.unique(np.abs(raw)))
+        # Validate the original absolute depth magnitudes before any
+        # deduplication. Exact duplicates, +d/-d pairs, and values closer than
+        # tol are ambiguous layer definitions and must not be silently merged.
+        depth_abs = np.sort(np.abs(raw))
         if depth_abs.size == 0:
             raise ValueError("NETCDF_data depth coordinate is empty after processing.")
 
@@ -9327,6 +9375,24 @@ class ChemicalDriftPostProcessMixin:
                 )
             return "; ".join(desc) if desc else "<no coordinates>"
 
+        def _validated_axis_values(values, axis_name):
+            vals = np.asarray(values, dtype=float).ravel()
+            if vals.size == 0:
+                raise ValueError(f"{label}: {axis_name} coordinate is empty.")
+            if not np.all(np.isfinite(vals)):
+                raise ValueError(f"{label}: {axis_name} coordinates must be finite.")
+            if vals.size > 1:
+                delta = np.diff(vals)
+                if np.any(delta == 0.0):
+                    raise ValueError(
+                        f"{label}: {axis_name} coordinates must be unique for nearest selection."
+                    )
+                if not (np.all(delta > 0.0) or np.all(delta < 0.0)):
+                    raise ValueError(
+                        f"{label}: {axis_name} coordinates must be monotonic increasing or decreasing."
+                    )
+            return vals
+
         def _collect(axis_kind):
             candidates = []
             for order, (name, coord) in enumerate(da.coords.items()):
@@ -9376,22 +9442,90 @@ class ChemicalDriftPostProcessMixin:
         lat_ndim = int(getattr(lat_coord, "ndim", np.asarray(lat_coord.values).ndim))
         lon_ndim = int(getattr(lon_coord, "ndim", np.asarray(lon_coord.values).ndim))
 
-        # Preserve the historical scalar-coordinate case. The downstream
-        # _coord_values_and_sel_index() helper already handles scalar coords.
+        # Preserve scalar coordinates and safely promote a single 1-D auxiliary
+        # axis only when its dimension mapping is unambiguous.
         if lat_ndim == 0 or lon_ndim == 0:
             if lat_ndim not in (0, 1) or lon_ndim not in (0, 1):
                 raise ValueError(
                     f"{label}: scalar/array mixed geographic coordinates must be scalar or 1-D; "
                     f"got latitude ndim={lat_ndim}, longitude ndim={lon_ndim}."
                 )
+
+            if lat_ndim == 0 and lon_ndim == 0:
+                lat_scalar = float(np.asarray(lat_coord.values, dtype=float).item())
+                lon_scalar = float(np.asarray(lon_coord.values, dtype=float).item())
+                if not np.isfinite(lat_scalar) or not np.isfinite(lon_scalar):
+                    raise ValueError(f"{label}: latitude/longitude coordinates must be finite.")
+                out = da
+                rename_map = {}
+                if lat_name != "latitude" and lat_name in out.coords:
+                    rename_map[lat_name] = "latitude"
+                if lon_name != "longitude" and lon_name in out.coords:
+                    rename_map[lon_name] = "longitude"
+                if rename_map:
+                    out = out.rename(rename_map)
+                return out
+
+            vector_kind = "longitude" if lon_ndim == 1 else "latitude"
+            scalar_kind = "latitude" if lat_ndim == 0 else "longitude"
+            vector_name = lon_name if lon_ndim == 1 else lat_name
+            scalar_name = lat_name if lat_ndim == 0 else lon_name
+            vector_coord = lon_coord if lon_ndim == 1 else lat_coord
+            scalar_coord = lat_coord if lat_ndim == 0 else lon_coord
+
+            if len(vector_coord.dims) != 1:
+                raise ValueError(
+                    f"{label}: 1-D {vector_kind} coordinate must have exactly one dimension."
+                )
+            vector_dim = vector_coord.dims[0]
+            if vector_dim not in da.dims:
+                raise ValueError(
+                    f"{label}: 1-D {vector_kind} coordinate must index a DataArray dimension."
+                )
+            vector_vals = _validated_axis_values(vector_coord.values, vector_kind)
+            if vector_vals.size != int(da.sizes[vector_dim]):
+                raise ValueError(
+                    f"{label}: {vector_kind} coordinate length does not match dimension {vector_dim!r}."
+                )
+            scalar_value = float(np.asarray(scalar_coord.values, dtype=float).item())
+            if not np.isfinite(scalar_value):
+                raise ValueError(f"{label}: {scalar_kind} coordinate must be finite.")
+
+            if vector_dim == scalar_kind:
+                raise ValueError(
+                    f"{label}: cannot promote {vector_kind} dimension {vector_dim!r}; "
+                    f"it conflicts with scalar {scalar_kind}."
+                )
+            if vector_dim != vector_kind and vector_kind in da.dims:
+                raise ValueError(
+                    f"{label}: cannot rename {vector_dim!r} to {vector_kind!r} because a distinct "
+                    f"{vector_kind!r} dimension already exists."
+                )
+
             out = da
-            rename_map = {}
-            if lat_name != "latitude" and lat_name in out.coords:
-                rename_map[lat_name] = "latitude"
-            if lon_name != "longitude" and lon_name in out.coords:
-                rename_map[lon_name] = "longitude"
-            if rename_map:
-                out = out.rename(rename_map)
+            if vector_dim != vector_kind:
+                out = out.rename({vector_dim: vector_kind})
+
+            if scalar_name != scalar_kind and scalar_name in out.coords:
+                if scalar_kind in out.coords:
+                    raise ValueError(
+                        f"{label}: cannot rename scalar coordinate {scalar_name!r} to {scalar_kind!r}; "
+                        "a distinct coordinate already exists."
+                    )
+                out = out.drop_vars(scalar_name)
+            if vector_name != vector_kind and vector_name in out.coords:
+                if vector_kind in out.coords:
+                    existing = out.coords[vector_kind]
+                    if tuple(existing.dims) != (vector_kind,):
+                        raise ValueError(
+                            f"{label}: ambiguous {vector_kind} coordinate after dimension promotion."
+                        )
+                out = out.drop_vars(vector_name)
+
+            out = out.assign_coords({
+                vector_kind: (vector_kind, vector_vals),
+                scalar_kind: scalar_value,
+            })
             return out
 
         if lat_ndim == 1 and lon_ndim == 1:
@@ -9409,14 +9543,12 @@ class ChemicalDriftPostProcessMixin:
                     f"data dims={tuple(da.dims)!r}."
                 )
 
-            lat_vals = np.asarray(lat_coord.values, dtype=float)
-            lon_vals = np.asarray(lon_coord.values, dtype=float)
+            lat_vals = _validated_axis_values(lat_coord.values, "latitude")
+            lon_vals = _validated_axis_values(lon_coord.values, "longitude")
             if lat_vals.size != int(da.sizes[lat_dim]) or lon_vals.size != int(da.sizes[lon_dim]):
                 raise ValueError(
                     f"{label}: geographic coordinate length does not match its dimension size."
                 )
-            if not np.all(np.isfinite(lat_vals)) or not np.all(np.isfinite(lon_vals)):
-                raise ValueError(f"{label}: latitude/longitude coordinates must be finite.")
 
             rename_dims = {}
             if lat_dim != "latitude":
@@ -9512,6 +9644,9 @@ class ChemicalDriftPostProcessMixin:
                     "latitude/longitude grid before reseeding."
                 )
 
+            lat_vec = _validated_axis_values(lat_vec, "latitude")
+            lon_vec = _validated_axis_values(lon_vec, "longitude")
+
             if lat_dim == lon_dim:
                 raise ValueError(f"{label}: invalid 2-D geographic coordinate dimensions {spatial_dims!r}.")
 
@@ -9580,107 +9715,155 @@ class ChemicalDriftPostProcessMixin:
 
         raise ValueError(f"'{dim_name}' not found as dimension or coordinate in dataarray.")
 
-    def build_specie_array(self, n, speciation, default_specie):
-        '''
-        Builds the initial per-element species index array (length n) used when seeding particles.
-        It interprets speciation as:
-         - None / "config": returns None (meaning: don’t pass specie, let config-driven partitioning decide).
-
-         - "default": returns an array filled with default_specie.
-         - scalar int or species-name str: returns an array with that single species for all n.
-         - array-like of int/str: (length n): returns the corresponding per-element indices (mapping names via self.name_species).
-         - dict {species: fraction}:→ randomly samples n species according to the normalized fractions.
-        '''
+    @staticmethod
+    def _species_value_to_index(
+        value,
+        name_to_idx,
+        active_names,
+        label="speciation",
+        missing_names=None,
+    ):
+        """Convert one species name/index to a validated integer index."""
+        import numbers
         import numpy as np
 
-        # ChemicalDrift config-driven partitioning
+        if isinstance(value, str):
+            if value not in name_to_idx:
+                if missing_names is not None:
+                    missing_names.add(value)
+                    return None
+                raise ValueError(
+                    f"Unknown species name '{value}'. Valid: {list(active_names)}"
+                )
+            return int(name_to_idx[value])
+
+        if isinstance(value, (bool, np.bool_)) or not isinstance(value, numbers.Real):
+            raise ValueError(
+                f"{label}: species indices must be non-boolean finite integer values or species names; "
+                f"got {value!r}."
+            )
+
+        numeric = float(value)
+        if not np.isfinite(numeric) or not numeric.is_integer():
+            raise ValueError(
+                f"{label}: species index must be a finite integer value; got {value!r}."
+            )
+
+        idx = int(numeric)
+        if idx < 0 or idx >= len(active_names):
+            raise ValueError(
+                f"{label}: species index {idx} out of range for active species list "
+                f"(0..{len(active_names)-1})."
+            )
+        return idx
+
+    def _resolve_speciation_plan(self, n, speciation, default_specie):
+        """Normalize speciation without sampling.
+
+        Returns a dict with basis ``unresolved``, ``exact`` or ``expected``.
+        The helper validates the same species names/indices and dictionary
+        fractions that real seeding uses, but never consumes RNG.
+        """
+        import numpy as np
+
+        n = int(n)
+        if n < 0:
+            raise ValueError(f"n must be >= 0, got {n}")
+
         if speciation is None or (isinstance(speciation, str) and speciation == "config"):
-            return None
+            return {"basis": "unresolved", "indices": None, "fractions": None}
+
+        if not hasattr(self, "name_species"):
+            self.init_species()
+        active_names = list(self.name_species)
+        name_to_idx = {name: i for i, name in enumerate(active_names)}
+
         if isinstance(speciation, str) and speciation == "default":
-            return np.full(n, int(default_specie), dtype=int)
+            sp_idx = self._species_value_to_index(
+                default_specie,
+                name_to_idx=name_to_idx,
+                active_names=active_names,
+                label="default_specie",
+            )
+            return {
+                "basis": "exact",
+                "indices": np.full(n, sp_idx, dtype=int),
+                "fractions": None,
+            }
 
-        # scalar: all same (int or species-name string)
         if np.isscalar(speciation):
-            if isinstance(speciation, str):
-                if not hasattr(self, "name_species"):
-                    self.init_species()
-                try:
-                    sp_idx = int(self.name_species.index(speciation))
-                except ValueError:
-                    raise ValueError(f"Unknown species name '{speciation}'. Valid: {self.name_species}")
-                return np.full(n, sp_idx, dtype=int)
-            else:
-                return np.full(n, int(speciation), dtype=int)
+            sp_idx = self._species_value_to_index(
+                speciation,
+                name_to_idx=name_to_idx,
+                active_names=active_names,
+                label="speciation",
+            )
+            return {
+                "basis": "exact",
+                "indices": np.full(n, sp_idx, dtype=int),
+                "fractions": None,
+            }
 
-        # explicit array/list of indices OR names (length must be n)
         if isinstance(speciation, (list, tuple, np.ndarray)):
-            arr = np.asarray(speciation).ravel()
+            arr = np.asarray(speciation, dtype=object).ravel()
             if arr.size != n:
-                raise ValueError(f"Explicit speciation array has length {arr.size}, expected {n}.")
+                raise ValueError(
+                    f"Explicit speciation array has length {arr.size}, expected {n}."
+                )
+            out = np.empty(arr.size, dtype=int)
+            for i, value in enumerate(arr):
+                out[i] = self._species_value_to_index(
+                    value,
+                    name_to_idx=name_to_idx,
+                    active_names=active_names,
+                    label="speciation",
+                )
+            return {"basis": "exact", "indices": out, "fractions": None}
 
-            # If any strings present, map by name_species
-            if arr.dtype.kind in ("U", "S", "O"):
-                if not hasattr(self, "name_species"):
-                    self.init_species()
-
-                out = np.empty(arr.size, dtype=int)
-                for i, v in enumerate(arr):
-                    if isinstance(v, str):
-                        try:
-                            out[i] = int(self.name_species.index(v))
-                        except ValueError:
-                            raise ValueError(f"Unknown species name '{v}'. Valid: {self.name_species}")
-                    else:
-                        idx = int(v)
-                        if idx < 0 or idx >= len(self.name_species):
-                            raise ValueError(f"Species index {idx} out of range 0..{len(self.name_species)-1}")
-
-                        out[i] = int(v)
-                return out.astype(int)
-
-            # Pure numeric
-            if not hasattr(self, "name_species"):
-                self.init_species()
-
-            arr_i = arr.astype(int)
-            if np.any(arr_i < 0) or np.any(arr_i >= len(self.name_species)):
-                bad = arr_i[(arr_i < 0) | (arr_i >= len(self.name_species))][:5]
-                raise ValueError(f"Species index out of range 0..{len(self.name_species)-1}. Examples: {bad.tolist()}")
-            return arr_i
-
-        # dict of fractions: {species: fraction, ...} (keys int or str)
         if isinstance(speciation, dict):
             keys = list(speciation.keys())
             fracs = np.asarray([speciation[k] for k in keys], dtype=float)
-
             if np.any(fracs < 0):
                 raise ValueError("Speciation fractions must be >= 0.")
-            s = fracs.sum()
-            if not np.isfinite(s) or s <= 0:
+            total = fracs.sum()
+            if not np.isfinite(total) or total <= 0:
                 raise ValueError("Speciation fractions must sum to a positive number.")
-            fracs = fracs / s  # normalize
-
-            if not hasattr(self, "name_species"):
-                self.init_species()
-
-            idx = []
-            for k in keys:
-                if isinstance(k, str):
-                    try:
-                        idx.append(int(self.name_species.index(k)))
-                    except ValueError:
-                        raise ValueError(f"Unknown species name '{k}'. Valid: {self.name_species}")
-                else:
-                    if int(k) < 0 or int(k) >= len(self.name_species):
-                        raise ValueError(f"Species index {k} out of range 0..{len(self.name_species)-1}")
-
-                    idx.append(int(k))
-
-            idx = np.asarray(idx, dtype=int)
-            return np.random.choice(idx, size=n, p=fracs).astype(int)
+            fracs = fracs / total
+            idx = np.asarray([
+                self._species_value_to_index(
+                    key,
+                    name_to_idx=name_to_idx,
+                    active_names=active_names,
+                    label="speciation",
+                )
+                for key in keys
+            ], dtype=int)
+            return {"basis": "expected", "indices": idx, "fractions": fracs}
 
         raise TypeError(
-            "speciation must be None/'config'/'default', int, str, array-like of int/str, or dict of fractions.")
+            "speciation must be None/'config'/'default', int, str, array-like of int/str, or dict of fractions."
+        )
+
+    def build_specie_array(self, n, speciation, default_specie):
+        """Build the realized per-element species array for real seeding."""
+        import numpy as np
+
+        plan = self._resolve_speciation_plan(
+            n=n,
+            speciation=speciation,
+            default_specie=default_specie,
+        )
+        if plan["basis"] == "unresolved":
+            return None
+        if plan["basis"] == "exact":
+            return np.asarray(plan["indices"], dtype=int).copy()
+        if plan["basis"] == "expected":
+            return np.random.choice(
+                np.asarray(plan["indices"], dtype=int),
+                size=int(n),
+                p=np.asarray(plan["fractions"], dtype=float),
+            ).astype(int)
+        raise RuntimeError(f"Unsupported speciation plan basis {plan['basis']!r}")
 
     def speciation_to_indices_set(self, speciation, name_to_idx, active_names, label="speciation"):
         """
@@ -9690,19 +9873,6 @@ class ChemicalDriftPostProcessMixin:
         import numpy as np
 
         missing = set()
-
-        def to_index(v):
-            if isinstance(v, str):
-                if v not in name_to_idx:
-                    missing.add(v)
-                    return None
-                return int(name_to_idx[v])
-            # numeric: accept as index but check bounds
-            i = int(v)
-            if i < 0 or i >= len(active_names):
-                raise ValueError(
-                    f"{label}: species index {i} out of range for active species list (0..{len(active_names)-1}).")
-            return i
 
         if isinstance(speciation, dict):
             vals = list(speciation.keys())
@@ -9715,7 +9885,13 @@ class ChemicalDriftPostProcessMixin:
 
         used = set()
         for v in vals:
-            idx = to_index(v)
+            idx = self._species_value_to_index(
+                v,
+                name_to_idx=name_to_idx,
+                active_names=active_names,
+                label=label,
+                missing_names=missing,
+            )
             if idx is not None:
                 used.add(idx)
 
@@ -9869,6 +10045,7 @@ class ChemicalDriftPostProcessMixin:
             emission_wetcell_diagnostic_radius=2000,
             water_concentration_unit=None,
             concentration_coordinate_mode="legacy",
+            dry_run=False,
     ):
         """
         Seed elements based on a dataarray with water/sediment concentration or direct emissions to water.
@@ -9944,6 +10121,8 @@ class ChemicalDriftPostProcessMixin:
                               "legacy" adds half the grid resolution to input coordinates (default).
                               "center" uses input coordinates directly, as required for writer-derived cell centres.
                               Emission placement and radius-based spreading are unchanged.
+        dry_run:              boolean. If True, validate and return a deterministic seeding estimate
+                              without sampling stochastic z/species values or calling seed_elements().
 
 
         """
@@ -9952,6 +10131,10 @@ class ChemicalDriftPostProcessMixin:
         import numpy as np
         from collections import Counter
         fail_records = []
+
+        if not isinstance(dry_run, (bool, np.bool_)):
+            raise ValueError(f"dry_run must be boolean, got {dry_run!r}")
+        dry_run = bool(dry_run)
 
         def _time_repr(x):
             if x is None:
@@ -9970,6 +10153,13 @@ class ChemicalDriftPostProcessMixin:
             raise ValueError(
                 f"Invalid mode: '{mode}', only 'water_conc', 'sed_conc', "
                 "'emission', and 'emission_depth' are permitted")
+
+        self._validate_generation_settings(
+            gen_mode=gen_mode,
+            mass_element_ug=mass_element_ug,
+            number_of_elements=number_of_elements,
+        )
+
         if mode == "emission" and emission_placement not in ("upper_1m", "seafloor"):
             raise ValueError(
                 f"Invalid emission_placement='{emission_placement}'. "
@@ -10227,6 +10417,17 @@ class ChemicalDriftPostProcessMixin:
         initial_species_mass_ug = Counter()
         unresolved_initial_species_mass_ug = 0.0
 
+        # Deterministic pre-execution plan accounting. This is populated in
+        # both real-seed and estimate modes and never depends on RNG.
+        planned_datapoints = 0
+        planned_elements = 0
+        planned_mass_ug = 0.0
+        planned_residual_elements = 0
+        planned_residual_mass_ug = 0.0
+        planned_species_exact_mass_ug = Counter()
+        planned_species_expected_mass_ug = Counter()
+        planned_species_unresolved_mass_ug = 0.0
+
         def _accumulate_species_mass(species_values, mass_per_element_ug, count):
             """Account mass from existing realized species assignments only."""
             nonlocal unresolved_initial_species_mass_ug
@@ -10260,6 +10461,71 @@ class ChemicalDriftPostProcessMixin:
                 else:
                     unresolved_initial_species_mass_ug += specie_mass
 
+        def _accumulate_planned_operation(
+            speciation_plan, mass_per_element_ug, count, *, is_residual=False
+        ):
+            """Add one deterministically validated operation to the plan."""
+            nonlocal planned_elements
+            nonlocal planned_mass_ug
+            nonlocal planned_residual_elements
+            nonlocal planned_residual_mass_ug
+            nonlocal planned_species_unresolved_mass_ug
+
+            count = int(count)
+            mass_per_element_ug = float(mass_per_element_ug)
+            if count <= 0 or mass_per_element_ug <= 0.0:
+                return
+
+            total_mass = float(count * mass_per_element_ug)
+            planned_elements += count
+            planned_mass_ug += total_mass
+            if is_residual:
+                planned_residual_elements += count
+                planned_residual_mass_ug += total_mass
+
+            basis = speciation_plan["basis"]
+            if basis == "unresolved":
+                planned_species_unresolved_mass_ug += total_mass
+                return
+
+            indices = np.asarray(speciation_plan["indices"], dtype=int).ravel()
+            if basis == "exact":
+                if indices.size != count:
+                    raise RuntimeError(
+                        "Exact speciation plan length does not match planned element count."
+                    )
+                for specie_index, specie_count in zip(
+                    *np.unique(indices, return_counts=True)
+                ):
+                    idx = int(specie_index)
+                    if not (0 <= idx < len(self.name_species)):
+                        raise RuntimeError(
+                            f"Planned species index {idx} is outside active species bounds."
+                        )
+                    planned_species_exact_mass_ug[str(self.name_species[idx])] += float(
+                        int(specie_count) * mass_per_element_ug
+                    )
+                return
+
+            if basis == "expected":
+                fractions = np.asarray(speciation_plan["fractions"], dtype=float).ravel()
+                if indices.size != fractions.size:
+                    raise RuntimeError(
+                        "Expected speciation plan indices/fractions length mismatch."
+                    )
+                for idx_raw, fraction in zip(indices, fractions):
+                    idx = int(idx_raw)
+                    if not (0 <= idx < len(self.name_species)):
+                        raise RuntimeError(
+                            f"Planned species index {idx} is outside active species bounds."
+                        )
+                    planned_species_expected_mass_ug[str(self.name_species[idx])] += float(
+                        total_mass * float(fraction)
+                    )
+                return
+
+            raise RuntimeError(f"Unsupported speciation plan basis {basis!r}")
+
         def _to_plain(value):
             """Return a JSON/YAML-safe copy without changing stored diagnostics."""
             if isinstance(value, np.generic):
@@ -10273,47 +10539,185 @@ class ChemicalDriftPostProcessMixin:
             return value
 
         def _zero_small_difference(total, part):
-            diff = float(total) - float(part)
-            tol = 1e-12 * max(1.0, abs(float(total)), abs(float(part)))
+            """Subtract with only scale-aware floating-point cancellation cleanup."""
+            total_f = float(total)
+            part_f = float(part)
+            diff = total_f - part_f
+            scale = max(abs(total_f), abs(part_f))
+            if scale == 0.0:
+                return 0.0
+            tol = 8.0 * abs(float(np.spacing(scale)))
             return 0.0 if abs(diff) <= tol else float(diff)
+
+        class _SeedAccountingUnobservableError(RuntimeError):
+            """A failed scheduling attempt cannot be reconciled deterministically."""
+
+        def _scheduled_count_or_none():
+            """Return the current scheduled-element count when it is observable."""
+            try:
+                return int(self.num_elements_scheduled())
+            except Exception:
+                return None
+
+        def _resolve_observed_scheduled_delta(
+            before, after, expected_count, *, normal_return
+        ):
+            """Resolve scheduled count for one seed_elements attempt."""
+            expected_count = int(expected_count)
+            if before is not None and after is not None:
+                observed = int(after - before)
+            elif normal_return:
+                observed = expected_count
+            else:
+                observed = None
+
+            if observed is not None and not (0 <= observed <= expected_count):
+                raise _SeedAccountingUnobservableError(
+                    "seed_elements changed the scheduled-element count by "
+                    f"{observed}, outside the expected range 0..{expected_count}; "
+                    "a reliable seed report cannot be produced."
+                )
+            return observed
+
+        def _account_observed_scheduling(
+            species_values, mass_per_element_ug, observed_count, expected_count,
+            *, is_residual=False,
+        ):
+            """Account a known scheduled subset without guessing its species."""
+            nonlocal scheduled_mass_ug
+            nonlocal seeded_elements_counter
+            nonlocal residual_elements_scheduled
+            nonlocal residual_scheduled_mass_ug
+            nonlocal unresolved_initial_species_mass_ug
+
+            observed_count = int(observed_count)
+            expected_count = int(expected_count)
+            mass_per_element_ug = float(mass_per_element_ug)
+            if observed_count <= 0:
+                return
+
+            scheduled_here = float(observed_count * mass_per_element_ug)
+            seeded_elements_counter += observed_count
+            scheduled_mass_ug += scheduled_here
+            if is_residual:
+                residual_elements_scheduled += observed_count
+                residual_scheduled_mass_ug += scheduled_here
+
+            # A full batch (or a one-element partial) has an unambiguous realized
+            # species array.  For a strict partial batch, OpenDrift's count delta
+            # does not identify which members were committed, so preserve the mass
+            # as unresolved rather than guessing a subset of species_values.
+            if observed_count == expected_count or expected_count == 1:
+                _accumulate_species_mass(
+                    species_values,
+                    mass_per_element_ug=mass_per_element_ug,
+                    count=observed_count,
+                )
+            else:
+                # A partial batch does not reveal which positions were committed.
+                # One-species arrays remain unambiguous; mixed arrays do not.
+                try:
+                    species_arr = np.asarray(species_values, dtype=int).ravel()
+                except Exception:
+                    species_arr = np.empty((0,), dtype=int)
+                if (
+                    species_arr.size == expected_count
+                    and np.unique(species_arr).size == 1
+                ):
+                    _accumulate_species_mass(
+                        np.full(observed_count, int(species_arr[0]), dtype=int),
+                        mass_per_element_ug=mass_per_element_ug,
+                        count=observed_count,
+                    )
+                else:
+                    unresolved_initial_species_mass_ug += scheduled_here
 
         def _build_seed_report(seedable_datapoints, scheduled_elements):
             failure_counts = Counter(rec.get("stage", "unknown") for rec in fail_records)
+            if dry_run:
+                seeded_datapoints_value = None
+                unseeded_datapoints_value = None
+                scheduled_mass_value = None
+                failed_mass_value = None
+                scheduled_elements_value = None
+                failed_elements_value = None
+                residual_elements_scheduled_value = None
+                residual_scheduled_mass_value = None
+                residual_failed_mass_value = None
+                realized_species_value = None
+                unresolved_realized_species_value = None
+            else:
+                seeded_datapoints_value = int(seeded_datapoints)
+                unseeded_datapoints_value = int(seedable_datapoints - seeded_datapoints)
+                scheduled_mass_value = float(scheduled_mass_ug)
+                failed_mass_value = _zero_small_difference(
+                    intended_mass_ug, scheduled_mass_ug
+                )
+                scheduled_elements_value = int(scheduled_elements)
+                failed_elements_value = int(
+                    expected_or_requested_elements - int(scheduled_elements)
+                )
+                residual_elements_scheduled_value = int(residual_elements_scheduled)
+                residual_scheduled_mass_value = float(residual_scheduled_mass_ug)
+                residual_failed_mass_value = _zero_small_difference(
+                    residual_intended_mass_ug, residual_scheduled_mass_ug
+                )
+                realized_species_value = {
+                    str(name): float(initial_species_mass_ug[name])
+                    for name in sorted(initial_species_mass_ug)
+                }
+                unresolved_realized_species_value = float(
+                    unresolved_initial_species_mass_ug
+                )
+
             return {
-                "schema_version": 1,
+                "schema_version": 2,
+                "execution_mode": "estimate" if dry_run else "seed",
+                "dry_run": bool(dry_run),
                 "mode": str(mode),
                 "gen_mode": str(gen_mode),
                 "input_datapoints": int(input_datapoints),
                 "selected_datapoints": int(selected_datapoints),
                 "seedable_datapoints": int(seedable_datapoints),
-                "seeded_datapoints": int(seeded_datapoints),
-                "unseeded_datapoints": int(seedable_datapoints - seeded_datapoints),
+                "seeded_datapoints": seeded_datapoints_value,
+                "unseeded_datapoints": unseeded_datapoints_value,
                 "intended_mass_ug": float(intended_mass_ug),
-                "scheduled_mass_ug": float(scheduled_mass_ug),
-                "failed_mass_ug": _zero_small_difference(
-                    intended_mass_ug, scheduled_mass_ug
-                ),
+                "scheduled_mass_ug": scheduled_mass_value,
+                "failed_mass_ug": failed_mass_value,
                 "expected_or_requested_elements": int(expected_or_requested_elements),
-                "scheduled_elements": int(scheduled_elements),
-                "failed_or_unscheduled_elements": int(
-                    expected_or_requested_elements - int(scheduled_elements)
-                ),
+                "scheduled_elements": scheduled_elements_value,
+                "failed_or_unscheduled_elements": failed_elements_value,
                 "residual": {
                     "elements_expected": int(residual_elements_expected),
-                    "elements_scheduled": int(residual_elements_scheduled),
+                    "elements_scheduled": residual_elements_scheduled_value,
                     "intended_mass_ug": float(residual_intended_mass_ug),
-                    "scheduled_mass_ug": float(residual_scheduled_mass_ug),
-                    "failed_mass_ug": _zero_small_difference(
-                        residual_intended_mass_ug, residual_scheduled_mass_ug
-                    ),
+                    "scheduled_mass_ug": residual_scheduled_mass_value,
+                    "failed_mass_ug": residual_failed_mass_value,
                 },
-                "initial_species_mass_ug": {
-                    str(name): float(initial_species_mass_ug[name])
-                    for name in sorted(initial_species_mass_ug)
+                "initial_species_mass_ug": realized_species_value,
+                "unresolved_initial_species_mass_ug": unresolved_realized_species_value,
+                "plan": {
+                    "planned_datapoints": int(planned_datapoints),
+                    "planned_elements": int(planned_elements),
+                    "planned_mass_ug": float(planned_mass_ug),
+                    "residual": {
+                        "elements_planned": int(planned_residual_elements),
+                        "planned_mass_ug": float(planned_residual_mass_ug),
+                    },
+                    "species": {
+                        "exact_mass_ug": {
+                            str(name): float(planned_species_exact_mass_ug[name])
+                            for name in sorted(planned_species_exact_mass_ug)
+                        },
+                        "expected_mass_ug": {
+                            str(name): float(planned_species_expected_mass_ug[name])
+                            for name in sorted(planned_species_expected_mass_ug)
+                        },
+                        "unresolved_mass_ug": float(
+                            planned_species_unresolved_mass_ug
+                        ),
+                    },
                 },
-                "unresolved_initial_species_mass_ug": float(
-                    unresolved_initial_species_mass_ug
-                ),
                 "qc": {
                     str(key): int(value)
                     for key, value in sorted(seed_qc.items())
@@ -10442,6 +10846,9 @@ class ChemicalDriftPostProcessMixin:
         npts = int(values.size)
 
         if npts == 0:
+            if dry_run:
+                return _build_seed_report(seedable_datapoints=0, scheduled_elements=None)
+
             self._last_seed_from_netcdf_qc = dict(seed_qc)
             self._last_seed_from_netcdf_failures = fail_records
 
@@ -10491,8 +10898,11 @@ class ChemicalDriftPostProcessMixin:
 
             return _build_seed_report(seedable_datapoints=0, scheduled_elements=0)
 
-        print(f"Seeding {npts} datapoints")
-        list_index_print = self._print_progress_list(npts)
+        if dry_run:
+            list_index_print = set()
+        else:
+            print(f"Seeding {npts} datapoints")
+            list_index_print = self._print_progress_list(npts)
 
         if mode == 'sed_conc':
             sed_mixing_depth_global = float(self.get_config('chemical:sediment:mixing_depth'))
@@ -10514,10 +10924,13 @@ class ChemicalDriftPostProcessMixin:
 
         wetcell_cache = {}
 
-        try:
-            scheduled_before_seed_from_netcdf = int(self.num_elements_scheduled())
-        except Exception:
+        if dry_run:
             scheduled_before_seed_from_netcdf = None
+        else:
+            try:
+                scheduled_before_seed_from_netcdf = int(self.num_elements_scheduled())
+            except Exception:
+                scheduled_before_seed_from_netcdf = None
 
         for i in range(npts):
             lai = None
@@ -10531,17 +10944,17 @@ class ChemicalDriftPostProcessMixin:
             emission_depth_value = None
 
             point_seeded = False
-            point_elements_seeded = 0
+            point_planned = False
 
             try:
-                if i == 0:
+                if not dry_run and i == 0:
                     time_start_0 = datetime.now()
-                if i == 1:
+                if not dry_run and i == 1:
                     time_start_1 = datetime.now()
                     estimated_time = (time_start_1 - time_start_0) * npts
                     print(f"Estimated time (h:min:s): {estimated_time}")
 
-                if i in list_index_print:
+                if not dry_run and i in list_index_print:
                     print(".", end="")
                 # Per-point lat/lon (scalar)
                 lai = float(la[i])
@@ -10907,12 +11320,10 @@ class ChemicalDriftPostProcessMixin:
                     default_specie = None
 
                 if gen_mode == "mass":
-                    number_full = self._get_number_of_elements(
-                        g_mode="mass",
+                    number_full, mass_residual = self._plan_mass_generation(
+                        data_point=mass_ug,
                         mass_element_ug=mass_element_ug,
-                        data_point=mass_ug)
-
-                    mass_residual = float(mass_ug - number_full * float(mass_element_ug))
+                    )
                     seed_single_residual_only = (number_full == 0 and mass_residual > 0)
 
                     number = int(number_full)
@@ -10944,75 +11355,116 @@ class ChemicalDriftPostProcessMixin:
 
                 # main batch
                 if number > 0:
-                    z = self._get_z(
-                    mode=mode,
-                    number=number,
-                    NETCDF_data_dim_names=NETCDF_data_dim_names,
-                    depth_min=depth_min,
-                    depth_max=depth_max,
-                    depth_seed=Bathimetry_seed if mode in ('water_conc', 'emission', 'emission_depth') else None,
-                    emission_placement=emission_placement,
-                    emission_seafloor_eps=emission_seafloor_eps,
-                    emission_depth_value=emission_depth_value if mode == 'emission_depth' else None,)
-
-                    spec_arr = self.build_specie_array(
+                    self._validate_z_placement(
+                        mode=mode,
+                        number=number,
+                        NETCDF_data_dim_names=NETCDF_data_dim_names,
+                        depth_min=depth_min,
+                        depth_max=depth_max,
+                        depth_seed=Bathimetry_seed if mode in ('water_conc', 'emission', 'emission_depth') else None,
+                        emission_placement=emission_placement,
+                        emission_seafloor_eps=emission_seafloor_eps,
+                        emission_depth_value=emission_depth_value if mode == 'emission_depth' else None,
+                    )
+                    main_speciation_plan = self._resolve_speciation_plan(
                         n=number,
                         speciation=speciation_ctrl,
-                        default_specie=default_specie)
+                        default_specie=default_specie,
+                    )
+                    _accumulate_planned_operation(
+                        main_speciation_plan,
+                        mass_per_element_ug=mass_element_seed_ug,
+                        count=number,
+                    )
+                    if not point_planned:
+                        planned_datapoints += 1
+                        point_planned = True
 
-                    kwargs_seed = dict(
-                        lon=elem_lon,
-                        lat=elem_lat,
-                        radius=radius,
+                    if not dry_run:
+                        z = self._get_z(
+                        mode=mode,
                         number=number,
-                        time=time,
-                        mass=mass_element_seed_ug,
-                        mass_degraded=0,
-                        mass_volatilized=0,
-                        moving=moving_element,
-                        z=z,
-                        origin_marker=origin_marker_seed)
+                        NETCDF_data_dim_names=NETCDF_data_dim_names,
+                        depth_min=depth_min,
+                        depth_max=depth_max,
+                        depth_seed=Bathimetry_seed if mode in ('water_conc', 'emission', 'emission_depth') else None,
+                        emission_placement=emission_placement,
+                        emission_seafloor_eps=emission_seafloor_eps,
+                        emission_depth_value=emission_depth_value if mode == 'emission_depth' else None,)
 
-                    if spec_arr is not None:
-                        kwargs_seed["specie"] = spec_arr
-                    elif mode == "sed_conc":
-                        raise RuntimeError(
-                            "sed_speciation resolved to None, which is not supported for sediment seeding.")
+                        spec_arr = self.build_specie_array(
+                            n=number,
+                            speciation=speciation_ctrl,
+                            default_specie=default_specie)
 
-                    try:
-                        self.seed_elements(**kwargs_seed)
-                        point_seeded = True
-                        point_elements_seeded += int(number)
-                        scheduled_mass_ug += float(number) * float(mass_element_seed_ug)
-                        _accumulate_species_mass(
-                            spec_arr,
-                            mass_per_element_ug=mass_element_seed_ug,
-                            count=number,
-                        )
-
-                    except Exception as e_batch:
-                        self._record_seed_failure(
-                            fail_records=fail_records,
-                            stage="main_batch_seed",
-                            point_index=i,
-                            exc=e_batch,
-                            mode=mode,
+                        kwargs_seed = dict(
                             lon=elem_lon,
                             lat=elem_lat,
-                            time=_time_repr(time),
-                            mass_ug=float(mass_ug),
-                            number=int(number),
-                            seed_mass_ug=float(mass_element_seed_ug),
-                            origin_marker=origin_marker_seed,
-                            z_kind="string" if isinstance(z, str) else "array",
-                        )
+                            radius=radius,
+                            number=number,
+                            time=time,
+                            mass=mass_element_seed_ug,
+                            mass_degraded=0,
+                            mass_volatilized=0,
+                            moving=moving_element,
+                            z=z,
+                            origin_marker=origin_marker_seed)
 
-                        # Fallback for sediments only (coastal failures due to radius sampling)
-                        if mode == "sed_conc":
-                            spec_choices = kwargs_seed.get("specie", None)
+                        if spec_arr is not None:
+                            kwargs_seed["specie"] = spec_arr
+                        elif mode == "sed_conc":
+                            raise RuntimeError(
+                                "sed_speciation resolved to None, which is not supported for sediment seeding.")
 
-                            for k in range(number):
-                                try:
+                        batch_before = _scheduled_count_or_none()
+                        try:
+                            self.seed_elements(**kwargs_seed)
+                        except Exception as e_batch:
+                            batch_after = _scheduled_count_or_none()
+                            observed_batch = _resolve_observed_scheduled_delta(
+                                batch_before, batch_after, number, normal_return=False
+                            )
+                            if observed_batch is not None and observed_batch > 0:
+                                if not point_seeded:
+                                    seeded_datapoints += 1
+                                    point_seeded = True
+                                _account_observed_scheduling(
+                                    spec_arr,
+                                    mass_per_element_ug=mass_element_seed_ug,
+                                    observed_count=observed_batch,
+                                    expected_count=number,
+                                )
+
+                            self._record_seed_failure(
+                                fail_records=fail_records,
+                                stage="main_batch_seed",
+                                point_index=i,
+                                exc=e_batch,
+                                mode=mode,
+                                lon=elem_lon,
+                                lat=elem_lat,
+                                time=_time_repr(time),
+                                mass_ug=float(mass_ug),
+                                number=int(number),
+                                seed_mass_ug=float(mass_element_seed_ug),
+                                origin_marker=origin_marker_seed,
+                                z_kind="string" if isinstance(z, str) else "array",
+                            )
+                            if observed_batch is None:
+                                raise _SeedAccountingUnobservableError(
+                                    "seed_elements raised during main_batch_seed while "
+                                    "the scheduled-element delta was unavailable; "
+                                    "a reliable seed report cannot be produced."
+                                ) from e_batch
+
+                            # Fallback for sediments only when the failed batch is
+                            # proven to have scheduled zero elements. If scheduling
+                            # is partial or unobservable, retrying all members could
+                            # duplicate already-scheduled elements.
+                            if mode == "sed_conc" and observed_batch == 0:
+                                spec_choices = kwargs_seed.get("specie", None)
+
+                                for k in range(number):
                                     kwargs_one = dict(kwargs_seed)
                                     kwargs_one["number"] = 1
                                     kwargs_one["mass"] = mass_element_seed_ug
@@ -11027,106 +11479,202 @@ class ChemicalDriftPostProcessMixin:
                                     else:
                                         kwargs_one["z"] = np.asarray(z, dtype=float).ravel()[k:k+1]
 
-                                    self.seed_elements(**kwargs_one)
+                                    single_before = _scheduled_count_or_none()
+                                    try:
+                                        self.seed_elements(**kwargs_one)
+                                    except Exception as e_single:
+                                        single_after = _scheduled_count_or_none()
+                                        observed_single = _resolve_observed_scheduled_delta(
+                                            single_before, single_after, 1, normal_return=False
+                                        )
+                                        if observed_single is not None and observed_single > 0:
+                                            if not point_seeded:
+                                                seeded_datapoints += 1
+                                                point_seeded = True
+                                            _account_observed_scheduling(
+                                                kwargs_one.get("specie", None),
+                                                mass_per_element_ug=mass_element_seed_ug,
+                                                observed_count=observed_single,
+                                                expected_count=1,
+                                            )
+                                        self._record_seed_failure(
+                                            fail_records=fail_records,
+                                            stage="sediment_single_fallback_seed",
+                                            point_index=i,
+                                            exc=e_single,
+                                            mode=mode,
+                                            lon=elem_lon,
+                                            lat=elem_lat,
+                                            time=_time_repr(time),
+                                            mass_ug=float(mass_ug),
+                                            element_offset=int(k),
+                                            seed_mass_ug=float(mass_element_seed_ug),
+                                            origin_marker=origin_marker_seed,
+                                        )
+                                        if observed_single is None:
+                                            raise _SeedAccountingUnobservableError(
+                                                "seed_elements raised during "
+                                                "sediment_single_fallback_seed while the "
+                                                "scheduled-element delta was unavailable; "
+                                                "a reliable seed report cannot be produced."
+                                            ) from e_single
+                                    else:
+                                        single_after = _scheduled_count_or_none()
+                                        observed_single = _resolve_observed_scheduled_delta(
+                                            single_before, single_after, 1, normal_return=True
+                                        )
+                                        if observed_single > 0:
+                                            if not point_seeded:
+                                                seeded_datapoints += 1
+                                                point_seeded = True
+                                            _account_observed_scheduling(
+                                                kwargs_one.get("specie", None),
+                                                mass_per_element_ug=mass_element_seed_ug,
+                                                observed_count=observed_single,
+                                                expected_count=1,
+                                            )
+                        else:
+                            batch_after = _scheduled_count_or_none()
+                            observed_batch = _resolve_observed_scheduled_delta(
+                                batch_before, batch_after, number, normal_return=True
+                            )
+                            if observed_batch > 0:
+                                if not point_seeded:
+                                    seeded_datapoints += 1
                                     point_seeded = True
-                                    point_elements_seeded += 1
-                                    scheduled_mass_ug += float(mass_element_seed_ug)
-                                    _accumulate_species_mass(
-                                        kwargs_one.get("specie", None),
-                                        mass_per_element_ug=mass_element_seed_ug,
-                                        count=1,
-                                    )
-
-                                except Exception as e_single:
-                                    self._record_seed_failure(
-                                        fail_records=fail_records,
-                                        stage="sediment_single_fallback_seed",
-                                        point_index=i,
-                                        exc=e_single,
-                                        mode=mode,
-                                        lon=elem_lon,
-                                        lat=elem_lat,
-                                        time=_time_repr(time),
-                                        mass_ug=float(mass_ug),
-                                        element_offset=int(k),
-                                        seed_mass_ug=float(mass_element_seed_ug),
-                                        origin_marker=origin_marker_seed,
-                                    )
+                                _account_observed_scheduling(
+                                    spec_arr,
+                                    mass_per_element_ug=mass_element_seed_ug,
+                                    observed_count=observed_batch,
+                                    expected_count=number,
+                                )
 
                 # residual (mass mode only)
                 if gen_mode == "mass":
                     residual_to_seed = float(mass_ug) if seed_single_residual_only else float(mass_residual)
 
                     if residual_to_seed > 0:
-                        z_res = self._get_z(
-                                    mode=mode,
-                                    number=1,
-                                    NETCDF_data_dim_names=NETCDF_data_dim_names,
-                                    depth_min=depth_min,
-                                    depth_max=depth_max,
-                                    depth_seed=Bathimetry_seed if mode in ('water_conc', 'emission', 'emission_depth') else None,
-                                    emission_placement=emission_placement,
-                                    emission_seafloor_eps=emission_seafloor_eps,
-                                    emission_depth_value=emission_depth_value if mode == 'emission_depth' else None,
-                                )
-
-                        spec_res = self.build_specie_array(
+                        self._validate_z_placement(
+                            mode=mode,
+                            number=1,
+                            NETCDF_data_dim_names=NETCDF_data_dim_names,
+                            depth_min=depth_min,
+                            depth_max=depth_max,
+                            depth_seed=Bathimetry_seed if mode in ('water_conc', 'emission', 'emission_depth') else None,
+                            emission_placement=emission_placement,
+                            emission_seafloor_eps=emission_seafloor_eps,
+                            emission_depth_value=emission_depth_value if mode == 'emission_depth' else None,
+                        )
+                        residual_speciation_plan = self._resolve_speciation_plan(
                             n=1,
                             speciation=speciation_ctrl,
-                            default_specie=default_specie)
+                            default_specie=default_specie,
+                        )
+                        _accumulate_planned_operation(
+                            residual_speciation_plan,
+                            mass_per_element_ug=residual_to_seed,
+                            count=1,
+                            is_residual=True,
+                        )
+                        if not point_planned:
+                            planned_datapoints += 1
+                            point_planned = True
 
-                        kwargs_res = dict(
-                            lon=elem_lon,
-                            lat=elem_lat,
-                            radius=radius,
-                            number=1,
-                            time=time,
-                            mass=residual_to_seed,
-                            mass_degraded=0,
-                            mass_volatilized=0,
-                            moving=moving_element,
-                            z=z_res,
-                            origin_marker=origin_marker_seed)
+                        if not dry_run:
+                            z_res = self._get_z(
+                                        mode=mode,
+                                        number=1,
+                                        NETCDF_data_dim_names=NETCDF_data_dim_names,
+                                        depth_min=depth_min,
+                                        depth_max=depth_max,
+                                        depth_seed=Bathimetry_seed if mode in ('water_conc', 'emission', 'emission_depth') else None,
+                                        emission_placement=emission_placement,
+                                        emission_seafloor_eps=emission_seafloor_eps,
+                                        emission_depth_value=emission_depth_value if mode == 'emission_depth' else None,
+                                    )
 
-                        if spec_res is not None:
-                            kwargs_res["specie"] = spec_res
-                        elif mode == "sed_conc":
-                            raise RuntimeError(
-                                "sed_speciation resolved to None, which is not supported for sediment seeding.")
+                            spec_res = self.build_specie_array(
+                                n=1,
+                                speciation=speciation_ctrl,
+                                default_specie=default_specie)
 
-                        try:
-                            self.seed_elements(**kwargs_res)
-                            point_seeded = True
-                            point_elements_seeded += 1
-                            scheduled_mass_ug += float(residual_to_seed)
-                            residual_elements_scheduled += 1
-                            residual_scheduled_mass_ug += float(residual_to_seed)
-                            _accumulate_species_mass(
-                                spec_res,
-                                mass_per_element_ug=residual_to_seed,
-                                count=1,
-                            )
-
-                        except Exception as e_res:
-                            self._record_seed_failure(
-                                fail_records=fail_records,
-                                stage="residual_seed",
-                                point_index=i,
-                                exc=e_res,
-                                mode=mode,
+                            kwargs_res = dict(
                                 lon=elem_lon,
                                 lat=elem_lat,
-                                time=_time_repr(time),
-                                mass_ug=float(mass_ug),
-                                residual_mass_ug=float(residual_to_seed),
-                                origin_marker=origin_marker_seed,
-                                z_kind="string" if isinstance(z_res, str) else "array",
-                            )
+                                radius=radius,
+                                number=1,
+                                time=time,
+                                mass=residual_to_seed,
+                                mass_degraded=0,
+                                mass_volatilized=0,
+                                moving=moving_element,
+                                z=z_res,
+                                origin_marker=origin_marker_seed)
 
-                if point_seeded:
-                    seeded_datapoints += 1
-                    seeded_elements_counter += int(point_elements_seeded)
+                            if spec_res is not None:
+                                kwargs_res["specie"] = spec_res
+                            elif mode == "sed_conc":
+                                raise RuntimeError(
+                                    "sed_speciation resolved to None, which is not supported for sediment seeding.")
 
+                            residual_before = _scheduled_count_or_none()
+                            try:
+                                self.seed_elements(**kwargs_res)
+                            except Exception as e_res:
+                                residual_after = _scheduled_count_or_none()
+                                observed_residual = _resolve_observed_scheduled_delta(
+                                    residual_before, residual_after, 1, normal_return=False
+                                )
+                                if observed_residual is not None and observed_residual > 0:
+                                    if not point_seeded:
+                                        seeded_datapoints += 1
+                                        point_seeded = True
+                                    _account_observed_scheduling(
+                                        spec_res,
+                                        mass_per_element_ug=residual_to_seed,
+                                        observed_count=observed_residual,
+                                        expected_count=1,
+                                        is_residual=True,
+                                    )
+                                self._record_seed_failure(
+                                    fail_records=fail_records,
+                                    stage="residual_seed",
+                                    point_index=i,
+                                    exc=e_res,
+                                    mode=mode,
+                                    lon=elem_lon,
+                                    lat=elem_lat,
+                                    time=_time_repr(time),
+                                    mass_ug=float(mass_ug),
+                                    residual_mass_ug=float(residual_to_seed),
+                                    origin_marker=origin_marker_seed,
+                                    z_kind="string" if isinstance(z_res, str) else "array",
+                                )
+                                if observed_residual is None:
+                                    raise _SeedAccountingUnobservableError(
+                                        "seed_elements raised during residual_seed while "
+                                        "the scheduled-element delta was unavailable; "
+                                        "a reliable seed report cannot be produced."
+                                    ) from e_res
+                            else:
+                                residual_after = _scheduled_count_or_none()
+                                observed_residual = _resolve_observed_scheduled_delta(
+                                    residual_before, residual_after, 1, normal_return=True
+                                )
+                                if observed_residual > 0:
+                                    if not point_seeded:
+                                        seeded_datapoints += 1
+                                        point_seeded = True
+                                    _account_observed_scheduling(
+                                        spec_res,
+                                        mass_per_element_ug=residual_to_seed,
+                                        observed_count=observed_residual,
+                                        expected_count=1,
+                                        is_residual=True,
+                                    )
+
+            except _SeedAccountingUnobservableError:
+                raise
             except Exception as e_point:
                 self._record_seed_failure(
                     fail_records=fail_records,
@@ -11145,6 +11693,12 @@ class ChemicalDriftPostProcessMixin:
                     if residual_to_seed is not None and np.isfinite(residual_to_seed) else None,
                 )
                 continue
+
+        if dry_run:
+            return _build_seed_report(
+                seedable_datapoints=npts,
+                scheduled_elements=None,
+            )
 
         try:
             scheduled_after_seed_from_netcdf = int(self.num_elements_scheduled())
