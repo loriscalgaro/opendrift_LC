@@ -10056,6 +10056,9 @@ class ChemicalDriftPostProcessMixin:
             "active_sediment_layer_thickness_data",
         )
 
+        # Structured-report datapoint accounting starts from the normalized input.
+        input_datapoints = int(NETCDF_data.size)
+
         # Convert input water concentrations to ug/m3 during mass calculation.
         # Selection bounds remain expressed in the original input units.
         water_conc_to_ug_m3 = 1.0
@@ -10109,6 +10112,7 @@ class ChemicalDriftPostProcessMixin:
 
         # Select data
         sel = np.where((NETCDF_data > lowerbound) & (NETCDF_data < higherbound))
+        selected_datapoints = int(len(sel[0]))
 
         if ("time" not in NETCDF_data.dims) and ("time" not in NETCDF_data.coords):
             raise ValueError("NETCDF_data has no 'time' dimension/coord.")
@@ -10211,6 +10215,115 @@ class ChemicalDriftPostProcessMixin:
         seed_qc = Counter()
         seeded_datapoints = 0
         seeded_elements_counter = 0
+
+        # Structured-report accounting. Retry attempts do not create new intent.
+        intended_mass_ug = 0.0
+        scheduled_mass_ug = 0.0
+        expected_or_requested_elements = 0
+        residual_elements_expected = 0
+        residual_elements_scheduled = 0
+        residual_intended_mass_ug = 0.0
+        residual_scheduled_mass_ug = 0.0
+        initial_species_mass_ug = Counter()
+        unresolved_initial_species_mass_ug = 0.0
+
+        def _accumulate_species_mass(species_values, mass_per_element_ug, count):
+            """Account mass from existing realized species assignments only."""
+            nonlocal unresolved_initial_species_mass_ug
+
+            count = int(count)
+            mass_per_element_ug = float(mass_per_element_ug)
+            if count <= 0 or mass_per_element_ug <= 0.0:
+                return
+
+            total_mass = float(count * mass_per_element_ug)
+            if species_values is None:
+                unresolved_initial_species_mass_ug += total_mass
+                return
+
+            try:
+                species_arr = np.asarray(species_values, dtype=int).ravel()
+            except Exception:
+                unresolved_initial_species_mass_ug += total_mass
+                return
+
+            if species_arr.size != count:
+                unresolved_initial_species_mass_ug += total_mass
+                return
+
+            for specie_index, specie_count in zip(*np.unique(species_arr, return_counts=True)):
+                idx = int(specie_index)
+                specie_mass = float(int(specie_count) * mass_per_element_ug)
+                if 0 <= idx < len(self.name_species):
+                    specie_name = str(self.name_species[idx])
+                    initial_species_mass_ug[specie_name] += specie_mass
+                else:
+                    unresolved_initial_species_mass_ug += specie_mass
+
+        def _to_plain(value):
+            """Return a JSON/YAML-safe copy without changing stored diagnostics."""
+            if isinstance(value, np.generic):
+                return value.item()
+            if isinstance(value, np.ndarray):
+                return [_to_plain(v) for v in value.tolist()]
+            if isinstance(value, dict):
+                return {str(k): _to_plain(v) for k, v in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [_to_plain(v) for v in value]
+            return value
+
+        def _zero_small_difference(total, part):
+            diff = float(total) - float(part)
+            tol = 1e-12 * max(1.0, abs(float(total)), abs(float(part)))
+            return 0.0 if abs(diff) <= tol else float(diff)
+
+        def _build_seed_report(seedable_datapoints, scheduled_elements):
+            failure_counts = Counter(rec.get("stage", "unknown") for rec in fail_records)
+            return {
+                "schema_version": 1,
+                "mode": str(mode),
+                "gen_mode": str(gen_mode),
+                "input_datapoints": int(input_datapoints),
+                "selected_datapoints": int(selected_datapoints),
+                "seedable_datapoints": int(seedable_datapoints),
+                "seeded_datapoints": int(seeded_datapoints),
+                "unseeded_datapoints": int(seedable_datapoints - seeded_datapoints),
+                "intended_mass_ug": float(intended_mass_ug),
+                "scheduled_mass_ug": float(scheduled_mass_ug),
+                "failed_mass_ug": _zero_small_difference(
+                    intended_mass_ug, scheduled_mass_ug
+                ),
+                "expected_or_requested_elements": int(expected_or_requested_elements),
+                "scheduled_elements": int(scheduled_elements),
+                "failed_or_unscheduled_elements": int(
+                    expected_or_requested_elements - int(scheduled_elements)
+                ),
+                "residual": {
+                    "elements_expected": int(residual_elements_expected),
+                    "elements_scheduled": int(residual_elements_scheduled),
+                    "intended_mass_ug": float(residual_intended_mass_ug),
+                    "scheduled_mass_ug": float(residual_scheduled_mass_ug),
+                    "failed_mass_ug": _zero_small_difference(
+                        residual_intended_mass_ug, residual_scheduled_mass_ug
+                    ),
+                },
+                "initial_species_mass_ug": {
+                    str(name): float(initial_species_mass_ug[name])
+                    for name in sorted(initial_species_mass_ug)
+                },
+                "unresolved_initial_species_mass_ug": float(
+                    unresolved_initial_species_mass_ug
+                ),
+                "qc": {
+                    str(key): int(value)
+                    for key, value in sorted(seed_qc.items())
+                },
+                "failure_counts_by_stage": {
+                    str(stage): int(count)
+                    for stage, count in sorted(failure_counts.items())
+                },
+                "failures": [_to_plain(rec) for rec in fail_records],
+            }
 
         # Prune datapoints where Bathimetry_seed_data at the pixel-center is NaN/<=0
         if mode in ("water_conc", "sed_conc", "emission_depth"):
@@ -10376,7 +10489,7 @@ class ChemicalDriftPostProcessMixin:
                 dict(seed_qc),
             )
 
-            return
+            return _build_seed_report(seedable_datapoints=0, scheduled_elements=0)
 
         print(f"Seeding {npts} datapoints")
         list_index_print = self._print_progress_list(npts)
@@ -10817,6 +10930,14 @@ class ChemicalDriftPostProcessMixin:
                 else:
                     raise ValueError("Invalid gen_mode")
 
+                # A positive mass becomes intended only after a valid element plan exists.
+                intended_mass_ug += float(mass_ug)
+                expected_or_requested_elements += int(number)
+                if gen_mode == "mass" and mass_residual > 0.0:
+                    expected_or_requested_elements += 1
+                    residual_elements_expected += 1
+                    residual_intended_mass_ug += float(mass_residual)
+
                 elem_lat = float(lat_array[i])
                 elem_lon = float(lon_array[i])
                 origin_marker_seed = origin_marker_np[i] if origin_marker == "single" else origin_marker
@@ -10862,6 +10983,12 @@ class ChemicalDriftPostProcessMixin:
                         self.seed_elements(**kwargs_seed)
                         point_seeded = True
                         point_elements_seeded += int(number)
+                        scheduled_mass_ug += float(number) * float(mass_element_seed_ug)
+                        _accumulate_species_mass(
+                            spec_arr,
+                            mass_per_element_ug=mass_element_seed_ug,
+                            count=number,
+                        )
 
                     except Exception as e_batch:
                         self._record_seed_failure(
@@ -10903,6 +11030,12 @@ class ChemicalDriftPostProcessMixin:
                                     self.seed_elements(**kwargs_one)
                                     point_seeded = True
                                     point_elements_seeded += 1
+                                    scheduled_mass_ug += float(mass_element_seed_ug)
+                                    _accumulate_species_mass(
+                                        kwargs_one.get("specie", None),
+                                        mass_per_element_ug=mass_element_seed_ug,
+                                        count=1,
+                                    )
 
                                 except Exception as e_single:
                                     self._record_seed_failure(
@@ -10965,6 +11098,14 @@ class ChemicalDriftPostProcessMixin:
                             self.seed_elements(**kwargs_res)
                             point_seeded = True
                             point_elements_seeded += 1
+                            scheduled_mass_ug += float(residual_to_seed)
+                            residual_elements_scheduled += 1
+                            residual_scheduled_mass_ug += float(residual_to_seed)
+                            _accumulate_species_mass(
+                                spec_res,
+                                mass_per_element_ug=residual_to_seed,
+                                count=1,
+                            )
 
                         except Exception as e_res:
                             self._record_seed_failure(
@@ -11088,6 +11229,11 @@ class ChemicalDriftPostProcessMixin:
                     len(fail_records) - FAIL_PREVIEW)
         else:
             logger.info("Seeding completed with 0 failures.")
+
+        return _build_seed_report(
+	    seedable_datapoints=npts,
+	    scheduled_elements=elements_scheduled,
+	)
 
     ### Helpers for regrid_conc
     def interp_weights(self, xyz, uvw):
