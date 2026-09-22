@@ -107,7 +107,7 @@ class ChemicalDriftPostProcessMixin:
 
     ##### Helpers for write_netcdf_chemical_density_map
     @staticmethod
-    def _make_edges(lo, hi, step, dtype=np.float32):
+    def _make_edges(lo, hi, step, dtype=np.float64):
         vals = np.array([lo, hi, step], dtype=np.float64)
         if not np.all(np.isfinite(vals)):
             raise ValueError(f"Non-finite lo/hi/step: lo={lo}, hi={hi}, step={step}")
@@ -472,6 +472,23 @@ class ChemicalDriftPostProcessMixin:
         return tri
 
     @staticmethod
+    def _density_counts_to_int32(counts):
+        arr = np.asarray(counts)
+        finite = np.isfinite(arr)
+        if np.any(arr[finite] < 0):
+            raise ValueError('Density counts must be non-negative before int32 encoding.')
+        if np.any(arr[finite] > np.iinfo(np.int32).max):
+            raise OverflowError(
+                f'Density count exceeds int32 maximum {np.iinfo(np.int32).max}.'
+            )
+        rounded = np.rint(arr[finite])
+        if np.any(np.abs(arr[finite] - rounded) > 1e-6):
+            raise ValueError('Raw density counts must be integer-valued before int32 encoding.')
+        out = np.zeros(arr.shape, dtype=np.int32)
+        out[finite] = rounded.astype(np.int32, copy=False)
+        return out
+
+    @staticmethod
     def _build_unstructured_locator(grid_spec):
         import matplotlib.tri as mtri
 
@@ -747,24 +764,24 @@ class ChemicalDriftPostProcessMixin:
             if flip_axis:
                 bb = bb[::-1, :]
 
-            if bb[0, 0] <= bb[0, 1]:
-                lo = bb[:, 0]
-                hi = bb[:, 1]
-            else:
-                lo = bb[:, 1]
-                hi = bb[:, 0]
+            lo = np.minimum(bb[:, 0], bb[:, 1])
+            hi = np.maximum(bb[:, 0], bb[:, 1])
+            if not np.all(np.isfinite(lo)) or not np.all(np.isfinite(hi)):
+                raise ValueError(f"{name} contains non-finite bounds.")
+            if np.any(hi <= lo):
+                raise ValueError(f"{name} contains zero-width or reversed cells that cannot be normalized.")
+            if n > 1:
+                scale = max(1.0, float(np.nanmax(np.abs(bb))))
+                atol = 1e-10 * scale
+                if not np.all(np.diff(lo) > 0):
+                    raise ValueError(f"{name} cells are not strictly ordered after axis normalization.")
+                if not np.allclose(hi[:-1], lo[1:], rtol=1e-10, atol=atol):
+                    raise ValueError(f"{name} cells contain gaps or overlaps and cannot be represented by one rectilinear edge vector.")
 
             edges = np.empty(n + 1, dtype=np.float64)
             edges[0] = lo[0]
             edges[1:] = hi
-
-            if not np.all(np.isfinite(edges)) or not np.all(np.diff(edges) > 0):
-                lo = np.minimum(bb[:, 0], bb[:, 1])
-                hi = np.maximum(bb[:, 0], bb[:, 1])
-                edges[0] = lo[0]
-                edges[1:] = hi
-
-            if not np.all(np.isfinite(edges)) or not np.all(np.diff(edges) > 0):
+            if not np.all(np.diff(edges) > 0):
                 raise ValueError(f"Could not construct a strictly increasing edge vector from {name}.")
             return edges
 
@@ -873,6 +890,30 @@ class ChemicalDriftPostProcessMixin:
                     area[ix, iy] = abs(a)
             return area
 
+        def _validate_projected_geographic_consistency(x, y, lon, lat, proj, label, atol_deg=5e-5):
+            x = np.asarray(x, dtype=np.float64)
+            y = np.asarray(y, dtype=np.float64)
+            lon = np.asarray(lon, dtype=np.float64)
+            lat = np.asarray(lat, dtype=np.float64)
+            if x.shape != y.shape or lon.shape != lat.shape or x.shape != lon.shape:
+                raise ValueError(f"{label} projected/geographic geometry shape mismatch: x={x.shape}, y={y.shape}, lon={lon.shape}, lat={lat.shape}")
+            lon_calc, lat_calc = proj(x, y, inverse=True)
+            lon_calc = np.asarray(lon_calc, dtype=np.float64)
+            lat_calc = np.asarray(lat_calc, dtype=np.float64)
+            finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(lon) & np.isfinite(lat) & np.isfinite(lon_calc) & np.isfinite(lat_calc)
+            if not np.any(finite):
+                raise ValueError(f"{label} has no finite projected/geographic coordinate pairs to validate.")
+            dlon = ((lon[finite] - lon_calc[finite] + 180.0) % 360.0) - 180.0
+            dlat = lat[finite] - lat_calc[finite]
+            if np.any(np.abs(dlon) > float(atol_deg)) or np.any(np.abs(dlat) > float(atol_deg)):
+                max_dlon = float(np.nanmax(np.abs(dlon)))
+                max_dlat = float(np.nanmax(np.abs(dlat)))
+                raise ValueError(
+                    f"{label} projected and geographic geometry are inconsistent: "
+                    f"max |dlon|={max_dlon:.6g} deg, max |dlat|={max_dlat:.6g} deg, "
+                    f"tolerance={float(atol_deg):.6g} deg."
+                )
+
         # triangular unstructured mesh detection
         face_conn_obj = _get_obj(['face_node_connectivity', 'triangles', 'faces'])
         node_lon_obj = _get_obj(['node_lon', 'lon_node'])
@@ -914,6 +955,9 @@ class ChemicalDriftPostProcessMixin:
                 if have_geo_nodes:
                     node_lon = np.asarray(_as_array(node_lon_obj), dtype=np.float64)
                     node_lat = np.asarray(_as_array(node_lat_obj), dtype=np.float64)
+                    _validate_projected_geographic_consistency(
+                        node_x, node_y, node_lon, node_lat, proj, 'triangular output_grid nodes'
+                    )
                 else:
                     node_lon, node_lat = proj(node_x, node_y, inverse=True)
 
@@ -922,7 +966,13 @@ class ChemicalDriftPostProcessMixin:
 
                 x0, x1, x2 = node_x[conn[:, 0]], node_x[conn[:, 1]], node_x[conn[:, 2]]
                 y0, y1, y2 = node_y[conn[:, 0]], node_y[conn[:, 1]], node_y[conn[:, 2]]
-                cell_area = self._triangle_area_plane(x0, y0, x1, y1, x2, y2)
+                geod = Geod(ellps='WGS84')
+                cell_area = np.empty(nface, dtype=np.float64)
+                for i in range(nface):
+                    lons = [node_lon[conn[i, 0]], node_lon[conn[i, 1]], node_lon[conn[i, 2]]]
+                    lats = [node_lat[conn[i, 0]], node_lat[conn[i, 1]], node_lat[conn[i, 2]]]
+                    a, _ = geod.polygon_area_perimeter(lons, lats)
+                    cell_area[i] = abs(a)
                 face_x_center = (x0 + x1 + x2) / 3.0
                 face_y_center = (y0 + y1 + y2) / 3.0
             else:
@@ -1028,10 +1078,10 @@ class ChemicalDriftPostProcessMixin:
         native_y_units = str(getattr(y_obj, 'attrs', {}).get('units', 'm')).strip() if y_obj is not None else None
 
         if (not use_xy) and geo_rect:
-            lon1d, _ = _ensure_monotonic_increasing(lon_arr, 'output_grid lon')
-            lat1d, _ = _ensure_monotonic_increasing(lat_arr, 'output_grid lat')
-            lon_edges = (_bounds1d_to_edges(_as_array(lon_b_obj), len(lon1d), name='lon_bounds') if lon_b_obj is not None else self._centers_to_edges_1d(lon1d))
-            lat_edges = (_bounds1d_to_edges(_as_array(lat_b_obj), len(lat1d), name='lat_bounds') if lat_b_obj is not None else self._centers_to_edges_1d(lat1d))
+            lon1d, flip_lon = _ensure_monotonic_increasing(lon_arr, 'output_grid lon')
+            lat1d, flip_lat = _ensure_monotonic_increasing(lat_arr, 'output_grid lat')
+            lon_edges = (_bounds1d_to_edges(_as_array(lon_b_obj), len(lon1d), flip_axis=flip_lon, name='lon_bounds') if lon_b_obj is not None else self._centers_to_edges_1d(lon1d))
+            lat_edges = (_bounds1d_to_edges(_as_array(lat_b_obj), len(lat1d), flip_axis=flip_lat, name='lat_bounds') if lat_b_obj is not None else self._centers_to_edges_1d(lat1d))
             Xc, Yc = np.meshgrid(lon1d, lat1d, indexing='xy')
             lon_center_2d = Xc.T.astype(np.float64, copy=False)
             lat_center_2d = Yc.T.astype(np.float64, copy=False)
@@ -1103,6 +1153,10 @@ class ChemicalDriftPostProcessMixin:
                 if flip_y:
                     lon_center_2d = lon_center_2d[:, ::-1]
                     lat_center_2d = lat_center_2d[:, ::-1]
+                _validate_projected_geographic_consistency(
+                    x_center_2d, y_center_2d, lon_center_2d, lat_center_2d, proj,
+                    'projected rectilinear output_grid centers'
+                )
             else:
                 lon_center_2d, lat_center_2d = proj(x_center_2d, y_center_2d, inverse=True)
 
@@ -1134,7 +1188,16 @@ class ChemicalDriftPostProcessMixin:
                 lon_corners_4 = self._nodes_to_corners4(lon_nodes)
                 lat_corners_4 = self._nodes_to_corners4(lat_nodes)
 
-            cell_area = self._quad_area_plane(x_corners_4, y_corners_4)
+            if lon_nodes is not None and lat_nodes is not None:
+                _validate_projected_geographic_consistency(
+                    x_nodes, y_nodes, lon_nodes, lat_nodes, proj, 'projected rectilinear output_grid bounds'
+                )
+            elif lon_corners_4 is not None and lat_corners_4 is not None:
+                _validate_projected_geographic_consistency(
+                    x_corners_4, y_corners_4, lon_corners_4, lat_corners_4, proj,
+                    'projected rectilinear output_grid corner bounds'
+                )
+            cell_area = _geographic_area(lon_corners_4, lat_corners_4)
             return {
                 '_normalized_output_grid': True,
                 'shape': x_center_2d.shape,
@@ -1253,6 +1316,10 @@ class ChemicalDriftPostProcessMixin:
                     raise ValueError('For projected curvilinear output grids, lon/lat auxiliaries must be 2D.')
                 lon_center_2d = _to_internal_2d(lon_arr, obj=lon_obj, x_size=X, y_size=Y, name='lon')
                 lat_center_2d = _to_internal_2d(lat_arr, obj=lat_obj, x_size=X, y_size=Y, name='lat')
+                _validate_projected_geographic_consistency(
+                    x_center_2d, y_center_2d, lon_center_2d, lat_center_2d, proj,
+                    'projected curvilinear output_grid centers'
+                )
             else:
                 lon_center_2d, lat_center_2d = proj(x_center_2d, y_center_2d, inverse=True)
 
@@ -1271,7 +1338,16 @@ class ChemicalDriftPostProcessMixin:
                 lon_corners_4 = self._nodes_to_corners4(lon_nodes)
                 lat_corners_4 = self._nodes_to_corners4(lat_nodes)
 
-            cell_area = self._quad_area_plane(x_corners_4, y_corners_4)
+            if lon_nodes is not None and lat_nodes is not None:
+                _validate_projected_geographic_consistency(
+                    x_nodes, y_nodes, lon_nodes, lat_nodes, proj, 'projected curvilinear output_grid bounds'
+                )
+            elif lon_corners_4 is not None and lat_corners_4 is not None:
+                _validate_projected_geographic_consistency(
+                    x_corners_4, y_corners_4, lon_corners_4, lat_corners_4, proj,
+                    'projected curvilinear output_grid corner bounds'
+                )
+            cell_area = _geographic_area(lon_corners_4, lat_corners_4)
             return {
                 '_normalized_output_grid': True,
                 'shape': x_center_2d.shape,
@@ -1311,6 +1387,42 @@ class ChemicalDriftPostProcessMixin:
 
         raise ValueError('Unsupported output_grid layout. Provide either 1D lon/lat, 2D lon/lat, 1D x/y, 2D x_center/y_center, or triangular node/connectivity arrays.')
 
+    @staticmethod
+    def _estimate_density_histogram_bytes(shape, need_counts=False):
+        """Minimum bytes required for the full histogram arrays.
+
+        This estimate covers the primary float32 histogram and, when requested,
+        the uint32 count histogram. It intentionally does not claim to include
+        later smoothing/averaging temporaries in the writer.
+        """
+        from math import prod
+        dims = tuple(int(v) for v in shape)
+        if not dims or any(v < 0 for v in dims):
+            raise ValueError(f'Invalid histogram shape for memory estimate: {shape!r}')
+        cells = int(prod(dims))
+        return cells * (np.dtype(np.float32).itemsize + (np.dtype(np.uint32).itemsize if need_counts else 0))
+
+    @classmethod
+    def _check_density_histogram_allocation(cls, shape, need_counts=False, memory_budget_mb=None):
+        estimated = cls._estimate_density_histogram_bytes(shape, need_counts=need_counts)
+        if memory_budget_mb is not None:
+            budget = float(memory_budget_mb) * (1024.0 ** 2)
+            if not np.isfinite(budget) or budget <= 0:
+                raise ValueError('memory_budget_mb must be a finite positive number when supplied.')
+            if estimated > budget:
+                raise MemoryError(
+                    'Estimated minimum density-histogram allocation '
+                    f'{estimated / (1024.0 ** 2):.1f} MiB exceeds memory_budget_mb={float(memory_budget_mb):.1f}. '
+                    'Reduce the requested domain/resolution/species/depth/time extent or increase the budget.'
+                )
+        elif estimated >= 1024 ** 3:
+            logger.warning(
+                'Density histogram minimum allocation is approximately %.1f MiB before later writer temporaries. '
+                'Consider a coarser/smaller request or set memory_budget_mb to enforce a hard pre-allocation limit.',
+                estimated / (1024.0 ** 2),
+            )
+        return estimated
+
     def get_chemical_density_array(self, pixelsize_m, z_array,
                                    is_moll, is_latlon,
                                    lat_resol=None, lon_resol=None,
@@ -1324,7 +1436,8 @@ class ChemicalDriftPostProcessMixin:
                                    timestep_values=False,
                                    compress_species=False,
                                    weight_mode='extensive',
-                                   output_grid=None):
+                                   output_grid=None,
+                                   memory_budget_mb=None):
         """
         Compute a gridded species-resolved histogram from particle positions.
 
@@ -1636,7 +1749,11 @@ class ChemicalDriftPostProcessMixin:
                 raise ValueError('z_array must contain at least two edges.')
             Zx = len(z_array) - 1
 
-            H = np.zeros((n_timef, Nout, Zx, nface), dtype=np.float32)
+            hist_shape = (n_timef, Nout, Zx, nface)
+            self._last_density_allocation_estimate_bytes = self._check_density_histogram_allocation(
+                hist_shape, need_counts=need_counts, memory_budget_mb=memory_budget_mb
+            )
+            H = np.zeros(hist_shape, dtype=np.float32)
             H_count = np.zeros_like(H, dtype=np.uint32) if need_counts else None
             x_centers = np.arange(nface, dtype=np.int64)
             y_centers = None
@@ -1751,8 +1868,8 @@ class ChemicalDriftPostProcessMixin:
         # structured branches
         if grid_spec is not None:
             if grid_spec['binning_mode'] == 'rectilinear':
-                x_edges = np.asarray(grid_spec['x_edges'], dtype=np.float32)
-                y_edges = np.asarray(grid_spec['y_edges'], dtype=np.float32)
+                x_edges = np.asarray(grid_spec['x_edges'], dtype=np.float64)
+                y_edges = np.asarray(grid_spec['y_edges'], dtype=np.float64)
                 if x_edges.size < 2 or y_edges.size < 2:
                     raise ValueError(f'Invalid explicit rectilinear edges: x={x_edges.size}, y={y_edges.size}')
             else:
@@ -1775,13 +1892,13 @@ class ChemicalDriftPostProcessMixin:
                     llcrnrx, llcrnry = xmin - lon_resol, ymin - lat_resol
                     urcrnrx, urcrnry = xmax + lon_resol, ymax + lat_resol
             if is_moll:
-                x_edges = self._make_edges(llcrnrx, urcrnrx, pixelsize_m, dtype=np.float32)
-                y_edges = self._make_edges(llcrnry, urcrnry, pixelsize_m, dtype=np.float32)
+                x_edges = self._make_edges(llcrnrx, urcrnrx, pixelsize_m, dtype=np.float64)
+                y_edges = self._make_edges(llcrnry, urcrnry, pixelsize_m, dtype=np.float64)
             else:
-                x_edges = self._make_edges(llcrnrx, urcrnrx, lon_resol, dtype=np.float32)
-                y_edges = self._make_edges(llcrnry, urcrnry, lat_resol, dtype=np.float32)
-            x_edges = np.asarray(x_edges, dtype=np.float32)
-            y_edges = np.asarray(y_edges, dtype=np.float32)
+                x_edges = self._make_edges(llcrnrx, urcrnrx, lon_resol, dtype=np.float64)
+                y_edges = self._make_edges(llcrnry, urcrnry, lat_resol, dtype=np.float64)
+            x_edges = np.asarray(x_edges, dtype=np.float64)
+            y_edges = np.asarray(y_edges, dtype=np.float64)
             if x_edges.size < 2 or y_edges.size < 2:
                 raise ValueError(f'Invalid bin edges: x={x_edges.size}, y={y_edges.size}. Check bounds/resolution and/or data coverage.')
             x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
@@ -1801,7 +1918,11 @@ class ChemicalDriftPostProcessMixin:
         if z_array.size < 2:
             raise ValueError('z_array must contain at least two edges.')
         Zx = len(z_array) - 1
-        H = np.zeros((n_timef, Nout, Zx, Xx, Yx), dtype=np.float32)
+        hist_shape = (n_timef, Nout, Zx, Xx, Yx)
+        self._last_density_allocation_estimate_bytes = self._check_density_histogram_allocation(
+            hist_shape, need_counts=need_counts, memory_budget_mb=memory_budget_mb
+        )
+        H = np.zeros(hist_shape, dtype=np.float32)
         H_count = np.zeros_like(H, dtype=np.uint32) if need_counts else None
         m.fill(False); tmp.fill(False)
 
@@ -4300,15 +4421,20 @@ class ChemicalDriftPostProcessMixin:
         if arr is None:
             return None
         arr = np.asarray(arr)
-        if arr.ndim == 5:
-            return arr[:, :, depth_order, :, :]
-        if arr.ndim == 4:
-            return arr[:, :, depth_order, :]
-        if arr.ndim == 3:
-            return arr[depth_order, :, :]
-        if arr.ndim == 2:
-            return arr[depth_order, :]
-        raise ValueError(f'Unexpected array rank for depth reorder: {arr.ndim}')
+        if arr.ndim in (5, 4):
+            axis = 2
+        elif arr.ndim in (3, 2):
+            axis = 0
+        else:
+            raise ValueError(f'Unexpected array rank for depth reorder: {arr.ndim}')
+
+        order = np.asarray(depth_order, dtype=np.int64)
+        ndepth = arr.shape[axis]
+        if order.shape == (ndepth,) and np.array_equal(order, np.arange(ndepth - 1, -1, -1, dtype=np.int64)):
+            slicer = [slice(None)] * arr.ndim
+            slicer[axis] = slice(None, None, -1)
+            return arr[tuple(slicer)]
+        return np.take(arr, order, axis=axis)
 
     @staticmethod
     def _rename_common_dims(da, time_name=None):
@@ -4320,7 +4446,7 @@ class ChemicalDriftPostProcessMixin:
         arrays that already carry a scalar/auxiliary coordinate named time, which
         would otherwise conflict with renaming avg_time -> time.
         """
-        out = da.copy()
+        out = da.copy(deep=False)
 
         source_time_coordinate = None
 
@@ -4572,7 +4698,7 @@ class ChemicalDriftPostProcessMixin:
 
     def _prepare_unstructured_output_da(self, da, src_ds):
         src_ds = self._normalize_xarray_spatial_coordinate_roles(src_ds)
-        out = da.copy()
+        out = da.copy(deep=False)
 
         if "face" not in out.dims:
             raise ValueError("Unstructured output requires a 'face' dimension.")
@@ -4597,7 +4723,7 @@ class ChemicalDriftPostProcessMixin:
         self, da, lat_var=None, lon_var=None,
         lat1d_from_2d=None, lon1d_from_2d=None,
         ):
-        out = da.copy()
+        out = da.copy(deep=False)
 
         def _maybe_get_existing_1d_coord(out_da, names):
             for nm in names:
@@ -4735,7 +4861,7 @@ class ChemicalDriftPostProcessMixin:
     ):
         import xarray as xr
 
-        out = da.copy()
+        out = da.copy(deep=False)
 
         if "lat" in out.dims or "lon" in out.dims or "latitude" in out.dims or "longitude" in out.dims:
             raise ValueError("Curvilinear/projected output helper expects y/x dimensions.")
@@ -4982,7 +5108,8 @@ class ChemicalDriftPostProcessMixin:
                                           bathymetry_min_wet_fraction=0.0,
                                           bathymetry_conservative_backend='auto',
                                           bathymetry_conservative_weights=None,
-                                          bathymetry_large_domain_backend='scrip'):
+                                          bathymetry_large_domain_backend='scrip',
+                                          memory_budget_mb=None):
         '''
         write_netcdf_chemical_density_map
 
@@ -5044,6 +5171,11 @@ class ChemicalDriftPostProcessMixin:
                                    of concentration map.
 
             time_chunk_size:       int, number of timesteps computed per chunk.
+
+            memory_budget_mb:      optional positive float. Before allocating the primary
+                                   full histogram arrays, reject the request if their minimum
+                                   estimated size exceeds this budget in MiB. The estimate
+                                   does not include later smoothing/averaging temporaries.
 
             horizontal_smoothing:  boolean, smooth concentration horizontally.
 
@@ -5507,18 +5639,34 @@ class ChemicalDriftPostProcessMixin:
             times = np.asarray(times)
             Tsnap = len(times)
             if Tsnap == 0:
-                return 1, 0, None
-            if Tsnap == 1 or deltat_hours is None:
+                return 1, 0, None, None
+            if Tsnap == 1:
                 ndt = 1
             else:
-                dt_hours = (times[1] - times[0]).total_seconds() / 3600.0
-                if dt_hours <= 0:
-                    raise ValueError('Model output times must be strictly increasing.')
-                ndt = max(1, int(np.ceil(float(deltat_hours) / dt_hours)))
+                dt_seconds = np.asarray(
+                    [(times[i + 1] - times[i]).total_seconds() for i in range(Tsnap - 1)],
+                    dtype=np.float64,
+                )
+                if np.any(~np.isfinite(dt_seconds)) or np.any(dt_seconds <= 0):
+                    raise ValueError('Model output times must be finite and strictly increasing.')
+                if not np.allclose(dt_seconds, dt_seconds[0], rtol=1e-9, atol=1e-6):
+                    raise ValueError(
+                        'time_avg_conc currently requires regularly spaced model snapshots; irregular time spacing is not supported.'
+                    )
+                if deltat_hours is None:
+                    ndt = 1
+                else:
+                    dt_hours = dt_seconds[0] / 3600.0
+                    ndt = max(1, int(np.ceil(float(deltat_hours) / dt_hours)))
             odt = int(np.ceil(Tsnap / ndt))
-            block_end_idx = np.minimum((np.arange(odt) + 1) * ndt - 1, Tsnap - 1)
-            avg_times = times[block_end_idx]
-            return ndt, odt, avg_times
+            avg_time_bounds = np.empty((odt, 2), dtype=object)
+            for ii in range(odt):
+                s0 = ii * ndt
+                s1 = min((ii + 1) * ndt, Tsnap)
+                avg_time_bounds[ii, 0] = times[s0]
+                avg_time_bounds[ii, 1] = times[s1 - 1]
+            avg_times = avg_time_bounds[:, 1].copy()
+            return ndt, odt, avg_times, avg_time_bounds
 
         def _species_category_ids():
             sediment_ids = set()
@@ -5816,7 +5964,7 @@ class ChemicalDriftPostProcessMixin:
                 weight=weight, origin_marker=origin_marker, active_status=active_status,
                 elements_density=need_counts, time_start=time_start, time_end=time_end, time_chunk_size=time_chunk_size,
                 timestep_values=timestep_values, compress_species=compress_species, weight_mode=weight_mode,
-                output_grid=explicit_grid)
+                output_grid=explicit_grid, memory_budget_mb=memory_budget_mb)
             nspecies_out = len(name_species_out)
             unstructured = explicit_grid is not None and explicit_grid.get('topology') == 'triangular_unstructured'
 
@@ -5981,8 +6129,9 @@ class ChemicalDriftPostProcessMixin:
             mean_field_sm = None
             mean_dens_sm = None
             avg_times = None
+            avg_time_bounds = None
             if time_avg_conc:
-                ndt, odt, avg_times = _compute_snapshot_block_layout(filtered_times, deltat)
+                ndt, odt, avg_times, avg_time_bounds = _compute_snapshot_block_layout(filtered_times, deltat)
                 if odt == 0:
                     logger.warning('No snapshots available for block averaging.')
                     return
@@ -6039,7 +6188,7 @@ class ChemicalDriftPostProcessMixin:
                 compound = 'None'
             species_str = ' '.join([f'{isp}:{sp}' for isp, sp in enumerate(name_species_out)])
             units_water = f'{resolved_weight_unit} m-3' if weight_mode == 'extensive' else None
-            units_sediment = f'{resolved_weight_unit} kg-1 dry_weight' if weight_mode == 'extensive' else None
+            units_sediment = f'{resolved_weight_unit} kg-1' if weight_mode == 'extensive' else None
 
             FILL_F8 = np.float64(np.nan)
             FILL_F4 = np.float32(np.nan)
@@ -6063,6 +6212,13 @@ class ChemicalDriftPostProcessMixin:
                     v.standard_name = standard_name
                 v.grid_mapping = 'crs'
                 v.coordinates = 'lon lat'
+
+            def _set_mixed_phase_units_attrs(v):
+                v.units_water = units_water
+                v.units_sediment = units_sediment
+                v.sediment_mass_basis = 'dry_weight'
+                v.phase_units_by = 'specie_phase'
+
 
             # def _set_unstructured_face_attrs(
             #     v,
@@ -6090,14 +6246,18 @@ class ChemicalDriftPostProcessMixin:
             def _set_horizontal_smoothing_attrs(v, smoothing_cells):
                 v.comment = f'Horizontal smoothing applied with smoothing_cells={smoothing_cells}.'
 
-            def _set_time_coverage_attrs(nc, times):
+            def _set_time_coverage_attrs(nc, times, time_bounds=None):
                 if times is None:
                     return
                 try:
                     if len(times) == 0:
                         return
-                    nc.time_coverage_start = str(times[0])
-                    nc.time_coverage_end = str(times[-1])
+                    if time_bounds is not None and len(time_bounds) > 0:
+                        nc.time_coverage_start = str(time_bounds[0, 0])
+                        nc.time_coverage_end = str(time_bounds[-1, 1])
+                    else:
+                        nc.time_coverage_start = str(times[0])
+                        nc.time_coverage_end = str(times[-1])
                 except Exception:
                     pass
 
@@ -6380,7 +6540,7 @@ class ChemicalDriftPostProcessMixin:
                         nc.bathymetry_conservative_backend = str(bathy_backend)
                         nc.bathymetry_extent_class = str(bathy_extent_class)
                     if weight_mode == 'extensive':
-                        nc.phase_units_metadata_mode = 'compatibility'
+                        nc.phase_units_metadata_mode = 'specie_phase'
                     if bathymetry_remap != 'interpolate':
                         nc.comment = (
                             'Triangular unstructured mesh output. Bathymetry was conservatively remapped. '
@@ -6391,11 +6551,10 @@ class ChemicalDriftPostProcessMixin:
                     else:
                         nc.comment = 'Triangular unstructured mesh output. Depth is written as a CF-style positive-down coordinate derived from model z coordinates.'
 
-                    nc.featureType = 'mesh'
                     nc.institution = 'OpenDrift ChemicalDrift'
                     nc.references = 'Generated by ChemicalDrift write_netcdf_chemical_density_map'
                     _set_geospatial_attrs(nc, lon_center_2d, lat_center_2d)
-                    _set_time_coverage_attrs(nc, avg_times if time_avg_conc else filtered_times)
+                    _set_time_coverage_attrs(nc, avg_times if time_avg_conc else filtered_times, avg_time_bounds if time_avg_conc else None)
 
                     nc.createDimension('face', explicit_grid['nface'])
                     nc.createDimension('node', explicit_grid['nnode'])
@@ -6414,11 +6573,17 @@ class ChemicalDriftPostProcessMixin:
                         tvar.calendar = 'standard'
                     else:
                         nc.createDimension('avg_time', mean_field_out.shape[0])
+                        nc.createDimension('time_bounds_dim', 2)
                         tvar = nc.createVariable('avg_time', 'f8', ('avg_time',))
                         tvar[:] = date2num(avg_times, 'seconds since 1970-01-01 00:00:00')
                         tvar.units = 'seconds since 1970-01-01 00:00:00'
                         tvar.standard_name = 'time'
                         tvar.calendar = 'standard'
+                        tvar.bounds = 'time_bounds'
+                        tb = nc.createVariable('time_bounds', 'f8', ('avg_time', 'time_bounds_dim'))
+                        tb[:] = np.asarray(date2num(avg_time_bounds.ravel().tolist(), tvar.units)).reshape(avg_time_bounds.shape)
+                        tb.units = tvar.units
+                        tb.calendar = 'standard'
 
                     _crs_obj, _ = _write_cf_crs_variable(nc, density_proj_str)
 
@@ -6595,8 +6760,10 @@ class ChemicalDriftPostProcessMixin:
 
                     if write_density:
                         if not time_avg_conc:
-                            dname = nc.createVariable('density', 'i4', ('time', 'specie', 'depth', 'face'), fill_value=99999)
-                            _write_masked_4d(dname, np.nan_to_num(H_count_out, nan=0, posinf=0, neginf=0).astype('i4', copy=False), combined_mask_face, 99999)
+                            density_fill_value = np.int32(-1)
+                            dname = nc.createVariable('density', 'i4', ('time', 'specie', 'depth', 'face'), fill_value=density_fill_value)
+                            H_count_i4 = self._density_counts_to_int32(H_count_out)
+                            _write_masked_4d(dname, H_count_i4, combined_mask_face, density_fill_value)
                             dname.long_name = 'Number of elements in face'; dname.units = '1'; dname.mesh = 'mesh'; dname.location = 'face'; dname.grid_mapping = 'crs'; dname.coordinates = 'face_lon face_lat'
                         else:
                             dname = _create_f4(nc, 'density_avg', ('avg_time', 'specie', 'depth', 'face'))
@@ -6614,9 +6781,7 @@ class ChemicalDriftPostProcessMixin:
                             _write_masked_4d(cname, mean_field_out, combined_mask_face, FILL_F8)
                             cname.long_name = f'{compound} snapshot-block mean concentration from weight={weight}\nspecie {species_str}'
                             _set_time_mean_attrs(cname)
-                        cname.units = f'{units_water} | {units_sediment}'
-                        cname.units_water = units_water
-                        cname.units_sediment = units_sediment
+                        _set_mixed_phase_units_attrs(cname)
                         cname.mesh = 'mesh'; cname.location = 'face'; cname.grid_mapping = 'crs'; cname.coordinates = 'face_lon face_lat'
                     else:
                         if not time_avg_conc:
@@ -6650,7 +6815,7 @@ class ChemicalDriftPostProcessMixin:
                     nc.bathymetry_conservative_backend = str(bathy_backend)
                     nc.bathymetry_extent_class = str(bathy_extent_class)
                 if weight_mode == 'extensive':
-                    nc.phase_units_metadata_mode = 'compatibility'
+                    nc.phase_units_metadata_mode = 'specie_phase'
                 if bathymetry_remap != 'interpolate':
                     nc.comment = (
                         'Bathymetry was conservatively remapped. Local/regional maps use Shapely/STRtree '
@@ -6663,11 +6828,10 @@ class ChemicalDriftPostProcessMixin:
                 else:
                     nc.comment = 'Depth is written as a CF-style positive-down coordinate derived from model z coordinates. Auxiliary-reader interpolation is linear first, then nearest-neighbour fill for remaining NaNs; this is not conservative. This file stores per-cell mean property fields; no mixed-phase compatibility-unit interpretation is required.'
 
-                nc.featureType = 'grid'
                 nc.institution = 'OpenDrift ChemicalDrift'
                 nc.references = 'Generated by ChemicalDrift write_netcdf_chemical_density_map'
                 _set_geospatial_attrs(nc, lon_center_2d, lat_center_2d)
-                _set_time_coverage_attrs(nc, avg_times if time_avg_conc else filtered_times)
+                _set_time_coverage_attrs(nc, avg_times if time_avg_conc else filtered_times, avg_time_bounds if time_avg_conc else None)
 
                 nc.createDimension('x', x_centers.size)
                 nc.createDimension('y', y_centers.size)
@@ -6697,10 +6861,17 @@ class ChemicalDriftPostProcessMixin:
                     nc.variables['time'].calendar = 'standard'
                 else:
                     nc.createDimension('avg_time', mean_field_out.shape[0])
+                    nc.createDimension('time_bounds_dim', 2)
                     nc.createVariable('avg_time', 'f8', ('avg_time',))[:] = date2num(avg_times, timestr)
                     nc.variables['avg_time'].units = timestr
                     nc.variables['avg_time'].standard_name = 'time'
                     nc.variables['avg_time'].calendar = 'standard'
+                    nc.variables['avg_time'].bounds = 'time_bounds'
+                    nc.createVariable('time_bounds', 'f8', ('avg_time', 'time_bounds_dim'))[:] = np.asarray(
+                        date2num(avg_time_bounds.ravel().tolist(), timestr)
+                    ).reshape(avg_time_bounds.shape)
+                    nc.variables['time_bounds'].units = timestr
+                    nc.variables['time_bounds'].calendar = 'standard'
                 _crs_obj, _ = _write_cf_crs_variable(nc, density_proj_str)
                 x_is_index = bool(explicit_grid['x_is_index']) if explicit_grid is not None else False
                 y_is_index = bool(explicit_grid['y_is_index']) if explicit_grid is not None else False
@@ -6715,21 +6886,19 @@ class ChemicalDriftPostProcessMixin:
                 else:
                     nc.variables['x'].standard_name = 'projection_x_coordinate'; nc.variables['x'].long_name = 'x coordinate of cell center in target CRS'; nc.variables['x'].units = 'm'; nc.variables['x'].axis = 'X'
                     nc.variables['y'].standard_name = 'projection_y_coordinate'; nc.variables['y'].long_name = 'y coordinate of cell center in target CRS'; nc.variables['y'].units = 'm'; nc.variables['y'].axis = 'Y'
-                    lon_var_nc = nc.createVariable('lon', 'f8', ('y', 'x'))
-                    lat_var_nc = nc.createVariable('lat', 'f8', ('y', 'x'))
 
-                    lon_var_nc[:] = np.asarray(lon_center_2d, dtype=np.float64).T
-                    lat_var_nc[:] = np.asarray(lat_center_2d, dtype=np.float64).T
-
-                    lon_var_nc.standard_name = 'longitude'
-                    lon_var_nc.long_name = 'longitude of cell center'
-                    lon_var_nc.units = 'degrees_east'
-                    lon_var_nc.comment = 'Two-dimensional auxiliary coordinate for variables on the y/x grid.'
-
-                    lat_var_nc.standard_name = 'latitude'
-                    lat_var_nc.long_name = 'latitude of cell center'
-                    lat_var_nc.units = 'degrees_north'
-                    lat_var_nc.comment = 'Two-dimensional auxiliary coordinate for variables on the y/x grid.'
+                lon_var_nc = nc.createVariable('lon', 'f8', ('y', 'x'))
+                lat_var_nc = nc.createVariable('lat', 'f8', ('y', 'x'))
+                lon_var_nc[:] = np.asarray(lon_center_2d, dtype=np.float64).T
+                lat_var_nc[:] = np.asarray(lat_center_2d, dtype=np.float64).T
+                lon_var_nc.standard_name = 'longitude'
+                lon_var_nc.long_name = 'longitude of cell center'
+                lon_var_nc.units = 'degrees_east'
+                lon_var_nc.comment = 'Two-dimensional auxiliary coordinate for variables on the y/x grid.'
+                lat_var_nc.standard_name = 'latitude'
+                lat_var_nc.long_name = 'latitude of cell center'
+                lat_var_nc.units = 'degrees_north'
+                lat_var_nc.comment = 'Two-dimensional auxiliary coordinate for variables on the y/x grid.'
                 if explicit_grid is not None and explicit_grid.get('lon_corners_4') is not None and explicit_grid.get('lat_corners_4') is not None:
                     if 'nv' not in nc.dimensions:
                         nc.createDimension('nv', 4)
@@ -6908,9 +7077,10 @@ class ChemicalDriftPostProcessMixin:
 
                 if write_density:
                     if not time_avg_conc:
-                        nc.createVariable('density', 'i4', ('time', 'specie', 'depth', 'y', 'x'), fill_value=99999)
-                        H_count_i4 = np.nan_to_num(H_count_out, nan=0, posinf=0, neginf=0).astype('i4', copy=False)
-                        _write_masked_5d(nc.variables['density'], H_count_i4, mask_yx=combined_mask_yx, fill_value=99999)
+                        density_fill_value = np.int32(-1)
+                        nc.createVariable('density', 'i4', ('time', 'specie', 'depth', 'y', 'x'), fill_value=density_fill_value)
+                        H_count_i4 = self._density_counts_to_int32(H_count_out)
+                        _write_masked_5d(nc.variables['density'], H_count_i4, mask_yx=combined_mask_yx, fill_value=density_fill_value)
                         _set_structured_spatial_attrs(nc.variables['density'],
                             long_name='Number of elements in grid cell', units='1',)
                         if horizontal_smoothing and Hcount_sm_out is not None:
@@ -6944,24 +7114,18 @@ class ChemicalDriftPostProcessMixin:
                     if not time_avg_conc:
                         _create_f8(nc, 'concentration', ('time', 'specie', 'depth', 'y', 'x'))
                         _write_masked_5d(nc.variables['concentration'], H_out, mask_yx=combined_mask_yx, fill_value=FILL_F8)
-                        nc.variables['concentration'].units = f'{units_water} | {units_sediment}'
                         _set_structured_spatial_attrs(
                         nc.variables['concentration'],
                         long_name=f'{compound} concentration from weight={weight}; specie {species_str}',
-                        units=f'{units_water} | {units_sediment}',
                         )
-                        nc.variables['concentration'].units_water = units_water
-                        nc.variables['concentration'].units_sediment = units_sediment
+                        _set_mixed_phase_units_attrs(nc.variables['concentration'])
                     else:
                         _create_f8(nc, 'concentration_avg', ('avg_time', 'specie', 'depth', 'y', 'x'))
                         _write_masked_5d(nc.variables['concentration_avg'], mean_field_out, mask_yx=combined_mask_yx, fill_value=FILL_F8)
-                        nc.variables['concentration_avg'].units = f'{units_water} | {units_sediment}'
-                        nc.variables['concentration_avg'].units_water = units_water
-                        nc.variables['concentration_avg'].units_sediment = units_sediment
+                        _set_mixed_phase_units_attrs(nc.variables['concentration_avg'])
                         _set_structured_spatial_attrs(
                             nc.variables['concentration_avg'],
                             long_name=f'{compound} snapshot-block mean concentration from weight={weight}; specie {species_str}',
-                            units=f'{units_water} | {units_sediment}',
                         )
                         _set_time_mean_attrs(nc.variables['concentration_avg'])
                 else:
@@ -6990,25 +7154,19 @@ class ChemicalDriftPostProcessMixin:
                         if not time_avg_conc:
                             _create_f8(nc, 'concentration_smooth', ('time', 'specie', 'depth', 'y', 'x'))
                             _write_masked_5d(nc.variables['concentration_smooth'], Hsm_out, mask_yx=combined_mask_yx, fill_value=FILL_F8)
-                            nc.variables['concentration_smooth'].units = nc.variables['concentration'].units
-                            nc.variables['concentration_smooth'].units_water = units_water
-                            nc.variables['concentration_smooth'].units_sediment = units_sediment
+                            _set_mixed_phase_units_attrs(nc.variables['concentration_smooth'])
                             _set_structured_spatial_attrs(
                                 nc.variables['concentration_smooth'],
                                 long_name=f'Horizontally smoothed {compound} concentration from weight={weight}; specie {species_str}',
-                                units=f'{units_water} | {units_sediment}',
                             )
                             _set_horizontal_smoothing_attrs(nc.variables['concentration_smooth'], smoothing_cells)
                         else:
                             _create_f8(nc, 'concentration_smooth_avg', ('avg_time', 'specie', 'depth', 'y', 'x'))
                             _write_masked_5d(nc.variables['concentration_smooth_avg'],  mean_field_sm_out, mask_yx=combined_mask_yx, fill_value=FILL_F8)
-                            nc.variables['concentration_smooth_avg'].units = nc.variables['concentration_avg'].units
-                            nc.variables['concentration_smooth_avg'].units_water = units_water
-                            nc.variables['concentration_smooth_avg'].units_sediment = units_sediment
+                            _set_mixed_phase_units_attrs(nc.variables['concentration_smooth_avg'])
                             _set_structured_spatial_attrs(
                                 nc.variables['concentration_smooth_avg'],
                                 long_name=f'Horizontally smoothed snapshot-block mean {compound} concentration from weight={weight}; specie {species_str}',
-                                units=f'{units_water} | {units_sediment}',
                             )
                             _set_time_mean_attrs(nc.variables['concentration_smooth_avg'])
                             _set_horizontal_smoothing_attrs(nc.variables['concentration_smooth_avg'], smoothing_cells)
@@ -7142,7 +7300,7 @@ class ChemicalDriftPostProcessMixin:
             del landmask_face, domain_invalid_face, combined_mask_face
             del lon_center_2d, lat_center_2d
             del topo_raw, aslt_raw, grid
-            del avg_times, filtered_times
+            del avg_times, avg_time_bounds, filtered_times
 
             gc.collect()
 
@@ -7184,6 +7342,14 @@ class ChemicalDriftPostProcessMixin:
     @staticmethod
     def _sed_units(src_da, variable, default='unknown'):
         import re
+
+        def _physical_unit(value):
+            if value is None:
+                return default
+            text = str(value).strip()
+            text = re.sub(r'\s+(?:dry_weight|dry-weight|dry\s+weight)\b', '', text, flags=re.IGNORECASE).strip()
+            return text or default
+
         variable = str(variable)
         if 'density' in variable:
             return '1'
@@ -7192,16 +7358,16 @@ class ChemicalDriftPostProcessMixin:
             return str(units_raw).strip() if units_raw else default
         units_sed = src_da.attrs.get('units_sediment', None)
         if units_sed:
-            return str(units_sed).strip()
+            return _physical_unit(units_sed)
         units_raw = src_da.attrs.get('units', None)
         if not units_raw:
             return default
-        s = str(units_raw).strip()
-        if '|' in s:
-            return s.split('|', 1)[1].strip() or default
-        m = re.search(r'\(\s*sed\s*([^)]+)\)', s, flags=re.IGNORECASE)
+        text = str(units_raw).strip()
+        if '|' in text:
+            return _physical_unit(text.split('|', 1)[1])
+        m = re.search(r'\(\s*sed\s*([^)]+)\)', text, flags=re.IGNORECASE)
         if m:
-            return m.group(1).strip() or default
+            return _physical_unit(m.group(1))
         return default
 
     @staticmethod
@@ -7292,18 +7458,22 @@ class ChemicalDriftPostProcessMixin:
             return None, []
         if Verbose:
             print('Included sediment species:', ', '.join(name for name, _ in included))
-        mask = np.isnan(TOT_Conc)
+        # Missingness must follow the selected sediment data, not an unrelated
+        # specie/depth cell.  Keep the existing additive aggregation semantics,
+        # but restore NaN when the selected sediment field has no finite support.
+        selected_valid = np.isfinite(da_sed)
         if 'depth' in da_sed.dims and debug_check_single_depth:
-            occupied = xr.where(np.isfinite(da_sed) & (np.abs(da_sed) > float(nonzero_tol)), 1, 0).sum(dim='depth')
+            occupied = xr.where(selected_valid & (np.abs(da_sed) > float(nonzero_tol)), 1, 0).sum(dim='depth')
             if bool((occupied > 1).any()):
                 raise AssertionError('Sediment concentration occupies more than one depth bin in at least one horizontal cell.')
         if 'depth' in da_sed.dims:
             if Verbose:
                 print('depth included in sediment DA -> summing over depth')
+            valid_any = selected_valid.any(dim='depth')
             da_sed = da_sed.sum(dim='depth')
-            da_sed = xr.where(mask.isel(specie=0, depth=0), np.nan, da_sed)
+            da_sed = xr.where(valid_any, da_sed, np.nan)
         else:
-            da_sed = xr.where(mask.isel(specie=0), np.nan, da_sed)
+            da_sed = xr.where(selected_valid, da_sed, np.nan)
         return da_sed, included
 
     @staticmethod
@@ -7730,6 +7900,7 @@ class ChemicalDriftPostProcessMixin:
         If Return_datasets=False, the function writes files only and returns None.
         '''
         from datetime import datetime
+        from pathlib import Path
         import time
         import warnings
         import numpy as np
@@ -7768,25 +7939,26 @@ class ChemicalDriftPostProcessMixin:
             m, s = divmod(rem, 60)
             print(f"{msg} | elapsed {h:02d}:{m:02d}:{s:02d} (started {_start_wall.strftime('%Y-%m-%d %H:%M:%S')})")
 
-        def _zero_like_concentration_template(TOT_Conc, *, name, dropped_species=True):
+        def _zero_like_concentration_template(
+            TOT_Conc, *, name, collapse_depth=False, fill_value=0.0, dropped_species=True
+        ):
             """
-            Build a zero concentration DataArray using the same non-species grid as TOT_Conc.
+            Build an empty-selection fallback on the derived non-species domain.
 
-            Used when no requested water/sediment species are present in a slice.
-            Keeps exactly one time-like axis so prepare_derived_output_da can safely
-            normalize avg_time/time without name conflicts.
+            Additive concentration/density sums use zero. Unsupported property means
+            use NaN. Sediment outputs always collapse the source depth axis so the
+            empty and non-empty sediment schemas are identical.
             """
             template = TOT_Conc
 
-            # Drop only species. Keep time/avg_time and horizontal dimensions.
             if "specie" in template.dims:
                 template = template.isel(specie=0, drop=True)
 
-            # Drop singleton depth only. Never drop time/avg_time.
-            if "depth" in template.dims and template.sizes.get("depth", 0) == 1:
-                template = template.isel(depth=0, drop=True)
+            if "depth" in template.dims:
+                if collapse_depth or template.sizes.get("depth", 0) == 1:
+                    template = template.isel(depth=0, drop=True)
 
-            out = xr.zeros_like(template).astype(np.float32)
+            out = xr.full_like(template, fill_value, dtype=np.float32)
 
             has_time_dim = ("time" in out.dims) or ("time_avg" in out.dims) or ("avg_time" in out.dims)
             has_time_coord = ("time" in out.coords) or ("time_avg" in out.coords) or ("avg_time" in out.coords)
@@ -7859,11 +8031,14 @@ class ChemicalDriftPostProcessMixin:
                         pass
 
             out.name = name
+            is_nan_fallback = bool(np.isnan(fill_value))
             out.attrs.update({
                 "empty_species_fallback": "true",
                 "empty_species_fallback_reason": (
                     "No matching species remained after species selection/exclusion. "
-                    "Returned zero concentration instead of raising."
+                    + ("Returned NaN because a weighted property mean is undefined without support."
+                       if is_nan_fallback else
+                       "Returned zero because an additive sum over an empty selected set is zero.")
                 ),
                 "units": getattr(TOT_Conc, "units", ""),
             })
@@ -7878,7 +8053,7 @@ class ChemicalDriftPostProcessMixin:
             import numpy as np
             import xarray as xr
 
-            out = da.copy()
+            out = da.copy(deep=False)
             # Case 1: already usable
             if (
                 ("latitude" in out.dims or "latitude" in out.coords or "lat" in out.dims or "lat" in out.coords)
@@ -7949,7 +8124,7 @@ class ChemicalDriftPostProcessMixin:
             if Concentration_file is None and File_Path is not None and File_Name is not None:
                 if Verbose:
                     log('Loading Concentration_file from File_Path')
-                DS = xr.open_dataset(File_Path + File_Name)
+                DS = xr.open_dataset(Path(File_Path) / File_Name)
                 ds_opened_here = True
             elif Concentration_file is not None:
                 DS = Concentration_file
@@ -7967,8 +8142,10 @@ class ChemicalDriftPostProcessMixin:
                 time_name = 'time'
             elif 'avg_time' in DS.dims:
                 time_name = 'avg_time'
+            elif 'time_avg' in DS.dims:
+                time_name = 'time_avg'
             else:
-                raise ValueError('No time or avg_time dimension found in dataset')
+                raise ValueError('No time, avg_time, or time_avg dimension found in dataset')
 
             variable_ls = supported_vars if variables is None else list(variables)
             sum_vars_wat_dict = {}
@@ -7994,6 +8171,42 @@ class ChemicalDriftPostProcessMixin:
                         seen.add(s2)
                 return out
 
+            def _phase_species_from_metadata(src_ds, specie_ids_num):
+                if 'specie_phase' not in src_ds.variables:
+                    return None
+                phase_da = src_ds['specie_phase']
+                if phase_da.ndim != 1 or 'specie' not in phase_da.dims:
+                    raise ValueError('specie_phase must be one-dimensional on the specie axis.')
+                if 'specie' in src_ds.coords:
+                    specie_vals = np.asarray(src_ds['specie'].values)
+                else:
+                    specie_vals = np.arange(phase_da.sizes['specie'], dtype=int)
+                phases = np.asarray(phase_da.values)
+                if phases.size != specie_vals.size:
+                    raise ValueError('specie_phase length does not match the specie coordinate.')
+                if not np.all(np.isin(phases, [0, 1])):
+                    raise ValueError('specie_phase must contain only 0 (water-like) or 1 (sediment-like).')
+
+                excluded_w_ids = {int(specie_ids_num[name]) for name in excluded_water_names if name in specie_ids_num}
+                excluded_s_ids = {int(specie_ids_num[name]) for name in excluded_sed_names if name in specie_ids_num}
+
+                def _name_for_idx(idx):
+                    candidates = [name for name, mapped in specie_ids_num.items() if int(mapped) == int(idx)]
+                    if not candidates:
+                        raise ValueError(f'No species name maps to specie coordinate {idx!r}.')
+                    canonical = [name for name in candidates if name not in legacy_alias]
+                    return sorted(canonical or candidates)[0]
+
+                water_names = []
+                sediment_names = []
+                for idx, phase in zip(specie_vals, phases):
+                    idx_i = int(idx)
+                    if int(phase) == 0 and idx_i not in excluded_w_ids:
+                        water_names.append(_name_for_idx(idx_i))
+                    elif int(phase) == 1 and idx_i not in excluded_s_ids:
+                        sediment_names.append(_name_for_idx(idx_i))
+                return water_names, sediment_names
+
             def _copy_source_metadata(dst_ds, src_ds):
                 attr_names = (
                     'Conventions',
@@ -8003,13 +8216,11 @@ class ChemicalDriftPostProcessMixin:
                     'institution',
                     'references',
                     'comment',
-                    'featureType',
                     'sim_description',
 
                     'actual_density_proj_str',
                     'weight_name',
                     'weight_mode',
-                    'phase_units_metadata_mode',
 
                     'bathymetry_remap',
                     'bathymetry_conservative_backend',
@@ -8018,14 +8229,11 @@ class ChemicalDriftPostProcessMixin:
                     'explicit_output_grid',
                     'output_grid_mode',
                     'output_grid_coords',
-                    'species_axis_compressed',
 
                     'geospatial_lon_min',
                     'geospatial_lon_max',
                     'geospatial_lat_min',
                     'geospatial_lat_max',
-                    'time_coverage_start',
-                    'time_coverage_end',
                 )
 
                 for attr_name in attr_names:
@@ -8071,8 +8279,69 @@ class ChemicalDriftPostProcessMixin:
                     support_vars |= {gm for gm in extra_grid_mapping_names if gm}
 
                 for name in support_vars:
-                    if name in src_ds.variables and name not in dst_ds.variables and name not in dst_ds.coords:
-                        dst_ds[name] = src_ds[name]
+                    if name not in src_ds.variables or name in dst_ds.variables or name in dst_ds.coords:
+                        continue
+                    src_var = src_ds[name]
+                    # Do not reintroduce dimensions that the derived aggregation removed.
+                    # In particular, species is always aggregated away and sediment depth
+                    # is collapsed.  Reattaching their support variables would create
+                    # orphan dimensions in the derived dataset.
+                    if any(
+                        dim in {"specie", "depth"} and dim not in dst_ds.dims
+                        for dim in src_var.dims
+                    ):
+                        continue
+                    dst_ds[name] = src_var
+
+            def _rebuild_derived_time_metadata(dst_ds, src_ds):
+                dst_ds.attrs.pop('time_coverage_start', None)
+                dst_ds.attrs.pop('time_coverage_end', None)
+                if 'time' not in dst_ds.coords:
+                    return dst_ds
+
+                src_time_name = None
+                for candidate in ('time', 'avg_time', 'time_avg'):
+                    if candidate in src_ds.coords or candidate in src_ds.dims:
+                        src_time_name = candidate
+                        break
+
+                bounds_name = None
+                if src_time_name is not None and src_time_name in src_ds:
+                    bounds_name = src_ds[src_time_name].attrs.get('bounds', None)
+                if not bounds_name and 'time_bounds' in src_ds.variables:
+                    bounds_name = 'time_bounds'
+
+                coverage_values = None
+                if bounds_name and bounds_name in src_ds.variables and src_time_name is not None:
+                    bounds = src_ds[bounds_name]
+                    if src_time_name in bounds.dims and bounds.sizes.get(src_time_name) == dst_ds.sizes.get('time'):
+                        if src_time_name != 'time':
+                            bounds = bounds.rename({src_time_name: 'time'})
+                        dst_ds[bounds_name] = bounds
+                        dst_ds['time'].attrs['bounds'] = str(bounds_name)
+                        bvals = np.asarray(bounds.values)
+                        if bvals.ndim >= 2 and bvals.shape[-1] >= 2:
+                            coverage_values = (bvals.reshape((-1, bvals.shape[-1]))[0, 0],
+                                               bvals.reshape((-1, bvals.shape[-1]))[-1, 1])
+
+                if coverage_values is None:
+                    tvals = np.asarray(dst_ds['time'].values)
+                    if tvals.size:
+                        coverage_values = (tvals.reshape(-1)[0], tvals.reshape(-1)[-1])
+
+                def _format_time(value):
+                    arr = np.asarray(value)
+                    if np.issubdtype(arr.dtype, np.datetime64):
+                        return np.datetime_as_string(np.datetime64(value, 's'), unit='s') + 'Z'
+                    return None
+
+                if coverage_values is not None:
+                    start = _format_time(coverage_values[0])
+                    end = _format_time(coverage_values[1])
+                    if start is not None and end is not None:
+                        dst_ds.attrs['time_coverage_start'] = start
+                        dst_ds.attrs['time_coverage_end'] = end
+                return dst_ds
 
             def _normalize_dataset_spatial_convention(ds, *, main_var_name):
                 """
@@ -8286,7 +8555,6 @@ class ChemicalDriftPostProcessMixin:
             def _preserve_relevant_var_metadata(out_da, src_da):
                 for attr_name in (
                     'grid_mapping',
-                    'coordinates',
                     'mesh',
                     'location',
                     'cell_methods',
@@ -8294,12 +8562,13 @@ class ChemicalDriftPostProcessMixin:
                 ):
                     if attr_name in src_da.attrs and attr_name not in out_da.attrs:
                         out_da.attrs[attr_name] = src_da.attrs[attr_name]
-                # If source coordinates were absent or intentionally not copied,
-                # infer from actual coordinates on the derived DataArray.
-                if 'coordinates' not in out_da.attrs:
-                    coords_attr = _infer_coordinates_attr(out_da)
-                    if coords_attr:
-                        out_da.attrs['coordinates'] = coords_attr
+
+                # `coordinates` is structural metadata. Rebuild it from the final
+                # derived DataArray and never copy a stale source reference.
+                out_da.attrs.pop('coordinates', None)
+                coords_attr = _infer_coordinates_attr(out_da)
+                if coords_attr:
+                    out_da.attrs['coordinates'] = coords_attr
 
                 out_da.attrs['source_variable'] = str(src_da.name)
                 if 'units' in src_da.attrs:
@@ -8337,8 +8606,12 @@ class ChemicalDriftPostProcessMixin:
                     except ValueError as e2:
                         raise ValueError(f'Species mapping failed from dataset metadata ({e}) and fallback mapping also failed ({e2}).') from e2
 
-                water_species_eff = _alias_and_filter(water_species, specie_ids_num, legacy_alias)
-                sed_species_eff = _alias_and_filter(sed_species, specie_ids_num, legacy_alias)
+                phase_species = _phase_species_from_metadata(DS, specie_ids_num)
+                if phase_species is not None:
+                    water_species_eff, sed_species_eff = phase_species
+                else:
+                    water_species_eff = _alias_and_filter(water_species, specie_ids_num, legacy_alias)
+                    sed_species_eff = _alias_and_filter(sed_species, specie_ids_num, legacy_alias)
                 DA_Conc_array_wat = DA_Conc_array_sed = None
                 included_wat = []
                 included_sed = []
@@ -8375,6 +8648,8 @@ class ChemicalDriftPostProcessMixin:
                     DA_Conc_array_wat = _zero_like_concentration_template(
                         TOT_Conc,
                         name="DA_Conc_array_wat",
+                        collapse_depth=False,
+                        fill_value=np.nan if weight_var is not None else 0.0,
                     )
                     included_wat = []
 
@@ -8395,6 +8670,8 @@ class ChemicalDriftPostProcessMixin:
                     DA_Conc_array_sed = _zero_like_concentration_template(
                         TOT_Conc,
                         name="DA_Conc_array_sed",
+                        collapse_depth=True,
+                        fill_value=np.nan if weight_var is not None else 0.0,
                     )
                     included_sed = []
 
@@ -8478,6 +8755,14 @@ class ChemicalDriftPostProcessMixin:
                     DA_Conc_array_sed.name = var_sed_name
                     DA_Conc_array_sed.attrs['long_name'] = base_ln + ' in sediments'
                     DA_Conc_array_sed.attrs['units'] = self._sed_units(src_da, variable)
+                    if 'concentration' in str(variable):
+                        mass_basis = src_da.attrs.get('sediment_mass_basis', None)
+                        if mass_basis is None:
+                            legacy_units = ' '.join(str(src_da.attrs.get(k, '')) for k in ('units_sediment', 'units'))
+                            if 'dry_weight' in legacy_units or 'dry weight' in legacy_units.lower() or 'dry-weight' in legacy_units.lower():
+                                mass_basis = 'dry_weight'
+                        if mass_basis is not None:
+                            DA_Conc_array_sed.attrs['mass_basis'] = str(mass_basis)
                     lon_coord = _coord_getter(DA_Conc_array_sed, 'longitude')
                     lat_coord = _coord_getter(DA_Conc_array_sed, 'latitude')
                     x_coord = _coord_getter(DA_Conc_array_sed, 'x')
@@ -8515,6 +8800,7 @@ class ChemicalDriftPostProcessMixin:
                         DS_wat_fin,
                         main_var_name=main_wat_vars[0],
                     )
+                DS_wat_fin = _rebuild_derived_time_metadata(DS_wat_fin, DS)
             if do_sediment:
                 _copy_source_metadata(DS_sed_fin, DS)
                 gm_names = {da.attrs.get('grid_mapping') for da in DS_sed_fin.data_vars.values()}
@@ -8530,22 +8816,26 @@ class ChemicalDriftPostProcessMixin:
                         DS_sed_fin,
                         main_var_name=main_sed_vars[0],
                     )
+                DS_sed_fin = _rebuild_derived_time_metadata(DS_sed_fin, DS)
 
             wat_file = sed_file = None
+            out_dir = Path(File_Path_out or '.')
             if do_water:
                 if File_Name_out is not None:
-                    wat_file = File_Path_out + 'wat_' + File_Name_out
-                    if not wat_file.endswith('.nc'):
-                        wat_file += '.nc'
+                    wat_name = 'wat_' + str(File_Name_out)
+                    if not wat_name.endswith('.nc'):
+                        wat_name += '.nc'
                 else:
-                    wat_file = File_Path_out + 'water_conc_' + (Chemical_name or '') + '_' + (Origin_marker_name or '') + '.nc'
+                    wat_name = 'water_conc_' + (Chemical_name or '') + '_' + (Origin_marker_name or '') + '.nc'
+                wat_file = out_dir / wat_name
             if do_sediment:
                 if File_Name_out is not None:
-                    sed_file = File_Path_out + 'sed_' + File_Name_out
-                    if not sed_file.endswith('.nc'):
-                        sed_file += '.nc'
+                    sed_name = 'sed_' + str(File_Name_out)
+                    if not sed_name.endswith('.nc'):
+                        sed_name += '.nc'
                 else:
-                    sed_file = File_Path_out + 'sediments_conc_' + (Chemical_name or '') + '_' + (Origin_marker_name or '') + '.nc'
+                    sed_name = 'sediments_conc_' + (Chemical_name or '') + '_' + (Origin_marker_name or '') + '.nc'
+                sed_file = out_dir / sed_name
 
             def _nan_fill_encoding(ds):
                 enc = {}
