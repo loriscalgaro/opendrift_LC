@@ -1388,6 +1388,501 @@ class ChemicalDriftPostProcessMixin:
         raise ValueError('Unsupported output_grid layout. Provide either 1D lon/lat, 2D lon/lat, 1D x/y, 2D x_center/y_center, or triangular node/connectivity arrays.')
 
     @staticmethod
+    def _read_memory_control_text(path, file_reader=None):
+        """Read one OS memory-control text file, or return None when unavailable."""
+        try:
+            if file_reader is not None:
+                value = file_reader(str(path))
+                return None if value is None else str(value)
+            with open(path, 'r', encoding='utf-8') as fh:
+                return fh.read()
+        except (OSError, IOError, KeyError, TypeError):
+            return None
+
+    @staticmethod
+    def _parse_meminfo_available_bytes(meminfo_text):
+        if not meminfo_text:
+            return None
+        for line in str(meminfo_text).splitlines():
+            if line.startswith('MemAvailable:'):
+                fields = line.split()
+                if len(fields) >= 2:
+                    try:
+                        kib = int(fields[1])
+                    except (TypeError, ValueError):
+                        return None
+                    return max(0, kib) * 1024
+        return None
+
+    @classmethod
+    def _detect_host_available_memory_bytes(cls, *, file_reader=None,
+                                            psutil_module=None,
+                                            allow_psutil=True,
+                                            sysconf_func=None):
+        """Return currently available physical RAM, excluding swap."""
+        psutil_obj = psutil_module
+        if psutil_obj is None and allow_psutil:
+            try:
+                import psutil as psutil_obj
+            except ImportError:
+                psutil_obj = None
+        if psutil_obj is not None:
+            try:
+                available = int(psutil_obj.virtual_memory().available)
+                if available >= 0:
+                    return available
+            except (AttributeError, OSError, TypeError, ValueError):
+                pass
+
+        meminfo = cls._read_memory_control_text('/proc/meminfo', file_reader=file_reader)
+        available = cls._parse_meminfo_available_bytes(meminfo)
+        if available is not None:
+            return available
+
+        if sysconf_func is None:
+            try:
+                import os
+                sysconf_func = os.sysconf
+            except (ImportError, AttributeError):
+                sysconf_func = None
+        if sysconf_func is not None:
+            try:
+                pages = int(sysconf_func('SC_AVPHYS_PAGES'))
+                page_size = int(sysconf_func('SC_PAGE_SIZE'))
+                if pages >= 0 and page_size > 0:
+                    return pages * page_size
+            except (OSError, TypeError, ValueError):
+                pass
+        return None
+
+    @staticmethod
+    def _parse_proc_self_cgroup(cgroup_text):
+        out = []
+        if not cgroup_text:
+            return out
+        for raw in str(cgroup_text).splitlines():
+            parts = raw.strip().split(':', 2)
+            if len(parts) != 3:
+                continue
+            hierarchy, controllers, path = parts
+            out.append((hierarchy, tuple(c for c in controllers.split(',') if c), path or '/'))
+        return out
+
+    @staticmethod
+    def _parse_memory_cgroup_mounts(mountinfo_text):
+        """Return (version, mount_point, mount_root) tuples for memory cgroups."""
+        mounts = []
+        if not mountinfo_text:
+            return mounts
+        for raw in str(mountinfo_text).splitlines():
+            fields = raw.strip().split()
+            if '-' not in fields:
+                continue
+            sep = fields.index('-')
+            if sep < 6 or len(fields) <= sep + 3:
+                continue
+            mount_root = fields[3]
+            mount_point = fields[4]
+            fstype = fields[sep + 1]
+            super_options = fields[sep + 3].split(',')
+            if fstype == 'cgroup2':
+                mounts.append((2, mount_point, mount_root))
+            elif fstype == 'cgroup' and 'memory' in super_options:
+                mounts.append((1, mount_point, mount_root))
+        return mounts
+
+    @staticmethod
+    def _resolve_cgroup_control_dir(mount_point, mount_root, cgroup_path):
+        from pathlib import PurePosixPath
+        mp = PurePosixPath(mount_point)
+        root = str(PurePosixPath(mount_root))
+        cg = str(PurePosixPath(cgroup_path))
+        if root != '/' and (cg == root or cg.startswith(root.rstrip('/') + '/')):
+            rel = cg[len(root):].lstrip('/')
+        else:
+            rel = cg.lstrip('/')
+        return str(mp / rel) if rel else str(mp)
+
+    @staticmethod
+    def _parse_finite_cgroup_limit(value, *, version):
+        if value is None:
+            return None
+        text = str(value).strip()
+        if version == 2 and text == 'max':
+            return None
+        try:
+            limit = int(text)
+        except (TypeError, ValueError):
+            return None
+        if limit < 0:
+            return None
+        # cgroup v1 commonly uses a near-int64-max sentinel for "unlimited".
+        if version == 1 and limit >= (1 << 60):
+            return None
+        return limit
+
+    @classmethod
+    def _detect_cgroup_memory_remaining_bytes(cls, *, file_reader=None,
+                                               cgroup_text=None,
+                                               mountinfo_text=None):
+        """Return remaining cgroup memory for the current process when finite."""
+        if cgroup_text is None:
+            cgroup_text = cls._read_memory_control_text('/proc/self/cgroup', file_reader=file_reader)
+        if mountinfo_text is None:
+            mountinfo_text = cls._read_memory_control_text('/proc/self/mountinfo', file_reader=file_reader)
+        memberships = cls._parse_proc_self_cgroup(cgroup_text)
+        mounts = cls._parse_memory_cgroup_mounts(mountinfo_text)
+        candidates = []
+
+        for version, mount_point, mount_root in mounts:
+            for _hierarchy, controllers, cgroup_path in memberships:
+                if version == 2:
+                    if controllers:
+                        continue
+                    max_name, current_name = 'memory.max', 'memory.current'
+                else:
+                    if 'memory' not in controllers:
+                        continue
+                    max_name, current_name = 'memory.limit_in_bytes', 'memory.usage_in_bytes'
+                control_dir = cls._resolve_cgroup_control_dir(mount_point, mount_root, cgroup_path)
+                limit_raw = cls._read_memory_control_text(f'{control_dir}/{max_name}', file_reader=file_reader)
+                usage_raw = cls._read_memory_control_text(f'{control_dir}/{current_name}', file_reader=file_reader)
+                limit = cls._parse_finite_cgroup_limit(limit_raw, version=version)
+                if limit is None or usage_raw is None:
+                    continue
+                try:
+                    usage = int(str(usage_raw).strip())
+                except (TypeError, ValueError):
+                    continue
+                if usage < 0:
+                    continue
+                candidates.append(max(0, limit - usage))
+        return min(candidates) if candidates else None
+
+    @classmethod
+    def _detect_current_vms_bytes(cls, *, file_reader=None,
+                                  psutil_module=None,
+                                  allow_psutil=True,
+                                  sysconf_func=None):
+        psutil_obj = psutil_module
+        if psutil_obj is None and allow_psutil:
+            try:
+                import psutil as psutil_obj
+            except ImportError:
+                psutil_obj = None
+        if psutil_obj is not None:
+            try:
+                vms = int(psutil_obj.Process().memory_info().vms)
+                if vms >= 0:
+                    return vms
+            except (AttributeError, OSError, TypeError, ValueError):
+                pass
+
+        statm = cls._read_memory_control_text('/proc/self/statm', file_reader=file_reader)
+        if statm:
+            fields = str(statm).split()
+            if fields:
+                try:
+                    pages = int(fields[0])
+                    if sysconf_func is None:
+                        import os
+                        page_size = int(os.sysconf('SC_PAGE_SIZE'))
+                    else:
+                        page_size = int(sysconf_func('SC_PAGE_SIZE'))
+                    if pages >= 0 and page_size > 0:
+                        return pages * page_size
+                except (ImportError, OSError, TypeError, ValueError):
+                    pass
+        return None
+
+    @classmethod
+    def _detect_rlimit_as_remaining_bytes(cls, *, file_reader=None,
+                                           psutil_module=None,
+                                           allow_psutil=True,
+                                           sysconf_func=None,
+                                           rlimit_as_soft=None,
+                                           current_vms_bytes=None):
+        """Return finite RLIMIT_AS headroom when both limit and current VMS are reliable."""
+        if rlimit_as_soft is None:
+            try:
+                import resource
+                soft, _hard = resource.getrlimit(resource.RLIMIT_AS)
+                if soft == resource.RLIM_INFINITY or soft < 0:
+                    return None
+                rlimit_as_soft = int(soft)
+            except (ImportError, AttributeError, OSError, TypeError, ValueError):
+                return None
+        else:
+            try:
+                rlimit_as_soft = int(rlimit_as_soft)
+            except (TypeError, ValueError):
+                return None
+            if rlimit_as_soft < 0:
+                return None
+
+        if current_vms_bytes is None:
+            current_vms_bytes = cls._detect_current_vms_bytes(
+                file_reader=file_reader,
+                psutil_module=psutil_module,
+                allow_psutil=allow_psutil,
+                sysconf_func=sysconf_func,
+            )
+        if current_vms_bytes is None:
+            return None
+        try:
+            current_vms_bytes = int(current_vms_bytes)
+        except (TypeError, ValueError):
+            return None
+        if current_vms_bytes < 0:
+            return None
+        return max(0, rlimit_as_soft - current_vms_bytes)
+
+    @classmethod
+    def _detect_effective_memory_capacity(cls, *, file_reader=None,
+                                           psutil_module=None,
+                                           allow_psutil=True,
+                                           sysconf_func=None,
+                                           cgroup_text=None,
+                                           mountinfo_text=None,
+                                           rlimit_as_soft=None,
+                                           current_vms_bytes=None):
+        """Detect effective currently available memory without adding swap capacity."""
+        host = cls._detect_host_available_memory_bytes(
+            file_reader=file_reader,
+            psutil_module=psutil_module,
+            allow_psutil=allow_psutil,
+            sysconf_func=sysconf_func,
+        )
+        cgroup = cls._detect_cgroup_memory_remaining_bytes(
+            file_reader=file_reader,
+            cgroup_text=cgroup_text,
+            mountinfo_text=mountinfo_text,
+        )
+        rlimit = cls._detect_rlimit_as_remaining_bytes(
+            file_reader=file_reader,
+            psutil_module=psutil_module,
+            allow_psutil=allow_psutil,
+            sysconf_func=sysconf_func,
+            rlimit_as_soft=rlimit_as_soft,
+            current_vms_bytes=current_vms_bytes,
+        )
+        finite = [int(v) for v in (host, cgroup, rlimit) if v is not None and int(v) >= 0]
+        effective = min(finite) if finite else None
+        return {
+            'host_available_bytes': host,
+            'cgroup_remaining_bytes': cgroup,
+            'rlimit_as_remaining_bytes': rlimit,
+            'effective_available_bytes': effective,
+        }
+
+    @staticmethod
+    def _density_known_working_set_factor(*, need_counts=False,
+                                           weight_mode='extensive',
+                                           horizontal_smoothing=False,
+                                           time_avg_conc=False,
+                                           avg_output_ratio=0.0,
+                                           unstructured=False):
+        """Return the modeled known-working-set factor relative to H + optional H_count."""
+        if weight_mode not in ('extensive', 'mean'):
+            raise ValueError("weight_mode must be 'extensive' or 'mean'.")
+        if unstructured and horizontal_smoothing:
+            raise NotImplementedError(
+                'horizontal_smoothing is not implemented yet for triangular unstructured output grids.'
+            )
+        try:
+            ratio = float(avg_output_ratio)
+        except (TypeError, ValueError):
+            raise ValueError('avg_output_ratio must be a finite number in the interval [0, 1].')
+        if not np.isfinite(ratio) or ratio < 0.0 or ratio > 1.0:
+            raise ValueError('avg_output_ratio must be a finite number in the interval [0, 1].')
+        if not time_avg_conc and ratio != 0.0:
+            raise ValueError('avg_output_ratio must be 0 when time_avg_conc=False.')
+
+        h = 1.0
+        c = 1.0 if need_counts else 0.0
+        primary = h + c
+        primary_stage = primary
+        divide_stage = (2.0 * h + c) if weight_mode == 'mean' else primary
+
+        if time_avg_conc:
+            average_stage = primary + ratio * h + (ratio * h if need_counts else 0.0)
+            if horizontal_smoothing:
+                post_stage = primary + 2.0 * ratio * h + (2.0 * ratio * h if need_counts else 0.0)
+            else:
+                post_stage = average_stage
+        elif horizontal_smoothing:
+            post_stage = primary + h + (h if need_counts else 0.0)
+        else:
+            post_stage = primary
+
+        known_peak = max(primary_stage, divide_stage, post_stage)
+        return known_peak / primary
+
+    @classmethod
+    def _estimate_density_known_working_set_bytes(cls, shape, *, need_counts=False,
+                                                   weight_mode='extensive',
+                                                   horizontal_smoothing=False,
+                                                   time_avg_conc=False,
+                                                   avg_output_ratio=0.0,
+                                                   unstructured=False):
+        """Estimate known large-array bytes for the current writer mode.
+
+        This is a deterministic model of the current persistent full-shape arrays
+        plus the documented mean-mode full-shape divide result. It is not an RSS
+        prediction and excludes smaller/library temporaries.
+        """
+        from math import prod
+        dims = tuple(int(v) for v in shape)
+        if not dims or any(v < 0 for v in dims):
+            raise ValueError(f'Invalid histogram shape for memory estimate: {shape!r}')
+        cells = int(prod(dims))
+        h = cells * np.dtype(np.float32).itemsize
+        c = cells * np.dtype(np.uint32).itemsize if need_counts else 0
+        primary = h + c
+        factor = cls._density_known_working_set_factor(
+            need_counts=need_counts,
+            weight_mode=weight_mode,
+            horizontal_smoothing=horizontal_smoothing,
+            time_avg_conc=time_avg_conc,
+            avg_output_ratio=avg_output_ratio,
+            unstructured=unstructured,
+        )
+        known_peak = int(round(primary * factor))
+        return {
+            'h_bytes': int(h),
+            'h_count_bytes': int(c),
+            'primary_bytes': int(primary),
+            'mode_factor': float(factor),
+            'known_working_set_bytes': known_peak,
+        }
+
+    @classmethod
+    def _resolve_density_memory_budget(cls, memory_budget_mb, *,
+                                       need_counts=False,
+                                       weight_mode='extensive',
+                                       horizontal_smoothing=False,
+                                       time_avg_conc=False,
+                                       avg_output_ratio=0.0,
+                                       unstructured=False,
+                                       memory_auto_fraction=0.50,
+                                       memory_auto_reserve_mb=1024,
+                                       memory_auto_reserve_fraction=0.20,
+                                       memory_capacity_report=None,
+                                       detector_kwargs=None):
+        """Resolve None, explicit MiB, or 'auto' to a primary-histogram MiB budget."""
+        if memory_budget_mb is None:
+            return None, {
+                'mode': 'none',
+                'resolved_primary_budget_bytes': None,
+                'decision': 'ALLOW',
+            }
+
+        if isinstance(memory_budget_mb, str):
+            if memory_budget_mb != 'auto':
+                raise ValueError("memory_budget_mb must be None, a finite positive number, or 'auto'.")
+        else:
+            if isinstance(memory_budget_mb, (bool, np.bool_)):
+                raise ValueError("memory_budget_mb must be None, a finite positive number, or 'auto'.")
+            try:
+                value = float(memory_budget_mb)
+            except (TypeError, ValueError):
+                raise ValueError("memory_budget_mb must be None, a finite positive number, or 'auto'.")
+            if not np.isfinite(value) or value <= 0:
+                raise ValueError('memory_budget_mb must be a finite positive number when supplied.')
+            return value, {
+                'mode': 'explicit',
+                'resolved_primary_budget_bytes': value * (1024.0 ** 2),
+                'decision': 'ALLOW',
+            }
+
+        # Auto-only policy validation.
+        try:
+            auto_fraction = float(memory_auto_fraction)
+            reserve_mb = float(memory_auto_reserve_mb)
+            reserve_fraction = float(memory_auto_reserve_fraction)
+        except (TypeError, ValueError):
+            raise ValueError('Auto-memory controls must be finite numeric values.')
+        if not np.isfinite(auto_fraction) or not (0.0 < auto_fraction <= 1.0):
+            raise ValueError('memory_auto_fraction must satisfy 0 < value <= 1.')
+        if not np.isfinite(reserve_mb) or reserve_mb < 0.0:
+            raise ValueError('memory_auto_reserve_mb must be a finite non-negative number.')
+        if not np.isfinite(reserve_fraction) or not (0.0 <= reserve_fraction < 1.0):
+            raise ValueError('memory_auto_reserve_fraction must satisfy 0 <= value < 1.')
+
+        if memory_capacity_report is None:
+            memory_capacity_report = cls._detect_effective_memory_capacity(**(detector_kwargs or {}))
+        capacity = dict(memory_capacity_report)
+        effective = capacity.get('effective_available_bytes')
+        if effective is None:
+            raise RuntimeError(
+                "memory_budget_mb='auto' could not determine a reliable available-memory capacity. "
+                "Use an explicit numeric memory_budget_mb value or memory_budget_mb=None."
+            )
+        try:
+            effective = int(effective)
+        except (TypeError, ValueError):
+            raise RuntimeError(
+                "memory_budget_mb='auto' received an invalid available-memory capacity. "
+                "Use an explicit numeric memory_budget_mb value or memory_budget_mb=None."
+            )
+        if effective < 0:
+            raise RuntimeError(
+                "memory_budget_mb='auto' received a negative available-memory capacity. "
+                "Use an explicit numeric memory_budget_mb value or memory_budget_mb=None."
+            )
+
+        reserve_bytes = max(reserve_mb * (1024.0 ** 2), effective * reserve_fraction)
+        usable_bytes = max(0.0, effective - reserve_bytes)
+        working_set_allowance = usable_bytes * auto_fraction
+        mode_factor = cls._density_known_working_set_factor(
+            need_counts=need_counts,
+            weight_mode=weight_mode,
+            horizontal_smoothing=horizontal_smoothing,
+            time_avg_conc=time_avg_conc,
+            avg_output_ratio=avg_output_ratio,
+            unstructured=unstructured,
+        )
+        resolved_primary_bytes = working_set_allowance / mode_factor if mode_factor > 0 else 0.0
+        report = {
+            'mode': 'auto',
+            'host_available_bytes': capacity.get('host_available_bytes'),
+            'cgroup_remaining_bytes': capacity.get('cgroup_remaining_bytes'),
+            'rlimit_as_remaining_bytes': capacity.get('rlimit_as_remaining_bytes'),
+            'effective_available_bytes': effective,
+            'reserve_bytes': reserve_bytes,
+            'usable_bytes': usable_bytes,
+            'memory_auto_fraction': auto_fraction,
+            'memory_auto_reserve_mb': reserve_mb,
+            'memory_auto_reserve_fraction': reserve_fraction,
+            'working_set_allowance_bytes': working_set_allowance,
+            'need_counts': bool(need_counts),
+            'weight_mode': weight_mode,
+            'horizontal_smoothing': bool(horizontal_smoothing),
+            'time_avg_conc': bool(time_avg_conc),
+            'avg_output_ratio': float(avg_output_ratio),
+            'mode_factor': float(mode_factor),
+            'resolved_primary_budget_bytes': resolved_primary_bytes,
+            'decision': 'ALLOW',
+        }
+        return resolved_primary_bytes / (1024.0 ** 2), report
+
+    def _finalize_density_memory_report(self, report, *,
+                                        actual_primary_estimate_bytes=None,
+                                        decision='ALLOW', reason=None):
+        out = dict(report or {})
+        out['decision'] = str(decision)
+        if reason is not None:
+            out['reason'] = str(reason)
+        if actual_primary_estimate_bytes is not None:
+            actual = int(actual_primary_estimate_bytes)
+            out['actual_primary_estimate_bytes'] = actual
+            factor = out.get('mode_factor')
+            if factor is not None:
+                out['known_working_set_estimate_bytes'] = int(round(actual * float(factor)))
+        self._last_density_memory_report = out
+        return out
+
+    @staticmethod
     def _estimate_density_histogram_bytes(shape, need_counts=False):
         """Minimum bytes required for the full histogram arrays.
 
@@ -1750,7 +2245,10 @@ class ChemicalDriftPostProcessMixin:
             Zx = len(z_array) - 1
 
             hist_shape = (n_timef, Nout, Zx, nface)
-            self._last_density_allocation_estimate_bytes = self._check_density_histogram_allocation(
+            self._last_density_allocation_estimate_bytes = self._estimate_density_histogram_bytes(
+                hist_shape, need_counts=need_counts
+            )
+            self._check_density_histogram_allocation(
                 hist_shape, need_counts=need_counts, memory_budget_mb=memory_budget_mb
             )
             H = np.zeros(hist_shape, dtype=np.float32)
@@ -1919,7 +2417,10 @@ class ChemicalDriftPostProcessMixin:
             raise ValueError('z_array must contain at least two edges.')
         Zx = len(z_array) - 1
         hist_shape = (n_timef, Nout, Zx, Xx, Yx)
-        self._last_density_allocation_estimate_bytes = self._check_density_histogram_allocation(
+        self._last_density_allocation_estimate_bytes = self._estimate_density_histogram_bytes(
+            hist_shape, need_counts=need_counts
+        )
+        self._check_density_histogram_allocation(
             hist_shape, need_counts=need_counts, memory_budget_mb=memory_budget_mb
         )
         H = np.zeros(hist_shape, dtype=np.float32)
@@ -5109,7 +5610,10 @@ class ChemicalDriftPostProcessMixin:
                                           bathymetry_conservative_backend='auto',
                                           bathymetry_conservative_weights=None,
                                           bathymetry_large_domain_backend='scrip',
-                                          memory_budget_mb=None):
+                                          memory_budget_mb=None,
+                                          memory_auto_fraction=0.50,
+                                          memory_auto_reserve_mb=1024,
+                                          memory_auto_reserve_fraction=0.20):
         '''
         write_netcdf_chemical_density_map
 
@@ -5172,10 +5676,18 @@ class ChemicalDriftPostProcessMixin:
 
             time_chunk_size:       int, number of timesteps computed per chunk.
 
-            memory_budget_mb:      optional positive float. Before allocating the primary
-                                   full histogram arrays, reject the request if their minimum
-                                   estimated size exceeds this budget in MiB. The estimate
-                                   does not include later smoothing/averaging temporaries.
+            memory_budget_mb:      None, a positive numeric MiB value, or 'auto'. A numeric
+                                   value remains a hard limit for the minimum primary H/H_count
+                                   allocation. 'auto' detects current effective memory, applies
+                                   reserve/headroom policy, models known large writer arrays,
+                                   and resolves a numeric primary-histogram budget before allocation.
+                                   Auto mode is a conservative guard, not an OOM guarantee.
+
+            memory_auto_fraction:  float in (0, 1], default 0.50. Fraction of usable memory
+                                   available to the modeled known writer working set in auto mode.
+            memory_auto_reserve_mb: non-negative float, default 1024 MiB. Absolute reserve.
+            memory_auto_reserve_fraction: float in [0, 1), default 0.20. Fractional reserve.
+                                   Auto mode uses the larger absolute/fractional reserve.
 
             horizontal_smoothing:  boolean, smooth concentration horizontally.
 
@@ -5752,7 +6264,11 @@ class ChemicalDriftPostProcessMixin:
         topo_raw = aslt_raw = None
         grid = None
         avg_times = None
+        avg_time_bounds = None
         filtered_times = None
+        planned_avg_layout = None
+        resolved_memory_budget_mb = memory_budget_mb
+        memory_report = None
 
         try:
             explicit_grid = None
@@ -5768,6 +6284,12 @@ class ChemicalDriftPostProcessMixin:
                 pixelsize_m = None
                 lat_resol = None
                 lon_resol = None
+
+            unstructured = explicit_grid is not None and explicit_grid.get('topology') == 'triangular_unstructured'
+            if unstructured and horizontal_smoothing:
+                raise NotImplementedError(
+                    'horizontal_smoothing is not implemented yet for triangular unstructured output grids.'
+                )
 
             if explicit_grid is None:
                 if sum(x is None for x in [lat_resol, lon_resol]) == 1:
@@ -5824,6 +6346,15 @@ class ChemicalDriftPostProcessMixin:
                 filtered_times = np.array(all_times)[tmask]
             else:
                 filtered_times = np.asarray(all_times)
+
+            avg_output_ratio = 0.0
+            if time_avg_conc:
+                planned_avg_layout = _compute_snapshot_block_layout(filtered_times, deltat)
+                _ndt_plan, _odt_plan, avg_times, avg_time_bounds = planned_avg_layout
+                if _odt_plan == 0:
+                    logger.warning('No snapshots available for block averaging.')
+                    return
+                avg_output_ratio = float(_odt_plan) / float(len(filtered_times))
 
             if landmask_shapefile is not None:
                 old_shape_reader = self.env.readers.pop('shape', None)
@@ -5957,16 +6488,77 @@ class ChemicalDriftPostProcessMixin:
             z_array = self._build_z_array(zlevels, zmin_cap=-10000.0, ztop=0.0)
             need_counts = elements_density or (weight_mode == 'mean')
             write_density = elements_density or (weight_mode == 'mean')
-            H, x_centers, y_centers, lon_center_2d, lat_center_2d, H_count, keep_species, name_species_out = self.get_chemical_density_array(
-                pixelsize_m=pixelsize_m, is_moll=is_moll, is_latlon=is_latlon, z_array=z_array,
-                lat_resol=lat_resol, lon_resol=lon_resol, density_proj=density_proj,
-                llcrnrlon=llcrnrlon, llcrnrlat=llcrnrlat, urcrnrlon=urcrnrlon, urcrnrlat=urcrnrlat,
-                weight=weight, origin_marker=origin_marker, active_status=active_status,
-                elements_density=need_counts, time_start=time_start, time_end=time_end, time_chunk_size=time_chunk_size,
-                timestep_values=timestep_values, compress_species=compress_species, weight_mode=weight_mode,
-                output_grid=explicit_grid, memory_budget_mb=memory_budget_mb)
+            memory_capacity_report = None
+            if memory_budget_mb == 'auto':
+                memory_capacity_report = self._detect_effective_memory_capacity()
+            try:
+                resolved_memory_budget_mb, memory_report = self._resolve_density_memory_budget(
+                    memory_budget_mb,
+                    need_counts=need_counts,
+                    weight_mode=weight_mode,
+                    horizontal_smoothing=horizontal_smoothing,
+                    time_avg_conc=time_avg_conc,
+                    avg_output_ratio=avg_output_ratio,
+                    unstructured=unstructured,
+                    memory_auto_fraction=memory_auto_fraction,
+                    memory_auto_reserve_mb=memory_auto_reserve_mb,
+                    memory_auto_reserve_fraction=memory_auto_reserve_fraction,
+                    memory_capacity_report=memory_capacity_report,
+                )
+            except Exception as exc:
+                if memory_budget_mb == 'auto':
+                    failure_report = dict(memory_capacity_report or {})
+                    failure_report['mode'] = 'auto'
+                    self._finalize_density_memory_report(
+                        failure_report, decision='REJECT', reason=f'auto_budget_resolution_failed: {exc}'
+                    )
+                    logger.warning('Automatic density-memory planning rejected the request before histogram allocation: %s', exc)
+                raise
+            self._last_density_allocation_estimate_bytes = None
+            self._finalize_density_memory_report(memory_report, decision='ALLOW')
+            try:
+                H, x_centers, y_centers, lon_center_2d, lat_center_2d, H_count, keep_species, name_species_out = self.get_chemical_density_array(
+                    pixelsize_m=pixelsize_m, is_moll=is_moll, is_latlon=is_latlon, z_array=z_array,
+                    lat_resol=lat_resol, lon_resol=lon_resol, density_proj=density_proj,
+                    llcrnrlon=llcrnrlon, llcrnrlat=llcrnrlat, urcrnrlon=urcrnrlon, urcrnrlat=urcrnrlat,
+                    weight=weight, origin_marker=origin_marker, active_status=active_status,
+                    elements_density=need_counts, time_start=time_start, time_end=time_end, time_chunk_size=time_chunk_size,
+                    timestep_values=timestep_values, compress_species=compress_species, weight_mode=weight_mode,
+                    output_grid=explicit_grid, memory_budget_mb=resolved_memory_budget_mb)
+            except MemoryError:
+                actual_primary = getattr(self, '_last_density_allocation_estimate_bytes', None)
+                if (actual_primary is not None
+                        and resolved_memory_budget_mb is not None
+                        and actual_primary > float(resolved_memory_budget_mb) * (1024.0 ** 2)):
+                    reason = (
+                        'primary_histogram_exceeds_resolved_auto_budget'
+                        if memory_budget_mb == 'auto'
+                        else 'primary_histogram_exceeds_explicit_budget'
+                    )
+                    report = self._finalize_density_memory_report(
+                        memory_report, actual_primary_estimate_bytes=actual_primary,
+                        decision='REJECT', reason=reason
+                    )
+                    if memory_budget_mb == 'auto':
+                        logger.warning(
+                            'Automatic density-memory planning rejected primary histogram %.1f MiB; resolved budget %.1f MiB.',
+                            actual_primary / (1024.0 ** 2), resolved_memory_budget_mb,
+                        )
+                raise
+            actual_primary = getattr(self, '_last_density_allocation_estimate_bytes', None)
+            report = self._finalize_density_memory_report(
+                memory_report, actual_primary_estimate_bytes=actual_primary, decision='ALLOW'
+            )
+            if memory_budget_mb == 'auto':
+                logger.info(
+                    'Automatic density-memory planning ALLOW: effective=%.1f MiB, primary=%.1f MiB, '
+                    'resolved primary budget=%.1f MiB, mode_factor=%.3f.',
+                    report['effective_available_bytes'] / (1024.0 ** 2),
+                    report.get('actual_primary_estimate_bytes', 0) / (1024.0 ** 2),
+                    report['resolved_primary_budget_bytes'] / (1024.0 ** 2),
+                    report['mode_factor'],
+                )
             nspecies_out = len(name_species_out)
-            unstructured = explicit_grid is not None and explicit_grid.get('topology') == 'triangular_unstructured'
 
             pixel_mean_depth, pixel_area, pixel_active_sediment_layer_thickness, bathy_invalid_mask, bathy_meta = self.get_pixel_mean_depth(
                 lon_center_2d,
@@ -6106,9 +6698,6 @@ class ChemicalDriftPostProcessMixin:
                     raise ValueError("H_count is required for weight_mode='mean'.")
                 H = _safe_divide_num_count(H, H_count)
 
-            if unstructured and horizontal_smoothing:
-                raise NotImplementedError('horizontal_smoothing is not implemented yet for triangular unstructured output grids.')
-
             Hsm = None
             Hcount_sm = None
             if horizontal_smoothing and not time_avg_conc:
@@ -6128,13 +6717,10 @@ class ChemicalDriftPostProcessMixin:
             mean_dens = None
             mean_field_sm = None
             mean_dens_sm = None
-            avg_times = None
-            avg_time_bounds = None
             if time_avg_conc:
-                ndt, odt, avg_times, avg_time_bounds = _compute_snapshot_block_layout(filtered_times, deltat)
-                if odt == 0:
-                    logger.warning('No snapshots available for block averaging.')
-                    return
+                if planned_avg_layout is None:
+                    raise RuntimeError('Internal error: time-averaging layout was not planned before histogram allocation.')
+                ndt, odt, avg_times, avg_time_bounds = planned_avg_layout
                 if unstructured:
                     mean_field = np.full((odt, H.shape[1], H.shape[2], H.shape[3]), np.nan, dtype=np.float32)
                 else:
