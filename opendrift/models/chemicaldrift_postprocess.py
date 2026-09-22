@@ -20982,18 +20982,12 @@ class ChemicalDriftPostProcessMixin:
 
             ### Conservative horizontal regridding helpers
             def _maybe_depth_dim(da, candidates=("depth", "z", "lev", "level")):
-                """
-                Return the first matching depth-like dimension name present in the DataArray.
-                """
                 for nm in candidates:
                     if nm in da.dims:
                         return nm
                 return None
 
             def _centers_to_edges_1d(c):
-                """
-                Convert 1D cell centers to edges along an axis (used for conservative grids).
-                """
                 c = np.asarray(c, dtype=np.float64)
                 if c.size < 2:
                     half = 0.5 * (c[0] if c[0] != 0 else 1.0)
@@ -21004,9 +20998,6 @@ class ChemicalDriftPostProcessMixin:
                 return np.concatenate([[first], mid, [last]])
 
             def _hash_grid(lon_in, lat_in, lon_out, lat_out, method):
-                """
-                Compute a short hash identifier for a source/destination grid pair plus method.
-                """
                 h = hashlib.sha1()
                 for arr in (lon_in, lat_in, lon_out, lat_out):
                     a = np.asarray(arr, dtype=np.float64)
@@ -21015,9 +21006,6 @@ class ChemicalDriftPostProcessMixin:
                 return h.hexdigest()[:10]
 
             def _make_rect_grid(lon, lat):
-                """
-                Build a rectilinear xarray Dataset with cell centers and edges for xESMF.
-                """
                 lon = np.asarray(lon, dtype=np.float64)
                 lat = np.asarray(lat, dtype=np.float64)
                 return xr.Dataset(coords=dict(
@@ -21111,10 +21099,6 @@ class ChemicalDriftPostProcessMixin:
                 return out
 
             def _safe_assign_depth(da, depth_dim, coord_vals):
-                """
-                Assign depth coordinates to a DataArray, enforcing size consistency
-                between data along depth_dim and coord_vals.
-                """
                 coord_vals = np.asarray(coord_vals)
                 if da.sizes[depth_dim] != coord_vals.size:
                     raise ValueError(
@@ -21147,294 +21131,122 @@ class ChemicalDriftPostProcessMixin:
             def _topography_values_equal(left, right):
                 return self._topography_equal(left, right, compare_coords=False)
 
-                if depth_dim is None:
-                    depth_dim = _maybe_depth_dim(mass_src)
-
-                dims = list(mass_src.dims)
-                front = [d for d in dims if d not in (lat_name, lon_name)]
-                if depth_dim in front:
-                    front.remove(depth_dim)
-                    lead = front + [depth_dim]
-                else:
-                    lead = front
-
-                M = mass_src.transpose(
-                    *front,
-                    *([depth_dim] if depth_dim else []),
-                    lat_name,
-                    lon_name,
-                    missing_dims="ignore")
-
-                def _edges_1d(x, periodic=False):
-                    """
-                    Convert 1D centers to edges, optionally periodic in longitude.
-                    """
-                    x = np.asarray(x, dtype=np.float64)
-                    if x.size == 1:
-                        half = 0.5 * (x[0] if x[0] != 0 else 1.0)
-                        return np.array([x[0] - half, x[0] + half], dtype=np.float64)
-
-                    dx = np.diff(x)
-                    mids = x[:-1] + 0.5 * dx
-                    first = x[0] - 0.5 * dx[0]
-                    last = x[-1] + 0.5 * dx[-1]
-                    e = np.concatenate(([first], mids, [last]))
-                    if periodic:
-                        span = x[-1] - x[0] + dx[-1]
-                        e[0] = x[0] - 0.5 * dx[0]
-                        e[-1] = e[0] + span
-                    return e
-
-                def make_rect_grid(lon_1d, lat_1d, *, periodic=False):
-                    """
-                    Create xESMF rectilinear grid Dataset from 1D lon/lat.
-                    """
-                    lon = np.asarray(lon_1d, dtype=np.float64)
-                    lat = np.asarray(lat_1d, dtype=np.float64)
-                    return xr.Dataset(
-                        coords=dict(
-                            lon=(("lon",), lon),
-                            lat=(("lat",), lat),
-                            lon_b=(("lon_b",), _edges_1d(lon, periodic=periodic)),
-                            lat_b=(("lat_b",), _edges_1d(lat, periodic=False)),))
-
-                src_grid = make_rect_grid(
-                    np.asarray(M[lon_name].values),
-                    np.asarray(M[lat_name].values),
-                    periodic=periodic)
-
-                dst_grid = make_rect_grid(
-                    np.asarray(lon_out),
-                    np.asarray(lat_out),
-                    periodic=periodic)
-
-                method = "conservative"
-                weights_path, reuse = None, False
-                if weights_dir is not None:
-                    gid = _hash_grid(
-                        np.asarray(M[lon_name].values),
-                        np.asarray(M[lat_name].values),
-                        np.asarray(lon_out),
-                        np.asarray(lat_out),
-                        method=method,)
-                    os.makedirs(weights_dir, exist_ok=True)
-                    weights_path = os.path.join(weights_dir, f"mass_{method}_{gid}.nc")
-                    reuse = os.path.exists(weights_path)
-
-                R = xe.Regridder(
-                    src_grid,
-                    dst_grid,
-                    method=method,
-                    periodic=periodic,
-                    filename=weights_path,
-                    reuse_weights=reuse,)
-                if weights_path is not None and not reuse:
-                    R.to_netcdf(weights_path)
-
-                if lead:
-                    # Save lead-dim metadata BEFORE stacking
-                    M0 = M.transpose(*lead, lat_name, lon_name)
-                    lead_sizes = [M0.sizes[d] for d in lead]
-                    lead_coords = {
-                        d: (np.asarray(M0.coords[d].values) if d in M0.coords else np.arange(M0.sizes[d]))
-                        for d in lead}
-
-                    # Stack for xESMF, but rebuild explicitly after regrid
-                    M_stacked = M0.stack(_lead=lead).transpose("_lead", lat_name, lon_name)
-
-                    out_stacked = R(M_stacked)
-
-                    rename_map = {}
-                    if "lat" in out_stacked.dims:
-                        rename_map["lat"] = lat_name
-                    if "lon" in out_stacked.dims:
-                        rename_map["lon"] = lon_name
-                    if rename_map:
-                        out_stacked = out_stacked.rename(rename_map)
-
-                    out_stacked = out_stacked.transpose("_lead", lat_name, lon_name)
-
-                    out_vals = np.asarray(out_stacked.data).reshape(
-                        *lead_sizes,
-                        len(lat_out), len(lon_out),)
-
-                    out = xr.DataArray(
-                        out_vals,
-                        dims=tuple(lead) + (lat_name, lon_name),
-                        coords={
-                            **lead_coords,
-                            lat_name: np.asarray(lat_out),
-                            lon_name: np.asarray(lon_out),
-                        }, name=mass_src.name,)
-
-                    # Preserve scalar/non-dimension coords if any
-                    scalar_coords = {
-                        c: mass_src.coords[c]
-                        for c in mass_src.coords
-                        if c not in mass_src.dims and c not in out.coords}
-                    if scalar_coords:
-                        out = out.assign_coords(scalar_coords)
-
-                else:
-                    out = R(M)
-
-                    rename_map = {}
-                    if "lat" in out.dims:
-                        rename_map["lat"] = lat_name
-                    if "lon" in out.dims:
-                        rename_map["lon"] = lon_name
-                    if rename_map:
-                        out = out.rename(rename_map)
-
-                    out = out.transpose(lat_name, lon_name)
-                    out = out.assign_coords({
-                        lat_name: (lat_name, lat_out),
-                        lon_name: (lon_name, lon_out),})
-
-                out.attrs.update(mass_src.attrs)
-                out.attrs["regrid_method"] = "conservative"
-                return out
-
-            ### Horizontal and vertical interpolation ###
             def regrid3d_conservative_with_topo(
                 da,
                 topo_src,
                 lat_can,
                 lon_can,
-                depth_top_can, # depth_top_can reserved for future vertical conservative remap
+                depth_top_can,
                 need_horizontal_interp,
                 need_vertical_interp,
                 *,
-                periodic_lon=True,
                 depth_dim="depth",
                 weights_dir=None,
                 idx=None,
                 idx_tot=None,
                 Verbose=True,
             ):
-                """
-                Apply mass-conservative regrid to 3D/2D concentration field using topography:
-                conservative xESMF horizontally, thickness-based vertically (not yet supported).
+                """Conservatively remap concentration through areal mass density.
+
+                ``q = concentration * thickness`` is an intensive areal mass density.
+                Ordinary conservative regridding preserves the area integral of q.
+                Thickness is remapped with ``conservative_normed`` so partial overlap
+                does not attenuate an otherwise constant bathymetry/thickness field.
+                Destination concentration is reconstructed as ``q_out / thickness_out``.
                 """
                 if Verbose:
                     print(f"Interpolating array {idx} out of {idx_tot - 1}")
-
                 if topo_src is None:
                     raise ValueError("topo_src not specified")
-
-                topo_src = topo_src.astype(np.float64).clip(min=0.0)
-
-                dd = depth_dim if depth_dim in da.dims else None
-                has_depth = dd is not None
-
-                A_src = self._cell_areas_from_1d(
-                    da["latitude"].values,
-                    da["longitude"].values,
-                    lat_name="latitude", lon_name="longitude",)
-
-                if has_depth:
-                    depth_top_src = np.asarray(da[dd].values, dtype=np.float64)
-                    z_edges_src_col = xr.concat(
-                        [
-                            xr.DataArray(
-                                depth_top_src,
-                                dims=(dd,),
-                                coords={dd: np.arange(depth_top_src.size)},
-                            ).broadcast_like(topo_src),
-                            topo_src.astype(np.float64).expand_dims({dd: [depth_top_src.size]}),
-                        ],
-                        dim=dd,).rename({dd: "depth_edge"}).transpose("depth_edge", "latitude", "longitude")
-
-                    dz_src = z_edges_src_col.diff("depth_edge").rename({"depth_edge": dd}).clip(min=0.0).astype(np.float64)
-                    dz_src = _safe_assign_depth(dz_src, dd, da[dd].values)
-
-                    vol_src = dz_src * A_src
-                    mass_src = da.fillna(0).astype(np.float64) * vol_src
-                else:
-                    vol_src = A_src * topo_src
-                    mass_src = da.fillna(0).astype(np.float64) * vol_src
-
-                if not need_horizontal_interp and not need_vertical_interp:
-                    if Verbose:
-                        print("No interpolation necessary")
-                    return da
-
                 if need_vertical_interp:
                     raise ValueError("Vertical interpolation not yet supported")
+                if not need_horizontal_interp:
+                    return da
 
-                mass_h = _regrid_horizontal_conservative_mass(
-                    mass_src=mass_src,
-                    lon_out=np.asarray(lon_can),
-                    lat_out=np.asarray(lat_can),
-                    periodic=periodic_lon,
+                dd = depth_dim if depth_dim in da.dims else None
+                thickness_src = _layer_thickness(da, topo_src, depth_dim=depth_dim)
+                payload_dtype = da.dtype if np.issubdtype(da.dtype, np.floating) else np.dtype(np.float64)
+                thickness_payload = thickness_src.astype(payload_dtype)
+                areal_mass_src = da.fillna(0).astype(payload_dtype) * thickness_payload
+
+                areal_mass_out = _regrid_intensive(
+                    areal_mass_src,
+                    lon_can, lat_can,
+                    method="conservative",
                     weights_dir=weights_dir,
-                    depth_dim=dd,)
-                vol_h = _regrid_horizontal_conservative_mass(
-                    mass_src=vol_src,
-                    lon_out=np.asarray(lon_can),
-                    lat_out=np.asarray(lat_can),
-                    periodic=periodic_lon,
+                    prefix="areal_mass",
+                )
+                thickness_out = _regrid_intensive(
+                    thickness_src,
+                    lon_can, lat_can,
+                    method="conservative_normed",
                     weights_dir=weights_dir,
-                    depth_dim=dd,)
+                    prefix="thickness",
+                ).clip(min=0.0)
 
-                if has_depth:
-                    vol_h = _safe_assign_depth(vol_h, depth_dim, da[depth_dim].values)
-                    mass_h = _safe_assign_depth(mass_h, depth_dim, da[depth_dim].values)
+                if dd is not None:
+                    areal_mass_out = _safe_assign_depth(areal_mass_out, dd, da[dd].values)
+                    thickness_out = _safe_assign_depth(thickness_out, dd, da[dd].values)
 
-                spatial_dims = [d for d in mass_src.dims if d in ("depth", "latitude", "longitude")]
-                m_in = mass_src.sum(dim=spatial_dims, skipna=True)
-                m_out = mass_h.sum(dim=spatial_dims, skipna=True)
+                # Independent physical conservation check: integrate areal mass density
+                # using source and destination cell areas, not the regridding operator itself.
+                A_src = self._cell_areas_from_1d(
+                    da["latitude"].values, da["longitude"].values,
+                    lat_name="latitude", lon_name="longitude",
+                ).astype(payload_dtype)
+                A_dst = self._cell_areas_from_1d(
+                    lat_can, lon_can,
+                    lat_name="latitude", lon_name="longitude",
+                ).astype(payload_dtype)
+                spatial_dims = [d for d in areal_mass_src.dims if d in ("depth", "latitude", "longitude")]
+                m_in = (areal_mass_src * A_src).sum(dim=spatial_dims, skipna=True, dtype=np.float64)
+                m_out = (areal_mass_out * A_dst).sum(dim=spatial_dims, skipna=True, dtype=np.float64)
                 xr.testing.assert_allclose(m_out, m_in, rtol=1e-6, atol=1e-12)
 
-                if Verbose:
-                    print(f"mass before regrid: {float(m_in.fillna(0).sum().item())}")
-                    print(f"mass after regrid:  {float(m_out.fillna(0).sum().item())}")
-
-                mass_fin = mass_h
-                vol_fin = vol_h
-
-                conc_out = (mass_fin / vol_fin.where(vol_fin > 0)).where(vol_fin > 0)
-
-                if Verbose:
-                    check_conc_original = np.array(da.sum())
-                    check_conc_out = np.array(conc_out.sum())
-                    print(f"check_conc_original: {check_conc_original}")
-                    print(f"check_conc_out: {check_conc_out}")
-
-                    if has_depth:
-                        Cvw_in = float((da * dz_src * A_src).sum() / (dz_src * A_src).sum())
-                    else:
-                        Cvw_in = float(mass_src.sum() / vol_src.sum())
-                    Cvw_out = float(mass_fin.sum() / vol_fin.sum())
-                    print(f"Cvw_in: {Cvw_in}")
-                    print(f"Cvw_out: {Cvw_out}")
+                thickness_for_payload = thickness_out.astype(payload_dtype)
+                conc_out = (areal_mass_out / thickness_for_payload.where(thickness_for_payload > 0)).where(
+                    thickness_for_payload > 0
+                )
+                if np.issubdtype(da.dtype, np.floating):
+                    conc_out = conc_out.astype(da.dtype)
 
                 lead = [d for d in da.dims if d not in ("latitude", "longitude") and (dd is None or d != dd)]
-                if has_depth:
+                if dd is not None:
                     conc_out = conc_out.transpose(*lead, dd, "latitude", "longitude", missing_dims="ignore")
                 else:
                     conc_out = conc_out.transpose(*lead, "latitude", "longitude", missing_dims="ignore")
-
-                conc_out.name = getattr(da, "name", "concentration")
+                conc_out.name = da.name
                 conc_out.attrs.update(da.attrs)
                 conc_out.attrs["regrid_note"] = (
-                    "mass-conserving: xESMF conservative (horizontal); "
-                    "vertical conservative remap not yet implemented")
+                    "mass-conserving horizontal remap of areal mass density; "
+                    "thickness uses conservative_normed; vertical remap not implemented"
+                )
                 return conc_out
 
-            with tempfile.TemporaryDirectory() as tmpdir:
-                # Conservative regrid of MASS
+            # A single common bathymetry is required for the aggregate. Coordinate
+            # labels can differ within the accepted interpolation tolerance, but the
+            # underlying topography values must be equivalent.
+            first_idx = ordered_keys[0]
+            topo_ref = DataArray_dict_work[first_idx].get("topo")
+            if topo_ref is None:
+                raise ValueError("Interpolation requires topography for every input")
+            for key in ordered_keys[1:]:
+                topo_other = DataArray_dict_work[key].get("topo")
+                if topo_other is None or not _topography_values_equal(topo_ref, topo_other):
+                    raise ValueError(
+                        f"Interpolation requires equivalent topography across inputs; key {key} differs from {first_idx}"
+                    )
 
+            with tempfile.TemporaryDirectory() as tmpdir:
                 DataArray_ls = [
                     regrid3d_conservative_with_topo(
-                        da=DataArray_dict_work[key][variable],    # concentration [mass/volume], dims (..., depth, latitude, longitude)
-                        topo_src=DataArray_dict_work[key]["topo"],# 2-D topography [m] (bottom on source), positve downword, dims include ('latitude','longitude')
-                        lat_can=lat_can,                          # 1-D canonical lat
-                        lon_can=lon_can,                          # 1-D canonical TOPS (m, positive down; include 0 if surface)
+                        da=DataArray_dict_work[key][variable],
+                        topo_src=DataArray_dict_work[key]["topo"],
+                        lat_can=lat_can,
+                        lon_can=lon_can,
                         depth_top_can=depth_top_can,
                         need_horizontal_interp=need_horizontal_interp,
                         need_vertical_interp=need_vertical_interp,
-                        periodic_lon=True,
                         depth_dim="depth",
                         weights_dir=tmpdir,
                         idx=key,
@@ -21443,18 +21255,16 @@ class ChemicalDriftPostProcessMixin:
                     for key in ordered_keys]
 
                 nan_counts_interp = {
-                    key: int(np.count_nonzero(np.isnan(da.values)))
-                    for key, da in zip(ordered_keys, DataArray_ls)}
+                    key: self._lazy_scalar_int(da.isnull().sum())
+                    for key, da in zip(ordered_keys, DataArray_ls)
+                }
 
-                first_idx = ordered_keys[0]
-                H_can_out = regrid_topography_conservative(
-                    H_src=DataArray_dict_work[first_idx]["topo"],
+                H_can_out = regrid_topography_conservative_normed(
+                    H_src=topo_ref,
                     lat_out=lat_can,
                     lon_out=lon_can,
-                    periodic=True,
                     weights_dir=tmpdir,
                 ).where(lambda x: x > 0, 0.0)
-
                 common_topo_for_mass = H_can_out
 
         else:
