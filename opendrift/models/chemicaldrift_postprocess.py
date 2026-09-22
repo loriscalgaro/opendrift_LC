@@ -10802,7 +10802,7 @@ class ChemicalDriftPostProcessMixin:
                 )
 
             return {
-                "schema_version": 2,
+                "schema_version": 1,
                 "execution_mode": "estimate" if dry_run else "seed",
                 "dry_run": bool(dry_run),
                 "mode": str(mode),
@@ -14054,7 +14054,7 @@ class ChemicalDriftPostProcessMixin:
                 'source': 'element', 'units': '1', 'long_name': 'OpenDrift element status code',
                 'summary_mode': 'special', 'processor': 'event_status'},
         }
-        
+
         # Chemical element fields inherit their physical unit directly from the
         # authoritative element definitions. Optional diagnostic fields are added
         # even when not active in a particular run; presence in self.result still
@@ -14080,7 +14080,7 @@ class ChemicalDriftPostProcessMixin:
                 'summary_mode': 'mean',
                 'zeros_valid': True,
             }
-        
+
         # Source variables consumed by dedicated budget/event processors must never
         # be routed through the generic summary aggregator.
         for _name in (
@@ -14100,14 +14100,14 @@ class ChemicalDriftPostProcessMixin:
         if 'specie' in registry:
             registry['specie'].update({
                 'summary_mode': 'special', 'processor': 'species_budget'})
-        
+
         # Infinite oxygen penetration can be physically meaningful for a
         # non-reactive/deeply oxygenated layer. The summary mean remains finite-only
         # and a companion positive-infinity count preserves that information.
         if 'sed_o2_penetration_depth' in registry:
             registry['sed_o2_penetration_depth'][
                 'report_positive_infinity_count'] = True
-        
+
         for _name, _meta in cls._ENVIRONMENT_SUMMARY_METADATA.items():
             _entry = {
                 'source': 'environment',
