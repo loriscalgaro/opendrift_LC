@@ -20105,10 +20105,11 @@ class ChemicalDriftPostProcessMixin:
 
     @staticmethod
     def _normalize_inputs(DataArray_dict, DataArray_ls, variable):
-        """
-        Ensure the correct format of DataArray_ls.
-        """
+        """Normalize sum inputs and reject incomplete dictionary members.
 
+        Dictionary aggregation is strict: every member must contain a non-None
+        value for ``variable``. Silent omission would under-count the aggregate.
+        """
         if DataArray_dict is None and DataArray_ls is None:
             raise ValueError("Either DataArray_dict or DataArray_ls must be provided.")
 
@@ -20124,13 +20125,17 @@ class ChemicalDriftPostProcessMixin:
 
             # Build list from dict, keep mapping list index → dict key
             sorted_items = sorted(DataArray_dict.items())
-            index_keys = []
-            DataArray_ls = []
+            missing = [
+                idx_key for idx_key, inner in sorted_items
+                if variable not in inner or inner[variable] is None
+            ]
+            if missing:
+                raise ValueError(
+                    f"DataArray_dict members missing non-None variable {variable!r}: {missing}"
+                )
 
-            for idx_key, inner in sorted_items:
-                if variable in inner and inner[variable] is not None:
-                    DataArray_ls.append(inner[variable])
-                    index_keys.append(idx_key)
+            index_keys = [idx_key for idx_key, _ in sorted_items]
+            DataArray_ls = [inner[variable] for _, inner in sorted_items]
 
         # If DataArray_dict is None, we just keep the passed DataArray_ls as-is
         if DataArray_ls is None or len(DataArray_ls) == 0:
@@ -20313,41 +20318,42 @@ class ChemicalDriftPostProcessMixin:
 
         return normalized
 
-    def _infer_horizontal_names(self, da):
-        """
-        Return (lat_name, lon_name) from a DataArray using common conventions.
+    def _infer_horizontal_names(self, da, allow_xy=True):
+        """Return horizontal coordinate names without changing coordinate meaning.
 
-        Accepted:
-          - latitude / longitude
-          - lat / lon
-          - lat / long
-          - y / x
-
-        The y/x fallback is needed for concentration outputs written on projected or
-        grid-index coordinates before they are normalized to latitude/longitude.
+        ``allow_xy`` keeps the historical x/y fallback for callers outside
+        ``sum_DataArray_list``. The summation path sets it to ``False`` because
+        spherical area and conservative geographic regridding require real
+        latitude/longitude coordinates.
         """
-        lat_name = next(
-            (n for n in ("latitude", "lat", "y") if n in da.dims or n in da.coords),
-            None,
-        )
-        lon_name = next(
-            (n for n in ("longitude", "lon", "long", "x") if n in da.dims or n in da.coords),
-            None,
-        )
+        lat_candidates = ("latitude", "lat") + (("y",) if allow_xy else ())
+        lon_candidates = ("longitude", "lon", "long") + (("x",) if allow_xy else ())
+        lat_name = next((n for n in lat_candidates if n in da.dims or n in da.coords), None)
+        lon_name = next((n for n in lon_candidates if n in da.dims or n in da.coords), None)
 
         if lat_name is None or lon_name is None:
+            if not allow_xy and any(n in da.dims or n in da.coords for n in ("x", "y")):
+                raise ValueError(
+                    "sum_DataArray_list requires geographic latitude/longitude coordinates; "
+                    "projected or index x/y coordinates must be transformed before aggregation."
+                )
             raise ValueError(
-                "Could not infer horizontal coordinates. Expected one of "
-                "latitude/lat/y and longitude/lon/long/x."
+                "Could not infer horizontal coordinates. Expected latitude/lat and "
+                "longitude/lon/long." if not allow_xy else
+                "Could not infer horizontal coordinates. Expected latitude/lat/y and longitude/lon/long/x."
             )
 
         return lat_name, lon_name
 
-    def _standardize_horizontal_names(self, da, lat_name="latitude", lon_name="longitude"):
+    def _standardize_horizontal_names(
+        self, da, lat_name="latitude", lon_name="longitude", allow_xy=True
+    ):
+        """Rename accepted horizontal geographic aliases to canonical names.
+
+        When ``allow_xy`` is false, projected/index x/y are rejected rather than
+        relabeled as geographic degrees.
         """
-        Rename common horizontal coordinate names to canonical names.
-        """
-        lat0, lon0 = self._infer_horizontal_names(da)
+        lat0, lon0 = self._infer_horizontal_names(da, allow_xy=allow_xy)
 
         rename_map = {}
         if lat0 != lat_name:
@@ -20373,6 +20379,66 @@ class ChemicalDriftPostProcessMixin:
             )
 
         return out
+
+    @staticmethod
+    def _metadata_values_equal(left, right):
+        """Return deterministic equality for NetCDF/xarray attribute values."""
+        import numpy as np
+
+        if left is right:
+            return True
+        try:
+            if isinstance(left, dict) or isinstance(right, dict):
+                return left == right
+            if isinstance(left, (np.ndarray, list, tuple)) or isinstance(right, (np.ndarray, list, tuple)):
+                a = np.asarray(left)
+                b = np.asarray(right)
+                if a.shape != b.shape:
+                    return False
+                try:
+                    return bool(np.array_equal(a, b, equal_nan=True))
+                except TypeError:
+                    return bool(np.array_equal(a, b))
+            try:
+                if bool(np.isnan(left)) and bool(np.isnan(right)):
+                    return True
+            except (TypeError, ValueError):
+                pass
+            eq = left == right
+            if np.isscalar(eq):
+                return bool(eq)
+            return bool(np.all(eq))
+        except Exception:
+            return False
+
+    @classmethod
+    def _common_attrs_safe(cls, DataArray_ls):
+        """Return attributes that are equal on every input without scalar-truth errors."""
+        common = DataArray_ls[0].attrs.copy()
+        for da in DataArray_ls[1:]:
+            common = {
+                key: value for key, value in common.items()
+                if key in da.attrs and cls._metadata_values_equal(value, da.attrs[key])
+            }
+        return common
+
+    @staticmethod
+    def _validate_sum_units(DataArray_ls):
+        """Require exact unit-string equality before numerical aggregation."""
+        units = [da.attrs.get("units", None) for da in DataArray_ls]
+        if all(unit is None for unit in units):
+            return None
+        if any(unit is None for unit in units):
+            raise ValueError(f"All summed DataArrays must declare the same units; got {units}")
+        if not all(isinstance(unit, str) and unit.strip() for unit in units):
+            raise ValueError(f"DataArray units must be non-empty strings; got {units}")
+        ref = units[0]
+        if any(unit != ref for unit in units[1:]):
+            raise ValueError(
+                "sum_DataArray_list does not auto-convert units; all inputs must use "
+                f"the exact same units string. Got {units}"
+            )
+        return ref
 
     def _cell_areas_from_1d(self, lat, lon, lat_name="latitude", lon_name="longitude", R=6371000.0):
         """
@@ -20408,6 +20474,64 @@ class ChemicalDriftPostProcessMixin:
             coords={lat_name: lat, lon_name: lon},
             name="cell_area",)
 
+    @staticmethod
+    def _lazy_scalar_value(reduced):
+        """Compute only a scalar reduction, preserving laziness of full payloads."""
+        import numpy as np
+
+        data = getattr(reduced, "data", reduced)
+        if hasattr(data, "compute"):
+            data = data.compute()
+        arr = np.asarray(data)
+        if arr.size != 1:
+            raise ValueError(f"Expected scalar reduction, got shape {arr.shape}")
+        return arr.reshape(()).item()
+
+    @classmethod
+    def _lazy_scalar_int(cls, reduced):
+        return int(cls._lazy_scalar_value(reduced))
+
+    @classmethod
+    def _topography_equal(cls, left, right, *, compare_coords=True):
+        """Compare 2-D topography with only scalar eager reduction.
+
+        Full payloads remain lazy when backed by a lazy array. Coordinate vectors are
+        small metadata and may be compared eagerly.
+        """
+        import numpy as np
+        import xarray as xr
+
+        a = left.transpose("latitude", "longitude")
+        b = right.transpose("latitude", "longitude")
+        if a.shape != b.shape:
+            return False
+        if compare_coords:
+            for dim in ("latitude", "longitude"):
+                if not np.array_equal(np.asarray(a[dim].values), np.asarray(b[dim].values)):
+                    return False
+        aa = xr.DataArray(a.data, dims=("latitude", "longitude"))
+        bb = xr.DataArray(b.data, dims=("latitude", "longitude"))
+        equal = (aa == bb) | (aa.isnull() & bb.isnull())
+        return bool(cls._lazy_scalar_value(equal.all()))
+
+    @staticmethod
+    def _reduce_spatial_valid_mask(aligned, time_name, mask_mode):
+        """Build the spatial any-over-time mask without retaining O(N) payload masks."""
+        if not aligned:
+            raise ValueError("aligned must contain at least one DataArray")
+        if mask_mode == "input0":
+            return aligned[0].notnull().any(dim=time_name), "input0-any-over-time"
+        acc = aligned[0].notnull().any(dim=time_name)
+        if mask_mode == "union":
+            for da in aligned[1:]:
+                acc = acc | da.notnull().any(dim=time_name)
+            return acc, "union-any-over-time"
+        if mask_mode == "intersection":
+            for da in aligned[1:]:
+                acc = acc & da.notnull().any(dim=time_name)
+            return acc, "intersection-any-over-time"
+        raise ValueError(f"Unsupported mask_mode {mask_mode!r}")
+
     def _extract_common_topo_from_dict(self, DataArray_dict, topo_key="topo"):
         """
         Return a common topography from DataArray_dict if all topographies are identical.
@@ -20433,8 +20557,7 @@ class ChemicalDriftPostProcessMixin:
 
         ref_key, ref_topo = topo_items[0]
         for k, topo in topo_items[1:]:
-            a, b = xr.align(ref_topo, topo, join="exact", copy=False)
-            if not np.array_equal(np.asarray(a.values), np.asarray(b.values), equal_nan=True):
+            if not self._topography_equal(ref_topo, topo, compare_coords=True):
                 raise ValueError(
                     f"Mass check requires one common topography, but topo for key {k} "
                     f"differs from topo for key {ref_key}.")
@@ -20567,13 +20690,112 @@ class ChemicalDriftPostProcessMixin:
         import xarray as xr
 
         vol, data = xr.align(cell_volume, da, join="exact", copy=False)
-        mass = data.fillna(0).astype(np.float64) * vol.astype(np.float64)
+        payload_dtype = data.dtype if np.issubdtype(data.dtype, np.floating) else np.dtype(np.float64)
+        mass = data.fillna(0).astype(payload_dtype) * vol.astype(payload_dtype)
 
         spatial_dims = [d for d in vol.dims if d in mass.dims]
         if spatial_dims:
-            mass = mass.sum(dim=spatial_dims, skipna=True)
+            mass = mass.sum(dim=spatial_dims, skipna=True, dtype=np.float64)
 
         return mass
+
+    @classmethod
+    def _build_target_time(
+        cls, DataArray_ls, time_name, start_date=None, end_date=None, freq_time=None,
+        max_working_memory_bytes=None,
+    ):
+        """Build a bounded target time axis and enforce memory budget before expansion."""
+        import numpy as np
+
+        def _dt64(value):
+            return np.datetime64(value, "ns")
+
+        input_min = min(_dt64(da[time_name].values.min()) for da in DataArray_ls)
+        input_max = max(_dt64(da[time_name].values.max()) for da in DataArray_ls)
+        start = input_min if start_date is None else _dt64(start_date)
+        end = input_max if end_date is None else _dt64(end_date)
+        if end < start:
+            raise ValueError(f"end_date {end} is earlier than start_date {start}")
+
+        budget = None
+        if max_working_memory_bytes is not None:
+            budget = int(max_working_memory_bytes)
+            if budget <= 0:
+                raise ValueError("max_working_memory_bytes must be a positive integer or None")
+
+        step = None
+        if freq_time is not None:
+            step = np.asarray(freq_time).astype("timedelta64[ns]").item()
+            step = np.timedelta64(step, "ns") if not isinstance(step, np.timedelta64) else step
+            if step <= np.timedelta64(0, "ns"):
+                raise ValueError(f"freq_time must be positive, got {freq_time!r}")
+        else:
+            steps = []
+            for da in DataArray_ls:
+                vals = np.sort(np.asarray(da[time_name].values, dtype="datetime64[ns]"))
+                if vals.size > 1:
+                    diffs = np.diff(vals)
+                    diffs = diffs[diffs > np.timedelta64(0, "ns")]
+                    if diffs.size:
+                        steps.append(diffs.min())
+            if steps:
+                step = min(steps)
+
+        if step is None:
+            union = np.unique(np.concatenate([
+                np.asarray(da[time_name].values, dtype="datetime64[ns]") for da in DataArray_ls
+            ]))
+            target = union[(union >= start) & (union <= end)]
+            if target.size == 0:
+                raise ValueError(
+                    "No source timestamps fall inside the requested time window and freq_time "
+                    "cannot be inferred. Specify freq_time to define a new target grid."
+                )
+            estimate = cls._estimate_sum_working_set_bytes(
+                DataArray_ls, time_name, target_time_size=int(target.size)
+            )
+            if budget is not None and estimate > budget:
+                raise MemoryError(
+                    "sum_DataArray_list estimated working set exceeds configured budget before reindexing: "
+                    f"estimated={estimate} bytes, budget={budget} bytes, target_time={target.size}"
+                )
+            return target, start, end, None, estimate
+
+        span_ns = int((end - start) / np.timedelta64(1, "ns"))
+        step_ns = int(step / np.timedelta64(1, "ns"))
+        n = span_ns // step_ns + 1
+        if n <= 0:
+            raise ValueError("Requested time window produced an empty target time axis")
+        estimate = cls._estimate_sum_working_set_bytes(
+            DataArray_ls, time_name, target_time_size=n
+        )
+        if budget is not None and estimate > budget:
+            raise MemoryError(
+                "sum_DataArray_list estimated working set exceeds configured budget before target-time allocation: "
+                f"estimated={estimate} bytes, budget={budget} bytes, target_time={n}"
+            )
+        target = start + np.arange(n, dtype=np.int64) * step
+        target = target[target <= end]
+        return target.astype("datetime64[ns]"), start, end, step, estimate
+
+    @staticmethod
+    def _estimate_sum_working_set_bytes(DataArray_ls, time_name, target_time_size):
+        """Return a conservative lower-bound estimate for alignment/sum/mask storage."""
+        import numpy as np
+
+        nt = int(target_time_size)
+        reindexed_bytes = 0
+        max_payload = 0
+        spatial_elements_max = 0
+        for da in DataArray_ls:
+            spatial_elements = int(np.prod([da.sizes[d] for d in da.dims if d != time_name], dtype=np.int64))
+            itemsize = int(np.dtype(da.dtype).itemsize)
+            payload = nt * spatial_elements * itemsize
+            reindexed_bytes += payload
+            max_payload = max(max_payload, payload)
+            spatial_elements_max = max(spatial_elements_max, spatial_elements)
+        estimate = reindexed_bytes + 2 * max_payload + nt * spatial_elements_max + 2 * spatial_elements_max
+        return int(estimate)
 
     def sum_DataArray_list(
         self,
@@ -20592,6 +20814,7 @@ class ChemicalDriftPostProcessMixin:
         mask_mode="input0",
         sim_description=None,
         Verbose=True,
+        max_working_memory_bytes=None,
     ):
         """
         Sum a list of xarray DataArrays, with the same or different time step.
@@ -20607,8 +20830,11 @@ class ChemicalDriftPostProcessMixin:
         align_mode:          string, mode of selecting timestamp in reconstructed sum ("pad"|"nearest"|"exact")
         nearest_tol_time:    np.timedelta64, max distance for "nearest" (e.g., np.timedelta64(3,'h'))
         dim_res_dict:        dict {"dim": float32} resolution of each dimension. Will be inferred if None or {}
-        mask_mode:           string, mode of masking final sum ("input0"|"union"|"intersection")
-        sim_description:     string, description of simulation to be included in netcdf attributes
+        mask_mode:           string, spatial any-over-time mask mode ("input0"|"union"|"intersection").
+                             NaNs in this aggregation path mean spatial invalidity or zero contribution,
+                             not transient missing observations.
+        sim_description:     string, explicit value overrides inherited common metadata
+        max_working_memory_bytes: optional integer byte budget checked before target-time reindexing
         """
         import hashlib
         import os
@@ -20646,7 +20872,7 @@ class ChemicalDriftPostProcessMixin:
             for i, da in enumerate(DataArray_ls):
                 print(i, da.name, da.dims)
 
-        DataArray_ls = [self._standardize_horizontal_names(da) for da in DataArray_ls]
+        DataArray_ls = [self._standardize_horizontal_names(da, allow_xy=False) for da in DataArray_ls]
 
         if Verbose:
             print("DEBUG after _standardize_horizontal_names:")
@@ -20662,28 +20888,17 @@ class ChemicalDriftPostProcessMixin:
                 inner = dict(DataArray_dict[key])
                 inner[variable] = da_norm
                 if inner.get("topo") is not None:
-                    inner["topo"] = self._standardize_horizontal_names(inner["topo"])
+                    inner["topo"] = self._standardize_horizontal_names(inner["topo"], allow_xy=False)
                 DataArray_dict_work[key] = inner
 
         if not all(time_name in da.dims for da in DataArray_ls):
             missing = [i for i, da in enumerate(DataArray_ls) if time_name not in da.dims]
             raise ValueError(f'All DataArrays must contain time dimension "{time_name}". Missing in indexes: {missing}')
 
-        if DataArray_dict_work is not None:
-            nan_counts_inputs = {
-                key: int(DataArray_dict_work[key][variable].isnull().sum().item())
-                for key in ordered_keys}
-        else:
-            nan_counts_inputs = {
-                i: int(da.isnull().sum().item())
-                for i, da in enumerate(DataArray_ls)}
+        nan_counts_inputs = None
 
         if len(DataArray_ls) < 1:
             raise ValueError("Empty DataArray_ls")
-        if len(DataArray_ls) == 1:
-            if Verbose:
-                print("len(DataArray_ls) is 1, returning DataArray_ls[0]")
-            return DataArray_ls[0], None
 
         ### Dimension / metadata checks
         if Verbose:
@@ -20722,33 +20937,28 @@ class ChemicalDriftPostProcessMixin:
             dim_res_dict=dim_res_dict,
             Verbose=Verbose,)
 
-        # Find common attributes to be added in Final_sum
-        common_attrs = DataArray_ls[0].attrs.copy()
-        for da in DataArray_ls[1:]:
-            common_attrs = {
-                key: value
-                for key, value in common_attrs.items()
-                if da.attrs.get(key) == value}
+        # Validate arithmetic metadata before any summation and retain only truly common attrs.
+        self._validate_sum_units(DataArray_ls)
+        common_attrs = self._common_attrs_safe(DataArray_ls)
 
         H_can_out = None
         nan_counts_interp = None
         common_topo_for_mass = None
 
-        # No interpolation path: try to get one common topo for mass check
-        if not any(need_interpolation.values()):
-            if DataArray_dict_work is not None:
-                try:
-                    common_topo_for_mass = self._extract_common_topo_from_dict(DataArray_dict_work)
-                except ValueError as e:
-                    common_topo_for_mass = None
-                    if Verbose:
-                        print(f"Skipping mass-based conservation check: {e}")
+        # No-interpolation path: a supplied topography must be common across inputs.
+        if not any(need_interpolation.values()) and DataArray_dict_work is not None:
+            common_topo_for_mass = self._extract_common_topo_from_dict(DataArray_dict_work)
 
         ### Interpolation path
         if any(need_interpolation.values()):
             import xesmf as xe
             if DataArray_dict_work is None:
                 raise ValueError("DataArray_dict {idx: {'var','topo'}, ...} must be specified for interpolation")
+
+            nan_counts_inputs = {
+                key: self._lazy_scalar_int(DataArray_dict_work[key][variable].isnull().sum())
+                for key in ordered_keys
+            }
 
             if "latitude" not in canonical_dims_dict or "longitude" not in canonical_dims_dict:
                 raise ValueError("Interpolation requires canonical 'latitude' and 'longitude' dimensions")
@@ -20770,7 +20980,7 @@ class ChemicalDriftPostProcessMixin:
                     f"(and depth is reserved for future vertical remap). "
                     f"Unsupported dims requiring interpolation: {sorted(unsupported_interp_dims)}")
 
-            ### Helpers for "regrid_topography_conservative"
+            ### Conservative horizontal regridding helpers
             def _maybe_depth_dim(da, candidates=("depth", "z", "lev", "level")):
                 """
                 Return the first matching depth-like dimension name present in the DataArray.
@@ -20793,7 +21003,7 @@ class ChemicalDriftPostProcessMixin:
                 last = c[-1] + (c[-1] - mid[-1])
                 return np.concatenate([[first], mid, [last]])
 
-            def _hash_grid(lon_in, lat_in, lon_out, lat_out, method="conservative"):
+            def _hash_grid(lon_in, lat_in, lon_out, lat_out, method):
                 """
                 Compute a short hash identifier for a source/destination grid pair plus method.
                 """
@@ -20810,76 +21020,95 @@ class ChemicalDriftPostProcessMixin:
                 """
                 lon = np.asarray(lon, dtype=np.float64)
                 lat = np.asarray(lat, dtype=np.float64)
-                lon_b = _centers_to_edges_1d(lon)
-                lat_b = _centers_to_edges_1d(lat)
-                # NB: dim names 'lon','lat','lon_b','lat_b' are what xESMF expects
-                return xr.Dataset(
-                    coords=dict(
-                        lon=(["lon"], lon),
-                        lat=(["lat"], lat),
-                        lon_b=(["lon_b"], lon_b),
-                        lat_b=(["lat_b"], lat_b),))
+                return xr.Dataset(coords=dict(
+                    lon=(("lon",), lon),
+                    lat=(("lat",), lat),
+                    lon_b=(("lon_b",), _centers_to_edges_1d(lon)),
+                    lat_b=(("lat_b",), _centers_to_edges_1d(lat)),
+                ))
 
-            def get_regridder(src_lon, src_lat, dst_lon, dst_lat, *, method="conservative", periodic=True, weights_dir=None, prefix="weights"):
-                """
-                Create (or reuse cached) xESMF Regridder for given src/dst grids and method.
-                Optionally cache weights on disk under weights_dir.
+            def get_regridder(
+                src_lon, src_lat, dst_lon, dst_lat, *, method, weights_dir=None, prefix="weights"
+            ):
+                """Create/reuse one xESMF conservative weight file.
+
+                Conservative methods do not use the misleading ``periodic=True`` option.
+                Passing ``filename`` to xESMF is the single serialization path; do not
+                call ``to_netcdf`` again after construction.
                 """
                 src_grid = _make_rect_grid(src_lon, src_lat)
                 dst_grid = _make_rect_grid(dst_lon, dst_lat)
-                cache_id = _hash_grid(src_lon, src_lat, dst_lon, dst_lat, method=method)
                 weights_path = None
                 reuse = False
                 if weights_dir:
                     os.makedirs(weights_dir, exist_ok=True)
+                    cache_id = _hash_grid(src_lon, src_lat, dst_lon, dst_lat, method)
                     weights_path = os.path.join(weights_dir, f"{prefix}_{method}_{cache_id}.nc")
                     reuse = os.path.exists(weights_path)
                 R = xe.Regridder(
                     src_grid,
                     dst_grid,
                     method=method,
-                    periodic=periodic,
                     filename=weights_path,
-                    reuse_weights=reuse,)
-                if weights_path is not None and not reuse:
-                    R.to_netcdf(weights_path)
+                    reuse_weights=reuse,
+                )
                 return R, weights_path
 
-            def regrid_topography_conservative(H_src, lat_out, lon_out, *, periodic=False, weights_dir=None):
-                """
-                Conservative remap of topography to (lat_out, lon_out).
-                H_src must have dims named ('latitude','longitude') (any order). Extra dims broadcast.
-                - Caches weights under weights_dir (default: system temp) unless weights_path is given.
-                - Returns DataArray on the same non-horizontal dims as H_src, but with
-                  coords named ('latitude','longitude') on output.
-                """
-                lat_out = np.asarray(lat_out, dtype=np.float64)
+            def _regrid_intensive(field_src, lon_out, lat_out, *, method, weights_dir=None, prefix="field"):
+                """Conservatively remap an intensive field and preserve leading dimensions lazily."""
+                if "latitude" not in field_src.dims or "longitude" not in field_src.dims:
+                    raise ValueError("Conservative regridding requires latitude/longitude dimensions")
+                lead = [d for d in field_src.dims if d not in ("latitude", "longitude")]
+                src_lon = np.asarray(field_src["longitude"].values, dtype=np.float64)
+                src_lat = np.asarray(field_src["latitude"].values, dtype=np.float64)
                 lon_out = np.asarray(lon_out, dtype=np.float64)
-
-                if "latitude" not in H_src.dims or "longitude" not in H_src.dims:
-                    raise ValueError("H_src must have dims 'latitude' and 'longitude'")
-
-                other = [d for d in H_src.dims if d not in ("latitude", "longitude")]
-                H_ord = H_src.transpose(*other, "latitude", "longitude", missing_dims="ignore")
-
-                topo_R, _ = get_regridder(
-                    src_lon=H_src["longitude"].values,
-                    src_lat=H_src["latitude"].values,
-                    dst_lon=lon_out,
-                    dst_lat=lat_out,
-                    method="conservative",
-                    periodic=periodic,
-                    weights_dir=weights_dir,
-                    prefix="topo_conservative",)
-
-                H_regridded = topo_R(
-                    H_ord.rename({"latitude": "lat", "longitude": "lon"})
-                ).rename({"lat": "latitude", "lon": "longitude"})
-
-                H_back = H_regridded.transpose(*other, "latitude", "longitude", missing_dims="ignore")
-                return H_back.assign_coords(
+                lat_out = np.asarray(lat_out, dtype=np.float64)
+                R, _ = get_regridder(
+                    src_lon, src_lat, lon_out, lat_out,
+                    method=method, weights_dir=weights_dir, prefix=prefix,
+                )
+                work = field_src.transpose(*lead, "latitude", "longitude", missing_dims="ignore")
+                work = work.rename({"latitude": "lat", "longitude": "lon"})
+                out = R(work, keep_attrs=False)
+                rename_map = {}
+                if "lat" in out.dims:
+                    rename_map["lat"] = "latitude"
+                if "lon" in out.dims:
+                    rename_map["lon"] = "longitude"
+                if rename_map:
+                    out = out.rename(rename_map)
+                out = out.assign_coords(
                     latitude=("latitude", lat_out),
-                    longitude=("longitude", lon_out),)
+                    longitude=("longitude", lon_out),
+                )
+                out = out.transpose(*lead, "latitude", "longitude", missing_dims="ignore")
+                scalar_coords = {
+                    c: field_src.coords[c]
+                    for c in field_src.coords
+                    if c not in field_src.dims and c not in out.coords
+                }
+                if scalar_coords:
+                    out = out.assign_coords(scalar_coords)
+                return out
+
+            def _topography_attrs(attrs):
+                allow = ("units", "standard_name", "long_name", "positive", "source", "comment")
+                return {k: attrs[k] for k in allow if k in attrs}
+
+            def regrid_topography_conservative_normed(H_src, lat_out, lon_out, *, weights_dir=None):
+                """Remap intensive bathymetry without partial-overlap attenuation."""
+                attrs = _topography_attrs(H_src.attrs)
+                out = _regrid_intensive(
+                    H_src.astype(np.float64).clip(min=0.0),
+                    lon_out, lat_out,
+                    method="conservative_normed",
+                    weights_dir=weights_dir,
+                    prefix="topo",
+                )
+                out.attrs.update(attrs)
+                out.attrs["regrid_method"] = "conservative_normed"
+                out.encoding = {}
+                return out
 
             def _safe_assign_depth(da, depth_dim, coord_vals):
                 """
@@ -20889,12 +21118,34 @@ class ChemicalDriftPostProcessMixin:
                 coord_vals = np.asarray(coord_vals)
                 if da.sizes[depth_dim] != coord_vals.size:
                     raise ValueError(
-                        f"conflicting sizes for '{depth_dim}': data={da.sizes[depth_dim]} vs coord={coord_vals.size}")
+                        f"conflicting sizes for '{depth_dim}': data={da.sizes[depth_dim]} vs coord={coord_vals.size}"
+                    )
                 return da.assign_coords({depth_dim: (depth_dim, coord_vals)})
 
-            def _regrid_horizontal_conservative_mass(mass_src, lon_out, lat_out, *, periodic=True, weights_dir=None, depth_dim=None):
+            def _layer_thickness(da, topo_src, depth_dim="depth"):
+                """Return water-column/layer thickness as an intensive geometry field."""
+                topo = topo_src.astype(np.float64).clip(min=0.0)
+                if depth_dim in da.dims:
+                    depth_top = np.asarray(da[depth_dim].values, dtype=np.float64)
+                    z_top = xr.DataArray(
+                        depth_top,
+                        dims=(depth_dim,),
+                        coords={depth_dim: np.arange(depth_top.size)},
+                    ).broadcast_like(topo)
+                    z_bottom = topo.expand_dims({depth_dim: [depth_top.size]})
+                    z_edges = xr.concat([z_top, z_bottom], dim=depth_dim)
+                    z_edges = z_edges.rename({depth_dim: "depth_edge"}).transpose(
+                        "depth_edge", "latitude", "longitude"
+                    )
+                    dz = z_edges.diff("depth_edge").rename({"depth_edge": depth_dim}).clip(min=0.0)
+                    return _safe_assign_depth(dz, depth_dim, da[depth_dim].values)
+                if "depth" in da.coords:
+                    depth0 = float(np.ravel(da["depth"].values)[0])
+                    return (topo - depth0).clip(min=0.0)
+                return topo
 
-                lon_name, lat_name = "longitude", "latitude"
+            def _topography_values_equal(left, right):
+                return self._topography_equal(left, right, compare_coords=False)
 
                 if depth_dim is None:
                     depth_dim = _maybe_depth_dim(mass_src)
@@ -21214,9 +21465,10 @@ class ChemicalDriftPostProcessMixin:
         if nan_counts_interp is not None:
             import math
 
-            def report_interp_nan_changes(nan_counts_before, nan_counts_after, threshold_pct=10.0):
-                print("Index | NaN before interp -> after interp | d(after-before) | % change")
-                print("-" * 84)
+            def report_interp_nan_changes(nan_counts_before, nan_counts_after, threshold_pct=10.0, emit=False):
+                if emit:
+                    print("Index | NaN before interp -> after interp | d(after-before) | % change")
+                    print("-" * 84)
                 offenders = []
 
                 all_keys = sorted(set(nan_counts_before) | set(nan_counts_after))
@@ -21237,7 +21489,8 @@ class ChemicalDriftPostProcessMixin:
                         pct = (delta / before) * 100.0
                         pct_str = f"{pct:+.2f}%"
 
-                    print(f"{k:5} | {before:18} -> {after:<18} | {delta:16} | {pct_str:>8}")
+                    if emit:
+                        print(f"{k:5} | {before:18} -> {after:<18} | {delta:16} | {pct_str:>8}")
 
                     if math.isinf(pct) or abs(pct) > threshold_pct:
                         offenders.append((k, before, after, pct))
@@ -21252,8 +21505,9 @@ class ChemicalDriftPostProcessMixin:
                     raise ValueError(
                         f"Interpolation NaN count changed by more than {threshold_pct:.1f}% for: {details}")
 
-            if Verbose:
-                report_interp_nan_changes(nan_counts_inputs, nan_counts_interp)
+            report_interp_nan_changes(
+                nan_counts_inputs, nan_counts_interp, emit=Verbose
+            )
 
         ### Re-check canonical non-time dims after interpolation
         canonical_dims_dict, need_interpolation = self._canonical_nontime_dims(
@@ -21285,43 +21539,16 @@ class ChemicalDriftPostProcessMixin:
             if Verbose:
                 print("Time dimensions not all equal (or reconstruction requested)")
 
-            ### Infer start_date/end_date if missing
-            if start_date is None:
-                start_date = np.min([da[time_name].values.min() for da in DataArray_ls])
-                if Verbose:
-                    print("start_date set from DataArray_ls")
-            if end_date is None:
-                end_date = np.max([da[time_name].values.max() for da in DataArray_ls])
-                if Verbose:
-                    print("end_date set from DataArray_ls")
-
-            ### Prefer a regular grid if a minimal step can be inferred; otherwise use union of times
-            target_time = None
-            if freq_time is None:
-                steps = []
-                for da in DataArray_ls:
-                    t = np.sort(da[time_name].values)
-                    if t.size > 1:
-                        d = np.diff(t)
-                        # filter out non-positive diffs just in case of duplicates
-                        d = d[d > np.timedelta64(0, "ns")]
-                        if d.size:
-                            steps.append(d.min())
-
-                if steps:
-                    freq_time = np.min(steps)
-                    if Verbose:
-                        print("freq_time set from DataArray_ls")
-                else:
-                    # fallback: non-regular union of all timestamps
-                    target_time = np.unique(
-                        np.concatenate([da[time_name].values for da in DataArray_ls]))
-                    if Verbose:
-                        print("freq_time could not be inferred; using union of timestamps")
-
-            if target_time is None:
-                #  inclusive of final timestamp adding a timestep at the end
-                target_time = np.arange(start_date, end_date + freq_time, freq_time)
+            target_time, start_date, end_date, freq_time, estimated_working_set_bytes = self._build_target_time(
+                DataArray_ls=DataArray_ls,
+                time_name=time_name,
+                start_date=start_date,
+                end_date=end_date,
+                freq_time=freq_time,
+                max_working_memory_bytes=max_working_memory_bytes,
+            )
+            if Verbose:
+                print(f"estimated alignment/sum working set lower bound: {estimated_working_set_bytes} bytes")
 
             ### Print start_date, end_date, and freq_time
             if Verbose:
@@ -21424,46 +21651,39 @@ class ChemicalDriftPostProcessMixin:
         if Verbose:
             print("Create landmask")
 
-        per_input_valid = [~a.isnull() for a in aligned]
-        per_input_valid_any_time = [v.any(dim=time_name) for v in per_input_valid]
-        valid_stack = xr.concat(per_input_valid_any_time, dim="part")
+        final_mask, mask_source_value = self._reduce_spatial_valid_mask(
+            aligned, time_name=time_name, mask_mode=mask_mode
+        )
 
-        if mask_mode == "input0":
-            final_mask = per_input_valid_any_time[0]
-            mask_source_value = "input0-any-over-time"
-        elif mask_mode == "union":
-            final_mask = valid_stack.any("part")
-            mask_source_value = "union-any-over-time"
-        else:
-            final_mask = valid_stack.all("part")
-            mask_source_value = "intersection-any-over-time"
-
-        # NaN audit on the SAME object before vs after masking
         Final_sum_before_mask = Final_sum
-        nans_before_mask = int(np.count_nonzero(np.isnan(Final_sum_before_mask.values)))
+        nans_before_mask = self._lazy_scalar_int(Final_sum_before_mask.isnull().sum())
+        Final_sum = Final_sum_before_mask.where(final_mask)
+        nans_after_mask = self._lazy_scalar_int(Final_sum.isnull().sum())
 
-        # Broadcast mask explicitly to Final_sum shape/order
-        final_mask_full = final_mask.broadcast_like(Final_sum_before_mask)
-        final_mask_full = final_mask_full.transpose(*Final_sum_before_mask.dims)
-
-        Final_sum = Final_sum_before_mask.where(final_mask_full)
-        nans_after_mask = int(np.count_nonzero(np.isnan(Final_sum.values)))
-
-        # Masking should never reduce NaNs
         if nans_after_mask < nans_before_mask:
             raise ValueError(
-                f"Masking reduced NaNs unexpectedly: before={nans_before_mask}, after={nans_after_mask}")
+                f"Masking reduced NaNs unexpectedly: before={nans_before_mask}, after={nans_after_mask}"
+            )
 
-        # Check that newly created NaNs come only from mask=False where data was previously finite
-        added_nan_mask = Final_sum.isnull() & Final_sum_before_mask.notnull()
-        expected_added_nan_mask = (~final_mask_full) & Final_sum_before_mask.notnull()
-
-        xr.testing.assert_equal(added_nan_mask, expected_added_nan_mask)
+        # Verify with scalar reductions only. New NaNs are valid only where the
+        # spatial mask is false; existing NaNs may remain anywhere.
+        invalid_added = (
+            Final_sum.isnull() & Final_sum_before_mask.notnull() & final_mask
+        ).any()
+        if bool(self._lazy_scalar_value(invalid_added)):
+            raise AssertionError("Masking created NaNs where final_mask is True")
 
         Final_sum.attrs.update(common_attrs)
-        if "sim_description" not in Final_sum.attrs and sim_description is not None:
+        if sim_description is not None:
             Final_sum.attrs["sim_description"] = str(sim_description)
         Final_sum.attrs["mask_source"] = mask_source_value
+        Final_sum.attrs["mask_nan_semantics"] = (
+            "NaN is treated as spatial invalidity or zero contribution; "
+            "mask is spatial any-over-time, not a transient-missing-data mask"
+        )
+        # Storage encoding belongs to the writer after arithmetic. Do not propagate
+        # source _FillValue/dtype/compression/chunk encoding implicitly.
+        Final_sum.encoding = {}
 
         if Verbose:
             added_nans = nans_after_mask - nans_before_mask
