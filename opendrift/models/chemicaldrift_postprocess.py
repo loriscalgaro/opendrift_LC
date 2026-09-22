@@ -22062,18 +22062,19 @@ class ChemicalDriftPostProcessMixin:
     ##### Helpers for concat_simulation
     @staticmethod
     def _natural_key(value):
-        """
-        Natural sorting key so files ending in _2.nc come before _10.nc.
-        """
+        """Natural sort by basename with a deterministic full-path tie-breaker."""
         import re
         from pathlib import Path
 
-        name = Path(str(value)).name
-
-        return [
-            int(part) if part.isdigit() else part.lower()
+        text = str(value)
+        name = Path(text).name
+        tokens = tuple(
+            (1, int(part)) if part.isdigit() else (0, part.lower())
             for part in re.split(r"(\d+)", name)
-        ]
+        )
+        # Equal basenames must not depend on set/hash iteration order.
+        tie = str(Path(text)).replace("\\", "/").lower()
+        return (tokens, tie)
 
     @staticmethod
     def _safe_zip_members(zip_ref):
@@ -22086,11 +22087,13 @@ class ChemicalDriftPostProcessMixin:
         import re
 
         def natural_key(value):
-            name = Path(str(value)).name
-            return [
-                int(part) if part.isdigit() else part.lower()
+            text = str(value)
+            name = Path(text).name
+            tokens = tuple(
+                (1, int(part)) if part.isdigit() else (0, part.lower())
                 for part in re.split(r"(\d+)", name)
-            ]
+            )
+            return (tokens, text.lower())
 
         members = []
 
@@ -22109,33 +22112,49 @@ class ChemicalDriftPostProcessMixin:
 
     @classmethod
     def _extract_zip_once(cls, zip_path, output_dir):
+        """Extract NetCDF members into archive-specific staging paths.
+
+        Existing targets are never silently reused: each safe member is copied
+        to a temporary file and atomically replaced. Equal member names from
+        different archives therefore cannot collide.
         """
-        Extract missing .nc files from a zip archive, opening the archive only once.
-        """
+        import hashlib
+        import os
+        import shutil
         import zipfile
         from pathlib import Path
 
         zip_path = Path(zip_path)
         output_dir = Path(output_dir)
+        archive_id = hashlib.sha1(
+            str(zip_path.resolve()).encode("utf-8", errors="surrogatepass")
+        ).hexdigest()[:12]
+        stage_root = output_dir / ".concat_extract" / f"{zip_path.stem}_{archive_id}"
 
-        extracted_or_existing = []
+        extracted = []
 
         with zipfile.ZipFile(zip_path, "r") as zip_ref:
             members = cls._safe_zip_members(zip_ref)
-
-            missing = []
+            if len(members) != len(set(members)):
+                raise ValueError(f"Duplicate NetCDF member name in zip archive: {zip_path}")
 
             for member in members:
-                target = output_dir / member
-                extracted_or_existing.append(str(target))
+                target = stage_root / member
+                target.parent.mkdir(parents=True, exist_ok=True)
+                tmp = target.with_name(target.name + ".concat_extract_tmp")
+                try:
+                    with zip_ref.open(member, "r") as src, open(tmp, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                    os.replace(tmp, target)
+                finally:
+                    try:
+                        if tmp.exists():
+                            tmp.unlink()
+                    except OSError:
+                        pass
+                extracted.append(str(target))
 
-                if not target.exists():
-                    missing.append(member)
-
-            if missing:
-                zip_ref.extractall(output_dir, members=missing)
-
-        return extracted_or_existing
+        return extracted
 
     @staticmethod
     def _safe_process_pool_context(max_workers):
@@ -22146,7 +22165,7 @@ class ChemicalDriftPostProcessMixin:
             if __name__ == "__main__":
 
         On Linux/macOS where 'fork' is available, use it. This avoids the
-        spawn/forkserver re-import problem seen in Spyder and script cells.
+        spawn/forkserver re-import problem seen in IDE script cells.
 
         If 'fork' is not available, return None and the caller should fall
         back to serial execution.
@@ -22331,6 +22350,15 @@ class ChemicalDriftPostProcessMixin:
                 f"{where}: {missing}"
             )
 
+        # `trajectory` is a mandatory support coordinate and is appended by the
+        # resolver when present.  It must not make an explicit request appear
+        # successful when none of the requested scientific variables resolved.
+        if len(missing) == len(variables_to_keep):
+            raise ValueError(
+                "variables_to_keep did not match any requested variable in dataset"
+                + (f": {path}" if path is not None else "")
+            )
+
         if not keep:
             raise ValueError(
                 "variables_to_keep did not match any variable in dataset"
@@ -22445,8 +22473,8 @@ class ChemicalDriftPostProcessMixin:
         Return True when two time axes can be safely joined by prefix padding.
 
         Compatibility rules:
-          1. both time axes are present;
-          2. both start at the same timestamp;
+          1. two absent time axes are compatible; one absent and one present axis are incompatible;
+          2. present time axes start at the same timestamp;
           3. both are regular when they have >=2 timesteps;
           4. when both have >=2 timesteps, the timestep is identical;
           5. the shorter full time vector is an exact prefix of the longer.
@@ -22458,7 +22486,7 @@ class ChemicalDriftPostProcessMixin:
         import numpy as np
 
         if a is None or b is None:
-            return False
+            return a is None and b is None
 
         a = np.asarray(a)
         b = np.asarray(b)
@@ -22468,6 +22496,11 @@ class ChemicalDriftPostProcessMixin:
 
         if a[0] != b[0]:
             return False
+
+        # An identical irregular axis is safe because no alignment or padding
+        # is required. Irregular-but-different axes remain incompatible below.
+        if np.array_equal(a, b):
+            return True
 
         def _regular_step(values):
             if values.size < 2:
@@ -22498,13 +22531,13 @@ class ChemicalDriftPostProcessMixin:
         import numpy as np
 
         if a is None:
-            return None if b is None else np.asarray(b).copy()
+            return None if b is None else np.asarray(b)
         if b is None:
-            return np.asarray(a).copy()
+            return np.asarray(a)
 
         a = np.asarray(a)
         b = np.asarray(b)
-        return a.copy() if a.size >= b.size else b.copy()
+        return a if a.size >= b.size else b
 
     @staticmethod
     def _concat_time_signature_for_values(values):
@@ -22525,6 +22558,96 @@ class ChemicalDriftPostProcessMixin:
             h.update(repr(values.tolist()).encode("utf-8", errors="ignore"))
         return h.hexdigest()
 
+
+    @staticmethod
+    def _concat_integer_padding_encoding(dtype, source_fill_value=None):
+        """Return a lossless storage dtype/fill pair for padded integer-like data.
+
+        For <=32-bit integers and booleans, storage is widened so the fill value
+        lies outside the original value domain. This prevents padded cells from
+        becoming valid-looking values without scanning the full variable for an
+        unused in-range sentinel. For 64-bit integers, an explicit source fill
+        value is required because there is no wider standard integer dtype.
+        """
+        import numpy as np
+
+        dt = np.dtype(dtype)
+        kind = dt.kind
+        if kind == "b":
+            return {"dtype": "int8", "_FillValue": np.int8(-1)}
+        if kind == "i":
+            if dt.itemsize == 1:
+                return {"dtype": "int16", "_FillValue": np.int16(np.iinfo(np.int16).min)}
+            if dt.itemsize == 2:
+                return {"dtype": "int32", "_FillValue": np.int32(np.iinfo(np.int32).min)}
+            if dt.itemsize == 4:
+                return {"dtype": "int64", "_FillValue": np.int64(np.iinfo(np.int64).min)}
+            if dt.itemsize == 8 and source_fill_value is not None:
+                return {"dtype": "int64", "_FillValue": np.int64(source_fill_value)}
+        if kind == "u":
+            if dt.itemsize == 1:
+                return {"dtype": "int16", "_FillValue": np.int16(-1)}
+            if dt.itemsize == 2:
+                return {"dtype": "int32", "_FillValue": np.int32(-1)}
+            if dt.itemsize == 4:
+                return {"dtype": "int64", "_FillValue": np.int64(-1)}
+            if dt.itemsize == 8 and source_fill_value is not None:
+                return {"dtype": "uint64", "_FillValue": np.uint64(source_fill_value)}
+        raise ValueError(
+            f"Cannot safely encode padded integer variable with dtype {dt}; "
+            "64-bit integer padding requires an explicit source _FillValue."
+        )
+
+    @staticmethod
+    def _concat_merge_nontrajectory_dataarray(name, arrays):
+        """Merge copies of one non-trajectory data variable without broadcasting.
+
+        Values must agree wherever two sources both contain non-missing data.
+        Missing regions introduced by prefix reindexing may be filled from another
+        source. Variable attributes are retained only when identical across all
+        contributing copies.
+        """
+        import numpy as np
+        import xarray as xr
+
+        if not arrays:
+            raise ValueError(f"No arrays supplied for non-trajectory variable {name}")
+
+        def _same(a, b):
+            try:
+                if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
+                    return bool(np.array_equal(np.asarray(a), np.asarray(b)))
+                v = a == b
+                if isinstance(v, np.ndarray):
+                    return bool(np.all(v))
+                return bool(v)
+            except Exception:
+                return repr(a) == repr(b)
+
+        merged = arrays[0].copy(deep=False)
+        attr_dicts = [dict(getattr(a, "attrs", {}) or {}) for a in arrays]
+        common_attrs = {}
+        for key, value in attr_dicts[0].items():
+            if all(key in attrs and _same(value, attrs[key]) for attrs in attr_dicts[1:]):
+                common_attrs[key] = value
+
+        for other in arrays[1:]:
+            if tuple(merged.dims) != tuple(other.dims):
+                raise ValueError(
+                    f"Non-trajectory variable {name!r} has inconsistent dimensions: "
+                    f"{merged.dims} vs {other.dims}"
+                )
+            left, right = xr.align(merged, other, join="exact", copy=False)
+            conflict = left.notnull() & right.notnull() & (left != right)
+            if bool(np.asarray(conflict.any().values)):
+                raise ValueError(
+                    f"Non-trajectory variable {name!r} has conflicting values across source files."
+                )
+            merged = left.combine_first(right)
+
+        merged.attrs = common_attrs
+        return merged
+
     def _concat_one_global_id_range(job):
         """
         Worker process.
@@ -22535,11 +22658,14 @@ class ChemicalDriftPostProcessMixin:
         trajectory coordinate to the new global trajectory IDs.
         """
         from pathlib import Path
+        import os
         import numpy as np
         import xarray as xr
         import warnings
 
-        output_dir = Path(job["output_dir"])
+        final_output_dir = Path(job["output_dir"])
+        output_dir = Path(job.get("staging_dir", final_output_dir))
+        output_dir.mkdir(parents=True, exist_ok=True)
         sim_name = job["sim_name"]
         part_index = job["part_index"]
         compression_level = job.get("compression_level", 6)
@@ -22552,13 +22678,41 @@ class ChemicalDriftPostProcessMixin:
 
         opened = []
         selected = []
-        output_global_ids = []
-        max_steps_exported = 0
+        output_global_id_ranges = []
+        source_global_attrs = []
+        source_trajectory_attrs = []
+        padded_integer_specs = {}
+
+        def _attr_values_equal(a, b):
+            try:
+                if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
+                    return bool(np.array_equal(np.asarray(a), np.asarray(b)))
+                value = a == b
+                if isinstance(value, np.ndarray):
+                    return bool(np.all(value))
+                return bool(value)
+            except Exception:
+                return repr(a) == repr(b)
+
+        def _common_attrs(attr_dicts, exclude=()):
+            if not attr_dicts:
+                return {}
+            excluded = set(exclude)
+            common = {}
+            first = dict(attr_dicts[0] or {})
+            for key, value in first.items():
+                if key in excluded:
+                    continue
+                if all(key in attrs and _attr_values_equal(value, attrs[key]) for attrs in attr_dicts[1:]):
+                    common[key] = value
+            return common
 
         try:
             for path, selection in job["path_to_selection"].items():
-                positions = selection["positions"]
-                global_ids = selection["global_ids"]
+                local_start = int(selection["local_start"])
+                local_stop = int(selection["local_stop"])
+                global_start = int(selection["global_start"])
+                global_stop = int(selection["global_stop"])
 
                 ds = xr.open_dataset(path)
                 opened.append(ds)
@@ -22569,33 +22723,53 @@ class ChemicalDriftPostProcessMixin:
                     path=path,
                     warnings_module=warnings,
                 )
+                source_global_attrs.append(dict(getattr(ds, "attrs", {}) or {}))
+                if "trajectory" in ds_for_concat.variables:
+                    source_trajectory_attrs.append(
+                        dict(getattr(ds_for_concat["trajectory"], "attrs", {}) or {})
+                    )
+                else:
+                    source_trajectory_attrs.append({})
 
                 if "time" in ds_for_concat.sizes and ds_for_concat.sizes["time"] == 0:
                     continue
 
-                subset = ds_for_concat.isel(trajectory=positions)
+                subset = ds_for_concat.isel(trajectory=slice(local_start, local_stop))
 
                 # Prefix-padding path:
                 # The partitioner only assigns files to the same job when their
                 # time axes are exact prefixes of target_time_values.  Reindexing
-                # pads missing trailing timesteps with NaN.  Integer variables
-                # (status/origin_marker/specie) are encoded below as int32 with
-                # _FillValue=np.iinfo(np.int32).max, so these NaNs become the
-                # NetCDF missing-value code on disk rather than active/real IDs.
+                # pads missing trailing timesteps with NaN. Integer-like
+                # variables are encoded below with dtype-aware out-of-domain
+                # fill values so padded cells cannot become active/real IDs.
                 if target_time_values is not None and "time" in subset.sizes:
                     current_time = np.asarray(subset["time"].values)
                     if not np.array_equal(current_time, target_time_values):
+                        # Capture original integer-like dtypes before reindexing,
+                        # because xarray promotes them to a NaN-capable dtype.
+                        for var_name, da in subset.data_vars.items():
+                            if "time" not in da.dims or da.dtype.kind not in {"i", "u", "b"}:
+                                continue
+                            source_fill = da.encoding.get("_FillValue", da.attrs.get("_FillValue"))
+                            spec = ChemicalDriftPostProcessMixin._concat_integer_padding_encoding(
+                                da.dtype, source_fill_value=source_fill
+                            )
+                            existing = padded_integer_specs.get(var_name)
+                            normalized = (str(np.dtype(spec["dtype"])), int(spec["_FillValue"]))
+                            if existing is not None and existing["normalized"] != normalized:
+                                raise ValueError(
+                                    f"Padded integer variable {var_name!r} has incompatible source dtypes/fill policies."
+                                )
+                            padded_integer_specs[var_name] = {
+                                "dtype": spec["dtype"],
+                                "_FillValue": spec["_FillValue"],
+                                "source_dtype": str(np.dtype(da.dtype)),
+                                "normalized": normalized,
+                            }
                         subset = subset.reindex(time=target_time_values, copy=False)
 
                 selected.append(subset)
-                output_global_ids.extend(global_ids)
-
-                steps = ds.attrs.get(
-                    "steps_exported",
-                    ds.attrs.get("steps_output", 0),
-                )
-
-                max_steps_exported = max(max_steps_exported, int(steps or 0))
+                output_global_id_ranges.append((global_start, global_stop))
 
             if not selected:
                 return None
@@ -22603,8 +22777,26 @@ class ChemicalDriftPostProcessMixin:
             if len(selected) == 1:
                 out = selected[0]
             else:
+                # Only variables that actually depend on trajectory may be
+                # concatenated along trajectory. Other variables are validated
+                # and merged once, which prevents xarray from broadcasting them
+                # across every trajectory.
+                nontrajectory_names = sorted({
+                    name
+                    for subset in selected
+                    for name, da in subset.data_vars.items()
+                    if "trajectory" not in da.dims
+                })
+                nontrajectory_arrays = {
+                    name: [subset[name] for subset in selected if name in subset.data_vars]
+                    for name in nontrajectory_names
+                }
+                concat_selected = [
+                    subset.drop_vars([name for name in nontrajectory_names if name in subset.data_vars])
+                    for subset in selected
+                ]
                 out = xr.concat(
-                    selected,
+                    concat_selected,
                     dim="trajectory",
                     data_vars="all",
                     coords="minimal",
@@ -22614,36 +22806,55 @@ class ChemicalDriftPostProcessMixin:
                     # incompatible calendars fail instead of silently aligning.
                     join="exact",
                 )
+                for name in nontrajectory_names:
+                    out[name] = ChemicalDriftPostProcessMixin._concat_merge_nontrajectory_dataarray(
+                        name, nontrajectory_arrays[name]
+                    )
 
-            output_global_ids = np.asarray(output_global_ids, dtype="int64")
+            output_global_ids = np.concatenate([
+                np.arange(start, stop, dtype="int64")
+                for start, stop in output_global_id_ranges
+            ])
 
+            trajectory_attrs = _common_attrs(source_trajectory_attrs)
             out = out.assign_coords(
-                trajectory=("trajectory", output_global_ids)
+                trajectory=xr.DataArray(
+                    output_global_ids,
+                    dims=("trajectory",),
+                    attrs=trajectory_attrs,
+                )
             )
 
-            out.attrs["steps_exported"] = max_steps_exported
+            # Global metadata policy: retain only attributes that are identical
+            # across every contributing source. Slice-specific/conflicting attrs
+            # are dropped. Step counters are recomputed from the finalized time
+            # axis so they cannot contradict one another.
+            out.attrs = _common_attrs(
+                source_global_attrs,
+                exclude=("steps_output", "steps_exported"),
+            )
+            if "time" in out.sizes:
+                final_time_steps = int(out.sizes["time"])
+                out.attrs["steps_output"] = final_time_steps
+                out.attrs["steps_exported"] = final_time_steps
+
             if bool(job.get("prefix_time_padding", False)):
                 out.attrs["concat_time_padding"] = (
                     "prefix-compatible time axes padded to the longest axis; "
-                    "status/origin_marker/specie missing values encoded as int32 _FillValue"
+                    "integer/unsigned/boolean missing values use dtype-aware _FillValue encoding"
                 )
 
-            int_missing_vars = {"status", "origin_marker", "specie"}
-            int_fill_value = int(np.iinfo(np.int32).max)
-
-            # Avoid conflicts between existing decoded _FillValue metadata and
-            # the explicit integer missing-value encoding below.
-            for var_name in int_missing_vars:
+            # Avoid conflicts between decoded fill metadata and the explicit
+            # dtype-aware padding encodings selected above.
+            for var_name in padded_integer_specs:
                 if var_name in out.variables:
-                    try:
-                        out[var_name].attrs = dict(getattr(out[var_name], "attrs", {}) or {})
-                        out[var_name].encoding = dict(getattr(out[var_name], "encoding", {}) or {})
-                        for key in ("_FillValue", "missing_value"):
-                            out[var_name].attrs.pop(key, None)
-                            out[var_name].encoding.pop(key, None)
-                        out[var_name].encoding.pop("dtype", None)
-                    except Exception:
-                        pass
+                    out[var_name].attrs = dict(getattr(out[var_name], "attrs", {}) or {})
+                    out[var_name].encoding = dict(getattr(out[var_name], "encoding", {}) or {})
+                    for key in ("_FillValue", "missing_value"):
+                        out[var_name].attrs.pop(key, None)
+                        out[var_name].encoding.pop(key, None)
+                    out[var_name].encoding.pop("dtype", None)
+                    out[var_name].attrs["concat_original_dtype"] = padded_integer_specs[var_name]["source_dtype"]
 
             encoding = {}
 
@@ -22660,31 +22871,62 @@ class ChemicalDriftPostProcessMixin:
                     "shuffle": True,
                 }
 
-                if var_name in int_missing_vars:
+                if var_name in padded_integer_specs:
+                    spec = padded_integer_specs[var_name]
                     enc.update({
-                        "dtype": "int32",
-                        "_FillValue": int_fill_value,
+                        "dtype": spec["dtype"],
+                        "_FillValue": spec["_FillValue"],
                     })
 
                 encoding[var_name] = enc
 
+            tmp_output_path = output_path.with_name(
+                output_path.name + f".tmp-{os.getpid()}"
+            )
             try:
-                out.to_netcdf(output_path, encoding=encoding)
-            except Exception as e:
-                warnings.warn(
-                    f"Compressed write failed for {output_path}: {e}. "
-                    "Retrying without compression but preserving integer missing-value encoding."
-                )
-                fallback_encoding = {}
-                for var_name, da in out.data_vars.items():
-                    if da.ndim == 0:
-                        continue
-                    if var_name in int_missing_vars:
-                        fallback_encoding[var_name] = {
-                            "dtype": "int32",
-                            "_FillValue": int_fill_value,
-                        }
-                out.to_netcdf(output_path, encoding=fallback_encoding)
+                try:
+                    out.to_netcdf(tmp_output_path, encoding=encoding)
+                except Exception as e:
+                    warnings.warn(
+                        f"Compressed write failed for {output_path}: {e}. "
+                        "Retrying without compression but preserving integer missing-value encoding."
+                    )
+                    try:
+                        if tmp_output_path.exists():
+                            tmp_output_path.unlink()
+                    except OSError:
+                        pass
+                    fallback_encoding = {}
+                    for var_name, da in out.data_vars.items():
+                        if da.ndim == 0:
+                            continue
+                        if var_name in padded_integer_specs:
+                            spec = padded_integer_specs[var_name]
+                            source_dtype = np.dtype(spec["source_dtype"])
+                            if source_dtype.itemsize == 4 and source_dtype.kind in {"i", "u"}:
+                                # NetCDF3 cannot store int64/uint64. float64 exactly
+                                # represents every int32/uint32 value and keeps NaN
+                                # padding distinct from all valid source values.
+                                fallback_encoding[var_name] = {
+                                    "dtype": "float64",
+                                    "_FillValue": np.nan,
+                                }
+                            else:
+                                fallback_encoding[var_name] = {
+                                    "dtype": spec["dtype"],
+                                    "_FillValue": spec["_FillValue"],
+                                }
+                    out.to_netcdf(tmp_output_path, encoding=fallback_encoding)
+
+                if not tmp_output_path.exists() or tmp_output_path.stat().st_size <= 0:
+                    raise RuntimeError(f"NetCDF write produced no usable file: {tmp_output_path}")
+                os.replace(tmp_output_path, output_path)
+            finally:
+                try:
+                    if tmp_output_path.exists():
+                        tmp_output_path.unlink()
+                except OSError:
+                    pass
 
             return str(output_path)
 
@@ -22714,6 +22956,10 @@ class ChemicalDriftPostProcessMixin:
         Files with incompatible time axes are never placed in the same job.
         """
         import numpy as np
+
+        if not np.isfinite(max_bytes) or int(max_bytes) <= 0:
+            raise ValueError(f"max_bytes must be finite and > 0, got {max_bytes!r}")
+        max_bytes = int(max_bytes)
 
         jobs = []
 
@@ -22746,7 +22992,7 @@ class ChemicalDriftPostProcessMixin:
             total = 0
             for selection in current.values():
                 meta = selection["meta"]
-                total += _scaled_per_id_bytes(meta, target_values) * len(selection["positions"])
+                total += _scaled_per_id_bytes(meta, target_values) * int(selection["count"])
             return int(total)
 
         def _start_new_job_state():
@@ -22774,7 +23020,7 @@ class ChemicalDriftPostProcessMixin:
                 "time_size": _target_time_size(target_values),
                 "time_first": None if target_values is None or _target_time_size(target_values) == 0 else str(np.asarray(target_values)[0]),
                 "time_last": None if target_values is None or _target_time_size(target_values) == 0 else str(np.asarray(target_values)[-1]),
-                "target_time_values": None if target_values is None else np.asarray(target_values).copy(),
+                "target_time_values": None if target_values is None else np.asarray(target_values),
                 "prefix_time_padding": bool(current_prefix_time_padding),
             })
 
@@ -22796,18 +23042,25 @@ class ChemicalDriftPostProcessMixin:
             while local_start < n_trajectory:
                 # If current is empty, initialize its target axis from this file.
                 if not current:
-                    current_target_time_values = None if file_time_values is None else np.asarray(file_time_values).copy()
+                    current_target_time_values = None if file_time_values is None else np.asarray(file_time_values)
                     current_time_signature = ChemicalDriftPostProcessMixin._concat_time_signature_for_values(current_target_time_values)
                     current_time_size = _target_time_size(current_target_time_values)
                     current_time_first = None if current_time_size == 0 else str(current_target_time_values[0])
                     current_time_last = None if current_time_size == 0 else str(current_target_time_values[-1])
                     current_prefix_time_padding = False
 
-                # Never mix incompatible time axes.
+                # Never mix incompatible time axes. An empty current job must
+                # always be compatible with the file that initialized it; otherwise
+                # continuing would repeat the loop without advancing local_start.
                 if not ChemicalDriftPostProcessMixin._concat_time_values_prefix_compatible(
                     current_target_time_values,
                     file_time_values,
                 ):
+                    if not current:
+                        raise RuntimeError(
+                            f"Partitioner cannot make progress for {path}: "
+                            "the file time axis is incompatible with an empty job."
+                        )
                     _flush_current()
                     continue
 
@@ -22830,22 +23083,29 @@ class ChemicalDriftPostProcessMixin:
 
                 take = min(n_trajectory - local_start, capacity_positions)
                 if take <= 0:
+                    if not current:
+                        raise RuntimeError(
+                            f"Partitioner cannot make progress for {path}: take={take}."
+                        )
                     _flush_current()
                     continue
 
                 local_stop = local_start + take
-                positions = list(range(local_start, local_stop))
-                global_ids = [file_global_start + pos for pos in positions]
+                global_start = file_global_start + local_start
+                global_stop = file_global_start + local_stop
 
-                if path not in current:
-                    current[path] = {
-                        "positions": [],
-                        "global_ids": [],
-                        "meta": meta,
-                    }
-
-                current[path]["positions"].extend(positions)
-                current[path]["global_ids"].extend(global_ids)
+                if path in current:
+                    raise RuntimeError(
+                        f"Non-contiguous duplicate selection for {path} within one concat job."
+                    )
+                current[path] = {
+                    "local_start": int(local_start),
+                    "local_stop": int(local_stop),
+                    "global_start": int(global_start),
+                    "global_stop": int(global_stop),
+                    "count": int(take),
+                    "meta": meta,
+                }
 
                 old_target_size = _target_time_size(current_target_time_values)
                 new_target_size = _target_time_size(candidate_target_time_values)
@@ -22862,8 +23122,8 @@ class ChemicalDriftPostProcessMixin:
                 current_bytes = _estimate_current_bytes(current_target_time_values)
 
                 if current_min_id is None:
-                    current_min_id = global_ids[0]
-                current_max_id = global_ids[-1]
+                    current_min_id = global_start
+                current_max_id = global_stop - 1
 
                 local_start = local_stop
 
@@ -22884,33 +23144,59 @@ class ChemicalDriftPostProcessMixin:
         return jobs
 
     @staticmethod
+    def _netcdf_is_internally_compressed(nc_file):
+        """Return True/False for known NetCDF formats, or None if unknown.
+
+        HDF5-backed NetCDF is considered internally compressed only when every
+        non-scalar numeric dataset inspected is compressed. NetCDF3 is not
+        internally compressed. The function never assumes HDF5 solely from the
+        filename extension.
+        """
+        from pathlib import Path
+
+        path = Path(nc_file)
+        with open(path, "rb") as f:
+            magic = f.read(8)
+
+        if magic.startswith(b"CDF"):
+            return False
+
+        if magic == b"\x89HDF\r\n\x1a\n":
+            import h5py
+            statuses = []
+            with h5py.File(path, "r") as f:
+                def _visit(_name, obj):
+                    if not isinstance(obj, h5py.Dataset):
+                        return
+                    if obj.shape == () or obj.dtype.kind in {"O", "S", "U"}:
+                        return
+                    statuses.append(obj.compression is not None)
+                f.visititems(_visit)
+            return bool(statuses) and all(statuses)
+
+        return None
+
+    @staticmethod
     def _is_compressed_at_level_6(nc_file):
-        """
-        Check whether non-scalar numeric NetCDF variables are gzip-compressed
-        at level 6.
-        Scalar metadata variables, strings, time, and trajectory are ignored.
-        """
+        """Backward-compatible HDF5 gzip-level-6 check used by older callers."""
         import h5py
+        from pathlib import Path
 
-        compression_status = []
+        path = Path(nc_file)
+        with open(path, "rb") as f:
+            if f.read(8) != b"\x89HDF\r\n\x1a\n":
+                return False
+        statuses = []
+        with h5py.File(path, "r") as f:
+            def _visit(_name, obj):
+                if not isinstance(obj, h5py.Dataset):
+                    return
+                if obj.shape == () or obj.dtype.kind in {"O", "S", "U"}:
+                    return
+                statuses.append(obj.compression == "gzip" and obj.compression_opts == 6)
+            f.visititems(_visit)
+        return bool(statuses) and all(statuses)
 
-        with h5py.File(nc_file, "r") as f:
-            for var_name in f.keys():
-                if var_name in ["time", "trajectory"]:
-                    continue
-
-                dataset = f[var_name]
-                if not isinstance(dataset, h5py.Dataset):
-                    continue
-                if dataset.shape == ():
-                    continue
-                if dataset.dtype.kind in {"O", "S", "U"}:
-                    continue
-                compression_status.append(
-                    dataset.compression == "gzip"
-                    and dataset.compression_opts == 6)
-
-        return bool(compression_status) and all(compression_status)
 
     def concat_simulation(
         self,
@@ -22935,9 +23221,9 @@ class ChemicalDriftPostProcessMixin:
         sim_file_list:      list of str, List of .nc files or .zip archives.
         simoutputpath:      str, Folder containing files to concatenate.
         sim_name:           str, Name prefix for output files.
-        max_size_GB:        float32, Approximate maximum logical size per concatenated output file.
+        max_size_GB:        float32, Approximate maximum logical size per concatenated output file; not a RAM cap.
         zip_files:          boolean, If True, final concatenated files are placed in one zip archive.
-        max_workers:        int, Number of worker processes. Start with 2-4 for NetCDF/HDF5.
+        max_workers:        int, Number of worker processes. Default 1 is the limited-memory-safe policy; explicit values >1 can multiply RAM use.
         delete_original_nc: boolean, If True, source .nc files are deleted after all concatenations succeed.
         compression_level:  int, NetCDF gzip compression level for output files.
         variables_to_keep:  list/tuple of str, Optional list/tuple of variables to keep in the concatenated output.
@@ -22948,6 +23234,10 @@ class ChemicalDriftPostProcessMixin:
                 The max_size_GB partitioning is based on the filtered dataset size.
         """
         import os
+        import math
+        import operator
+        import shutil
+        import tempfile
         import zipfile
         import warnings
 
@@ -22965,7 +23255,29 @@ class ChemicalDriftPostProcessMixin:
             print("concat_simulation: keeping variables:", list(variables_to_keep))
 
         if max_workers is None:
-            max_workers = min(4, os.cpu_count() or 1)
+            max_workers = 1
+        try:
+            max_workers = operator.index(max_workers)
+        except TypeError as e:
+            raise ValueError(f"max_workers must be an integer >= 1, got {max_workers!r}") from e
+        if max_workers < 1:
+            raise ValueError(f"max_workers must be an integer >= 1, got {max_workers!r}")
+        if max_workers > 1:
+            warnings.warn(
+                "concat_simulation max_workers > 1 can multiply aggregate RAM use; "
+                "use max_workers=1 on memory-constrained systems."
+            )
+
+        try:
+            compression_level = operator.index(compression_level)
+        except TypeError as e:
+            raise ValueError(
+                f"compression_level must be an integer from 0 to 9, got {compression_level!r}"
+            ) from e
+        if not 0 <= compression_level <= 9:
+            raise ValueError(
+                f"compression_level must be an integer from 0 to 9, got {compression_level!r}"
+            )
 
         mp_context = cls._safe_process_pool_context(max_workers)
 
@@ -22990,7 +23302,19 @@ class ChemicalDriftPostProcessMixin:
         if len(sim_file_list) == 0:
             raise ValueError("No .nc or .zip files to concatenate")
 
+        try:
+            max_size_GB = float(max_size_GB)
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"max_size_GB must be a finite number > 0, got {max_size_GB!r}") from e
+        if not math.isfinite(max_size_GB) or max_size_GB <= 0:
+            raise ValueError(f"max_size_GB must be a finite number > 0, got {max_size_GB!r}")
+
         max_bytes = int(max_size_GB * 1024 ** 3)
+        if max_bytes <= 0:
+            raise ValueError(
+                "max_size_GB is too small to represent at least one byte "
+                f"({max_size_GB!r} GB)"
+            )
 
         resolved_files = []
 
@@ -23008,16 +23332,17 @@ class ChemicalDriftPostProcessMixin:
         direct_nc_paths = [p for p in resolved_files if p.suffix == ".nc"]
 
         nc_paths = []
+        missing_requested = []
 
         for path in direct_nc_paths:
             if path.exists():
                 nc_paths.append(str(path))
             else:
-                warnings.warn(f"Missing NetCDF file: {path}")
+                missing_requested.append(str(path))
 
         for index_zip, zip_path in enumerate(zip_paths, start=1):
             if not zip_path.exists():
-                warnings.warn(f"Missing zip file: {zip_path}")
+                missing_requested.append(str(zip_path))
                 continue
 
             print(f"Extracting zip file {index_zip} out of {len(zip_paths)}")
@@ -23029,8 +23354,22 @@ class ChemicalDriftPostProcessMixin:
 
             nc_paths.extend(extracted)
 
-        # Dedupe while preserving natural order.
-        nc_paths = sorted(set(nc_paths), key=cls._natural_key)
+        if missing_requested:
+            raise FileNotFoundError(
+                "Requested concat input(s) do not exist: " + ", ".join(missing_requested)
+            )
+
+        # Order-preserving dedupe followed by deterministic natural sorting.
+        # The natural key includes the full path as a tie-breaker for equal basenames.
+        unique_nc_paths = []
+        seen_nc_paths = set()
+        for path in nc_paths:
+            identity = str(Path(path).resolve())
+            if identity in seen_nc_paths:
+                continue
+            seen_nc_paths.add(identity)
+            unique_nc_paths.append(str(path))
+        nc_paths = sorted(unique_nc_paths, key=cls._natural_key)
 
         if len(nc_paths) == 0:
             raise ValueError("No NetCDF files found")
@@ -23038,6 +23377,7 @@ class ChemicalDriftPostProcessMixin:
         print(f"Scanning {len(nc_paths)} NetCDF files with {max_workers} workers")
 
         metas = []
+        rejected_paths = []
 
         if max_workers <= 1:
             for path in nc_paths:
@@ -23045,24 +23385,38 @@ class ChemicalDriftPostProcessMixin:
 
                 if meta is not None:
                     metas.append(meta)
+                else:
+                    rejected_paths.append(str(path))
         else:
             with ProcessPoolExecutor(
                     max_workers=max_workers,
                     mp_context=mp_context,
                 ) as executor:
-                futures = [
-                    executor.submit(cls._scan_nc_file, path, variables_to_keep)
-                    for path in nc_paths
-                ]
+                for batch_start in range(0, len(nc_paths), max_workers):
+                    batch = nc_paths[batch_start:batch_start + max_workers]
+                    future_to_path = {
+                        executor.submit(cls._scan_nc_file, path, variables_to_keep): str(path)
+                        for path in batch
+                    }
+                    for future in as_completed(future_to_path):
+                        path = future_to_path[future]
+                        meta = future.result()
 
-                for future in as_completed(futures):
-                    meta = future.result()
+                        if meta is not None:
+                            metas.append(meta)
+                        else:
+                            rejected_paths.append(path)
 
-                    if meta is not None:
-                        metas.append(meta)
+        if rejected_paths:
+            raise ValueError(
+                "Requested NetCDF input(s) could not be incorporated: "
+                + ", ".join(sorted(rejected_paths, key=cls._natural_key))
+            )
 
         if len(metas) == 0:
             raise ValueError("No usable NetCDF files found")
+
+        accepted_source_paths = {str(meta["path"]) for meta in metas}
 
         metas = sorted(metas, key=lambda m: m["sort_key"])
         if verbose:
@@ -23098,6 +23452,20 @@ class ChemicalDriftPostProcessMixin:
 
         print(f"Created {len(concat_jobs)} concatenation jobs")
 
+        incorporated_sources = {
+            str(path)
+            for job in concat_jobs
+            for path in job["path_to_selection"].keys()
+        }
+        if incorporated_sources != accepted_source_paths:
+            missing_from_jobs = sorted(accepted_source_paths - incorporated_sources, key=cls._natural_key)
+            unexpected_in_jobs = sorted(incorporated_sources - accepted_source_paths, key=cls._natural_key)
+            raise RuntimeError(
+                "Concat source inventory mismatch before writing outputs: "
+                f"accepted_not_incorporated={missing_from_jobs}, "
+                f"unexpected_in_jobs={unexpected_in_jobs}"
+            )
+
         if verbose:
             print("[concat] Concatenation part time axes:", flush=True)
             for job in concat_jobs:
@@ -23120,8 +23488,14 @@ class ChemicalDriftPostProcessMixin:
                     flush=True,
                 )
 
+        staging_dir = Path(tempfile.mkdtemp(
+            prefix=f".{sim_name}_concat_stage_",
+            dir=str(output_dir),
+        ))
+
         for job in concat_jobs:
             job["output_dir"] = str(output_dir)
+            job["staging_dir"] = str(staging_dir)
             job["sim_name"] = sim_name
             job["compression_level"] = compression_level
             job["variables_to_keep"] = variables_to_keep
@@ -23165,107 +23539,112 @@ class ChemicalDriftPostProcessMixin:
                     except ValueError:
                         rel_path = str(path)
 
-                    local_positions = selection["positions"]
-                    global_ids = selection["global_ids"]
-
                     file.write(
                         f"{rel_path}, "
-                        f"local positions {local_positions[0]}-{local_positions[-1]}, "
-                        f"global IDs {global_ids[0]}-{global_ids[-1]}, "
-                        f"n={len(global_ids)}\n"
+                        f"local positions {selection['local_start']}-{selection['local_stop'] - 1}, "
+                        f"global IDs {selection['global_start']}-{selection['global_stop'] - 1}, "
+                        f"n={selection['count']}\n"
                     )
 
                 file.write("\n")
 
-        concatenated_files = []
+        staged_files = []
 
         print("Starting parallel concatenation")
 
-        if max_workers <= 1:
-            for index_done, job in enumerate(concat_jobs, start=1):
-                output_file = cls._concat_one_global_id_range(job)
-
-                if output_file is not None:
-                    concatenated_files.append(output_file)
-
-                print(f"Finished concat job {index_done} out of {len(concat_jobs)}")
-        else:
-            with ProcessPoolExecutor(
-                    max_workers=max_workers,
-                    mp_context=mp_context,
-                ) as executor:
-                futures = [
-                    executor.submit(cls._concat_one_global_id_range, job)
-                    for job in concat_jobs
-                ]
-
-                for index_done, future in enumerate(as_completed(futures), start=1):
-                    output_file = future.result()
+        try:
+            if max_workers <= 1:
+                for index_done, job in enumerate(concat_jobs, start=1):
+                    output_file = cls._concat_one_global_id_range(job)
 
                     if output_file is not None:
-                        concatenated_files.append(output_file)
-                    print(f"Finished concat job {index_done} out of {len(futures)}")
+                        staged_files.append(output_file)
+
+                    print(f"Finished concat job {index_done} out of {len(concat_jobs)}")
+            else:
+                with ProcessPoolExecutor(
+                        max_workers=max_workers,
+                        mp_context=mp_context,
+                    ) as executor:
+                    completed_jobs = 0
+                    for batch_start in range(0, len(concat_jobs), max_workers):
+                        batch = concat_jobs[batch_start:batch_start + max_workers]
+                        futures = [
+                            executor.submit(cls._concat_one_global_id_range, job)
+                            for job in batch
+                        ]
+                        for future in as_completed(futures):
+                            output_file = future.result()
+                            completed_jobs += 1
+                            if output_file is not None:
+                                staged_files.append(output_file)
+                            print(
+                                f"Finished concat job {completed_jobs} "
+                                f"out of {len(concat_jobs)}"
+                            )
+
+            staged_files = sorted(staged_files, key=cls._natural_key)
+
+            if len(staged_files) == 0:
+                raise RuntimeError("No concatenated files were produced")
+
+            # All parts were written successfully. Only now publish final-named
+            # NetCDF artifacts into the output directory.
+            concatenated_files = []
+            for staged_path in staged_files:
+                staged_path = Path(staged_path)
+                final_path = output_dir / staged_path.name
+                os.replace(staged_path, final_path)
+                concatenated_files.append(str(final_path))
+        except Exception:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            raise
+        finally:
+            shutil.rmtree(staging_dir, ignore_errors=True)
 
         concatenated_files = sorted(concatenated_files, key=cls._natural_key)
-
-        if len(concatenated_files) == 0:
-            raise RuntimeError("No concatenated files were produced")
-
         print(f"Concatenating time: {datetime.now() - start}")
 
-        if delete_original_nc:
-            output_files_set = {
-                str(Path(path).resolve())
-                for path in concatenated_files
-            }
-
-            for path in nc_paths:
-                resolved = str(Path(path).resolve())
-
-                if resolved in output_files_set:
-                    continue
-
-                try:
-                    os.remove(path)
-                except FileNotFoundError:
-                    pass
-                except IsADirectoryError:
-                    warnings.warn(f"Expected a file but found a directory: {path}")
-                except PermissionError as e:
-                    warnings.warn(f"Permission denied deleting {path}: {e}")
-                except Exception as e:
-                    warnings.warn(f"Could not remove source file {path}: {e}")
+        returned_artifacts = list(concatenated_files)
 
         if zip_files:
             zip_start = datetime.now()
-
             print("Zip concatenated files")
 
-            first_output = concatenated_files[0]
-
-            compress_type = (
-                zipfile.ZIP_STORED
-                if cls._is_compressed_at_level_6(first_output)
-                else zipfile.ZIP_DEFLATED
-            )
-
             zip_path = output_dir / f"{sim_name}_concatenated_files.zip"
+            zip_tmp_path = zip_path.with_name(zip_path.name + ".tmp")
+            try:
+                with zipfile.ZipFile(zip_tmp_path, mode="w") as myzip:
+                    for index_zip, file_path in enumerate(concatenated_files, start=1):
+                        print(
+                            f"Zipping file {index_zip} "
+                            f"out of {len(concatenated_files)}"
+                        )
+                        internally_compressed = cls._netcdf_is_internally_compressed(file_path)
+                        compress_type = (
+                            zipfile.ZIP_STORED
+                            if internally_compressed is True
+                            else zipfile.ZIP_DEFLATED
+                        )
+                        myzip.write(
+                            file_path,
+                            arcname=Path(file_path).name,
+                            compress_type=compress_type,
+                        )
 
-            with zipfile.ZipFile(
-                zip_path,
-                mode="w",
-                compression=compress_type,
-            ) as myzip:
-                for index_zip, file_path in enumerate(concatenated_files, start=1):
-                    print(
-                        f"Zipping file {index_zip} "
-                        f"out of {len(concatenated_files)}"
-                    )
-
-                    myzip.write(
-                        file_path,
-                        arcname=Path(file_path).name,
-                    )
+                with zipfile.ZipFile(zip_tmp_path, mode="r") as check_zip:
+                    bad_member = check_zip.testzip()
+                    if bad_member is not None:
+                        raise RuntimeError(f"ZIP integrity check failed for member: {bad_member}")
+                os.replace(zip_tmp_path, zip_path)
+            except Exception:
+                try:
+                    if zip_tmp_path.exists():
+                        zip_tmp_path.unlink()
+                except OSError:
+                    pass
+                # Keep finalized NetCDF parts and all sources as recovery artifacts.
+                raise
 
             for file_path in concatenated_files:
                 try:
@@ -23277,8 +23656,24 @@ class ChemicalDriftPostProcessMixin:
                         f"Could not remove concatenated file {file_path}: {e}"
                     )
 
+            returned_artifacts = [str(zip_path)]
             print(f"Zip files time: {datetime.now() - zip_start}")
+
+        # Destructive source cleanup is the final step, after every requested
+        # output artifact has been successfully finalized.
+        if delete_original_nc:
+            for path in sorted(incorporated_sources, key=cls._natural_key):
+                try:
+                    os.remove(path)
+                except FileNotFoundError:
+                    pass
+                except IsADirectoryError:
+                    warnings.warn(f"Expected a file but found a directory: {path}")
+                except PermissionError as e:
+                    warnings.warn(f"Permission denied deleting {path}: {e}")
+                except Exception as e:
+                    warnings.warn(f"Could not remove source file {path}: {e}")
 
         print(f"Total time: {datetime.now() - start}")
 
-        return concatenated_files
+        return returned_artifacts
