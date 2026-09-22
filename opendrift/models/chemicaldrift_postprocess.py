@@ -6805,27 +6805,6 @@ class ChemicalDriftPostProcessMixin:
                 v.sediment_mass_basis = 'dry_weight'
                 v.phase_units_by = 'specie_phase'
 
-
-            # def _set_unstructured_face_attrs(
-            #     v,
-            #     *,
-            #     long_name=None,
-            #     units=None,
-            #     standard_name=None,
-            #     coordinates=None,
-            # ):
-            #     if long_name is not None:
-            #         v.long_name = long_name
-            #     if units is not None:
-            #         v.units = units
-            #     if standard_name is not None:
-            #         v.standard_name = standard_name
-
-            #     v.mesh = 'mesh'
-            #     v.location = 'face'
-            #     v.grid_mapping = 'crs'
-            #     v.coordinates = coordinates or 'face_lon face_lat'
-
             def _set_time_mean_attrs(v):
                 v.cell_methods = 'time: mean'
 
