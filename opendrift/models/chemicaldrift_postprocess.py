@@ -13307,103 +13307,382 @@ class ChemicalDriftPostProcessMixin:
     ##### Helpers for create_images
     @staticmethod
     def _simmetrical_colormap(cmap):
-        '''
-        Take a colormap and create a new one, as the concatenation of itself by a symmetrical fold around 0
-        from https://stackoverflow.com/questions/28439251/symmetric-colormap-matplotlib
-
-        cmap:     matplotlib colormap that will be returned symmetrical with respect to 0
-        '''
+        '''Return a colormap mirrored around its midpoint.'''
         import numpy as np
         import matplotlib.colors as mcolors
 
         new_cmap_name = "sym_" + cmap.name
-        # Define the roughness of the colormap, default is 128
-        n= 128
-        # get the list of color from colormap
-        colors_r = cmap(np.linspace(0, 1, n))    # take the standard colormap # 'right-part'
-        colors_l = colors_r[::-1]                # take the first list of color and flip the order # "left-part"
-
-        # combine them and build a new colormap
+        n = 128
+        colors_r = cmap(np.linspace(0, 1, n))
+        colors_l = colors_r[::-1]
         colors = np.vstack((colors_l, colors_r))
-        new_cmap = mcolors.LinearSegmentedColormap.from_list(new_cmap_name, colors)
-
-        return new_cmap
+        return mcolors.LinearSegmentedColormap.from_list(new_cmap_name, colors)
 
     @staticmethod
-    def _remove_white_borders(image, padding_r, padding_c, tol=1e-6):
-        '''
-        Remove white borders from an image
-
-        image:     np.array of float32, rgb array of image with white = 1
-        '''
-        # supports RGB or RGBA
-        if image.ndim == 3 and image.shape[2] == 4:
-            image = image[..., :3]
-        mask = np.any(image < 1 - tol, axis=2) if image.ndim == 3 else (image < 1 - tol)
-        if not np.any(mask):
-            return image  # nothing to trim
-        # Get the non-zero pixels along each axis
-        rows = np.any(mask, axis=1)
-        cols = np.any(mask, axis=0)
-        # Get the bounding box of non-zero pixels
-        rmin, rmax = np.where(rows)[0][[0, -1]]
-        cmin, cmax = np.where(cols)[0][[0, -1]]
-        rmin = max(rmin - padding_r, 0); rmax = min(rmax + padding_r, image.shape[0]-1)
-        cmin = max(cmin - padding_c, 0); cmax = min(cmax + padding_c, image.shape[1]-1)
-        # Crop the image to the bounding box
-        return image[rmin:rmax+1, cmin:cmax+1]
-
-    @staticmethod
-    def _create_animation(load_img_from_folder,
-                       trim_images,
-                       figure_ls,
-                       file_out_path,
-                       file_out_sub_folder,
-                       anim_prefix,
-                       figure_file_name,
-                       animation_format,
-                       fps,
-                       width_fig, high_fig,
-                       low_quality):
-        '''
-        Make .mp4 or .gif animation of figures created with create_images
-        '''
-        # https://stackoverflow.com/questions/67420158/how-do-you-make-a-matplotlib-funcanimation-animation-out-of-matplotlib-image-axe
-        from matplotlib.animation import FuncAnimation, FFMpegWriter, PillowWriter
-        from datetime import datetime as dt
-        import matplotlib.pyplot as plt
+    def _normalize_create_images_fig_ranges(fig_numbers, nframes=None):
+        """Normalize inclusive frame ranges used by create_images."""
         import numpy as np
 
-        start = dt.now()
-        def update(frame):
-            # frame is rgb np.array
-            # Update the image in the plot
-            art = (figure_ls[frame])
-            draw_image.set_array(art)
-            ax.set_axis_off()
-            return [draw_image]
+        if fig_numbers is None:
+            return None
+        if isinstance(fig_numbers, (str, bytes)) or not hasattr(fig_numbers, '__iter__'):
+            raise ValueError("fig_numbers must be None or a non-empty sequence of [start, end] integer pairs")
+        ranges = list(fig_numbers)
+        if not ranges:
+            raise ValueError("fig_numbers must not be empty")
 
+        out = []
+        previous_end = None
+        for i, item in enumerate(ranges):
+            if isinstance(item, (str, bytes)) or not hasattr(item, '__iter__'):
+                raise ValueError(f"fig_numbers[{i}] must be a two-integer range")
+            pair = list(item)
+            if len(pair) != 2:
+                raise ValueError(f"fig_numbers[{i}] must contain exactly [start, end]")
+            if any(isinstance(v, (bool, np.bool_)) or not isinstance(v, (int, np.integer)) for v in pair):
+                raise ValueError(f"fig_numbers[{i}] must contain integer indexes")
+            start, end = int(pair[0]), int(pair[1])
+            if start < 0 or end < 0:
+                raise ValueError("fig_numbers indexes must be non-negative")
+            if start > end:
+                raise ValueError(f"fig_numbers range start must be <= end, got {(start, end)}")
+            if previous_end is not None and start < previous_end:
+                raise ValueError("fig_numbers ranges must be ordered increasingly")
+            if nframes is not None and end >= int(nframes):
+                raise ValueError(
+                    f"fig_numbers end index {end} is outside available frames 0..{int(nframes)-1}"
+                )
+            out.append((start, end))
+            previous_end = end
+        return tuple(out)
 
-        if low_quality == True:
-            fig = plt.figure()
+    @classmethod
+    def _normalize_create_images_colormap(cls, selected_colormap, simmetrical_cmap):
+        import matplotlib.pyplot as plt
+
+        cmap = selected_colormap
+        if isinstance(cmap, str):
+            try:
+                cmap = plt.colormaps[cmap]
+            except KeyError as exc:
+                raise ValueError(f"Unknown Matplotlib colormap {selected_colormap!r}") from exc
+        if simmetrical_cmap:
+            if cmap is None:
+                cmap = plt.colormaps["viridis"]
+            cmap = cls._simmetrical_colormap(cmap)
+        return cmap
+
+    @staticmethod
+    def _canonicalize_create_images_unit_for_compare(unit):
+        """Conservative syntax-only normalization for unit conflict detection."""
+        import re
+
+        if unit is None:
+            return None
+        text = str(unit).strip()
+        while len(text) >= 2 and ((text[0], text[-1]) in {('(', ')'), ('[', ']')}):
+            text = text[1:-1].strip()
+        if not text:
+            return None
+        text = text.replace('µ', 'u').replace('μ', 'u').replace('³', '3').replace('²', '2')
+        text = text.replace('−', '-').replace('**', '^')
+        text = re.sub(r'\s+', '', text)
+        # Pure notation equivalences only: A/m3 == A m-3 and A/kg == A kg-1.
+        text = re.sub(r'/([A-Za-z]+)(\d+)', lambda m: f"{m.group(1)}-{m.group(2)}", text)
+        text = re.sub(r'/([A-Za-z]+)(?![A-Za-z0-9])', lambda m: f"{m.group(1)}-1", text)
+        text = text.replace('^-', '-')
+        return text
+
+    @classmethod
+    def _resolve_create_images_display_metadata(cls, dataarray, unit_measure, colorbar_title):
+        attrs = dict(getattr(dataarray, 'attrs', {}) or {})
+        metadata_unit = attrs.get('units', attrs.get('unit'))
+        explicit_unit = unit_measure
+        if explicit_unit is not None and not str(explicit_unit).strip():
+            explicit_unit = None
+        if metadata_unit is not None and not str(metadata_unit).strip():
+            metadata_unit = None
+
+        if explicit_unit is not None and metadata_unit is not None:
+            a = cls._canonicalize_create_images_unit_for_compare(explicit_unit)
+            b = cls._canonicalize_create_images_unit_for_compare(metadata_unit)
+            if a != b:
+                raise ValueError(
+                    "unit_measure conflicts with DataArray unit metadata: "
+                    f"explicit={explicit_unit!r}, metadata={metadata_unit!r}"
+                )
+        resolved_unit = explicit_unit if explicit_unit is not None else metadata_unit
+
+        if colorbar_title is None:
+            base_label = (
+                attrs.get('long_name') or attrs.get('standard_name') or
+                getattr(dataarray, 'name', None) or 'value'
+            )
         else:
-            fig = plt.figure(figsize = (width_fig,high_fig))
+            base_label = str(colorbar_title)
 
-        ax = plt.gca()
-        draw_image = ax.imshow((figure_ls[0]),animated=True)
+        label = str(base_label)
+        if resolved_unit is not None:
+            clean_unit = str(resolved_unit).strip().strip('()[]').strip()
+            unit_token = cls._canonicalize_create_images_unit_for_compare(clean_unit) or ''
+            label_token = cls._canonicalize_create_images_unit_for_compare(label) or label.replace(' ', '')
+            if unit_token and unit_token not in label_token:
+                label = f"{label} [{clean_unit}]"
+        return {
+            'unit': None if resolved_unit is None else str(resolved_unit).strip().strip('()[]').strip(),
+            'metadata_unit': metadata_unit,
+            'colorbar_title': label,
+        }
 
-        # Create the animation
-        print("Creating animation")
-        animation = FuncAnimation(fig, update, frames=len(figure_ls), interval=1000/fps, blit = True)
+    @staticmethod
+    def _format_create_images_timestamp(timestamp, date_str_lenght):
+        import pandas as pd
 
-        output_video = file_out_path + file_out_sub_folder + anim_prefix + figure_file_name + animation_format
-        print(f"Time to create animation (hr:min:sec): {dt.now()-start}")
-        print(f"Saving animation to {file_out_path + file_out_sub_folder}")
-        start = dt.now()
-        writer = FFMpegWriter(fps=fps) if animation_format == ".mp4" else PillowWriter(fps=fps)
-        animation.save(output_video, writer=writer)
+        formats = {
+            10: '%Y-%m-%d',
+            13: '%Y-%m-%d %H',
+            16: '%Y-%m-%d %H:%M',
+            19: '%Y-%m-%d %H:%M:%S',
+        }
+        if date_str_lenght not in formats:
+            raise ValueError("date_str_lenght must be one of 10, 13, 16, or 19")
+        return pd.to_datetime(timestamp).strftime(formats[date_str_lenght])
 
-        print(f"Time to save animation (hr:min:sec): {dt.now()-start}")
+    @classmethod
+    def _build_create_images_title(cls, title_caption, full_title, frame_time,
+                                   date_str_lenght, unit_measure=None,
+                                   depth_value=None, depth_unit=None):
+        if full_title is not None:
+            return str(full_title)
+
+        parts = []
+        if title_caption is not None and str(title_caption).strip():
+            parts.append(str(title_caption).strip())
+        parts.append(cls._format_create_images_timestamp(frame_time, date_str_lenght))
+        title = ' '.join(parts)
+        extras = []
+        if depth_value is not None:
+            try:
+                depth_text = f"{float(depth_value):g}"
+            except (TypeError, ValueError):
+                depth_text = str(depth_value)
+            if depth_unit is not None and str(depth_unit).strip():
+                depth_text += f" {str(depth_unit).strip().strip('()[]').strip()}"
+            extras.append(f"depth={depth_text}")
+        if unit_measure is not None and str(unit_measure).strip():
+            clean = str(unit_measure).strip().strip('()[]').strip()
+            extras.append(f"({clean})")
+        if extras:
+            title += " | " + " | ".join(extras)
+        return title
+
+    @classmethod
+    def _prepare_create_images_dataarray(cls, Conc_Dataset, variable_name,
+                                         time_start, time_end):
+        """Return a normalized plotting DataArray without mutating caller-owned state."""
+        import numpy as np
+        import pandas as pd
+
+        if Conc_Dataset is None:
+            raise ValueError("Conc_Dataset must be provided when load_img_from_folder=False")
+        obj = Conc_Dataset
+
+        dims = set(getattr(obj, 'dims', ()))
+        rename_map = {}
+        if 'longitude' not in dims or 'latitude' not in dims:
+            if {'lon', 'lat'}.issubset(dims):
+                rename_map.update({'lon': 'longitude', 'lat': 'latitude'})
+            elif {'x', 'y'}.issubset(dims):
+                rename_map.update({'x': 'longitude', 'y': 'latitude'})
+        if 'depth' not in dims and 'z' in dims:
+            rename_map['z'] = 'depth'
+        if 'time' not in dims and 'avg_time' in dims:
+            rename_map['avg_time'] = 'time'
+        if rename_map:
+            obj = obj.rename(rename_map)
+
+        dims = set(getattr(obj, 'dims', ()))
+        if not {'longitude', 'latitude'}.issubset(dims):
+            raise ValueError("Unknown spatial coordinates; expected longitude/latitude, lon/lat, or x/y dimensions")
+
+        if hasattr(obj, 'data_vars'):
+            if 'concentration_avg_water' in obj.data_vars:
+                da = obj['concentration_avg_water']
+            elif 'concentration_avg_sediments' in obj.data_vars:
+                da = obj['concentration_avg_sediments']
+            elif variable_name is not None and variable_name in obj.data_vars:
+                da = obj[variable_name]
+            else:
+                raise ValueError("specified variable_name is not present in Conc_Dataset")
+        else:
+            da = obj
+            if variable_name is not None and getattr(da, 'name', None) not in (None, variable_name):
+                raise ValueError(
+                    f"variable_name={variable_name!r} does not match DataArray name {getattr(da, 'name', None)!r}"
+                )
+
+        # Normalize time semantics before any .time access.
+        if 'time' not in da.dims:
+            if 'year' in da.dims:
+                years = np.asarray(da['year'].values)
+                try:
+                    year_time = pd.to_datetime([f"{int(v)}-01-01" for v in years]).to_numpy()
+                except Exception as exc:
+                    raise ValueError("Could not convert year coordinate to timestamps") from exc
+                da = da.assign_coords(year=('year', year_time)).rename({'year': 'time'})
+            elif 'season' in da.dims:
+                if time_start is None:
+                    raise ValueError("time_start must be specified when a season dimension is converted to time")
+                base_year = pd.to_datetime(time_start).year
+                season_day = {'DJF': '12-21', 'MAM': '03-21', 'JJA': '06-21', 'SON': '09-23'}
+                seasons = [str(v) for v in np.asarray(da['season'].values)]
+                unknown = [v for v in seasons if v not in season_day]
+                if unknown:
+                    raise ValueError(f"Unknown season labels: {unknown}")
+                season_time = pd.to_datetime([f"{base_year}-{season_day[v]}" for v in seasons]).to_numpy()
+                da = da.assign_coords(season=('season', season_time)).rename({'season': 'time'})
+            else:
+                allowed = {'latitude', 'longitude', 'depth'}
+                extra = set(da.dims) - allowed
+                if extra:
+                    raise ValueError(f"Dimensions other than latitude/longitude/depth are present: {sorted(extra)}")
+                if time_start is None:
+                    raise ValueError("Conc_DataArray.time is missing; time_start must be specified")
+                da = da.expand_dims(time=[pd.to_datetime(time_start).to_datetime64()])
+
+        allowed = {'latitude', 'longitude', 'time', 'depth'}
+        extra = set(da.dims) - allowed
+        if extra:
+            raise ValueError(f"Dimensions other than {sorted(allowed)} are present: {sorted(extra)}")
+        if 'time' not in da.dims:
+            raise ValueError("Could not normalize a time dimension")
+
+        source_times = np.asarray(da['time'].values)
+        if source_times.size == 0:
+            raise ValueError("Conc_DataArray contains no time values")
+        source_tstart = source_times[0]
+        source_tend = source_times[-1]
+
+        mask = np.ones(source_times.size, dtype=bool)
+        if time_start is not None:
+            mask &= source_times >= pd.to_datetime(time_start).to_datetime64()
+        if time_end is not None:
+            mask &= source_times <= pd.to_datetime(time_end).to_datetime64()
+        indexes = np.flatnonzero(mask)
+        if indexes.size == 0:
+            raise ValueError(
+                f"Conc_DataArray.time {source_tstart} - {source_tend} is out of time_start/end interval"
+            )
+        if indexes.size == 1 or np.all(np.diff(indexes) == 1):
+            da = da.isel(time=slice(int(indexes[0]), int(indexes[-1]) + 1))
+        else:
+            da = da.isel(time=indexes)
+
+        return da, {'source_tstart': source_tstart, 'source_tend': source_tend}
+
+    @staticmethod
+    def _select_create_images_frame(dataarray, timestep, selected_depth):
+        import numpy as np
+        import pandas as pd
+
+        frame_time = pd.to_datetime(dataarray['time'].isel(time=timestep).item())
+        frame = dataarray.isel(time=timestep, drop=True)
+        depth_value = None
+        depth_unit = None
+        if 'depth' in frame.dims:
+            if selected_depth is None:
+                raise ValueError("selected_depth must be specified when a depth dimension is present")
+            depth_values = np.asarray(frame['depth'].values)
+            try:
+                matches = np.flatnonzero(np.isclose(depth_values.astype(float), float(selected_depth)))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("depth coordinate and selected_depth must be numeric") from exc
+            if matches.size == 0:
+                raise ValueError(f"selected_depth {selected_depth} not found in available depths {depth_values}")
+            if matches.size > 1:
+                raise ValueError(f"selected_depth {selected_depth} ambiguously matches multiple depth positions")
+            pos = int(matches[0])
+            depth_value = frame['depth'].isel(depth=pos).item()
+            attrs = dict(getattr(frame['depth'], 'attrs', {}) or {})
+            depth_unit = attrs.get('units', attrs.get('unit'))
+            frame = frame.isel(depth=pos, drop=True)
+
+        frame = frame.squeeze(drop=True)
+        if frame.ndim != 2 or set(frame.dims) != {'latitude', 'longitude'}:
+            raise ValueError(
+                "Each create_images frame must reduce to exactly 2-D latitude/longitude data; "
+                f"got dims={frame.dims}"
+            )
+        frame = frame.transpose('latitude', 'longitude')
+        return frame, frame_time, depth_value, depth_unit
+
+    @staticmethod
+    def _normalize_image_frame_uint8_rgb(image):
+        import numpy as np
+
+        arr = np.asarray(image)
+        if arr.ndim == 2:
+            arr = arr[..., None]
+        if arr.ndim != 3 or arr.shape[2] not in (1, 3, 4):
+            raise ValueError(f"image must be grayscale, RGB, or RGBA; got shape {arr.shape}")
+        if arr.shape[2] == 4:
+            arr = arr[..., :3]
+        elif arr.shape[2] == 1:
+            arr = np.repeat(arr, 3, axis=2)
+
+        if arr.dtype == np.uint8:
+            return np.ascontiguousarray(arr).copy()
+        if np.issubdtype(arr.dtype, np.floating):
+            finite = np.isfinite(arr)
+            if not np.all(finite):
+                raise ValueError("floating image contains non-finite values")
+            amin = float(arr.min()) if arr.size else 0.0
+            amax = float(arr.max()) if arr.size else 0.0
+            if amin < 0.0 or amax > 1.0:
+                raise ValueError(
+                    f"floating image must use normalized [0,1] values, got range [{amin}, {amax}]"
+                )
+            return np.ascontiguousarray(np.rint(arr * 255.0).astype(np.uint8))
+        raise ValueError(f"unsupported image dtype {arr.dtype}; expected uint8 or normalized floating data")
+
+    @classmethod
+    def _remove_white_borders(cls, image, padding_r, padding_c, tol=3):
+        '''Remove near-white borders and return canonical uint8 RGB storage.'''
+        import numpy as np
+
+        raw = np.asarray(image)
+        if raw.dtype == np.uint8 and raw.ndim == 3 and raw.shape[2] == 3 and raw.flags.c_contiguous:
+            arr = raw
+        else:
+            arr = cls._normalize_image_frame_uint8_rgb(image)
+        try:
+            pr = int(padding_r)
+            pc = int(padding_c)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("padding_r and padding_c must be non-negative integers") from exc
+        if pr < 0 or pc < 0:
+            raise ValueError("padding_r and padding_c must be non-negative integers")
+        try:
+            tol_value = float(tol)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("trim tolerance must be numeric") from exc
+        if not np.isfinite(tol_value) or tol_value < 0:
+            raise ValueError("trim tolerance must be finite and non-negative")
+        tol_u8 = int(round(tol_value * 255.0)) if tol_value <= 1.0 else int(round(tol_value))
+        tol_u8 = min(max(tol_u8, 0), 255)
+        threshold = 255 - tol_u8
+        mask = np.any(arr < threshold, axis=2)
+        if not np.any(mask):
+            return arr
+        rows = np.any(mask, axis=1)
+        cols = np.any(mask, axis=0)
+        rmin, rmax = np.where(rows)[0][[0, -1]]
+        cmin, cmax = np.where(cols)[0][[0, -1]]
+        rmin = max(int(rmin) - pr, 0)
+        rmax = min(int(rmax) + pr, arr.shape[0] - 1)
+        cmin = max(int(cmin) - pc, 0)
+        cmax = min(int(cmax) + pc, arr.shape[1] - 1)
+        return np.ascontiguousarray(arr[rmin:rmax + 1, cmin:cmax + 1]).copy()
 
     @staticmethod
     def _flatten_list(matrix):
@@ -13414,69 +13693,219 @@ class ChemicalDriftPostProcessMixin:
 
     @staticmethod
     def _check_nested_list(input_list):
-        '''
-        Check if fig_numbers is a nested list
-        '''
-        for element in input_list:
-            if isinstance(element, list):
-                return True
-        return False
+        if input_list is None:
+            return False
+        return any(isinstance(element, (list, tuple)) for element in input_list)
 
     @staticmethod
     def _print_progress_list(length):
-        '''
-        Create list of indexes to print progress of creating/saving images
-
-        length:       float, lenght of figures array
-        '''
         elem_print = []
         if length < 10:
-             for index in range(0, length):
-                 elem_print.append(index)
-             return elem_print
-
-        interval = length // 10  # Calculate the interval
+            return list(range(0, length))
+        interval = length // 10
         for i in range(1, 11):
-             index = i * interval
-             if index < length:
-                 elem_print.append(index)
-             else:
-                 break
+            index = i * interval
+            if index < length:
+                elem_print.append(index)
+            else:
+                break
         return elem_print
 
+    @staticmethod
+    def _estimate_create_images_memory_bytes(width_px, height_px, figures_number,
+                                             trim_images, make_animation,
+                                             load_img_from_folder=False):
+        """Conservative known image-buffer working-set model."""
+        import numpy as np
+
+        for name, value in [('width_px', width_px), ('height_px', height_px), ('figures_number', figures_number)]:
+            if isinstance(value, (bool, np.bool_)):
+                raise ValueError(f"{name} must be a non-negative integer")
+            try:
+                ivalue = int(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{name} must be a non-negative integer") from exc
+            if ivalue < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+            if name == 'width_px': width_px = ivalue
+            elif name == 'height_px': height_px = ivalue
+            else: figures_number = ivalue
+        p = width_px * height_px
+        canonical = 3 * p
+        trim_temp = (4 * p + 3 * p) if trim_images else 0  # comparisons/mask + worst-case compact crop
+        if load_img_from_folder:
+            active = 3 * p + canonical + trim_temp  # PIL RGB source + canonical + trim/crop
+            mode = 'load_animation' if make_animation else 'load_sequential'
+        else:
+            active = 4 * p + canonical + trim_temp  # Matplotlib RGBA canvas + canonical + trim/crop
+            mode = 'render_animation' if make_animation else 'render_sequential'
+        retained = canonical * figures_number if make_animation else 0
+        known = active + retained
+        return {
+            'mode': mode,
+            'width_px': width_px,
+            'height_px': height_px,
+            'pixels_per_frame': p,
+            'figures_number': figures_number,
+            'canonical_frame_bytes': canonical,
+            'active_working_set_bytes': active,
+            'retained_animation_bytes': retained,
+            'known_working_set_estimate_bytes': known,
+            'scales_with_frame_count': bool(make_animation),
+            'trim_images': bool(trim_images),
+        }
+
+    @classmethod
+    def _resolve_create_images_memory_budget(cls, memory_budget_mb='auto', *,
+                                             memory_auto_fraction=0.50,
+                                             memory_auto_reserve_mb=1024,
+                                             memory_auto_reserve_fraction=0.20,
+                                             memory_capacity_report=None):
+        import numpy as np
+
+        if memory_budget_mb is None:
+            return None, {'budget_mode': 'none', 'budget_bytes': None}
+        if isinstance(memory_budget_mb, str):
+            if memory_budget_mb != 'auto':
+                raise ValueError("memory_budget_mb must be None, a positive number, or 'auto'")
+        else:
+            if isinstance(memory_budget_mb, (bool, np.bool_)):
+                raise ValueError("memory_budget_mb must be None, a positive number, or 'auto'")
+            try:
+                value = float(memory_budget_mb)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("memory_budget_mb must be None, a positive number, or 'auto'") from exc
+            if not np.isfinite(value) or value <= 0:
+                raise ValueError("memory_budget_mb must be a finite positive number")
+            return value * (1024.0 ** 2), {
+                'budget_mode': 'explicit',
+                'budget_bytes': value * (1024.0 ** 2),
+            }
+
+        try:
+            frac = float(memory_auto_fraction)
+            reserve_mb = float(memory_auto_reserve_mb)
+            reserve_frac = float(memory_auto_reserve_fraction)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("automatic image-memory controls must be numeric") from exc
+        if not np.isfinite(frac) or not (0 < frac <= 1):
+            raise ValueError("memory_auto_fraction must satisfy 0 < value <= 1")
+        if not np.isfinite(reserve_mb) or reserve_mb < 0:
+            raise ValueError("memory_auto_reserve_mb must be finite and non-negative")
+        if not np.isfinite(reserve_frac) or not (0 <= reserve_frac < 1):
+            raise ValueError("memory_auto_reserve_fraction must satisfy 0 <= value < 1")
+
+        capacity = dict(memory_capacity_report or cls._detect_effective_memory_capacity())
+        effective = capacity.get('effective_available_bytes')
+        if effective is None:
+            raise RuntimeError(
+                "memory_budget_mb='auto' could not determine reliable currently available memory; "
+                "use an explicit numeric budget or None"
+            )
+        effective = int(effective)
+        reserve = max(reserve_mb * (1024.0 ** 2), effective * reserve_frac)
+        usable = max(0.0, effective - reserve)
+        budget = usable * frac
+        report = {
+            'budget_mode': 'auto',
+            'budget_bytes': budget,
+            'effective_available_bytes': effective,
+            'host_available_bytes': capacity.get('host_available_bytes'),
+            'cgroup_remaining_bytes': capacity.get('cgroup_remaining_bytes'),
+            'rlimit_as_remaining_bytes': capacity.get('rlimit_as_remaining_bytes'),
+            'reserve_bytes': reserve,
+            'usable_bytes': usable,
+            'memory_auto_fraction': frac,
+            'memory_auto_reserve_mb': reserve_mb,
+            'memory_auto_reserve_fraction': reserve_frac,
+        }
+        return budget, report
+
+    def _check_imgs_memory_use(self, width_fig, high_fig, fig_dpi, figures_number,
+                               trim_images, make_animation, color_depth=4, *,
+                               load_img_from_folder=False, pixel_shape=None,
+                               memory_budget_mb='auto', memory_auto_fraction=0.50,
+                               memory_auto_reserve_mb=1024,
+                               memory_auto_reserve_fraction=0.20,
+                               memory_capacity_report=None):
+        """Estimate image working set and reject before large frame retention."""
+        if pixel_shape is None:
+            width_px = int(round(float(width_fig) * float(fig_dpi)))
+            height_px = int(round(float(high_fig) * float(fig_dpi)))
+        else:
+            height_px, width_px = [int(v) for v in pixel_shape]
+        estimate = self._estimate_create_images_memory_bytes(
+            width_px, height_px, figures_number,
+            trim_images=trim_images,
+            make_animation=make_animation,
+            load_img_from_folder=load_img_from_folder,
+        )
+        budget, budget_report = self._resolve_create_images_memory_budget(
+            memory_budget_mb,
+            memory_auto_fraction=memory_auto_fraction,
+            memory_auto_reserve_mb=memory_auto_reserve_mb,
+            memory_auto_reserve_fraction=memory_auto_reserve_fraction,
+            memory_capacity_report=memory_capacity_report,
+        )
+        report = dict(estimate)
+        report.update(budget_report)
+        known = estimate['known_working_set_estimate_bytes']
+        report['decision'] = 'ALLOW' if budget is None or known <= budget else 'REJECT'
+        self._last_create_images_memory_report = report
+        if budget is not None and known > budget:
+            raise MemoryError(
+                "create_images estimated image working set "
+                f"{known / (1024.0**2):.1f} MiB exceeds allowed "
+                f"{budget / (1024.0**2):.1f} MiB for mode {estimate['mode']}"
+            )
+        return report
 
     @staticmethod
-    def _check_imgs_memory_use(width_fig, high_fig,
-                              fig_dpi, figures_number,
-                              trim_images,
-                              make_animation,
-                              color_depth = 4): # Bytes per pixel (default is 4 for RGBA)
-        '''
-        Check if enought memory can be allocated to create/trim/animate images
+    def _create_animation(load_img_from_folder, trim_images, figure_ls,
+                          file_out_path, file_out_sub_folder, anim_prefix,
+                          figure_file_name, animation_format, fps,
+                          width_fig, high_fig, low_quality):
+        '''Make .mp4 or .gif animation from canonical RGB frames.'''
+        from matplotlib.animation import FuncAnimation, FFMpegWriter, PillowWriter
+        from datetime import datetime as dt
+        import matplotlib.pyplot as plt
+        import os
 
-        color_depth :     int, Bytes per pixel (default is 4 for RGBA)
+        if not figure_ls:
+            raise ValueError("Cannot create an animation with no frames")
+        if fps <= 0:
+            raise ValueError("fps must be > 0")
+        if animation_format not in ('.mp4', '.gif'):
+            raise ValueError("animation_format must be '.mp4' or '.gif'")
 
-        '''
-        import psutil
+        start = dt.now()
+        fig = plt.figure() if low_quality else plt.figure(figsize=(width_fig, high_fig))
+        try:
+            ax = fig.gca()
+            draw_image = ax.imshow(figure_ls[0], animated=True)
+            ax.set_axis_off()
 
-        total_ram = psutil.virtual_memory().total
-        total_ram_gb = (total_ram / (1024 ** 3))
+            def update(frame):
+                draw_image.set_array(figure_ls[frame])
+                ax.set_axis_off()
+                return [draw_image]
 
-        # Calculate dimensions in pixels of figure
-        width_px = width_fig * fig_dpi
-        height_px = high_fig * fig_dpi
-        # Total pixels
-        total_pixels = (width_px * height_px) * figures_number
-        # Memory used in gigabytes
-        fig_memory_gb = (total_pixels * color_depth)/ (1024 ** 3)
-        mult = 1 + (1 if make_animation else 0) + (0.1 if trim_images else 0)  # memory for trimmed images and animation
-        fig_memory_gb *= mult
-
-        if fig_memory_gb >= total_ram_gb*0.8:
-            print("WARNING: More than 80% of available RAM will be necessary")
-            if fig_memory_gb >= total_ram_gb:
-                raise MemoryError(f"Memory needed to create/trim/animate figures {fig_memory_gb} GB exceeds available RAM {total_ram_gb} GB")
-
+            print("Creating animation")
+            animation = FuncAnimation(
+                fig, update, frames=len(figure_ls), interval=1000 / fps, blit=True
+            )
+            output_video = os.path.join(
+                file_out_path, file_out_sub_folder,
+                anim_prefix + figure_file_name + animation_format,
+            )
+            print(f"Time to create animation (hr:min:sec): {dt.now()-start}")
+            print(f"Saving animation to {os.path.dirname(output_video)}")
+            start = dt.now()
+            writer = FFMpegWriter(fps=fps) if animation_format == '.mp4' else PillowWriter(fps=fps)
+            animation.save(output_video, writer=writer)
+            print(f"Time to save animation (hr:min:sec): {dt.now()-start}")
+        finally:
+            plt.close(fig)
 
     def create_images(self,
                       Conc_Dataset,
@@ -13490,558 +13919,377 @@ class ChemicalDriftPostProcessMixin:
                       shp_file_path,
                       title_caption,
                       unit_measure,
-                      full_title = None,
-                      vmin = None,
-                      vmax = None,
-                      selected_colormap = None,
-                      colormap_norm = None,
-                      levels_colormap = None,
-                      simmetrical_cmap = False,
-                      scientific_colorbar = False,
-                      colorbar_title = None,
-                      selected_depth = 0,
-                      fig_format = ".jpg",
-                      fig_dpi = 100,
-                      make_animation = False,
-                      concat_animation = False,
-                      animation_format = ".mp4",
-                      fps = 8,
-                      load_img_from_folder = False,
-                      fig_numbers = None,
-                      add_shp_to_figure = False,
-                      variable_name = None,
-                      labels_font_sizes = [30,30,30,25,25,25,25],
-                      shp_edge_color = "black",
-                      shp_face_color = "black",
-                      shp_linewidth = 0.2,
-                      shp_alpha = 1,
-                      trim_images = True,
-                      save_figures = True,
-                      shading = None,
-                      date_str_lenght = 10,
-                      width_fig = 26, high_fig =15,
-                      padding_r = 0, padding_c = 0,
-                      low_quality = False):
-        '''
-        Create a series of .jpg or .png for each timestep of a concentration map
-        from REGRIDDED "calculate_water_sediment_conc" function output
-
-        Conc_Dataset:         xarray dataset of concentration after calculate_water_sediment_conc
-                                *latitude, degrees N
-                                *longitude, degrees E
-                                *time, datetime64[ns]
-                                *depth, meters (optional)
-        time_start:           datetime64[ns], start time of figures
-        time_end:             datetime64[ns], end time of figures
-        long_min:             float64, min longitude of figure
-        long_max              float64, max longitude of figure
-        lat_min:              float64, min latitude of figure
-        lat_max:              float64, max latitude of figure
-        vmin:                 float64, min value of concentration in the figure, specify to keep colorscale constant
-        vmax:                 float64, max value of concentration in the figure, specify to keep colorscale constant
-        file_out_path:        string, main output path of figure produced, must end with /
-        file_out_sub_folder:  string, subforlder of file_out_path, must end with /
-        figure_file_name:     string, name of figure
-        shp_file_path:        string, full path and name of shp file
-        title_caption:        string, first part of figure title before date and unit_measure
-        full_title:           string, full title of figure. It overwrites title_caption if specified
-        unit_measure:         string, (ug/m3) or (ug/kg d.w), between parenthesis
-        levels_colormap:      list of float64, levels used for colorbar (e.g., [0., 1., 15.])
-        selected_colormap:    e.g. plt.cm.Blues
-        colorbar_title:       string, title of colorbar
-        simmetrical_cmap:     boolean,select if cmap is simmetrical to 0 (True) or not (False)
-        scientific_colorbar:  boolean,select if colorbar is written in scientific notation (True) or not (False)
-        selected_depth:       float32, depth selected when creating map if "depth" in Conc_Dataset.dims
-                                   If no depth was selected when creating conc map, use 0
-        fig_format:           string, format of produced images (e.g.,".jpg", ".png")
-        fig_dpi:              int, dots per inch resolution of figure
-        make_animation:       boolean,select if animation (.mp4 or .gif) is created (True) or not (False)
-        concat_animation:     boolean,select if animations (.mp4 or .gif) are loaded and concatenated (True) or not (False)
-        animation_format:     string, format of produced animation (".mp4" or .gif")
-        fps:                  integer, frames per second of animation
-        load_img_from_folder: boolean,select if images are created or loaded
-        fig_numbers:          list of lists (of int) that specifyies numbers to create fig_name of figures to load and in
-                              in prefix of animations to concatenate (e.g., [[0, 8], [9, 15]]))
-        add_shp_to_figure:    boolean,select if shp is added to the figure (True) or not (False)
-        variable_name:        string, name of Conc_Datasetdata variable to plot if not concentration_avg_water/sediments
-        labels_font_sizes:    list of int, [title_font_size, x_label_font_size, y_label_font_size, x_ticks_font_size
-                                           y_ticks_font_size, cbar_label_font_size, cbar_ticks_font_size]
-        width_fig:              int, lenght of the figure (inches)
-        high_fig:             int, height of the figure (inches)
-        shp_edge_color:       string, color of shapefile fill when plotted
-        shp_face_color:       string, color of shapefile line when plotted
-        shp_linewidth:        float32, width of shapefile line when plotted
-        shp_alpha:            float32, alpha of shapefile when plotted
-        trim_images:          boolean,select if white borders of images is removed
-        padding_r, padding_c: int, number of pixels not trimmed (_r for height, _c for width)
-        shading:              string, interpolation format using plt. pcolormesh (None, 'flat', 'nearest', 'gouraud', 'auto')
-        save_figures:         boolean,select if figures are saved
-        date_str_lenght:      int, number date string charcters kept in title [10 for YYYY-MM-DD, 19 for hour shown]
-        low_quality:          boolean, select if figures are sized down for animation
-        '''
+                      full_title=None,
+                      vmin=None,
+                      vmax=None,
+                      selected_colormap=None,
+                      colormap_norm=None,
+                      levels_colormap=None,
+                      simmetrical_cmap=False,
+                      scientific_colorbar=False,
+                      colorbar_title=None,
+                      selected_depth=0,
+                      fig_format='.jpg',
+                      fig_dpi=100,
+                      make_animation=False,
+                      concat_animation=False,
+                      animation_format='.mp4',
+                      fps=8,
+                      load_img_from_folder=False,
+                      fig_numbers=None,
+                      add_shp_to_figure=False,
+                      variable_name=None,
+                      labels_font_sizes=[30,30,30,25,25,25,25],
+                      shp_edge_color='black',
+                      shp_face_color='black',
+                      shp_linewidth=0.2,
+                      shp_alpha=1,
+                      trim_images=True,
+                      save_figures=True,
+                      shading=None,
+                      date_str_lenght=10,
+                      width_fig=26, high_fig=15,
+                      padding_r=0, padding_c=0,
+                      low_quality=False,
+                      memory_budget_mb='auto',
+                      memory_auto_fraction=0.50,
+                      memory_auto_reserve_mb=1024,
+                      memory_auto_reserve_fraction=0.20):
+        '''Create concentration-map images and optional GIF/MP4 animations.'''
+        import gc
+        import os
+        from contextlib import ExitStack
+        from datetime import datetime as dt
 
         import numpy as np
         import pandas as pd
         import matplotlib.pyplot as plt
         import matplotlib.ticker as ticker
-        import os as os
         from mpl_toolkits.axes_grid1 import make_axes_locatable, axes_size
-        import geopandas as gpd
-        from datetime import datetime as dt
-        import gc
 
-        if all([not e for e in [save_figures, make_animation, concat_animation]]) is True:
-            raise ValueError("No output (save_figures/make_animation/concat_animation) was selected ")
+        # ---- Stable public validation before I/O or large allocation ----
+        if not any(bool(v) for v in (save_figures, make_animation, concat_animation)):
+            raise ValueError("No output (save_figures/make_animation/concat_animation) was selected")
+        if not isinstance(fps, (int, float, np.integer, np.floating)) or isinstance(fps, (bool, np.bool_)) or not np.isfinite(fps) or fps <= 0:
+            raise ValueError("fps must be a finite number > 0")
+        if animation_format not in ('.mp4', '.gif'):
+            raise ValueError("animation_format must be '.mp4' or '.gif'")
+        if str(fig_format).lower() not in ('.jpg', '.jpeg', '.png'):
+            raise ValueError("fig_format must be '.jpg', '.jpeg', or '.png'")
+        for name, value in [('width_fig', width_fig), ('high_fig', high_fig), ('fig_dpi', fig_dpi)]:
+            try:
+                fvalue = float(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{name} must be a finite positive number") from exc
+            if not np.isfinite(fvalue) or fvalue <= 0:
+                raise ValueError(f"{name} must be a finite positive number")
+        for name, value in [('padding_r', padding_r), ('padding_c', padding_c)]:
+            if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)) or int(value) < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        try:
+            font_sizes = list(labels_font_sizes)
+        except TypeError as exc:
+            raise ValueError("labels_font_sizes must contain at least 7 numeric values") from exc
+        if len(font_sizes) < 7:
+            raise ValueError("labels_font_sizes must contain at least 7 numeric values")
+        for value in font_sizes[:7]:
+            try:
+                if not np.isfinite(float(value)) or float(value) <= 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                raise ValueError("labels_font_sizes values must be finite positive numbers")
+        for name, value in [('long_min', long_min), ('long_max', long_max), ('lat_min', lat_min), ('lat_max', lat_max)]:
+            try:
+                if not np.isfinite(float(value)):
+                    raise ValueError
+            except (TypeError, ValueError):
+                raise ValueError(f"{name} must be finite")
+        if not float(long_min) < float(long_max):
+            raise ValueError("long_min must be strictly less than long_max")
+        if not float(lat_min) < float(lat_max):
+            raise ValueError("lat_min must be strictly less than lat_max")
+        if date_str_lenght not in (10, 13, 16, 19):
+            raise ValueError("date_str_lenght must be one of 10, 13, 16, or 19")
+        if shading not in (None, 'flat', 'nearest', 'gouraud', 'auto'):
+            raise ValueError("Incorrect shading specified")
+        if full_title is not None and not isinstance(full_title, str):
+            raise ValueError("full_title must be a string or None")
+        if title_caption is not None and not isinstance(title_caption, str):
+            raise ValueError("title_caption must be a string or None")
+        if unit_measure is not None and not isinstance(unit_measure, str):
+            raise ValueError("unit_measure must be a string or None")
 
-        if load_img_from_folder == True and fig_numbers is None:
+        normalized_ranges = self._normalize_create_images_fig_ranges(fig_numbers)
+        if (load_img_from_folder or concat_animation) and normalized_ranges is None:
             raise ValueError("fig_numbers must be specified when loading images or concatenating animations")
+        selected_colormap = self._normalize_create_images_colormap(selected_colormap, simmetrical_cmap)
 
-        if fig_numbers is not None:
-            fig_num_ls = self._flatten_list(fig_numbers)
-            if  (all(fig_num_ls[i] <= fig_num_ls[i + 1] for i in range(len(fig_num_ls) - 1))) is False:
-                raise ValueError("fig_numbers are not ordered increasingly")
+        file_output_path = os.path.join(file_out_path, file_out_sub_folder)
+        if save_figures or make_animation:
+            os.makedirs(file_output_path, exist_ok=True)
 
-        if concat_animation is True and ((self._check_nested_list(fig_numbers) is False) or (fig_numbers is None)):
-            raise ValueError("No fig_numbers lists were specified for concat_animation")
+        aspect = 15
+        pad_fraction1 = -0.08
+        pad_fraction2 = 0.0384
+        title_font_size = font_sizes[0]
+        x_label_font_size = font_sizes[1]
+        y_label_font_size = font_sizes[2]
+        x_ticks_font_size = font_sizes[3]
+        cbar_label_font_size = font_sizes[5]
 
-        if load_img_from_folder == False and Conc_Dataset is not None:
-            start=dt.now()
-            aspect = 15
-            pad_fraction1 = -0.08
-            pad_fraction2 = 0.0384
-            file_output_path = file_out_path + file_out_sub_folder
-            print(f"Figures saved to: {file_output_path}")
+        def fmt(x, pos):
+            a, b = '{:.2e}'.format(x).split('e')
+            return r'${} \times 10^{{{}}}$'.format(a, int(b))
 
-            def fmt(x, pos):
-                '''
-                Define scientific notation for colorbar if scientific_colorbar is True
-                '''
-                a, b = '{:.2e}'.format(x).split('e')
-                b = int(b)
-                return r'${} \times 10^{{{}}}$'.format(a, b)
+        # ---- Render from data ----
+        if not load_img_from_folder and Conc_Dataset is not None:
+            start = dt.now()
+            da, _time_info = self._prepare_create_images_dataarray(
+                Conc_Dataset, variable_name, time_start, time_end
+            )
+            display = self._resolve_create_images_display_metadata(da, unit_measure, colorbar_title)
+            colorbar_title_resolved = display['colorbar_title']
+            resolved_unit = display['unit']
 
-            title_font_size = labels_font_sizes[0]
-            x_label_font_size = labels_font_sizes[1]
-            y_label_font_size = labels_font_sizes[2]
-            x_ticks_font_size = labels_font_sizes[3]
-            # y_ticks_font_size = labels_font_sizes[4]
-            cbar_label_font_size = labels_font_sizes[5]
-            # cbar_ticks_font_size = labels_font_sizes[6]
-
-            if simmetrical_cmap == True:
-                if selected_colormap == None:
-                    selected_colormap = plt.colormaps["viridis"]
-                selected_colormap = self._simmetrical_colormap(cmap = selected_colormap)
-
-            if not os.path.exists(file_output_path):
-                os.makedirs(file_output_path)
-                print("file_output_path did not exist and was created")
-            else:
-                pass
-
-            if add_shp_to_figure:
-                print("shp was added over the figures")
-                shp = gpd.read_file(shp_file_path)
-                cax_pad= pad_fraction1 * width_fig
-            else:
-                print("shp was not added over the figures")
-                # Create an empty GeoDataFrame (shp) to plot
-                from shapely.geometry import Point
-                crs = 'epsg:4326'
-                # Create an empty GeoDataFrame
-                columns = ['geometry']
-                shp =  gpd.GeoDataFrame(columns=columns, crs=crs)
-                point = Point(0, 0)
-                shp.loc[0, 'geometry'] = point
-                cax_pad= pad_fraction2 * width_fig
-
-            if "longitude" not in Conc_Dataset.dims:
-                if 'lat' in Conc_Dataset.dims:
-                    Conc_Dataset = Conc_Dataset.rename({'lat': 'latitude','lon': 'longitude'})
-                elif 'x' in Conc_Dataset.dims:
-                    Conc_Dataset = Conc_Dataset.rename({'y': 'latitude','x': 'longitude'})
-                else:
-                    raise ValueError("Unknown spatial coordinates")
-
-            if "depth" not in Conc_Dataset.dims:
-                if 'z' in Conc_Dataset.dims:
-                    Conc_Dataset = Conc_Dataset.rename({'z': 'depth'})
-            if 'avg_time' in Conc_Dataset.dims:
-                Conc_Dataset = Conc_Dataset.rename({'avg_time': 'time'})
-
-            if "concentration_avg_water" in Conc_Dataset.keys():
-                Conc_DataArray = Conc_Dataset.concentration_avg_water
-            elif "concentration_avg_sediments" in Conc_Dataset.keys():
-                Conc_DataArray = Conc_Dataset.concentration_avg_sediments
-            elif variable_name is not None:
-                Conc_DataArray = Conc_Dataset[variable_name]
-            else:
-                raise ValueError("specified variable_name is not present in Conc_Dataset")
-
-
-            Conc_DataArray_tstart =np.array(Conc_DataArray.time[0])
-            Conc_DataArray_tend =np.array(Conc_DataArray.time[-1])
-
-            if colorbar_title is None:
-                if "concentration_avg_water" in Conc_Dataset.keys():
-                    colorbar_title = "concentration_avg_water"
-                elif "concentration_avg_sediments" in Conc_Dataset.keys():
-                    colorbar_title = "concentration_avg_sediments"
-                elif variable_name is not None:
-                    colorbar_title = variable_name
-                else:
-                    raise ValueError("colorbar_title or variable_name are not specified")
-            del Conc_Dataset
-
-            if colormap_norm is not None:
-                vmax = colormap_norm.boundaries[-1]
-
-            if 'time' not in Conc_DataArray.dims:
-                if "year" in Conc_DataArray.dims:
-                    # Change "year" dimension to "time", at the January, 1st
-                    Conc_DataArray['year'] = pd.to_datetime(np.char.add(np.array(Conc_DataArray['year']).astype(str), '-01-01'))
-                    Conc_DataArray = Conc_DataArray.rename({'year': 'time'})
-                    Conc_DataArray = Conc_DataArray.assign_coords(time=Conc_DataArray['time'])
-                elif "season" in Conc_DataArray.dims and time_start is not None:
-                    # Change "season" dimension to "time", at the first day of each season
-                    time_start_year = time_start.astype('datetime64[Y]').astype(int) + 1970
-                    time_season_dict = {"DJF":"-12-21", "JJA":"-06-21", "MAM":"-03-21", "SON":"-09-23"}
-                    time_season = [time_season_dict.get(season) for season in list(Conc_DataArray.season.values)]
-                    Conc_DataArray["season"] = pd.to_datetime(np.char.add(str(time_start_year), time_season))
-                    Conc_DataArray = Conc_DataArray.rename({'season': 'time'})
-                    Conc_DataArray = Conc_DataArray.assign_coords(time=Conc_DataArray['time'])
-                else:
-                    # Check if other dimensions than the ones to be allowed are present and add time_start as time
-                    acceptable_dimensions = set(['latitude', 'longitude', 'time', 'depth'])
-                    Dataset_dimensions = set(Conc_DataArray.dims)
-                    extra_dimensions = (Dataset_dimensions - acceptable_dimensions)
-                    if len(extra_dimensions) > 0:
-                        raise ValueError(f"Dimensions other than {acceptable_dimensions} are present: f{extra_dimensions}")
-                    else:
-                        if time_start is not None:
-                            Conc_DataArray['time'] = time_start
-                        else:
-                            raise ValueError("Conc_DataArray.time is missing, time_start must be specified")
-            else:
-                # Check if other dimensions than the ones to be loaded are present
-                acceptable_dimensions = set(['latitude', 'longitude', 'time', 'depth'])
-                Dataset_dimensions = set(Conc_DataArray.dims)
-                extra_dimensions = (Dataset_dimensions - acceptable_dimensions)
-                if len(extra_dimensions) > 0:
-                    raise ValueError(f"Dimensions other than {acceptable_dimensions} are present: f{extra_dimensions}")
-
-            # Remove timesteps before time_start and after time_end
-            if time_start is not None:
-                Conc_DataArray = Conc_DataArray.where((Conc_DataArray.time >= time_start), drop=True)
-            if time_end is not None:
-                Conc_DataArray = Conc_DataArray.where((Conc_DataArray.time <= time_end), drop=True)
-
-            if Conc_DataArray.time.size == 0:
-                raise ValueError(f"Conc_DataArray.time {Conc_DataArray_tstart} - {Conc_DataArray_tend} is out of time_start/end interval")
-
-            attribute_list = list(Conc_DataArray.attrs)
-            for attr in attribute_list:
-                del Conc_DataArray.attrs[attr]
-
-            fig_num = []
-            figure_ls = []
-            figure_name_ls = []
-            Conc_DataArray_time_size = (Conc_DataArray.time.to_numpy()).size
-            figures_number = (Conc_DataArray_time_size)
-            if fig_numbers is not None:
-                if fig_numbers[-1][1] > figures_number:
-                    raise ValueError(f"fig_numbers selects more figures ({fig_numbers[-1][1] + 1}) that were created ({figures_number})")
-
-            self._check_imgs_memory_use(width_fig = width_fig,
-                                        high_fig = high_fig,
-                                        fig_dpi = fig_dpi,
-                                        figures_number = figures_number,
-                                        trim_images = trim_images,
-                                        make_animation = make_animation)
-
-            for num in [0, figures_number]:
-                fig_num.append(str(f"{num:03d}"))
-            anim_prefix = fig_num[0] + "_" + fig_num[1] + "_"
-
-            for timestep in range(0, figures_number):
-                figure_name_ls.append(str(f"{timestep:03d}")+"_"+figure_file_name+fig_format)
-
+            figures_number = int(da.sizes['time'])
+            if figures_number <= 0:
+                raise ValueError("No frames are available after time selection")
+            render_ranges = self._normalize_create_images_fig_ranges(normalized_ranges, nframes=figures_number) if normalized_ranges is not None else None
+            anim_prefix = f"000_{figures_number - 1:03d}_"
+            figure_name_ls = [f"{timestep:03d}_{figure_file_name}{fig_format}" for timestep in range(figures_number)]
             list_index_print = self._print_progress_list(figures_number)
 
-            if "depth" in Conc_DataArray.dims and selected_depth is None:
-                raise ValueError("selected_depth must be specified")
-            elif "depth" in Conc_DataArray.dims:
-                all_depth_values = np.sort((np.unique(np.array(Conc_DataArray.depth)))) # Change depth to positive values
-                idx = np.where(np.isclose(all_depth_values, selected_depth))[0]
-                if idx.size == 0:
-                    raise ValueError(f"selected_depth {selected_depth} not found in available depths {all_depth_values}")
-                selected_depth_index = int(idx[0])
+            self._check_imgs_memory_use(
+                width_fig=width_fig, high_fig=high_fig, fig_dpi=fig_dpi,
+                figures_number=figures_number, trim_images=trim_images,
+                make_animation=make_animation, load_img_from_folder=False,
+                memory_budget_mb=memory_budget_mb,
+                memory_auto_fraction=memory_auto_fraction,
+                memory_auto_reserve_mb=memory_auto_reserve_mb,
+                memory_auto_reserve_fraction=memory_auto_reserve_fraction,
+            )
 
-            start = dt.now()
+            shp = None
+            if add_shp_to_figure:
+                if not shp_file_path:
+                    raise ValueError("shp_file_path must be supplied when add_shp_to_figure=True")
+                import geopandas as gpd
+                shp = gpd.read_file(shp_file_path)
+                if shp.crs is None:
+                    raise ValueError("Shapefile CRS is undefined; cannot align it with longitude/latitude axes")
+                if str(shp.crs).lower() not in ('epsg:4326', '4326'):
+                    shp = shp.to_crs(epsg=4326)
+                cax_pad = pad_fraction1 * width_fig
+            else:
+                cax_pad = pad_fraction2 * width_fig
 
-            for timestep in range(0, figures_number):
+            figure_ls = [] if make_animation else None
+            for timestep in range(figures_number):
                 if timestep in list_index_print:
-                     print(f"creating image n° {str(timestep+1)} out of {str(figures_number)}")
+                    print(f"creating image n° {timestep + 1} out of {figures_number}")
+                frame, frame_time, depth_value, depth_unit = self._select_create_images_frame(
+                    da, timestep, selected_depth
+                )
+                fig = ax = cax = cbar = ax2 = None
+                try:
+                    fig, ax = plt.subplots(figsize=(width_fig, high_fig), dpi=fig_dpi)
+                    if shp is not None:
+                        shp.plot(
+                            ax=ax, zorder=10, edgecolor=shp_edge_color,
+                            facecolor=shp_face_color, linewidth=shp_linewidth,
+                            alpha=shp_alpha,
+                        )
 
-                if Conc_DataArray_time_size > 1 and "depth" in Conc_DataArray.dims:
-                    Conc_DataArray_selected = Conc_DataArray.isel(time=timestep, depth=selected_depth_index, drop=True)
-                elif Conc_DataArray_time_size > 1 and "depth" not in Conc_DataArray.dims:
-                    Conc_DataArray_selected = Conc_DataArray.isel(time=timestep, drop=True)
-                elif Conc_DataArray_time_size <= 1 and "depth" in Conc_DataArray.dims:
-                    Conc_DataArray_selected = Conc_DataArray.isel(depth=selected_depth_index, drop=True)
-                else:
-                    Conc_DataArray_selected = Conc_DataArray  # still may have time=1
-                    Conc_DataArray_selected = Conc_DataArray_selected.squeeze(drop=True)
-
-
-                fig, ax = plt.subplots(figsize = (width_fig, high_fig), dpi=fig_dpi)
-                shp.plot(ax=ax,zorder=10,
-                         edgecolor=shp_edge_color, facecolor=shp_face_color,
-                         linewidth=shp_linewidth, alpha = shp_alpha)
-
-                if shading in [None, "flat", "auto"]:
-                    ax2 = Conc_DataArray_selected.plot.pcolormesh(
-                                                x = 'longitude',
-                                                y = 'latitude',
-                                                cmap = selected_colormap,
-                                                norm = colormap_norm,
-                                                vmin = vmin, vmax = vmax,
-                                                levels = levels_colormap,
-                                                shading = shading,
-                                                add_colorbar = False, # colorbar is added ex-post
-                                                zorder = 0)
-                else:
-                    if shading not in ["gouraud", "nearest", "flat", "auto"]:
-                        raise ValueError("Incorrect shading specified")
-                    if shading in ["gouraud", "nearest"]:
-                        X = Conc_DataArray_selected.coords['longitude'].to_numpy()
-                        Y = Conc_DataArray_selected.coords['latitude'].to_numpy()
-                        Conc_DataArray_selected = Conc_DataArray_selected.to_numpy()
-
-                        ax2 = plt.pcolormesh(X,
-                                             Y,
-                                             Conc_DataArray_selected,
-                                             cmap = selected_colormap,
-                                             vmin = vmin, vmax = vmax,
-                                             shading = shading,
-                                             zorder = 0)
-                        del X, Y
-                ax.set_xlim(long_min, long_max)
-                ax.set_ylim(lat_min, lat_max)
-                ax.set_xlabel("Longitude", fontsize = x_label_font_size, labelpad = high_fig*2) # Change here size of ax labels
-                ax.set_ylabel("Latitude", fontsize = y_label_font_size, labelpad = high_fig*2) # Change here size of ax labels
-                ax.tick_params(labelsize=x_ticks_font_size) # Change here size of ax ticks
-                if full_title is not None:
-                    fig_title = full_title
-                else:
-                    if Conc_DataArray_time_size > 1:
-                        ts = pd.to_datetime(Conc_DataArray.time[timestep].item())
-                        um = f" {unit_measure}" if unit_measure else ""
-                        fig_title = (
-                            f"{title_caption} {ts:%Y-%m-%d %H:%M:%S}{um}"
-                            if date_str_lenght >= 19
-                            else f"{title_caption} {ts:%Y-%m-%d}{um}"
+                    plot_vmin = None if colormap_norm is not None else vmin
+                    plot_vmax = None if colormap_norm is not None else vmax
+                    if shading in (None, 'flat', 'auto'):
+                        ax2 = frame.plot.pcolormesh(
+                            x='longitude', y='latitude', cmap=selected_colormap,
+                            norm=colormap_norm, vmin=plot_vmin, vmax=plot_vmax,
+                            levels=levels_colormap, shading=shading,
+                            add_colorbar=False, zorder=0,
                         )
                     else:
-                        fig_title = (title_caption + " " + unit_measure)
+                        X = frame.coords['longitude'].to_numpy()
+                        Y = frame.coords['latitude'].to_numpy()
+                        Z = frame.to_numpy()
+                        ax2 = plt.pcolormesh(
+                            X, Y, Z, cmap=selected_colormap, norm=colormap_norm,
+                            vmin=plot_vmin, vmax=plot_vmax, shading=shading, zorder=0,
+                        )
 
-                ax.set_title(fig_title, pad=high_fig*1.5, fontsize = title_font_size, weight = "bold", wrap= True)
-                # from https://stackoverflow.com/questions/18195758/set-matplotlib-colorbar-size-to-match-graph
-                divider = make_axes_locatable(ax)
-                width = axes_size.AxesY(ax, aspect=1./aspect)
-                cax = divider.append_axes("right", size=width, pad = cax_pad)
-                cax.yaxis.offsetText.set_fontsize(24)
-                cax.tick_params(labelsize=cbar_label_font_size)
-                y_formatter = ticker.ScalarFormatter(useMathText=True)
-                cax.yaxis.set_major_formatter(y_formatter)
+                    ax.set_xlim(long_min, long_max)
+                    ax.set_ylim(lat_min, lat_max)
+                    ax.set_xlabel('Longitude', fontsize=x_label_font_size, labelpad=high_fig * 2)
+                    ax.set_ylabel('Latitude', fontsize=y_label_font_size, labelpad=high_fig * 2)
+                    ax.tick_params(labelsize=x_ticks_font_size)
+                    fig_title = self._build_create_images_title(
+                        title_caption, full_title, frame_time, date_str_lenght,
+                        unit_measure=resolved_unit,
+                        depth_value=depth_value, depth_unit=depth_unit,
+                    )
+                    ax.set_title(fig_title, pad=high_fig * 1.5,
+                                 fontsize=title_font_size, weight='bold', wrap=True)
 
-                if scientific_colorbar is True:
-                    cbar = plt.colorbar(ax2, cax=cax, format=ticker.FuncFormatter(fmt), label=colorbar_title)
-                else:
-                    cbar = plt.colorbar(ax2, cax=cax, label=colorbar_title)
+                    divider = make_axes_locatable(ax)
+                    width = axes_size.AxesY(ax, aspect=1. / aspect)
+                    cax = divider.append_axes('right', size=width, pad=cax_pad)
+                    cax.yaxis.offsetText.set_fontsize(24)
+                    cax.tick_params(labelsize=cbar_label_font_size)
+                    cax.yaxis.set_major_formatter(ticker.ScalarFormatter(useMathText=True))
+                    if scientific_colorbar:
+                        cbar = plt.colorbar(
+                            ax2, cax=cax, format=ticker.FuncFormatter(fmt),
+                            label=colorbar_title_resolved,
+                        )
+                    else:
+                        cbar = plt.colorbar(ax2, cax=cax, label=colorbar_title_resolved)
+                    cbar.set_label(
+                        colorbar_title_resolved, fontsize=cbar_label_font_size,
+                        labelpad=20, fontweight='bold',
+                    )
 
-                cbar.set_label(colorbar_title, fontsize=cbar_label_font_size, labelpad = 20, fontweight ="bold")
+                    fig.canvas.draw()
+                    width_px, height_px = fig.canvas.get_width_height()
+                    rgba = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8).reshape((height_px, width_px, 4))
+                    rgb = np.ascontiguousarray(rgba[..., :3]).copy()
+                    if trim_images:
+                        rgb = self._remove_white_borders(rgb, padding_r=padding_r, padding_c=padding_c)
 
-                fig_path = file_out_path + file_out_sub_folder + figure_name_ls[timestep]
-
-                # Draw the canvas and grab an RGB array
-                fig.canvas.draw()
-                width, height = fig.canvas.get_width_height()
-                rgba = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8).reshape((height, width, 4))
-                # Convert RGBA to RGB by removing the alpha channel
-                rgb = rgba[..., :3].astype(np.float32) / 255.0
-
-                # Optionally trim white borders
-                if trim_images:
-                    rgb = self._remove_white_borders(rgb, padding_r=padding_r, padding_c=padding_c)
-
-                # Save to disk if requested
-                if save_figures:
-                    plt.imsave(fig_path, rgb, cmap=selected_colormap)
-
-                # Collect frames for animation if requested
-                if make_animation:
-                    figure_ls.append(rgb)
-
-                # Close and clean up
-                plt.close(fig)
-                del fig, ax, cax, cbar, ax2, Conc_DataArray_selected, rgba, rgb
-                gc.collect()
+                    if save_figures:
+                        plt.imsave(os.path.join(file_output_path, figure_name_ls[timestep]), rgb)
+                    if make_animation:
+                        figure_ls.append(rgb)
+                finally:
+                    if fig is not None:
+                        plt.close(fig)
+                    del frame
+                    gc.collect()
 
             print(f"Time to create figures (hr:min:sec): {dt.now()-start}")
 
-            if make_animation is True:
-                if fig_numbers is None:
-
-                    self._create_animation(load_img_from_folder = load_img_from_folder,
-                                       trim_images = trim_images,
-                                       figure_ls = figure_ls,
-                                       file_out_path = file_out_path,
-                                       file_out_sub_folder = file_out_sub_folder,
-                                       anim_prefix = anim_prefix,
-                                       figure_file_name = figure_file_name,
-                                       animation_format = animation_format,
-                                       fps = fps,
-                                       width_fig = width_fig,
-                                       high_fig = high_fig,
-                                       low_quality = low_quality
-                                       )
+            if make_animation:
+                if render_ranges is None:
+                    self._create_animation(
+                        False, trim_images, figure_ls, file_out_path, file_out_sub_folder,
+                        anim_prefix, figure_file_name, animation_format, fps,
+                        width_fig, high_fig, low_quality,
+                    )
                 else:
-                    for num_list in fig_numbers:
-                        # Create prefix for animation name
-                        fig_num = []
-                        for num in num_list:
-                            fig_num.append(str(f"{num:03d}"))
-                        anim_prefix = fig_num[0] + "_" + fig_num[1] + "_"
+                    for start_i, end_i in render_ranges:
+                        prefix = f"{start_i:03d}_{end_i:03d}_"
+                        print(f"Creating animation {prefix}")
+                        self._create_animation(
+                            False, trim_images, figure_ls[start_i:end_i + 1],
+                            file_out_path, file_out_sub_folder, prefix,
+                            figure_file_name, animation_format, fps,
+                            width_fig, high_fig, low_quality,
+                        )
 
-                        print(f"Creating animation {anim_prefix}")
-                        figure_ls_split = figure_ls[num_list[0]:num_list[1]+1]
-                        self._create_animation(load_img_from_folder = load_img_from_folder,
-                                           trim_images = trim_images,
-                                           figure_ls = figure_ls_split,
-                                           file_out_path = file_out_path,
-                                           file_out_sub_folder = file_out_sub_folder,
-                                           anim_prefix = anim_prefix,
-                                           figure_file_name = figure_file_name,
-                                           animation_format = animation_format,
-                                           fps = fps,
-                                           width_fig = width_fig,
-                                           high_fig = high_fig,
-                                           low_quality = low_quality
-                                           )
-                        del figure_ls_split
+        # ---- Load existing image ranges sequentially ----
+        elif load_img_from_folder:
+            from PIL import Image
 
-        elif load_img_from_folder == True and fig_numbers is not None:
+            for start_i, end_i in normalized_ranges:
+                prefix = f"{start_i:03d}_{end_i:03d}_"
+                figure_names = [f"{i:03d}_{figure_file_name}{fig_format}" for i in range(start_i, end_i + 1)]
+                paths = [os.path.join(file_output_path, name) for name in figure_names]
+                missing = [p for p in paths if not os.path.isfile(p)]
+                if missing:
+                    raise FileNotFoundError(f"Missing input image(s): {missing[:3]}{' ...' if len(missing) > 3 else ''}")
 
-            for num_list in fig_numbers:
-                # Create prefix for animation name
-                fig_num = []
-                for num in num_list:
-                    fig_num.append(str(f"{num:03d}"))
-                anim_prefix = fig_num[0] + "_" + fig_num[1] + "_"
+                # Header-only dimension scan; no complete range is decoded into RAM.
+                max_h = max_w = 0
+                for path in paths:
+                    with Image.open(path) as im:
+                        w, h = im.size
+                    max_w = max(max_w, int(w)); max_h = max(max_h, int(h))
+                figures_number = len(paths)
+                self._check_imgs_memory_use(
+                    width_fig=width_fig, high_fig=high_fig, fig_dpi=fig_dpi,
+                    figures_number=figures_number, trim_images=trim_images,
+                    make_animation=make_animation, load_img_from_folder=True,
+                    pixel_shape=(max_h, max_w), memory_budget_mb=memory_budget_mb,
+                    memory_auto_fraction=memory_auto_fraction,
+                    memory_auto_reserve_mb=memory_auto_reserve_mb,
+                    memory_auto_reserve_fraction=memory_auto_reserve_fraction,
+                )
 
-                # Prepare progress messages
-                figures_number = (num_list[1] - num_list[0]) + 1
+                progress = self._print_progress_list(figures_number)
+                figure_ls = [] if make_animation else None
+                print(f"Loading images {prefix}")
+                for img_index, (fig_name, fig_path) in enumerate(zip(figure_names, paths)):
+                    if img_index in progress:
+                        print(f"processing image n° {img_index + 1} out of {figures_number}")
+                    with Image.open(fig_path) as im:
+                        image = np.asarray(im.convert('RGB'), dtype=np.uint8).copy()
+                    rgb = self._normalize_image_frame_uint8_rgb(image)
+                    if trim_images:
+                        rgb = self._remove_white_borders(rgb, padding_r=padding_r, padding_c=padding_c)
+                        if save_figures:
+                            stem, _ext = os.path.splitext(fig_name)
+                            plt.imsave(os.path.join(file_output_path, stem + '_trim' + fig_format), rgb)
+                    if make_animation:
+                        figure_ls.append(rgb)
+                    del image, rgb
 
-                self._check_imgs_memory_use(width_fig = width_fig,
-                                            high_fig = high_fig,
-                                            fig_dpi = fig_dpi,
-                                            figures_number = figures_number,
-                                            trim_images = trim_images,
-                                            make_animation = make_animation)
+                if make_animation:
+                    self._create_animation(
+                        True, trim_images, figure_ls, file_out_path, file_out_sub_folder,
+                        prefix, figure_file_name, animation_format, fps,
+                        width_fig, high_fig, low_quality,
+                    )
 
-                list_index_print = self._print_progress_list(figures_number)
-
-                # Create figures names
-                figure_name_ls = []
-                for timestep in range(num_list[0], num_list[1] +1):
-                    figure_name_ls.append(str(f"{timestep:03d}")+"_"+figure_file_name+fig_format)
-
-                # Load figures
-                figure_ls = []
-                print(f"Loading images {anim_prefix}")
-                for fig_name in figure_name_ls:
-                    fig_path = (file_out_path + file_out_sub_folder + fig_name)
-                    image = plt.imread(fig_path)
-                    # fig, ax = plt.subplots(figsize = (width_fig,high_fig))
-                    # ax.set_axis_off()
-                    figure_ls.append(image)
-                    plt.close('all')
-                if trim_images == True:
-                    for img_index in range(0, len(figure_ls)):
-                        if img_index in list_index_print:
-                            print(f"trim image n° {str(img_index+1)} out of {str(figures_number)}")
-                        rgb = self._remove_white_borders(figure_ls[img_index], padding_r = padding_r, padding_c = padding_c)
-                        figure_ls[img_index] = rgb
-
-                    if save_figures == True:
-                        for img_index in range(0, len(figure_ls)):
-                            if img_index in list_index_print:
-                                print(f"saving image n° {str(img_index+1)} out of {str(figures_number)}")
-                            fig_path = (file_out_path + file_out_sub_folder + figure_name_ls[img_index][:-4]+"_trim"+fig_format)
-                            fig, ax = plt.subplots(figsize = (width_fig,high_fig))
-                            ax.set_axis_off()
-                            plt.imsave(fig_path, figure_ls[img_index], cmap=selected_colormap)
-                            plt.close('all')
-                    else:
-                        pass
-
-                if make_animation is True:
-                    self._create_animation(load_img_from_folder = load_img_from_folder,
-                                           trim_images = trim_images,
-                                           fps=fps,
-                                           figure_ls = figure_ls,
-                                           file_out_path = file_out_path,
-                                           file_out_sub_folder = file_out_sub_folder,
-                                           anim_prefix = anim_prefix,
-                                           figure_file_name = figure_file_name,
-                                           animation_format = animation_format,
-                                           width_fig = width_fig,
-                                           high_fig = high_fig,
-                                           low_quality = low_quality
-                                           )
-                else:
-                    pass
-
-        elif concat_animation is True:
-            pass
-        else:
+        elif not concat_animation:
             raise ValueError("No image was set to be created/loaded, and no animation was set to be concatenated")
 
-        if concat_animation is True and fig_numbers is not None:
-            from moviepy.editor import VideoFileClip, concatenate_videoclips
-            from natsort import natsorted
-            # Prepare animation names to load
-            anim_name_ls = []
-            for num_list in fig_numbers:
+        # ---- Concatenate existing/generated animations ----
+        if concat_animation:
+            try:
+                from moviepy import VideoFileClip, concatenate_videoclips
+            except Exception:
+                try:
+                    from moviepy.editor import VideoFileClip, concatenate_videoclips
+                except Exception as exc:
+                    raise ImportError(
+                        "Animation concatenation requires MoviePy with VideoFileClip and concatenate_videoclips"
+                    ) from exc
 
-                fig_num = []
-                for num in num_list:
-                    fig_num.append(str(f"{num:03d}"))
-                anim_prefix = fig_num[0] + "_" + fig_num[1] + "_"
-                anim_name_ls.append(anim_prefix+figure_file_name+animation_format)
+            anim_names = [
+                f"{start_i:03d}_{end_i:03d}_{figure_file_name}{animation_format}"
+                for start_i, end_i in normalized_ranges
+            ]
+            files = sorted(anim_names, key=self._natural_key)
+            missing = [name for name in files if not os.path.isfile(os.path.join(file_output_path, name))]
+            if missing:
+                raise FileNotFoundError(f"Missing animation(s) for concatenation: {missing}")
 
-            # Order names and load animations
             print("Loading animations")
-            L_anim = []
-            files = natsorted(anim_name_ls)
-            for file in files:
-                    video = VideoFileClip(file_out_path + file_out_sub_folder + file)
-                    L_anim.append(video)
-
-            final_clip = concatenate_videoclips(L_anim)
-            if animation_format == ".gif":
-                video_codec ='gif'
-            elif  animation_format == ".mp4":
-                video_codec ='libx264'
-            else:
-                raise ValueError("Unsupported animation_format")
-
-            merged_prefix = "Merged_" + (str(f"{fig_numbers[0][0]:03d}")) + "_" + (str(f"{fig_numbers[-1][1]:03d}")) + "_"
-            print("Saving concatenated animation")
-            output_video = file_out_path + file_out_sub_folder + merged_prefix + figure_file_name + animation_format
-
-            final_clip.to_videofile(output_video, fps=12, remove_temp=False, codec = video_codec)
+            with ExitStack() as stack:
+                clips = []
+                for name in files:
+                    clip = VideoFileClip(os.path.join(file_output_path, name))
+                    if hasattr(clip, 'close'):
+                        stack.callback(clip.close)
+                    clips.append(clip)
+                final_clip = concatenate_videoclips(clips)
+                if hasattr(final_clip, 'close'):
+                    stack.callback(final_clip.close)
+                merged_prefix = f"Merged_{normalized_ranges[0][0]:03d}_{normalized_ranges[-1][1]:03d}_"
+                output_video = os.path.join(file_output_path, merged_prefix + figure_file_name + animation_format)
+                print("Saving concatenated animation")
+                if animation_format == '.gif':
+                    if hasattr(final_clip, 'write_gif'):
+                        final_clip.write_gif(output_video, fps=fps)
+                    else:
+                        final_clip.write_videofile(output_video, fps=fps, codec='gif')
+                else:
+                    if hasattr(final_clip, 'write_videofile'):
+                        final_clip.write_videofile(output_video, fps=fps, codec='libx264')
+                    elif hasattr(final_clip, 'to_videofile'):
+                        final_clip.to_videofile(output_video, fps=fps, codec='libx264')
+                    else:
+                        raise RuntimeError("Installed MoviePy clip does not expose a supported video writer")
 
     @staticmethod
     def _plot_emission_data_frequency(emissions, title, n_bins=100, zoom_max=100, zoom_min=0):
