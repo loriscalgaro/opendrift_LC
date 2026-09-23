@@ -12772,27 +12772,1438 @@ class ChemicalDriftPostProcessMixin:
 	)
 
     ### Helpers for regrid_conc
-    def interp_weights(self, xyz, uvw):
+    @staticmethod
+    def _regrid_get_obj(ds, names):
+        """Return the first named xarray coordinate/data variable from *ds*."""
+        if isinstance(names, str):
+            names = (names,)
+        for name in names:
+            if hasattr(ds, 'coords') and name in ds.coords:
+                return ds.coords[name]
+            if hasattr(ds, 'data_vars') and name in ds.data_vars:
+                return ds[name]
+            if hasattr(ds, 'variables') and name in ds.variables:
+                return ds[name]
+        return None
+
+    @classmethod
+    def _regrid_extract_crs(cls, ds):
+        """Resolve authoritative source CRS metadata without guessing from coordinates."""
+        from pyproj import CRS
+
+        candidates = []
+        for key in ('actual_density_proj_str', 'density_proj', 'proj4'):
+            value = getattr(ds, 'attrs', {}).get(key)
+            if value:
+                candidates.append(value)
+
+        crs_var = cls._regrid_get_obj(ds, 'crs')
+        if crs_var is not None:
+            attrs = getattr(crs_var, 'attrs', {})
+            for key in ('actual_density_proj_str', 'proj4_params', 'spatial_ref', 'crs_wkt'):
+                value = attrs.get(key)
+                if value:
+                    candidates.append(value)
+
+        # A data variable can name a non-standard grid-mapping variable.
+        for name in getattr(ds, 'data_vars', {}):
+            gm = getattr(ds[name], 'attrs', {}).get('grid_mapping')
+            if gm and gm in getattr(ds, 'variables', {}):
+                attrs = getattr(ds[gm], 'attrs', {})
+                for key in ('actual_density_proj_str', 'proj4_params', 'spatial_ref', 'crs_wkt'):
+                    value = attrs.get(key)
+                    if value:
+                        candidates.append(value)
+
+        for value in candidates:
+            try:
+                return CRS.from_user_input(value)
+            except Exception:
+                continue
+        return None
+
+    def _normalize_regrid_structured_source(self, ds):
+        """Normalize one supported structured source grid for :meth:`regrid_conc`.
+
+        The returned geometry follows the internal ``(x, y)`` convention already used
+        by ``_normalize_output_grid``.  Science variables are transposed to the returned
+        ``horizontal_dims`` before flattening, so geometry and values remain aligned.
+
+        Supported sources are regular/curvilinear geographic and regular/curvilinear
+        projected grids.  UGRID/face-node meshes are intentionally rejected here,
+        before any remapping state is allocated.
         """
-        Calculate interpolation weights within regrid_conc function
-        # https://stackoverflow.com/questions/20915502/speedup-scipy-griddata-for-multiple-interpolations-between-two-irregular-grids
+        import xarray as xr
+        from pyproj import CRS
+
+        if ds is None:
+            raise ValueError('A source xarray.Dataset is required for regrid_conc.')
+
+        # Normalize xarray coordinate roles if the current mixin provides the helper.
+        src = self._normalize_xarray_spatial_coordinate_roles(ds) if hasattr(self, '_normalize_xarray_spatial_coordinate_roles') else ds
+
+        mesh_obj = self._regrid_get_obj(src, ['mesh'])
+        face_conn = self._regrid_get_obj(src, ['face_node_connectivity', 'triangles', 'faces'])
+        mesh_role = str(getattr(mesh_obj, 'attrs', {}).get('cf_role', '')).lower() if mesh_obj is not None else ''
+        if face_conn is not None or mesh_role == 'mesh_topology' or ('face' in src.dims and 'node' in src.dims):
+            raise NotImplementedError(
+                'regrid_conc supports structured source grids only; triangular/unstructured face-node meshes are intentionally unsupported.'
+            )
+
+        lon = self._regrid_get_obj(src, ['lon', 'longitude', 'lon_center', 'longitude_center'])
+        lat = self._regrid_get_obj(src, ['lat', 'latitude', 'lat_center', 'latitude_center'])
+        x = self._regrid_get_obj(src, ['x', 'projection_x_coordinate'])
+        y = self._regrid_get_obj(src, ['y', 'projection_y_coordinate'])
+        xc = self._regrid_get_obj(src, ['x_center', 'xc', 'projection_x_coordinate_center'])
+        yc = self._regrid_get_obj(src, ['y_center', 'yc', 'projection_y_coordinate_center'])
+
+        crs = self._regrid_extract_crs(src)
+        x_std = str(getattr(x, 'attrs', {}).get('standard_name', '')).lower() if x is not None else ''
+        y_std = str(getattr(y, 'attrs', {}).get('standard_name', '')).lower() if y is not None else ''
+        x_units = str(getattr(x, 'attrs', {}).get('units', '')).lower() if x is not None else ''
+        y_units = str(getattr(y, 'attrs', {}).get('units', '')).lower() if y is not None else ''
+
+        projected_regular = bool(
+            x is not None and y is not None and getattr(x, 'ndim', 0) == 1 and getattr(y, 'ndim', 0) == 1
+            and (
+                x_std == 'projection_x_coordinate' or y_std == 'projection_y_coordinate'
+                or (crs is not None and crs.is_projected and x_units not in {'', '1'} and y_units not in {'', '1'})
+            )
+        )
+        projected_curvilinear = bool(
+            xc is not None and yc is not None and getattr(xc, 'ndim', 0) == 2 and getattr(yc, 'ndim', 0) == 2
+        )
+        if not projected_curvilinear and x is not None and y is not None:
+            projected_curvilinear = bool(
+                getattr(x, 'ndim', 0) == 2 and getattr(y, 'ndim', 0) == 2
+                and crs is not None and crs.is_projected
+            )
+
+        regular_geo_axes = bool(
+            lon is not None and lat is not None and getattr(lon, 'ndim', 0) == 1 and getattr(lat, 'ndim', 0) == 1
+        )
+        if not regular_geo_axes and x is not None and y is not None:
+            regular_geo_axes = bool(
+                getattr(x, 'ndim', 0) == 1 and getattr(y, 'ndim', 0) == 1
+                and x_std in {'longitude', 'grid_longitude'} and y_std in {'latitude', 'grid_latitude'}
+            )
+        geographic_curvilinear = bool(
+            lon is not None and lat is not None and getattr(lon, 'ndim', 0) == 2 and getattr(lat, 'ndim', 0) == 2
+        )
+
+        if projected_curvilinear or projected_regular:
+            if crs is None:
+                raise ValueError('Projected structured regrid input requires authoritative CRS metadata.')
+            if not crs.is_projected:
+                # Geographic writer files can still contain x/y axes.  Do not misclassify them.
+                projected_curvilinear = False
+                projected_regular = False
+
+        grid = None
+        density_proj = None
+        topology = None
+        xdim = ydim = None
+
+        if projected_curvilinear:
+            xobj = xc if xc is not None else x
+            yobj = yc if yc is not None else y
+            if tuple(xobj.dims) != tuple(yobj.dims):
+                raise ValueError('Curvilinear projected x/y center dimensions do not match.')
+            dims = tuple(str(d) for d in xobj.dims)
+            if len(dims) != 2:
+                raise ValueError('Curvilinear projected centers must be two-dimensional.')
+            # _normalize_output_grid defaults unknown 2-D dimensions to transpose -> internal (x,y).
+            x_like = {'x', 'lon', 'longitude', 'xc'}
+            y_like = {'y', 'lat', 'latitude', 'yc'}
+            if dims[0].lower() in x_like and dims[1].lower() in y_like:
+                xdim, ydim = dims[0], dims[1]
+            else:
+                xdim, ydim = dims[1], dims[0]
+            data_vars = {'x_center': xobj, 'y_center': yobj}
+            for name in ('x_bounds', 'y_bounds', 'lon_bounds', 'lat_bounds'):
+                if name in src.variables:
+                    data_vars[name] = src[name]
+            coords = {}
+            if lon is not None and lat is not None and getattr(lon, 'ndim', 0) == 2 and getattr(lat, 'ndim', 0) == 2:
+                coords.update({'lon': lon, 'lat': lat})
+            grid = xr.Dataset(data_vars=data_vars, coords=coords)
+            density_proj = crs
+            topology = 'curvilinear_projected'
+
+        elif projected_regular:
+            xdim = str(x.dims[0]); ydim = str(y.dims[0])
+            data_vars = {}
+            for name in ('x_bounds', 'y_bounds', 'lon_bounds', 'lat_bounds'):
+                if name in src.variables:
+                    data_vars[name] = src[name]
+            coords = {'x': x, 'y': y}
+            if lon is not None and lat is not None and getattr(lon, 'ndim', 0) == 2 and getattr(lat, 'ndim', 0) == 2:
+                coords.update({'lon': lon, 'lat': lat})
+            grid = xr.Dataset(data_vars=data_vars, coords=coords)
+            density_proj = crs
+            topology = 'regular_projected'
+
+        elif regular_geo_axes:
+            if lon is not None and lat is not None and getattr(lon, 'ndim', 0) == 1 and getattr(lat, 'ndim', 0) == 1:
+                lon1d, lat1d = lon, lat
+            else:
+                lon1d, lat1d = x, y
+            xdim = str(lon1d.dims[0]); ydim = str(lat1d.dims[0])
+            grid = xr.Dataset(coords={
+                'lon': xr.DataArray(lon1d.values, dims=('lon',), attrs=dict(getattr(lon1d, 'attrs', {}))),
+                'lat': xr.DataArray(lat1d.values, dims=('lat',), attrs=dict(getattr(lat1d, 'attrs', {}))),
+            })
+            density_proj = None
+            topology = 'regular_geographic'
+
+        elif geographic_curvilinear:
+            dims = tuple(str(d) for d in lon.dims)
+            if tuple(lat.dims) != tuple(lon.dims) or len(dims) != 2:
+                raise ValueError('Curvilinear geographic lon/lat dimensions do not match.')
+            x_like = {'x', 'lon', 'longitude', 'xc'}
+            y_like = {'y', 'lat', 'latitude', 'yc'}
+            if dims[0].lower() in x_like and dims[1].lower() in y_like:
+                xdim, ydim = dims[0], dims[1]
+            else:
+                xdim, ydim = dims[1], dims[0]
+            data_vars = {}
+            for name in ('lon_bounds', 'lat_bounds'):
+                if name in src.variables:
+                    data_vars[name] = src[name]
+            grid = xr.Dataset(data_vars=data_vars, coords={'lon': lon, 'lat': lat})
+            density_proj = None
+            topology = 'curvilinear_geographic'
+
+        else:
+            raise ValueError(
+                'Could not identify a supported structured source grid. Expected regular/curvilinear lon-lat or projected x-y coordinates.'
+            )
+
+        normalized = self._normalize_output_grid(grid, density_proj=density_proj)
+        if normalized.get('topology') == 'triangular_unstructured':
+            raise NotImplementedError('Triangular/unstructured source grids are intentionally unsupported by regrid_conc.')
+        if normalized.get('topology') != 'structured':
+            raise ValueError(f"Unexpected normalized source topology: {normalized.get('topology')!r}")
+
+        lon_corners = np.asarray(normalized['lon_corners_4'], dtype=np.float64)
+        lat_corners = np.asarray(normalized['lat_corners_4'], dtype=np.float64)
+        area = np.asarray(normalized['cell_area'], dtype=np.float64)
+        if lon_corners.shape[:2] != tuple(normalized['shape']) or lat_corners.shape != lon_corners.shape:
+            raise ValueError('Normalized structured source corner geometry is inconsistent.')
+        if area.shape != tuple(normalized['shape']):
+            raise ValueError('Normalized structured source area shape is inconsistent.')
+
+        valid = np.all(np.isfinite(lon_corners) & np.isfinite(lat_corners), axis=-1) & np.isfinite(area) & (area > 0)
+        domain_invalid = self._regrid_get_obj(src, ['domain_invalid'])
+        if domain_invalid is not None and xdim in domain_invalid.dims and ydim in domain_invalid.dims:
+            invalid_xy = np.asarray(domain_invalid.transpose(xdim, ydim).values, dtype=bool)
+            if invalid_xy.shape != valid.shape:
+                raise ValueError('domain_invalid shape is inconsistent with normalized source geometry.')
+            valid &= ~invalid_xy
+
+        return {
+            'topology': topology,
+            'horizontal_dims': (xdim, ydim),
+            'shape': tuple(normalized['shape']),
+            'lon_center_2d': np.asarray(normalized['lon_center_2d'], dtype=np.float64),
+            'lat_center_2d': np.asarray(normalized['lat_center_2d'], dtype=np.float64),
+            'lon_corners_4': lon_corners,
+            'lat_corners_4': lat_corners,
+            'cell_area': area,
+            'valid_mask': valid,
+            'bbox_lonlat': tuple(normalized['bbox_lonlat']),
+            'source_crs': crs,
+            'source_crs_string': crs.to_string() if crs is not None else '+proj=longlat +datum=WGS84 +no_defs',
+            'normalized_grid': normalized,
+        }
+
+    @staticmethod
+    def _regrid_variable_layout(da, source_desc):
+        """Return named non-horizontal dimensions and a geometry-aligned view."""
+        xdim, ydim = source_desc['horizontal_dims']
+        if xdim not in da.dims or ydim not in da.dims:
+            raise ValueError(
+                f"Variable {getattr(da, 'name', None)!r} does not contain both source horizontal dimensions "
+                f"{(xdim, ydim)!r}; got {tuple(da.dims)!r}."
+            )
+        nonhorizontal = tuple(dim for dim in da.dims if dim not in {xdim, ydim})
+        aligned = da.transpose(*(nonhorizontal + (xdim, ydim)))
+        if tuple(aligned.shape[-2:]) != tuple(source_desc['shape']):
+            raise ValueError(
+                f"Variable {getattr(da, 'name', None)!r} horizontal shape {aligned.shape[-2:]} "
+                f"does not match source geometry {source_desc['shape']}."
+            )
+        return {
+            'nonhorizontal_dims': nonhorizontal,
+            'nonhorizontal_shape': tuple(int(aligned.sizes[d]) for d in nonhorizontal),
+            'aligned': aligned,
+            'output_dims': nonhorizontal + ('latitude', 'longitude'),
+        }
+
+    def _discover_regrid_variables(self, ds, source_desc, variables=None):
+        """Resolve current writer/derived science variables on the structured source grid."""
+        xdim, ydim = source_desc['horizontal_dims']
+        support_names = {
+            'crs', 'mesh', 'face_node_connectivity',
+            'x', 'y', 'lon', 'lat', 'longitude', 'latitude',
+            'x_center', 'y_center', 'x_bounds', 'y_bounds', 'lon_bounds', 'lat_bounds',
+            'area', 'volume', 'wet_fraction',
+            'depth_bounds', 'depth_model_top', 'depth_model_bounds',
+            'specie_name', 'specie_original_id', 'specie_phase',
+            'cell_size', 'lat_resol', 'lon_resol', 'dx', 'dy',
+            'input_lat_resol_deg', 'input_lon_resol_deg', 'smoothing_cells',
+            'time_bounds',
+        }
+
+        if variables is not None:
+            if isinstance(variables, str):
+                requested = [variables]
+            else:
+                requested = [str(v) for v in variables]
+            missing = [name for name in requested if name not in ds.data_vars]
+            if missing:
+                raise ValueError(f"Requested regrid variables are absent from the source dataset: {missing}")
+            selected = requested
+        else:
+            selected = []
+            for name, da in ds.data_vars.items():
+                if name in support_names:
+                    continue
+                if xdim not in da.dims or ydim not in da.dims:
+                    continue
+                lname = str(name).lower()
+                if (
+                    lname.startswith('concentration')
+                    or lname.startswith('density')
+                    or lname.startswith('property_mean')
+                    or lname in {'topo', 'bathymetry', 'land', 'domain_invalid'}
+                ):
+                    selected.append(name)
+
+        # Weighted property outputs need their matching density/count support in the output
+        # to remain consumable by calculate_water_sediment_conc.
+        expanded = list(selected)
+        for name in list(selected):
+            if str(name).startswith('property_mean'):
+                support = self._property_mean_density_support_name(name)
+                if support not in ds.data_vars:
+                    raise ValueError(f"Weighted property variable {name!r} requires matching density support {support!r}.")
+                if support not in expanded:
+                    expanded.append(support)
+        # Preserve user order while removing accidental duplicates.
+        selected = list(dict.fromkeys(expanded))
+        if not selected:
+            raise ValueError(
+                'No regriddable science variables were resolved. Supply variables explicitly or use current '
+                'concentration/density/property_mean/topography names.'
+            )
+
+        layouts = {}
+        for name in selected:
+            layouts[name] = self._regrid_variable_layout(ds[name], source_desc)
+        return selected, layouts
+
+    @staticmethod
+    def _build_regrid_target_grid(latmin, latmax, latstep, lonmin, lonmax, lonstep):
+        """Construct the regular geographic target grid used by ``regrid_conc``.
+
+        Backward-compatible endpoint semantics are explicit: ``latmin``/``lonmin`` are
+        the first target *centers* and ``latmax``/``lonmax`` are exclusive upper center
+        limits.  Cell bounds extend one half-step around each center.
+        """
+        from pyproj import Geod
+
+        vals = np.asarray([latmin, latmax, latstep, lonmin, lonmax, lonstep], dtype=np.float64)
+        if not np.all(np.isfinite(vals)):
+            raise ValueError('Target latitude/longitude limits and steps must be finite.')
+        if latstep <= 0 or lonstep <= 0:
+            raise ValueError('latstep and lonstep must be > 0.')
+        if latmax <= latmin or lonmax <= lonmin:
+            raise ValueError('latmax/lonmax must be greater than latmin/lonmin.')
+
+        def _centers(lo, hi, step, label):
+            span = (hi - lo) / step
+            # Preserve np.arange-style exclusive upper endpoint without cumulative drift.
+            n = int(np.ceil(span - 1e-12 * max(1.0, abs(span))))
+            if n <= 0:
+                raise ValueError(f'{label} target contains no cells.')
+            c = lo + np.arange(n, dtype=np.float64) * step
+            c = c[c < hi - 1e-12 * max(1.0, abs(hi))]
+            if c.size == 0:
+                raise ValueError(f'{label} target contains no centers below the exclusive upper limit.')
+            return c
+
+        lat = _centers(float(latmin), float(latmax), float(latstep), 'latitude')
+        lon = _centers(float(lonmin), float(lonmax), float(lonstep), 'longitude')
+        lat_bounds = np.column_stack((lat - 0.5 * latstep, lat + 0.5 * latstep))
+        lon_bounds = np.column_stack((lon - 0.5 * lonstep, lon + 0.5 * lonstep))
+
+        if np.nanmin(lat_bounds) < -90.0 or np.nanmax(lat_bounds) > 90.0:
+            raise ValueError('Target latitude cell bounds must remain within [-90, 90].')
+        if np.nanmin(lon_bounds) < -180.0 or np.nanmax(lon_bounds) > 180.0:
+            raise ValueError('Target longitude cell bounds must remain within [-180, 180].')
+        if (np.nanmax(lon_bounds) - np.nanmin(lon_bounds)) > 180.0:
+            raise ValueError('Dateline-crossing target grids are not supported by regrid_conc.')
+
+        nlat, nlon = lat.size, lon.size
+        lon_corners = np.empty((nlat, nlon, 4), dtype=np.float64)
+        lat_corners = np.empty((nlat, nlon, 4), dtype=np.float64)
+        lon_corners[:, :, 0] = lon_bounds[None, :, 0]
+        lon_corners[:, :, 1] = lon_bounds[None, :, 1]
+        lon_corners[:, :, 2] = lon_bounds[None, :, 1]
+        lon_corners[:, :, 3] = lon_bounds[None, :, 0]
+        lat_corners[:, :, 0] = lat_bounds[:, None, 0]
+        lat_corners[:, :, 1] = lat_bounds[:, None, 0]
+        lat_corners[:, :, 2] = lat_bounds[:, None, 1]
+        lat_corners[:, :, 3] = lat_bounds[:, None, 1]
+
+        geod = Geod(ellps='WGS84')
+        row_area = np.empty(nlat, dtype=np.float64)
+        for j in range(nlat):
+            lons = [lon_bounds[0, 0], lon_bounds[0, 1], lon_bounds[0, 1], lon_bounds[0, 0]]
+            lats = [lat_bounds[j, 0], lat_bounds[j, 0], lat_bounds[j, 1], lat_bounds[j, 1]]
+            a, _ = geod.polygon_area_perimeter(lons, lats)
+            row_area[j] = abs(float(a))
+        area = np.broadcast_to(row_area[:, None], (nlat, nlon)).copy()
+        if not np.all(np.isfinite(area)) or np.any(area <= 0):
+            raise ValueError('Could not construct finite positive target-cell area.')
+
+        return {
+            'latitude': lat,
+            'longitude': lon,
+            'lat_bounds': lat_bounds,
+            'lon_bounds': lon_bounds,
+            'lat_corners_4': lat_corners,
+            'lon_corners_4': lon_corners,
+            'cell_area': area,
+            'shape': (nlat, nlon),
+            'bbox_lonlat': (
+                float(lon_bounds[0, 0]), float(lat_bounds[0, 0]),
+                float(lon_bounds[-1, 1]), float(lat_bounds[-1, 1]),
+            ),
+            'endpoint_semantics': 'min=center_inclusive; max=center_exclusive; bounds=center_plus_minus_half_step',
+            'latstep': float(latstep),
+            'lonstep': float(lonstep),
+        }
+
+    @classmethod
+    def _resolve_regrid_memory_budget(cls, memory_budget_mb='auto', *,
+                                      memory_auto_fraction=0.50,
+                                      memory_auto_reserve_mb=1024,
+                                      memory_auto_reserve_fraction=0.20,
+                                      memory_capacity_report=None,
+                                      detector_kwargs=None):
+        """Resolve the managed regrid working-set budget in MiB.
+
+        ``'auto'`` shares the writer's effective-capacity detector (host, cgroup and
+        RLIMIT-aware) but deliberately uses a regrid-specific allocation model.
+        """
+        if memory_budget_mb is None:
+            return None, {'mode': 'none', 'resolved_budget_bytes': None, 'decision': 'ALLOW'}
+        if isinstance(memory_budget_mb, str):
+            if memory_budget_mb != 'auto':
+                raise ValueError("memory_budget_mb must be None, a positive number, or 'auto'.")
+        else:
+            if isinstance(memory_budget_mb, (bool, np.bool_)):
+                raise ValueError("memory_budget_mb must be None, a positive number, or 'auto'.")
+            try:
+                value = float(memory_budget_mb)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("memory_budget_mb must be None, a positive number, or 'auto'.") from exc
+            if not np.isfinite(value) or value <= 0:
+                raise ValueError('memory_budget_mb must be a finite positive number.')
+            return value, {
+                'mode': 'explicit',
+                'resolved_budget_bytes': int(value * 1024.0 ** 2),
+                'decision': 'ALLOW',
+            }
+
+        try:
+            fraction = float(memory_auto_fraction)
+            reserve_mb = float(memory_auto_reserve_mb)
+            reserve_fraction = float(memory_auto_reserve_fraction)
+        except (TypeError, ValueError) as exc:
+            raise ValueError('Auto-memory controls must be finite numeric values.') from exc
+        if not np.isfinite(fraction) or not (0.0 < fraction <= 1.0):
+            raise ValueError('memory_auto_fraction must satisfy 0 < value <= 1.')
+        if not np.isfinite(reserve_mb) or reserve_mb < 0:
+            raise ValueError('memory_auto_reserve_mb must be finite and non-negative.')
+        if not np.isfinite(reserve_fraction) or not (0.0 <= reserve_fraction < 1.0):
+            raise ValueError('memory_auto_reserve_fraction must satisfy 0 <= value < 1.')
+
+        capacity = dict(memory_capacity_report or cls._detect_effective_memory_capacity(**(detector_kwargs or {})))
+        effective = capacity.get('effective_available_bytes')
+        if effective is None:
+            raise RuntimeError(
+                "memory_budget_mb='auto' could not determine reliable effective available memory; "
+                "use an explicit numeric budget or None."
+            )
+        effective = int(effective)
+        if effective < 0:
+            raise RuntimeError('Detected effective available memory is negative.')
+        reserve = max(reserve_mb * (1024.0 ** 2), effective * reserve_fraction)
+        usable = max(0.0, effective - reserve)
+        budget = int(usable * fraction)
+        if budget <= 0:
+            raise MemoryError(
+                "memory_budget_mb='auto' resolved to no usable managed regrid memory after reserve policy."
+            )
+        return budget / (1024.0 ** 2), {
+            'mode': 'auto',
+            'host_available_bytes': capacity.get('host_available_bytes'),
+            'cgroup_remaining_bytes': capacity.get('cgroup_remaining_bytes'),
+            'rlimit_as_remaining_bytes': capacity.get('rlimit_as_remaining_bytes'),
+            'effective_available_bytes': effective,
+            'reserve_bytes': int(reserve),
+            'usable_bytes': int(usable),
+            'memory_auto_fraction': fraction,
+            'memory_auto_reserve_mb': reserve_mb,
+            'memory_auto_reserve_fraction': reserve_fraction,
+            'resolved_budget_bytes': budget,
+            'decision': 'ALLOW',
+        }
+
+    @staticmethod
+    def _estimate_regrid_working_set_bytes(source_desc, target_grid, *, target_rows=1,
+                                           source_value_itemsize=8,
+                                           overlap_per_target=16,
+                                           geometry_bytes_per_source_cell=512,
+                                           geometry_bytes_per_target_cell=192):
+        """Conservative managed-memory estimate for one regrid execution chunk."""
+        from math import prod
+
+        sx, sy = (int(v) for v in source_desc['shape'])
+        nsource = sx * sy
+        nlat, nlon = (int(v) for v in target_grid['shape'])
+        rows = int(target_rows)
+        if rows <= 0 or rows > nlat:
+            raise ValueError(f'target_rows must be in [1, {nlat}], got {rows}.')
+        if source_value_itemsize <= 0 or overlap_per_target <= 0:
+            raise ValueError('source_value_itemsize and overlap_per_target must be positive.')
+
+        # Numeric source geometry arrays plus deliberately conservative Python/Shapely/index overhead.
+        source_numeric = nsource * (8 * (4 + 4 + 1 + 2) + 1)
+        source_geometry = nsource * int(geometry_bytes_per_source_cell)
+        source_slab = nsource * int(source_value_itemsize)
+        ntarget_total = nlat * nlon
+        target_numeric = ntarget_total * (8 * (4 + 4 + 1))
+        target_geometry = ntarget_total * int(geometry_bytes_per_target_cell)
+
+        chunk_cells = rows * nlon
+        # src index + local target index + overlap area, with spare room for query/intersection temporaries.
+        overlap_records = chunk_cells * int(overlap_per_target) * (8 + 8 + 8)
+        chunk_numeric = chunk_cells * (8 * 6 + 1)
+        io_buffers = max(source_slab, chunk_cells * 8) * 2
+        fixed = source_numeric + source_geometry + source_slab + target_numeric + target_geometry
+        variable = overlap_records + chunk_numeric + io_buffers
+        total = fixed + variable
+        return {
+            'nsource_cells': nsource,
+            'ntarget_cells': ntarget_total,
+            'target_rows': rows,
+            'target_chunk_cells': chunk_cells,
+            'source_numeric_bytes': int(source_numeric),
+            'source_geometry_bytes': int(source_geometry),
+            'source_slab_bytes': int(source_slab),
+            'target_numeric_bytes': int(target_numeric),
+            'target_geometry_bytes': int(target_geometry),
+            'overlap_records_bytes': int(overlap_records),
+            'chunk_numeric_bytes': int(chunk_numeric),
+            'io_buffer_bytes': int(io_buffers),
+            'fixed_bytes': int(fixed),
+            'variable_bytes': int(variable),
+            'estimated_working_set_bytes': int(total),
+        }
+
+    @classmethod
+    def _plan_regrid_target_row_chunk(cls, source_desc, target_grid, memory_budget_mb, *,
+                                      source_value_itemsize=8, overlap_per_target=16):
+        """Choose the largest deterministic latitude-row chunk that fits the managed budget."""
+        nlat = int(target_grid['shape'][0])
+        if memory_budget_mb is None:
+            estimate = cls._estimate_regrid_working_set_bytes(
+                source_desc, target_grid, target_rows=nlat,
+                source_value_itemsize=source_value_itemsize,
+                overlap_per_target=overlap_per_target,
+            )
+            return nlat, estimate
+
+        budget_bytes = int(float(memory_budget_mb) * (1024.0 ** 2))
+        minimum = cls._estimate_regrid_working_set_bytes(
+            source_desc, target_grid, target_rows=1,
+            source_value_itemsize=source_value_itemsize,
+            overlap_per_target=overlap_per_target,
+        )
+        if minimum['estimated_working_set_bytes'] > budget_bytes:
+            raise MemoryError(
+                f"Minimum managed regrid estimate {minimum['estimated_working_set_bytes'] / (1024.0**2):.1f} MiB "
+                f"exceeds memory_budget_mb={float(memory_budget_mb):.1f} before overlap allocation."
+            )
+        lo, hi = 1, nlat
+        best = 1
+        best_est = minimum
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            est = cls._estimate_regrid_working_set_bytes(
+                source_desc, target_grid, target_rows=mid,
+                source_value_itemsize=source_value_itemsize,
+                overlap_per_target=overlap_per_target,
+            )
+            if est['estimated_working_set_bytes'] <= budget_bytes:
+                best, best_est = mid, est
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        return best, best_est
+
+    def _iter_regrid_slabs(self, da, source_desc):
+        """Yield one geometry-aligned horizontal source slab at a time."""
+        layout = self._regrid_variable_layout(da, source_desc)
+        aligned = layout['aligned']
+        dims = layout['nonhorizontal_dims']
+        shape = layout['nonhorizontal_shape']
+        if not dims:
+            yield (), {}, np.asarray(aligned.values)
+            return
+        for index in np.ndindex(*shape):
+            indexer = {dim: int(i) for dim, i in zip(dims, index)}
+            slab = np.asarray(aligned.isel(indexer).values)
+            if slab.shape != tuple(source_desc['shape']):
+                raise ValueError(
+                    f"Source slab for {getattr(da, 'name', None)!r} has shape {slab.shape}, "
+                    f"expected {source_desc['shape']}."
+                )
+            yield tuple(int(i) for i in index), indexer, slab
+
+    @staticmethod
+    def _regrid_open_netcdf(filename, mode='w'):
+        """Open a low-level NetCDF writer suitable for direct slab assignment."""
+        try:
+            from netCDF4 import Dataset
+            return Dataset(filename, mode, format='NETCDF4'), 'netcdf4'
+        except ImportError:
+            from scipy.io import netcdf_file
+            return netcdf_file(filename, mode, version=2), 'scipy'
+
+    @staticmethod
+    def _regrid_nc_dtype(dtype, *, force_float=False):
+        dt = np.dtype(dtype)
+        if force_float or dt.kind in 'bu':
+            return 'f8' if dt.kind == 'f' and dt.itemsize > 4 else 'f4'
+        if dt.kind == 'f':
+            return 'f8' if dt.itemsize > 4 else 'f4'
+        if dt.kind in 'iu':
+            return 'f8' if dt.itemsize > 4 else 'i4'
+        if dt.kind in 'SU':
+            return 'S1'
+        return 'f8'
+
+    @staticmethod
+    def _regrid_safe_setattr(obj, name, value):
+        """Set a NetCDF attribute after normalizing unsupported Python values."""
+        if value is None:
+            return
+        if isinstance(value, (dict, set, tuple, list)) and not isinstance(value, np.ndarray):
+            value = str(value)
+        if isinstance(value, np.generic):
+            value = value.item()
+        try:
+            setattr(obj, str(name), value)
+        except Exception:
+            setattr(obj, str(name), str(value))
+
+    def _initialize_regrid_output_file(self, filename, source_ds, target_grid, variable_layouts):
+        """Create dimensions/basic coordinates without allocating complete target variables."""
+        nc, backend = self._regrid_open_netcdf(filename, 'w')
+        created_dims = set()
+
+        nonhorizontal_dims = []
+        for layout in variable_layouts.values():
+            for dim in layout['nonhorizontal_dims']:
+                if dim not in nonhorizontal_dims:
+                    nonhorizontal_dims.append(dim)
+        for dim in nonhorizontal_dims:
+            nc.createDimension(dim, int(source_ds.sizes[dim]))
+            created_dims.add(dim)
+        nc.createDimension('latitude', int(target_grid['shape'][0])); created_dims.add('latitude')
+        nc.createDimension('longitude', int(target_grid['shape'][1])); created_dims.add('longitude')
+        nc.createDimension('bounds2', 2); created_dims.add('bounds2')
+
+        # Basic numeric/datetime dimension coordinates. Rich metadata is reconstructed later.
+        for dim in nonhorizontal_dims:
+            if dim not in source_ds.variables:
+                continue
+            coord = source_ds[dim]
+            if coord.ndim != 1 or coord.dims != (dim,):
+                continue
+            values = np.asarray(coord.values)
+            attrs = dict(coord.attrs)
+            if np.issubdtype(values.dtype, np.datetime64):
+                values = values.astype('datetime64[ns]').astype(np.int64) / 1e9
+                dtype = 'f8'
+                attrs.setdefault('units', 'seconds since 1970-01-01 00:00:00')
+                attrs.setdefault('calendar', 'proleptic_gregorian')
+            elif values.dtype.kind in 'iu':
+                if values.size == 0 or (np.nanmin(values) >= np.iinfo(np.int32).min and np.nanmax(values) <= np.iinfo(np.int32).max):
+                    dtype = 'i4'; values = values.astype(np.int32, copy=False)
+                else:
+                    dtype = 'f8'; values = values.astype(np.float64)
+            elif values.dtype.kind in 'fb':
+                dtype = self._regrid_nc_dtype(values.dtype)
+            else:
+                continue
+            v = nc.createVariable(dim, dtype, (dim,))
+            v[:] = values
+            for k, val in attrs.items():
+                self._regrid_safe_setattr(v, k, val)
+
+        latv = nc.createVariable('latitude', 'f8', ('latitude',)); latv[:] = target_grid['latitude']
+        lonv = nc.createVariable('longitude', 'f8', ('longitude',)); lonv[:] = target_grid['longitude']
+        latb = nc.createVariable('latitude_bounds', 'f8', ('latitude', 'bounds2')); latb[:] = target_grid['lat_bounds']
+        lonb = nc.createVariable('longitude_bounds', 'f8', ('longitude', 'bounds2')); lonb[:] = target_grid['lon_bounds']
+        for var, standard, units, axis, bounds in (
+            (latv, 'latitude', 'degrees_north', 'Y', 'latitude_bounds'),
+            (lonv, 'longitude', 'degrees_east', 'X', 'longitude_bounds'),
+        ):
+            var.standard_name = standard; var.long_name = standard; var.units = units; var.axis = axis; var.bounds = bounds
+        latb.units = 'degrees_north'; lonb.units = 'degrees_east'
+
+        areav = nc.createVariable('area', 'f8', ('latitude', 'longitude')); areav[:] = target_grid['cell_area']
+        areav.standard_name = 'cell_area'; areav.long_name = 'Geodesic target grid cell area'; areav.units = 'm2'
+        areav.coordinates = 'latitude longitude'
+
+        from pyproj import CRS
+        crs_obj = CRS.from_epsg(4326)
+        crsv = nc.createVariable('crs', 'i4', ())
+        try:
+            crsv.assignValue(np.int32(0))
+        except Exception:
+            try:
+                crsv[...] = np.int32(0)
+            except Exception:
+                pass
+        crsv.long_name = 'WGS84 geographic coordinate reference system'
+        crsv.grid_mapping_name = 'latitude_longitude'
+        crsv.spatial_ref = crs_obj.to_wkt()
+        crsv.crs_wkt = crs_obj.to_wkt()
+        crsv.proj4_params = '+proj=longlat +datum=WGS84 +no_defs'
+        try:
+            for key, value in crs_obj.to_cf().items():
+                self._regrid_safe_setattr(crsv, key, value)
+        except Exception:
+            pass
+
+        self._regrid_safe_setattr(nc, 'Conventions', 'CF-1.10')
+        self._regrid_safe_setattr(nc, 'actual_density_proj_str', '+proj=longlat +datum=WGS84 +no_defs')
+        self._regrid_safe_setattr(nc, 'output_grid_mode', 'rectilinear')
+        self._regrid_safe_setattr(nc, 'output_grid_coords', 'geographic')
+        self._regrid_safe_setattr(nc, 'explicit_output_grid', 1)
+        self._regrid_safe_setattr(nc, 'regrid_target_endpoint_semantics', target_grid['endpoint_semantics'])
+        self._regrid_safe_setattr(nc, 'geospatial_lat_min', float(target_grid['lat_bounds'][0, 0]))
+        self._regrid_safe_setattr(nc, 'geospatial_lat_max', float(target_grid['lat_bounds'][-1, 1]))
+        self._regrid_safe_setattr(nc, 'geospatial_lon_min', float(target_grid['lon_bounds'][0, 0]))
+        self._regrid_safe_setattr(nc, 'geospatial_lon_max', float(target_grid['lon_bounds'][-1, 1]))
+        return nc, backend
+
+    def _create_regrid_output_variable(self, nc, name, source_da, layout):
+        """Create one float target variable without allocating its complete data array."""
+        dtype = 'f8' if np.dtype(source_da.dtype).kind == 'f' and np.dtype(source_da.dtype).itemsize > 4 else 'f4'
+        var = nc.createVariable(str(name), dtype, tuple(layout['output_dims']))
+        try:
+            var._FillValue = np.nan
+        except Exception:
+            pass
+        var.grid_mapping = 'crs'
+        var.coordinates = 'latitude longitude'
+        return var
+
+    def _apply_regrid_variable_metadata(self, var_nc, source_da, classification, source_desc, target_grid):
+        """Preserve valid science metadata and replace all source-spatial references."""
+        forbidden = {
+            'grid_mapping', 'coordinates', 'bounds', 'mesh', 'location',
+            'lon_resol', 'lat_resol', 'dx', 'dy',
+        }
+        for key, value in dict(getattr(source_da, 'attrs', {})).items():
+            if key in forbidden or str(key).startswith('_'):
+                continue
+            # Derived water/sediment products may retain the writer's phase_units_by
+            # provenance after the specie axis has been aggregated away.  Do not copy
+            # that reference unless the regridded variable still has a specie axis;
+            # otherwise it would point to a support variable that is intentionally absent.
+            if key == 'phase_units_by' and 'specie' not in source_da.dims:
+                continue
+            self._regrid_safe_setattr(var_nc, key, value)
+        var_nc.grid_mapping = 'crs'
+        var_nc.coordinates = 'latitude longitude'
+        var_nc.regrid_semantic_class = str(classification['kind'])
+        var_nc.regrid_method = (
+            'conservative_equal_area_overlap' if classification['kind'] in {'count', 'extensive'}
+            else 'count_weighted_conservative_components' if classification['kind'] == 'weighted_mean'
+            else 'categorical_area_majority' if classification['kind'] == 'categorical'
+            else 'equal_area_overlap_weighted_mean'
+        )
+        var_nc.source_grid_topology = str(source_desc['topology'])
+        var_nc.target_latitude_resolution = float(target_grid['latstep'])
+        var_nc.target_longitude_resolution = float(target_grid['lonstep'])
+        if classification.get('conservation_note'):
+            var_nc.regrid_conservation_note = str(classification['conservation_note'])
+
+    @staticmethod
+    def _regrid_netcdf_existing_dimensions(nc):
+        return set(getattr(nc, 'dimensions', {}).keys())
+
+    def _copy_regrid_support_variables(self, nc, source_ds, variable_layouts):
+        """Copy valid non-spatial time/depth/species support variables only."""
+        required_dims = set()
+        for layout in variable_layouts.values():
+            required_dims.update(layout['nonhorizontal_dims'])
+
+        support_names = (
+            'time_bounds',
+            'depth_bounds', 'depth_model_top', 'depth_model_bounds',
+            'specie_original_id', 'specie_phase', 'specie_name',
+        )
+
+        def _ensure_dim(dim, size):
+            if dim not in nc.dimensions:
+                nc.createDimension(dim, int(size))
+
+        def _create_char(name, values, dims, attrs):
+            arr = np.asarray(values)
+            # xarray may decode a netCDF char array to one string per leading dimension.
+            if arr.ndim == 1 and arr.dtype.kind in 'SUO':
+                strings = [str(v.decode() if isinstance(v, (bytes, np.bytes_)) else v) for v in arr]
+                width = max([len(v) for v in strings] + [1])
+                strlen_dim = f'{name}_strlen'
+                _ensure_dim(strlen_dim, width)
+                leading_dim = dims[0]
+                char_arr = np.asarray([list(v.ljust(width)) for v in strings], dtype='S1')
+                dtype = 'c' if nc.__class__.__module__.startswith('scipy') else 'S1'
+                out = nc.createVariable(name, dtype, (leading_dim, strlen_dim))
+                out[:] = char_arr
+            else:
+                for dim, size in zip(dims, arr.shape):
+                    _ensure_dim(dim, size)
+                dtype = 'c' if nc.__class__.__module__.startswith('scipy') else 'S1'
+                out = nc.createVariable(name, dtype, dims)
+                out[:] = arr.astype('S1')
+            for k, v in attrs.items():
+                self._regrid_safe_setattr(out, k, v)
+
+        for name in support_names:
+            if name not in source_ds.variables or name in nc.variables:
+                continue
+            src = source_ds[name]
+            dims = tuple(str(d) for d in src.dims)
+            # Do not reintroduce specie/depth support after an aggregation removed that axis.
+            if any(dim in {'specie', 'depth'} and dim not in required_dims for dim in dims):
+                continue
+            values = np.asarray(src.values)
+            attrs = dict(src.attrs)
+            if values.dtype.kind in 'SUO':
+                if not dims:
+                    continue
+                for dim in dims:
+                    if dim in source_ds.sizes:
+                        _ensure_dim(dim, source_ds.sizes[dim])
+                _create_char(name, values, dims, attrs)
+                continue
+            for dim, size in zip(dims, values.shape):
+                _ensure_dim(dim, size)
+            if np.issubdtype(values.dtype, np.datetime64):
+                values = values.astype('datetime64[ns]').astype(np.int64) / 1e9
+                dtype = 'f8'; attrs.setdefault('units', 'seconds since 1970-01-01 00:00:00')
+            elif values.dtype.kind in 'iu':
+                # netCDF3 fallback has no int64; preserve exactly when int32-safe, otherwise use f8.
+                if values.size == 0 or (np.nanmin(values) >= np.iinfo(np.int32).min and np.nanmax(values) <= np.iinfo(np.int32).max):
+                    dtype = 'i4'; values = values.astype(np.int32, copy=False)
+                else:
+                    dtype = 'f8'; values = values.astype(np.float64)
+            else:
+                dtype = 'f8' if values.dtype.itemsize > 4 else 'f4'
+            out = nc.createVariable(name, dtype, dims)
+            out[:] = values
+            for k, v in attrs.items():
+                if not str(k).startswith('_'):
+                    self._regrid_safe_setattr(out, k, v)
+
+    def _apply_regrid_global_metadata(self, nc, source_ds, source_desc, target_grid, *, overlap_plan=None):
+        """Preserve valid provenance while replacing source spatial-grid identity."""
+        keep = (
+            'title', 'source', 'institution', 'references', 'comment', 'sim_description',
+            'weight_name', 'weight_mode', 'phase_units_metadata_mode',
+            'species_axis_compressed', 'time_coverage_start', 'time_coverage_end',
+        )
+        for name in keep:
+            if name in source_ds.attrs:
+                self._regrid_safe_setattr(nc, name, source_ds.attrs[name])
+        old_history = str(source_ds.attrs.get('history', '')).strip()
+        addition = 'Regridded by ChemicalDrift regrid_conc using structured-cell overlap to a regular geographic grid.'
+        self._regrid_safe_setattr(nc, 'history', (old_history + '\n' + addition).strip() if old_history else addition)
+        self._regrid_safe_setattr(nc, 'source_regrid_topology', source_desc['topology'])
+        self._regrid_safe_setattr(nc, 'source_regrid_crs', source_desc.get('source_crs_string'))
+        self._regrid_safe_setattr(nc, 'regrid_geometry_method', 'equal_area_polygon_overlap')
+        self._regrid_safe_setattr(nc, 'regrid_latstep_deg', float(target_grid['latstep']))
+        self._regrid_safe_setattr(nc, 'regrid_lonstep_deg', float(target_grid['lonstep']))
+        if overlap_plan is not None:
+            self._regrid_safe_setattr(nc, 'regrid_equal_area_working_crs', overlap_plan.get('equal_area_crs'))
+
+        # Target-resolution scalar support used by existing post-processing metadata conventions.
+        if 'lat_resol' not in nc.variables:
+            v = nc.createVariable('lat_resol', 'f8', ())
+            try: v.assignValue(float(target_grid['latstep']))
+            except Exception: v[...] = float(target_grid['latstep'])
+            v.long_name = 'Output latitude resolution'; v.units = 'degrees_north'
+        if 'lon_resol' not in nc.variables:
+            v = nc.createVariable('lon_resol', 'f8', ())
+            try: v.assignValue(float(target_grid['lonstep']))
+            except Exception: v[...] = float(target_grid['lonstep'])
+            v.long_name = 'Output longitude resolution'; v.units = 'degrees_east'
+
+    @staticmethod
+    def _write_regrid_output_chunk(var_nc, slab_index, row_start, row_end, values):
+        """Write one contiguous target-latitude chunk for one non-horizontal slab."""
+        arr = np.asarray(values)
+        if arr.ndim != 2 or arr.shape[0] != int(row_end) - int(row_start):
+            raise ValueError('Regrid output chunk shape does not match requested row interval.')
+        key = tuple(int(i) for i in slab_index) + (slice(int(row_start), int(row_end)), slice(None))
+        var_nc[key] = arr
+
+    @staticmethod
+    def _build_regrid_source_polygons(source_desc, *, area_rtol=5e-6, area_atol_m2=1e-3):
+        """Build validated Shapely polygons aligned with flattened internal source cells."""
+        from shapely.geometry import Polygon
+        from pyproj import Geod
+
+        lon4 = np.asarray(source_desc['lon_corners_4'], dtype=np.float64)
+        lat4 = np.asarray(source_desc['lat_corners_4'], dtype=np.float64)
+        area = np.asarray(source_desc['cell_area'], dtype=np.float64)
+        valid = np.asarray(source_desc['valid_mask'], dtype=bool)
+        if lon4.shape != lat4.shape or lon4.shape[:2] != area.shape or valid.shape != area.shape:
+            raise ValueError('Source polygon geometry arrays are shape-inconsistent.')
+
+        geod = Geod(ellps='WGS84')
+        polygons = [None] * int(area.size)
+        valid_flat = valid.ravel(order='C').copy()
+        area_flat = area.ravel(order='C')
+        lon_flat = lon4.reshape((-1, 4), order='C')
+        lat_flat = lat4.reshape((-1, 4), order='C')
+
+        for flat_idx in np.flatnonzero(valid_flat):
+            xs = lon_flat[flat_idx]
+            ys = lat_flat[flat_idx]
+            if not np.all(np.isfinite(xs) & np.isfinite(ys)):
+                valid_flat[flat_idx] = False
+                continue
+            poly = Polygon(np.column_stack((xs, ys)))
+            if poly.is_empty or poly.area <= 0:
+                raise ValueError(f'Degenerate finite source cell geometry at flat index {flat_idx}.')
+            if not poly.is_valid:
+                raise ValueError(f'Invalid/self-intersecting source cell geometry at flat index {flat_idx}.')
+            try:
+                geod_area = abs(float(geod.geometry_area_perimeter(poly)[0]))
+            except Exception:
+                geod_area = abs(float(geod.polygon_area_perimeter(xs, ys)[0]))
+            if not np.isfinite(geod_area) or geod_area <= 0:
+                raise ValueError(f'Non-positive geodesic source-cell area at flat index {flat_idx}.')
+            expected = float(area_flat[flat_idx])
+            if not np.isclose(geod_area, expected, rtol=float(area_rtol), atol=float(area_atol_m2)):
+                raise ValueError(
+                    f'Source cell geodesic area mismatch at flat index {flat_idx}: '
+                    f'polygon={geod_area:.12g} m2, normalized={expected:.12g} m2.'
+                )
+            polygons[flat_idx] = poly
+
+        source_indices = np.flatnonzero(valid_flat).astype(np.int64, copy=False)
+        valid_polygons = [polygons[int(i)] for i in source_indices]
+        return {
+            'polygons_by_flat_index': polygons,
+            'valid_source_indices': source_indices,
+            'valid_polygons': valid_polygons,
+            'valid_mask_flat': valid_flat,
+            'source_area_flat': area_flat,
+        }
+
+    @staticmethod
+    def _build_regrid_spatial_index(source_geometry, source_desc=None):
+        """Build an equal-area STRtree and retain source-flat-index mappings.
+
+        Polygon intersections are performed in a WGS84 cylindrical equal-area working
+        CRS.  This makes overlap areas additive across target-cell partitions, unlike
+        summing independently geodesic sub-polygons whose subdivided edges are not the
+        same geodesic curves as the unsplit source edge.
+        """
+        from shapely.strtree import STRtree
+        from shapely.ops import transform as shapely_transform
+        from pyproj import CRS, Transformer
+
+        geographic = list(source_geometry['valid_polygons'])
+        if not geographic:
+            raise ValueError('No valid structured source cells are available for regridding.')
+        if source_desc is not None:
+            bbox = source_desc.get('bbox_lonlat')
+        else:
+            bbox = None
+        lon0 = 0.0 if bbox is None else 0.5 * (float(bbox[0]) + float(bbox[2]))
+        equal_area_crs = CRS.from_proj4(
+            f'+proj=cea +lat_ts=0 +lon_0={lon0:.12g} +datum=WGS84 +units=m +no_defs'
+        )
+        transformer = Transformer.from_crs(CRS.from_epsg(4326), equal_area_crs, always_xy=True)
+        projected = [shapely_transform(transformer.transform, poly) for poly in geographic]
+        remap_area = np.asarray([float(poly.area) for poly in projected], dtype=np.float64)
+        if np.any(~np.isfinite(remap_area)) or np.any(remap_area <= 0):
+            raise ValueError('Equal-area source geometry contains non-positive/non-finite areas.')
+
+        all_area = np.full(len(source_geometry['polygons_by_flat_index']), np.nan, dtype=np.float64)
+        src_indices = np.asarray(source_geometry['valid_source_indices'], dtype=np.int64)
+        all_area[src_indices] = remap_area
+        return {
+            'tree': STRtree(projected),
+            'tree_source_indices': src_indices,
+            'tree_polygons': projected,
+            'tree_geographic_polygons': geographic,
+            'source_remap_area_flat': all_area,
+            'equal_area_crs': equal_area_crs,
+            'to_equal_area': transformer,
+        }
+
+    @staticmethod
+    def _geodesic_geometry_area_m2(geometry, geod=None):
+        """Return absolute WGS84 geodesic area for Polygon/MultiPolygon geometry."""
+        from pyproj import Geod
+        if geometry is None or geometry.is_empty:
+            return 0.0
+        geod = geod or Geod(ellps='WGS84')
+        try:
+            area = abs(float(geod.geometry_area_perimeter(geometry)[0]))
+        except Exception:
+            if geometry.geom_type == 'Polygon':
+                x, y = geometry.exterior.xy
+                area = abs(float(geod.polygon_area_perimeter(x, y)[0]))
+                for ring in geometry.interiors:
+                    rx, ry = ring.xy
+                    area -= abs(float(geod.polygon_area_perimeter(rx, ry)[0]))
+            elif hasattr(geometry, 'geoms'):
+                area = sum(ChemicalDriftPostProcessMixin._geodesic_geometry_area_m2(g, geod=geod) for g in geometry.geoms)
+            else:
+                area = 0.0
+        return max(0.0, float(area))
+
+    def _build_regrid_overlap_chunk(self, source_desc, source_geometry, spatial_index,
+                                    target_grid, row_start, row_end, *, area_tol_fraction=1e-8):
+        """Build additive equal-area source/target overlap records for target rows."""
+        from shapely.geometry import Polygon
+        from shapely.ops import transform as shapely_transform
+
+        nlat, nlon = target_grid['shape']
+        r0, r1 = int(row_start), int(row_end)
+        if r0 < 0 or r1 > int(nlat) or r1 <= r0:
+            raise ValueError(f'Invalid target row interval [{r0}, {r1}) for nlat={nlat}.')
+        tree = spatial_index['tree']
+        tree_source = spatial_index['tree_source_indices']
+        tree_polygons = spatial_index['tree_polygons']
+        source_area = np.asarray(spatial_index['source_remap_area_flat'], dtype=np.float64)
+        transformer = spatial_index['to_equal_area']
+        lon4 = np.asarray(target_grid['lon_corners_4'], dtype=np.float64)
+        lat4 = np.asarray(target_grid['lat_corners_4'], dtype=np.float64)
+
+        src_records, tgt_records, area_records = [], [], []
+        covered = np.zeros((r1 - r0, int(nlon)), dtype=np.float64)
+        target_remap_area = np.empty_like(covered)
+
+        for rr in range(r0, r1):
+            for cc in range(int(nlon)):
+                geographic_target = Polygon(np.column_stack((lon4[rr, cc], lat4[rr, cc])))
+                if geographic_target.is_empty or not geographic_target.is_valid or geographic_target.area <= 0:
+                    raise ValueError(f'Invalid target cell polygon at latitude-row {rr}, longitude-column {cc}.')
+                target_poly = shapely_transform(transformer.transform, geographic_target)
+                t_area = float(target_poly.area)
+                if not np.isfinite(t_area) or t_area <= 0:
+                    raise ValueError(f'Invalid equal-area target cell at ({rr}, {cc}).')
+                target_remap_area[rr - r0, cc] = t_area
+                hits = np.asarray(tree.query(target_poly))
+                if hits.dtype.kind not in 'iu':
+                    id_to_pos = {id(g): i for i, g in enumerate(tree_polygons)}
+                    hit_pos = [id_to_pos[id(g)] for g in hits if id(g) in id_to_pos]
+                else:
+                    hit_pos = [int(v) for v in hits.ravel()]
+                local_tgt = (rr - r0) * int(nlon) + cc
+                for pos in hit_pos:
+                    inter = tree_polygons[pos].intersection(target_poly)
+                    if inter.is_empty:
+                        continue
+                    a = float(inter.area)
+                    if not np.isfinite(a) or a <= 0:
+                        continue
+                    sidx = int(tree_source[pos])
+                    max_allowed = min(float(source_area[sidx]), t_area)
+                    if a > max_allowed * (1.0 + float(area_tol_fraction)) + 1e-4:
+                        raise ValueError(
+                            f'Overlap area exceeds source/target cell area at source={sidx}, target=({rr},{cc}).'
+                        )
+                    a = min(a, max_allowed)
+                    src_records.append(sidx); tgt_records.append(local_tgt); area_records.append(a)
+                    covered[rr - r0, cc] += a
+
+        if np.any(covered > target_remap_area * (1.0 + float(area_tol_fraction)) + 1e-4):
+            raise ValueError('Accumulated overlap area exceeds equal-area target cell area beyond tolerance.')
+        coverage = np.divide(covered, target_remap_area, out=np.zeros_like(covered), where=target_remap_area > 0)
+        coverage = np.clip(coverage, 0.0, 1.0)
+        return {
+            'row_start': r0, 'row_end': r1, 'nlon': int(nlon),
+            'source_index': np.asarray(src_records, dtype=np.int64),
+            'target_local_index': np.asarray(tgt_records, dtype=np.int64),
+            'overlap_area_m2': np.asarray(area_records, dtype=np.float64),
+            'covered_area_m2': covered,
+            'target_remap_area_m2': target_remap_area,
+            'coverage_fraction': coverage,
+        }
+
+    def _build_overlap_plan(self, source_desc, target_grid, *, row_chunk, plan_directory):
+        """Persist bounded overlap chunks so all later variable slabs reuse one spatial plan."""
+        import os
+
+        row_chunk = int(row_chunk)
+        if row_chunk <= 0:
+            raise ValueError('row_chunk must be positive.')
+        os.makedirs(plan_directory, exist_ok=True)
+        source_geometry = self._build_regrid_source_polygons(source_desc)
+        spatial_index = self._build_regrid_spatial_index(source_geometry, source_desc)
+        chunks = []
+        nlat = int(target_grid['shape'][0])
+        total_records = 0
+        for r0 in range(0, nlat, row_chunk):
+            r1 = min(nlat, r0 + row_chunk)
+            chunk = self._build_regrid_overlap_chunk(
+                source_desc, source_geometry, spatial_index, target_grid, r0, r1
+            )
+            path = os.path.join(plan_directory, f'overlap_rows_{r0:08d}_{r1:08d}.npz')
+            np.savez(
+                path,
+                source_index=chunk['source_index'],
+                target_local_index=chunk['target_local_index'],
+                overlap_area_m2=chunk['overlap_area_m2'],
+                covered_area_m2=chunk['covered_area_m2'],
+                target_remap_area_m2=chunk['target_remap_area_m2'],
+                coverage_fraction=chunk['coverage_fraction'],
+            )
+            count = int(chunk['source_index'].size)
+            total_records += count
+            chunks.append({'row_start': r0, 'row_end': r1, 'path': path, 'records': count})
+            del chunk
+        return {
+            'chunks': chunks,
+            'row_chunk': row_chunk,
+            'total_records': total_records,
+            'source_remap_area_flat': np.asarray(spatial_index['source_remap_area_flat'], dtype=np.float64),
+            'equal_area_crs': spatial_index['equal_area_crs'].to_string(),
+        }
+
+    @staticmethod
+    def _load_overlap_plan_chunk(chunk_info):
+        """Load one persisted overlap-plan chunk into bounded memory."""
+        with np.load(chunk_info['path']) as z:
+            return {
+                'row_start': int(chunk_info['row_start']),
+                'row_end': int(chunk_info['row_end']),
+                'source_index': np.asarray(z['source_index'], dtype=np.int64),
+                'target_local_index': np.asarray(z['target_local_index'], dtype=np.int64),
+                'overlap_area_m2': np.asarray(z['overlap_area_m2'], dtype=np.float64),
+                'covered_area_m2': np.asarray(z['covered_area_m2'], dtype=np.float64),
+                'target_remap_area_m2': np.asarray(z['target_remap_area_m2'], dtype=np.float64),
+                'coverage_fraction': np.asarray(z['coverage_fraction'], dtype=np.float64),
+            }
+
+    @staticmethod
+    def _property_mean_density_support_name(name):
+        """Map property_mean* names, including derived suffixes, to density* support."""
+        name = str(name)
+        if not name.startswith('property_mean'):
+            return None
+        return 'density' + name[len('property_mean'):]
+
+    def _classify_regrid_variable(self, name, da, ds):
+        """Classify spatial remap semantics from the current writer/downstream contract."""
+        lname = str(name).lower()
+        attrs = dict(getattr(da, 'attrs', {}))
+        explicit = str(attrs.get('regrid_semantics', '')).strip().lower()
+        explicit_map = {
+            'extensive': 'extensive', 'count': 'count', 'intensive': 'intensive',
+            'weighted_mean': 'weighted_mean', 'topography': 'topography', 'categorical': 'categorical',
+        }
+        if explicit:
+            if explicit not in explicit_map:
+                raise ValueError(
+                    f"Unsupported regrid_semantics={explicit!r} for variable {name!r}."
+                )
+            kind = explicit_map[explicit]
+            support = self._property_mean_density_support_name(name) if kind == 'weighted_mean' else None
+            return {'kind': kind, 'support_variable': support, 'classification_source': 'regrid_semantics',
+                    'mass_conservation_claim': kind in {'extensive', 'count'}}
+
+        if lname.startswith('property_mean'):
+            support = self._property_mean_density_support_name(name)
+            if support not in ds.data_vars:
+                raise ValueError(
+                    f"Weighted property variable {name!r} requires matching density support {support!r}."
+                )
+            return {
+                'kind': 'weighted_mean', 'support_variable': support,
+                'classification_source': 'property_mean naming contract',
+                'mass_conservation_claim': False,
+            }
+
+        if lname.startswith('density'):
+            return {
+                'kind': 'count', 'support_variable': None,
+                'classification_source': 'density naming contract',
+                'mass_conservation_claim': True,
+            }
+
+        if lname.startswith('concentration'):
+            # Current write_netcdf_chemical_density_map first accumulates extensive particle
+            # weight, then divides water-like species by cell water volume and sediment-like
+            # species by dry sediment mass before writing concentration*.  Therefore the
+            # written concentration field is intensive even when ds.weight_mode='extensive'.
+            units = ' '.join(str(attrs.get(k, '')) for k in (
+                'units', 'units_water', 'units_sediment',
+                'source_units', 'source_units_water', 'source_units_sediment'))
+            return {
+                'kind': 'intensive', 'support_variable': None,
+                'classification_source': (
+                    'current concentration writer contract (volume/dry-mass normalized)'
+                    if str(getattr(ds, 'attrs', {}).get('weight_mode', '')).lower() == 'extensive'
+                    or attrs.get('units_water') or attrs.get('units_sediment')
+                    else 'concentration naming fallback'
+                ),
+                'physical_units': units.strip(),
+                'mass_conservation_claim': False,
+                'conservation_note': (
+                    'Area-overlap averaging preserves concentration semantics only. '
+                    'A mass-conservation claim would require compatible water-volume or dry-sediment-mass support.'
+                ),
+            }
+
+        if lname in {'topo', 'bathymetry', 'sea_floor_depth', 'depth'} or 'bathym' in lname:
+            return {
+                'kind': 'topography', 'support_variable': None,
+                'classification_source': 'topography naming contract',
+                'mass_conservation_claim': False,
+            }
+        if lname in {'land', 'domain_invalid', 'mask', 'landmask'} or lname.endswith('_mask'):
+            return {
+                'kind': 'categorical', 'support_variable': None,
+                'classification_source': 'mask naming contract',
+                'mass_conservation_claim': False,
+            }
+
+        raise ValueError(
+            f"Variable {name!r} has no safe regrid semantic classification. "
+            "Set variable.attrs['regrid_semantics'] explicitly."
+        )
+
+    @staticmethod
+    def _remap_overlap_chunk(values_xy, overlap_chunk, overlap_plan, kind, *, support_values_xy=None,
+                             categorical_threshold=0.5):
+        """Apply one semantic remap kernel to a persisted overlap chunk."""
+        values = np.asarray(values_xy)
+        if values.ndim != 2:
+            raise ValueError('values_xy must be a 2-D geometry-aligned source slab.')
+        src_values = values.reshape(-1, order='C')
+        sidx = np.asarray(overlap_chunk['source_index'], dtype=np.int64)
+        tidx = np.asarray(overlap_chunk['target_local_index'], dtype=np.int64)
+        overlap = np.asarray(overlap_chunk['overlap_area_m2'], dtype=np.float64)
+        rows = int(overlap_chunk['row_end']) - int(overlap_chunk['row_start'])
+        nlon = int(overlap_chunk.get('nlon', overlap_chunk['covered_area_m2'].shape[1]))
+        ntarget = rows * nlon
+        if sidx.shape != tidx.shape or sidx.shape != overlap.shape:
+            raise ValueError('Overlap chunk arrays are inconsistent.')
+        if sidx.size and int(np.max(sidx)) >= src_values.size:
+            raise ValueError('Overlap plan references source values outside the source slab.')
+        kind = str(kind)
+
+        if kind in {'count', 'extensive'}:
+            source_area = np.asarray(overlap_plan['source_remap_area_flat'], dtype=np.float64)
+            valid = np.isfinite(src_values[sidx]) & np.isfinite(source_area[sidx]) & (source_area[sidx] > 0)
+            out = np.zeros(ntarget, dtype=np.float64)
+            valid_area = np.zeros(ntarget, dtype=np.float64)
+            if np.any(valid):
+                contrib = src_values[sidx[valid]] * overlap[valid] / source_area[sidx[valid]]
+                np.add.at(out, tidx[valid], contrib)
+                np.add.at(valid_area, tidx[valid], overlap[valid])
+            out[valid_area <= 0] = np.nan
+            return out.reshape((rows, nlon))
+
+        if kind in {'intensive', 'topography'}:
+            valid = np.isfinite(src_values[sidx])
+            numerator = np.zeros(ntarget, dtype=np.float64)
+            denominator = np.zeros(ntarget, dtype=np.float64)
+            if np.any(valid):
+                np.add.at(numerator, tidx[valid], src_values[sidx[valid]] * overlap[valid])
+                np.add.at(denominator, tidx[valid], overlap[valid])
+            out = np.full(ntarget, np.nan, dtype=np.float64)
+            np.divide(numerator, denominator, out=out, where=denominator > 0)
+            return out.reshape((rows, nlon))
+
+        if kind == 'weighted_mean':
+            if support_values_xy is None:
+                raise ValueError('weighted_mean remapping requires support_values_xy.')
+            support = np.asarray(support_values_xy).reshape(-1, order='C')
+            if support.size != src_values.size:
+                raise ValueError('weighted-mean support shape does not match source values.')
+            source_area = np.asarray(overlap_plan['source_remap_area_flat'], dtype=np.float64)
+            valid = (
+                np.isfinite(src_values[sidx]) & np.isfinite(support[sidx])
+                & np.isfinite(source_area[sidx]) & (source_area[sidx] > 0)
+                & (support[sidx] >= 0)
+            )
+            numerator = np.zeros(ntarget, dtype=np.float64)
+            denominator = np.zeros(ntarget, dtype=np.float64)
+            if np.any(valid):
+                frac = overlap[valid] / source_area[sidx[valid]]
+                weights = support[sidx[valid]] * frac
+                np.add.at(numerator, tidx[valid], src_values[sidx[valid]] * weights)
+                np.add.at(denominator, tidx[valid], weights)
+            out = np.full(ntarget, np.nan, dtype=np.float64)
+            np.divide(numerator, denominator, out=out, where=denominator > 0)
+            return out.reshape((rows, nlon))
+
+        if kind == 'categorical':
+            valid = np.isfinite(src_values[sidx])
+            true_area = np.zeros(ntarget, dtype=np.float64)
+            valid_area = np.zeros(ntarget, dtype=np.float64)
+            if np.any(valid):
+                np.add.at(true_area, tidx[valid], (src_values[sidx[valid]] != 0).astype(np.float64) * overlap[valid])
+                np.add.at(valid_area, tidx[valid], overlap[valid])
+            out = np.full(ntarget, np.nan, dtype=np.float64)
+            frac = np.zeros(ntarget, dtype=np.float64)
+            np.divide(true_area, valid_area, out=frac, where=valid_area > 0)
+            out[valid_area > 0] = (frac[valid_area > 0] >= float(categorical_threshold)).astype(np.float64)
+            return out.reshape((rows, nlon))
+
+        raise ValueError(f'Unsupported regrid remap kind: {kind!r}')
+
+    def _remap_regrid_mask_chunk(self, name, values_xy, overlap_chunk, overlap_plan, *,
+                                 categorical_threshold=0.5,
+                                 domain_valid_coverage_threshold=0.999999):
+        """Apply explicit categorical/domain-invalid policies."""
+        lname = str(name).lower()
+        if lname == 'domain_invalid':
+            coverage = np.asarray(overlap_chunk['coverage_fraction'], dtype=np.float64)
+            return (coverage < float(domain_valid_coverage_threshold)).astype(np.float64)
+        return self._remap_overlap_chunk(
+            values_xy, overlap_chunk, overlap_plan, 'categorical',
+            categorical_threshold=categorical_threshold,
+        )
+
+    def _get_regrid_weighted_support_slab(self, ds, property_name, property_layout,
+                                          slab_indexer, source_desc):
+        """Load the matching density/count slab for one property_mean slab."""
+        support_name = self._property_mean_density_support_name(property_name)
+        if support_name not in ds.data_vars:
+            raise ValueError(
+                f"Weighted property variable {property_name!r} requires support variable {support_name!r}."
+            )
+        support_layout = self._regrid_variable_layout(ds[support_name], source_desc)
+        if support_layout['nonhorizontal_dims'] != property_layout['nonhorizontal_dims']:
+            raise ValueError(
+                f"Weighted support {support_name!r} dimensions {support_layout['nonhorizontal_dims']} do not match "
+                f"{property_name!r} dimensions {property_layout['nonhorizontal_dims']}."
+            )
+        aligned = support_layout['aligned']
+        if slab_indexer:
+            aligned = aligned.isel({k: int(v) for k, v in slab_indexer.items()})
+        slab = np.asarray(aligned.values)
+        if slab.shape != tuple(source_desc['shape']):
+            raise ValueError('Weighted support slab is not aligned with source geometry.')
+        return support_name, slab
+
+    def _validate_regrid_metadata_references(self, dataset_or_filename):
+        """Mechanically reject dangling CF/support references in a regrid result."""
+        import xarray as xr
+
+        opened_here = isinstance(dataset_or_filename, (str, bytes))
+        ds = xr.open_dataset(dataset_or_filename, decode_coords=False) if opened_here else dataset_or_filename
+        try:
+            errors = []
+            forbidden_vars = {'mesh', 'face_node_connectivity', 'node_lon', 'node_lat', 'node_x', 'node_y', 'face_lon', 'face_lat', 'face_x', 'face_y'}
+            present_forbidden = sorted(forbidden_vars.intersection(ds.variables))
+            if present_forbidden:
+                errors.append(f'UGRID/source-mesh variables leaked into regular target: {present_forbidden}')
+            forbidden_dims = sorted({'face', 'node', 'nmax_face_nodes'}.intersection(ds.dims))
+            if forbidden_dims:
+                errors.append(f'UGRID/source-mesh dimensions leaked into regular target: {forbidden_dims}')
+            if 'crs' not in ds.variables:
+                errors.append("Missing target 'crs' variable.")
+            for name, var in ds.variables.items():
+                attrs = dict(var.attrs)
+                gm = attrs.get('grid_mapping')
+                if gm and str(gm) not in ds.variables:
+                    errors.append(f'{name}: dangling grid_mapping={gm!r}')
+                coords = attrs.get('coordinates')
+                if coords:
+                    for token in str(coords).split():
+                        if token not in ds.variables and token not in ds.coords:
+                            errors.append(f'{name}: dangling coordinates token {token!r}')
+                bounds = attrs.get('bounds')
+                if bounds and str(bounds) not in ds.variables:
+                    errors.append(f'{name}: dangling bounds={bounds!r}')
+                mesh = attrs.get('mesh')
+                if mesh:
+                    errors.append(f'{name}: mesh reference is invalid on a regular geographic target')
+                phase_by = attrs.get('phase_units_by')
+                if phase_by and str(phase_by) not in ds.variables:
+                    errors.append(f'{name}: dangling phase_units_by={phase_by!r}')
+            if 'specie_phase' in ds.variables and 'specie' in ds.dims:
+                if ds['specie_phase'].sizes.get('specie') != ds.sizes['specie']:
+                    errors.append('specie_phase length does not match specie dimension.')
+            if errors:
+                raise ValueError('Invalid regrid metadata references: ' + '; '.join(errors))
+            return True
+        finally:
+            if opened_here:
+                ds.close()
+
+    def interp_weights(self, xyz, uvw):
+        """Compatibility helper for 2-D barycentric interpolation.
+
+        Points outside the Delaunay hull receive NaN weights.  The legacy implementation
+        indexed simplex ``-1`` and could therefore return plausible but incorrect finite
+        extrapolations.  Production regrid_conc no longer uses this helper for conservative
+        cell remapping.
         """
         import scipy.spatial as sp
 
+        xyz = np.asarray(xyz, dtype=np.float64)
+        uvw = np.asarray(uvw, dtype=np.float64)
+        if xyz.ndim != 2 or xyz.shape[1] != 2 or uvw.ndim != 2 or uvw.shape[1] != 2:
+            raise ValueError('interp_weights expects xyz and uvw with shape (N, 2).')
         tri = sp.Delaunay(xyz)
         simplex = tri.find_simplex(uvw)
-        vertices = np.take(tri.simplices, simplex, axis=0)
-        temp = np.take(tri.transform, simplex, axis=0)
-        d=2                                               ## CHECK
-        delta = uvw - temp[:, d]
-        bary = np.einsum('njk,nk->nj', temp[:, :d, :], delta)
-        return vertices, np.hstack((bary, 1 - bary.sum(axis=1, keepdims=True)))
+        valid = simplex >= 0
+        vertices = np.zeros((uvw.shape[0], 3), dtype=np.int64)
+        weights = np.full((uvw.shape[0], 3), np.nan, dtype=np.float64)
+        if np.any(valid):
+            sv = simplex[valid]
+            vertices[valid] = np.take(tri.simplices, sv, axis=0)
+            temp = np.take(tri.transform, sv, axis=0)
+            delta = uvw[valid] - temp[:, 2]
+            bary = np.einsum('njk,nk->nj', temp[:, :2, :], delta)
+            weights[valid] = np.hstack((bary, 1.0 - bary.sum(axis=1, keepdims=True)))
+        return vertices, weights
 
     def interpolate_regrid(self, values, vtx, wts):
-        """
-        Interpolate the value of each concentration gridpoint within regrid_conc function
-        """
-        return np.einsum('nj,nj->n', np.take(values, vtx), wts)
+        """Apply compatibility barycentric weights, preserving invalid targets as NaN."""
+        values = np.asarray(values)
+        vtx = np.asarray(vtx, dtype=np.int64)
+        wts = np.asarray(wts, dtype=np.float64)
+        if vtx.shape != wts.shape or vtx.ndim != 2:
+            raise ValueError('vtx and wts must have the same 2-D shape.')
+        out = np.full(vtx.shape[0], np.nan, dtype=np.result_type(values.dtype, np.float64))
+        valid = np.all(np.isfinite(wts), axis=1)
+        if np.any(valid):
+            out[valid] = np.einsum('nj,nj->n', np.take(values, vtx[valid]), wts[valid])
+        return out
 
     def regrid_dataarray(self,
                          mode,
@@ -12871,481 +14282,1366 @@ class ChemicalDriftPostProcessMixin:
 
         return regridded_data, vtx, wts
 
-    def regrid_conc(self, filename, filename_regridded, latmin, latmax, latstep, lonmin, lonmax, lonstep, mode = None,
-                    variables = None, concfile = None,
-                    lon_2d_ncdm = None, lat_2d_ncdm = None):
-        """
-        Interpolate "write_netcdf_chemical_density_map" or "calculate_water_sediment_conc" output to regular lat/lon grid
-            filename:               string, path or filename of "write_netcdf_chemical_density_map" output file to be regridded
-            filename_regridded:     string, path or filename of regridded output
-            latmin:                 float 32, min latitude of new grid
-            latmax:                 float 32, max latitude of new grid
-            latstep:                float 32, latitude resolution of new grid, in degrees
-            lonmin:                 float 32, min longitude of new grid
-            lonmax:                 float 32, max longitude of new grid
-            lonstep:                float 32 longitude resolution of new grid, in degrees
-            variables:              list, list of variables' name to be regridded within DataSet
-            concfile:               xarray Dataset of "write_netcdf_chemical_density_map" or
-                                    "calculate_water_sediment_conc" output file to be regridded
-            lon_2d_ncdm:            array of float 64, flattened array of ds['lon'].values.flatten() from ncdm
-            lat_2d_ncdm:            array of float 64, flattened array of ds['lat'].values.flatten() from ncdm
-        """
-        import numpy as np
-        import xarray as xr
-        from datetime import datetime as dt
+    def regrid_conc(self, filename, filename_regridded, latmin, latmax, latstep, lonmin, lonmax, lonstep, mode=None,
+                    variables=None, concfile=None,
+                    lon_2d_ncdm=None, lat_2d_ncdm=None,
+                    memory_budget_mb='auto', memory_auto_fraction=0.50,
+                    memory_auto_reserve_mb=1024, memory_auto_reserve_fraction=0.20,
+                    categorical_threshold=0.5,
+                    domain_valid_coverage_threshold=0.999999,
+                    validate_metadata=True):
+        """Regrid a supported structured ChemicalDrift product to regular latitude/longitude.
 
-        if ((concfile is None) and (filename is not None)):
-            print("Loading concentration file from filename")
+        Accepted source topologies are regular/curvilinear geographic and
+        regular/curvilinear projected structured grids.  Triangular/unstructured meshes
+        are intentionally rejected.  The target uses constant angular spacing with
+        ``latmin/lonmin`` as first centers and ``latmax/lonmax`` as exclusive center limits.
+
+        Spatial semantics are quantity-aware: density/count fields use conservative
+        equal-area overlap fractions; current concentration fields use overlap-weighted
+        intensive averaging; property_mean fields remap count-weighted numerator and
+        denominator; topography is continuous and categorical masks use area coverage.
+
+        ``mode``, ``lon_2d_ncdm`` and ``lat_2d_ncdm`` are retained only for call
+        compatibility.  Current files are interpreted from their own coordinate/CRS
+        metadata and do not require those legacy arguments.
+        """
+        import os
+        import tempfile
+        import xarray as xr
+
+        if filename_regridded is None:
+            raise ValueError('filename_regridded is required.')
+        if concfile is None and filename is None:
+            raise ValueError('Provide either filename or concfile.')
+        if concfile is not None and not hasattr(concfile, 'data_vars'):
+            raise TypeError('concfile must be an xarray.Dataset when supplied.')
+        if mode not in (None, 'chemical_density_map', 'wat_sed_map'):
+            raise ValueError("mode is deprecated and, when supplied, must be 'chemical_density_map' or 'wat_sed_map'.")
+
+        ds_opened_here = False
+        if concfile is None:
+            # Do not call .load(): backend arrays remain lazy and individual horizontal slabs
+            # are read only when _iter_regrid_slabs requests them.
             ds = xr.open_dataset(filename)
+            ds_opened_here = True
         else:
             ds = concfile
 
-        ds.load()
-        start=dt.now()
-        variable_ls = ['concentration', 'concentration_avg',
-                       'concentration_smooth', 'concentration_smooth_avg',
-                       'concentration_avg_sediments', 'concentration_avg_sediments',
-                       'density', 'density_avg', 'topo']
+        output_tmp = None
+        nc = None
+        try:
+            source_desc = self._normalize_regrid_structured_source(ds)
+            target_grid = self._build_regrid_target_grid(
+                latmin, latmax, latstep, lonmin, lonmax, lonstep
+            )
 
-        if variables is not None:
-            variable_ls = variables
+            # Preserve the legacy no-extrapolation intent, but compare target centers with
+            # source cell-domain bounds rather than source center extrema.
+            sb = source_desc['bbox_lonlat']
+            if (
+                float(target_grid['latitude'][0]) < float(sb[1]) - 1e-10
+                or float(target_grid['latitude'][-1]) > float(sb[3]) + 1e-10
+                or float(target_grid['longitude'][0]) < float(sb[0]) - 1e-10
+                or float(target_grid['longitude'][-1]) > float(sb[2]) + 1e-10
+            ):
+                raise ValueError(
+                    'Regrid target centers extend outside the supported source cell-domain bounds: '
+                    f'source_bbox={sb}, target_center_bbox='
+                    f'({target_grid["longitude"][0]}, {target_grid["latitude"][0]}, '
+                    f'{target_grid["longitude"][-1]}, {target_grid["latitude"][-1]}).'
+                )
 
-        if mode is None:
-            # Define if output of "write_netcdf_chemical_density_map" or
-            # of "calculate_water_sediment_conc" was given as input
-            if "latitude" not in ds.dims:
-                mode = "chemical_density_map"
-                lat_name = "lat"
-                lon_name = "lon"
-            else:
-                mode = "wat_sed_map"
-                lat_name = "latitude"
-                lon_name = "longitude"
-                if ((lon_2d_ncdm is None) or (lat_2d_ncdm is None)):
-                    raise ValueError("lat/lon_2d_ncdm unspecified")
-        print(f"mode: {mode}, variables: {variable_ls}")
+            variable_names, layouts = self._discover_regrid_variables(ds, source_desc, variables)
+            classifications = {
+                name: self._classify_regrid_variable(name, ds[name], ds)
+                for name in variable_names
+            }
 
-        if (latmin < min(ds[lat_name].values.flatten()) or latmax > max(ds[lat_name].values.flatten())\
-        or lonmin < min(ds[lon_name].values.flatten()) or lonmax > max(ds[lon_name].values.flatten())):
-            if latmin < min(ds[lat_name].values.flatten()):
-                print(f"latmin ({latmin}) is not in range, should not be lower than: {min(ds[lat_name].values.flatten())}")
-            if latmax > max(ds[lat_name].values.flatten()):
-                print(f"latmax ({latmax}) is not in range, should not be higher than: {max(ds[lat_name].values.flatten())}")
-            if lonmin < min(ds[lon_name].values.flatten()):
-                print(f"lonmin ({lonmin}) is not in range: should not be lower than: {min(ds[lon_name].values.flatten())}")
-            if lonmax > max(ds[lon_name].values.flatten()):
-                print(f"lonmax ({lonmax}) is not in range, should not be higher than: {max(ds[lon_name].values.flatten())}")
+            resolved_budget_mb, budget_report = self._resolve_regrid_memory_budget(
+                memory_budget_mb,
+                memory_auto_fraction=memory_auto_fraction,
+                memory_auto_reserve_mb=memory_auto_reserve_mb,
+                memory_auto_reserve_fraction=memory_auto_reserve_fraction,
+            )
+            max_itemsize = max([np.dtype(ds[name].dtype).itemsize for name in variable_names] + [8])
+            row_chunk, working_estimate = self._plan_regrid_target_row_chunk(
+                source_desc, target_grid, resolved_budget_mb,
+                source_value_itemsize=max_itemsize,
+            )
 
-            raise ValueError("Regrid coordinates out of bounds from input file range")
-        else:
-            pass
+            out_dir = os.path.dirname(os.path.abspath(filename_regridded)) or '.'
+            os.makedirs(out_dir, exist_ok=True)
+            fd, output_tmp = tempfile.mkstemp(prefix='.regrid_conc_', suffix='.nc', dir=out_dir)
+            os.close(fd)
+            os.unlink(output_tmp)  # low-level NetCDF writer creates the file itself.
 
-        if "time" in ds.dims:
-            time_name = "time"
-        else:
-            time_name = "avg_time"
+            with tempfile.TemporaryDirectory(prefix='regrid_conc_plan_') as plan_dir:
+                overlap_plan = self._build_overlap_plan(
+                    source_desc, target_grid, row_chunk=row_chunk, plan_directory=plan_dir
+                )
 
-        new_lat_coords = np.arange(latmin,latmax,latstep)
-        new_lon_coords = np.arange(lonmin,lonmax,lonstep)
+                nc, backend = self._initialize_regrid_output_file(
+                    output_tmp, ds, target_grid, layouts
+                )
+                self._copy_regrid_support_variables(nc, ds, layouts)
+                self._apply_regrid_global_metadata(
+                    nc, ds, source_desc, target_grid, overlap_plan=overlap_plan
+                )
 
-        # define new grid of latitude and longitude
-        new_lat, new_lon = np.meshgrid(new_lat_coords, new_lon_coords)
+                out_vars = {}
+                for name in variable_names:
+                    out_var = self._create_regrid_output_variable(nc, name, ds[name], layouts[name])
+                    self._apply_regrid_variable_metadata(
+                        out_var, ds[name], classifications[name], source_desc, target_grid
+                    )
+                    out_vars[name] = out_var
 
-        # create 2D array of (y*x,) coordinates from the 2D (y,x) lat-lon grid
-        if mode == "chemical_density_map":
-            lon_2d = ds[lon_name].values.flatten()
-            lat_2d = ds[lat_name].values.flatten()
-        else:
-            lat_2d = lat_2d_ncdm
-            lon_2d = lon_2d_ncdm
+                # Optional diagnostic coverage is target-only support metadata, not a source-grid copy.
+                coverage_var = nc.createVariable('regrid_coverage_fraction', 'f4', ('latitude', 'longitude'))
+                coverage_var.long_name = 'Fraction of target cell covered by valid source grid area'
+                coverage_var.units = '1'; coverage_var.coordinates = 'latitude longitude'; coverage_var.grid_mapping = 'crs'
+                for chunk_info in overlap_plan['chunks']:
+                    ch = self._load_overlap_plan_chunk(chunk_info)
+                    coverage_var[ch['row_start']:ch['row_end'], :] = ch['coverage_fraction'].astype(np.float32)
 
-        lonlat_2d = np.column_stack((lat_2d, lon_2d))
+                for name in variable_names:
+                    da = ds[name]
+                    layout = layouts[name]
+                    classification = classifications[name]
+                    kind = classification['kind']
+                    for slab_index, slab_indexer, source_slab in self._iter_regrid_slabs(da, source_desc):
+                        support_slab = None
+                        if kind == 'weighted_mean':
+                            _support_name, support_slab = self._get_regrid_weighted_support_slab(
+                                ds, name, layout, slab_indexer, source_desc
+                            )
+                        for chunk_info in overlap_plan['chunks']:
+                            ch = self._load_overlap_plan_chunk(chunk_info)
+                            if kind == 'categorical':
+                                target_chunk = self._remap_regrid_mask_chunk(
+                                    name, source_slab, ch, overlap_plan,
+                                    categorical_threshold=categorical_threshold,
+                                    domain_valid_coverage_threshold=domain_valid_coverage_threshold,
+                                )
+                            else:
+                                target_chunk = self._remap_overlap_chunk(
+                                    source_slab, ch, overlap_plan, kind,
+                                    support_values_xy=support_slab,
+                                    categorical_threshold=categorical_threshold,
+                                )
+                            self._write_regrid_output_chunk(
+                                out_vars[name], slab_index,
+                                ch['row_start'], ch['row_end'], target_chunk
+                            )
 
-        # create 2D array of the new coordinates
-        lonlat_2d_new=np.column_stack((new_lat.flatten(),new_lon.flatten()))
+                nc.close(); nc = None
 
-        regridded_vars_dict = {}
-        for variable in variable_ls:
-            if (variable in ds.data_vars) and (variable != 'topo'):
-                print(variable)
-                ds_attrs = ds[variable].attrs
-                for key in ["lon_resol", "lat_resol", "grid_mapping"]:
-                    ds_attrs.pop(key, None)
+                self._last_regrid_memory_report = {
+                    **dict(budget_report),
+                    'resolved_budget_mb': resolved_budget_mb,
+                    'target_row_chunk': int(row_chunk),
+                    'working_set_estimate': working_estimate,
+                    'source_shape': tuple(int(v) for v in source_desc['shape']),
+                    'target_shape': tuple(int(v) for v in target_grid['shape']),
+                    'overlap_records': int(overlap_plan['total_records']),
+                    'backend': backend,
+                }
 
-                regridded_variable, vtx, wts = self.regrid_dataarray(mode = mode,
-                                                         ds = ds,
-                                                         variable = variable,
-                                                         new_lat = new_lat, new_lon = new_lon,
-                                                         lonlat_2d = lonlat_2d,
-                                                         lonlat_2d_new = lonlat_2d_new,
-                                                         new_lon_coords = new_lon_coords,
-                                                         new_lat_coords = new_lat_coords,
-                                                         time_name = time_name)
-
-                regridded_variable.name = variable
-                regridded_variable.attrs['grid_mapping'] = "+proj=longlat +datum=WGS84 +no_defs"
-                regridded_variable.attrs.update(ds_attrs)
-                regridded_variable.attrs['lon_resol'] = str(np.around(abs(new_lon[0][0]-new_lon[1][0]), decimals = 8)) + " degrees E"
-                regridded_variable.attrs['lat_resol'] = str(np.around(abs(new_lat[0][0]-new_lat[0][1]), decimals = 8)) + " degrees N"
-                # change negative values to 0
-                regridded_variable =  regridded_variable.clip(min = 0)
-                regridded_vars_dict[variable] = regridded_variable
-
-        if "topo" in list(ds.keys()):
-            topo_attrs = ds["topo"].attrs
-            for key in ["lon_resol", "lat_resol", "grid_mapping"]:
-                topo_attrs.pop(key, None)
-
-            regridded_topo_data = np.zeros((new_lat.shape[1], new_lon.shape[0]))
-            # regrid topography
-            points = ds.topo[:,:].values.reshape(-1)
-
-            # interpolate the concentration data onto the new grid using griddata
-            new_topo_2d = self.interpolate_regrid(points, vtx, wts)
-            # store the interpolated data in the regridded_topo array
-            regridded_topo_data = np.transpose(np.reshape(new_topo_2d,(len(new_lon_coords),len(new_lat_coords))))
-
-            # create a new xarray dataarray with the topography regridded data
-            regridded_topo = xr.DataArray(regridded_topo_data, coords=[new_lat_coords, new_lon_coords], dims=['latitude', 'longitude'])
-
-            regridded_topo.name = "topo"
-            regridded_topo.attrs['grid_mapping'] = "+proj=longlat +datum=WGS84 +no_defs"
-            regridded_topo.attrs.update(topo_attrs)
-            regridded_topo.attrs['lon_resol'] = str(np.around(abs(new_lon[0][0]-new_lon[1][0]), decimals = 8)) + " degrees E"
-            regridded_topo.attrs['lat_resol'] = str(np.around(abs(new_lat[0][0]-new_lat[0][1]), decimals = 8)) + " degrees N"
-            # change negative topography values to np.nan
-            regridded_topo = xr.where(regridded_topo < 0, np.nan, regridded_topo)
-            regridded_topo['latitude'] = regridded_topo['latitude'].assign_attrs(standard_name='latitude')
-            regridded_topo['latitude'] = regridded_topo['latitude'].assign_attrs(long_name='latitude')
-            regridded_topo['latitude'] = regridded_topo['latitude'].assign_attrs(units='degrees_north')
-            regridded_topo['latitude'] = regridded_topo['latitude'].assign_attrs(axis='Y')
-
-            regridded_topo['longitude'] = regridded_topo['longitude'].assign_attrs(standard_name='longitude')
-            regridded_topo['longitude'] = regridded_topo['longitude'].assign_attrs(long_name='longitude')
-            regridded_topo['longitude'] = regridded_topo['longitude'].assign_attrs(units='degrees_east')
-            regridded_topo['longitude'] = regridded_topo['longitude'].assign_attrs(axis='X')
-            regridded_vars_dict['topo'] = regridded_topo
-
-        print(f"Time elapsed (hr:min:sec): {dt.now()-start}")
-        print("Saving to netcdf")
-        # save regridded data
-        regridded_dataset = xr.Dataset(regridded_vars_dict)
-        regridded_dataset.to_netcdf(filename_regridded)
-
-        print(f"Time elapsed (hr:min:sec): {dt.now()-start}")
+            if validate_metadata:
+                self._validate_regrid_metadata_references(output_tmp)
+            os.replace(output_tmp, filename_regridded)
+            output_tmp = None
+            return None
+        finally:
+            if nc is not None:
+                try:
+                    nc.close()
+                except Exception:
+                    pass
+            if output_tmp is not None and os.path.exists(output_tmp):
+                try:
+                    os.remove(output_tmp)
+                except Exception:
+                    pass
+            if ds_opened_here:
+                ds.close()
 
     @staticmethod
-    def _save_masked_DataArray(DataArray_masked,
-                              file_output_path,
-                              file_output_name):
-        import os
+    def _masked_metadata_values_equal(left, right):
+        import numpy as np
+
+        if left is right:
+            return True
+        try:
+            a = np.asarray(left)
+            b = np.asarray(right)
+            if a.shape != b.shape:
+                return False
+            if a.size == 1 and b.size == 1:
+                av = a.reshape(()).item()
+                bv = b.reshape(()).item()
+                try:
+                    if bool(np.isnan(av)) and bool(np.isnan(bv)):
+                        return True
+                except (TypeError, ValueError):
+                    pass
+            try:
+                return bool(np.array_equal(a, b, equal_nan=True))
+            except TypeError:
+                return bool(np.array_equal(a, b))
+        except Exception:
+            try:
+                return bool(left == right)
+            except Exception:
+                return False
+
+    @staticmethod
+    def _masked_metadata_copy(obj):
+        """Copy xarray metadata dictionaries without copying payload buffers."""
+        import xarray as xr
+
+        copied = obj.copy(deep=False)
+        copied.attrs = dict(obj.attrs)
+        copied.encoding = dict(getattr(obj, 'encoding', {}) or {})
+        if isinstance(copied, xr.Dataset):
+            for var_name in copied.variables:
+                copied[var_name].attrs = dict(obj[var_name].attrs)
+                copied[var_name].encoding = dict(obj[var_name].encoding)
+        else:
+            copied.encoding = dict(obj.encoding)
+            for coord_name in copied.coords:
+                copied.coords[coord_name].attrs = dict(obj.coords[coord_name].attrs)
+                copied.coords[coord_name].encoding = dict(obj.coords[coord_name].encoding)
+        return copied
+
+    @staticmethod
+    def _masked_storage_dtype(var):
+        import numpy as np
+
+        encoded = var.encoding.get('dtype')
+        if encoded is None:
+            return np.dtype(var.dtype)
+        try:
+            return np.dtype(encoded)
+        except Exception as exc:
+            raise ValueError(f"Invalid encoded dtype {encoded!r} for variable {var.name!r}") from exc
+
+    @classmethod
+    def _validate_masked_fill_value(cls, var_name, var, fill_value):
+        """Return a representable scalar fill value or raise before serialization."""
+        import numpy as np
+
+        if fill_value is None:
+            return None
+        arr = np.asarray(fill_value)
+        if arr.size != 1:
+            raise ValueError(f"_FillValue for {var_name!r} must be scalar")
+        value = arr.reshape(()).item()
+        dtype = cls._masked_storage_dtype(var)
+        kind = dtype.kind
+
+        if kind in {'i', 'u'}:
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"_FillValue {value!r} is not numeric for integer variable {var_name!r}"
+                ) from exc
+            if not np.isfinite(numeric) or not numeric.is_integer():
+                raise ValueError(
+                    f"_FillValue {value!r} is not a finite integer for {var_name!r} ({dtype})"
+                )
+            info = np.iinfo(dtype)
+            if numeric < info.min or numeric > info.max:
+                raise ValueError(
+                    f"_FillValue {value!r} is outside {dtype} range for {var_name!r}"
+                )
+            return dtype.type(int(numeric)).item()
+
+        if kind == 'b':
+            if value not in (False, True, 0, 1):
+                raise ValueError(f"_FillValue {value!r} is invalid for boolean variable {var_name!r}")
+            return bool(value)
+
+        if kind in {'f', 'c'}:
+            try:
+                return dtype.type(value).item()
+            except Exception as exc:
+                raise ValueError(
+                    f"_FillValue {value!r} cannot be represented by {dtype} for {var_name!r}"
+                ) from exc
+
+        # String/object encodings are backend-specific.  Keep the scalar value but do
+        # not invent or coerce a sentinel here.
+        return value
+
+    @classmethod
+    def _canonicalize_masked_fill_values(cls, obj):
+        """Move `_FillValue` to encoding on a write copy and validate dtype safety."""
+        import xarray as xr
+
+        variables = obj.variables.items() if isinstance(obj, xr.Dataset) else [(obj.name or 'data', obj)]
+        processed = set()
+        for var_name, var in variables:
+            processed.add(id(var.variable if hasattr(var, 'variable') else var))
+            attrs = dict(var.attrs)
+            encoding = dict(var.encoding)
+            has_attr = '_FillValue' in attrs
+            has_enc = '_FillValue' in encoding
+            if not has_attr and not has_enc:
+                continue
+            if has_attr and has_enc and not cls._masked_metadata_values_equal(attrs['_FillValue'], encoding['_FillValue']):
+                raise ValueError(
+                    f"Conflicting _FillValue metadata for {var_name!r}: "
+                    f"attrs={attrs['_FillValue']!r}, encoding={encoding['_FillValue']!r}"
+                )
+            fill = encoding['_FillValue'] if has_enc else attrs['_FillValue']
+            fill = cls._validate_masked_fill_value(var_name, var, fill)
+            attrs.pop('_FillValue', None)
+            encoding['_FillValue'] = fill
+            var.attrs = attrs
+            var.encoding = encoding
+
+        # DataArray coordinates are not included above.
+        if isinstance(obj, xr.DataArray):
+            for coord_name, coord in obj.coords.items():
+                attrs = dict(coord.attrs)
+                encoding = dict(coord.encoding)
+                has_attr = '_FillValue' in attrs
+                has_enc = '_FillValue' in encoding
+                if not has_attr and not has_enc:
+                    continue
+                if has_attr and has_enc and not cls._masked_metadata_values_equal(attrs['_FillValue'], encoding['_FillValue']):
+                    raise ValueError(
+                        f"Conflicting _FillValue metadata for coordinate {coord_name!r}"
+                    )
+                fill = encoding['_FillValue'] if has_enc else attrs['_FillValue']
+                fill = cls._validate_masked_fill_value(coord_name, coord, fill)
+                attrs.pop('_FillValue', None)
+                encoding['_FillValue'] = fill
+                coord.attrs = attrs
+                coord.encoding = encoding
+        return obj
+
+    @classmethod
+    def _canonicalize_masked_grid_mappings(cls, obj):
+        """Canonicalize valid grid_mapping references on a write copy."""
         import warnings
         import xarray as xr
 
-        if not os.path.exists(file_output_path):
-            os.makedirs(file_output_path)
-            print("file_output_path did not exist and was created")
-        print(f"Saving to {file_output_path}")
+        available = set(obj.variables) if isinstance(obj, xr.Dataset) else set(obj.coords)
 
-        full_output_path = os.path.join(file_output_path, file_output_name)
-
-        def _metadata_copy(obj):
-            copied = obj.copy(deep=False)
-            copied.attrs = dict(obj.attrs)
-            if isinstance(copied, xr.Dataset):
-                for var_name in copied.variables:
-                    copied[var_name].attrs = dict(obj[var_name].attrs)
-                    copied[var_name].encoding = dict(obj[var_name].encoding)
+        def _handle(var_name, var):
+            attrs = dict(var.attrs)
+            encoding = dict(var.encoding)
+            attr_value = attrs.get('grid_mapping')
+            enc_value = encoding.get('grid_mapping')
+            if attr_value and enc_value and attr_value != enc_value:
+                raise ValueError(
+                    f"Conflicting grid_mapping metadata for {var_name!r}: "
+                    f"attrs={attr_value!r}, encoding={enc_value!r}"
+                )
+            mapping = enc_value or attr_value
+            if not mapping:
+                return
+            if mapping not in available:
+                warnings.warn(
+                    f"Removing unresolved grid_mapping={mapping!r} from {var_name!r} "
+                    "on write copy; the caller object is unchanged.",
+                    RuntimeWarning,
+                    stacklevel=3,
+                )
+                attrs.pop('grid_mapping', None)
+                encoding.pop('grid_mapping', None)
             else:
-                copied.encoding = dict(obj.encoding)
-                for coord_name in copied.coords:
-                    copied.coords[coord_name].attrs = dict(obj.coords[coord_name].attrs)
-                    copied.coords[coord_name].encoding = dict(obj.coords[coord_name].encoding)
-            return copied
+                # xarray decodes CF grid_mapping into encoding.  Keep one authoritative
+                # copy there so serialization cannot collide with an attribute copy.
+                attrs.pop('grid_mapping', None)
+                encoding['grid_mapping'] = mapping
+            var.attrs = attrs
+            var.encoding = encoding
 
-        def _drop_unresolved_grid_mapping(obj):
-            if isinstance(obj, xr.DataArray):
-                attrs = dict(obj.attrs)
-                mapping_name = attrs.get("grid_mapping")
-                if mapping_name and mapping_name not in obj.coords:
-                    warnings.warn(
-                        f"Removing unresolved grid_mapping={mapping_name!r} from write copy; "
-                        "the caller object is unchanged.",
-                        RuntimeWarning,
-                        stacklevel=2,
-                    )
-                    attrs.pop("grid_mapping", None)
-                    obj.attrs = attrs
-            else:
-                global_attrs = dict(obj.attrs)
-                mapping_name = global_attrs.get("grid_mapping")
-                if mapping_name and mapping_name not in obj.variables:
-                    warnings.warn(
-                        f"Removing unresolved dataset grid_mapping={mapping_name!r} from write copy; "
-                        "the caller object is unchanged.",
-                        RuntimeWarning,
-                        stacklevel=2,
-                    )
-                    global_attrs.pop("grid_mapping", None)
-                    obj.attrs = global_attrs
-                for var_name in obj.data_vars:
-                    attrs = dict(obj[var_name].attrs)
-                    mapping_name = attrs.get("grid_mapping")
-                    if mapping_name and mapping_name not in obj.variables:
-                        warnings.warn(
-                            f"Removing unresolved grid_mapping={mapping_name!r} from variable "
-                            f"{var_name!r} on write copy; the caller object is unchanged.",
-                            RuntimeWarning,
-                            stacklevel=2,
-                        )
-                        attrs.pop("grid_mapping", None)
-                        obj[var_name].attrs = attrs
-            return obj
+        if isinstance(obj, xr.Dataset):
+            for var_name in obj.data_vars:
+                _handle(var_name, obj[var_name])
+            attrs = dict(obj.attrs)
+            global_mapping = attrs.get('grid_mapping')
+            if global_mapping and global_mapping not in available:
+                warnings.warn(
+                    f"Removing unresolved dataset grid_mapping={global_mapping!r} on write copy; "
+                    "the caller object is unchanged.",
+                    RuntimeWarning,
+                    stacklevel=3,
+                )
+                attrs.pop('grid_mapping', None)
+            obj.attrs = attrs
+        else:
+            _handle(obj.name or 'data', obj)
+        return obj
 
-        write_obj = _drop_unresolved_grid_mapping(_metadata_copy(DataArray_masked))
+    @classmethod
+    def _prepare_masked_netcdf_write_copy(cls, obj):
+        """Create and validate a shallow metadata-only NetCDF write copy."""
+        import xarray as xr
 
+        if not isinstance(obj, (xr.DataArray, xr.Dataset)):
+            raise TypeError("DataArray_masked must be an xarray DataArray or Dataset")
+        write_obj = cls._masked_metadata_copy(obj)
+        write_obj = cls._canonicalize_masked_grid_mappings(write_obj)
+        write_obj = cls._canonicalize_masked_fill_values(write_obj)
+        return write_obj
+
+    @classmethod
+    def _save_masked_DataArray(cls,
+                               DataArray_masked,
+                               file_output_path,
+                               file_output_name,
+                               to_netcdf_kwargs=None):
+        """Serialize a masked xarray object through a validated atomic write."""
+        import os
+        import tempfile
+
+        if file_output_path is None or file_output_name is None:
+            raise ValueError("file_output_path and file_output_name are required")
+        output_dir = os.fspath(file_output_path)
+        output_name = os.fspath(file_output_name)
+        if not output_name:
+            raise ValueError("file_output_name must not be empty")
+        os.makedirs(output_dir, exist_ok=True)
+        full_output_path = os.path.join(output_dir, output_name)
+
+        kwargs = cls._mask_kwargs_dict(to_netcdf_kwargs, 'to_netcdf_kwargs')
+        if 'path' in kwargs:
+            raise ValueError("to_netcdf_kwargs must not contain 'path'")
+        if kwargs.get('mode', 'w') != 'w':
+            raise ValueError("Atomic masked NetCDF writes require mode='w'")
+        if kwargs.get('compute', True) is False:
+            raise ValueError("Atomic masked NetCDF writes require compute=True")
+
+        # Metadata/fill validation is complete before the final target is opened.
+        write_obj = cls._prepare_masked_netcdf_write_copy(DataArray_masked)
+
+        stem, ext = os.path.splitext(os.path.basename(output_name))
+        suffix = f".tmp{ext or '.nc'}"
+        fd, temp_path = tempfile.mkstemp(
+            prefix=f".{stem or 'masked'}.", suffix=suffix, dir=output_dir
+        )
+        os.close(fd)
         try:
-            write_obj.to_netcdf(full_output_path)
-        except Exception as e:
-            print(f"Error writing netcdf ({e}), trying fallback...")
-            fallback_obj = _metadata_copy(write_obj)
-            if isinstance(fallback_obj, xr.DataArray):
-                data_name = fallback_obj.name or "data"
-                fallback_obj = fallback_obj.to_dataset(name=data_name)
-
-            for var_name in fallback_obj.variables:
-                attrs = dict(fallback_obj[var_name].attrs)
-                if "_FillValue" in attrs:
-                    attrs["_FillValue"] = -9999
-                    fallback_obj[var_name].attrs = attrs
-                    print(f"Changed _FillValue of {var_name} to -9999 on fallback write copy")
-
-            fallback_obj.to_netcdf(full_output_path)
+            write_obj.to_netcdf(temp_path, **kwargs)
+            if not os.path.isfile(temp_path) or os.path.getsize(temp_path) <= 0:
+                raise IOError("Temporary NetCDF write did not produce a non-empty file")
+            os.replace(temp_path, full_output_path)
+            temp_path = None
+        finally:
+            if temp_path is not None:
+                try:
+                    os.remove(temp_path)
+                except FileNotFoundError:
+                    pass
 
         return full_output_path
 
     @staticmethod
-    def _mask_DataArray(DataArray,
-                       shp_mask,
-                       shp_epsg = "epsg:4326",
-                       invert_shp = False,
-                       drop_data = False):
-        '''
-        Mask xarray DataArray using shapefile, return a masked xarray DataArray
-        See mask_netcdf_map function for details
-        '''
+    def _mask_get_variable(obj, name):
+        """Return a coordinate/data variable by name without loading payload data."""
+        import xarray as xr
 
-        from shapely.geometry import mapping
-
-        if ("latitude" in DataArray.dims) and ("longitude" in DataArray.dims):
-            DataArray = DataArray.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude", inplace=True)
-            print("latitude/longitude dimensions used")
-        elif ("lat" in DataArray.dims) and ("lon" in DataArray.dims):
-            DataArray = DataArray.rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=True)
-            print("lat/lon dimensions used")
-        elif ("x" in DataArray.dims) and ("y" in DataArray.dims):
-            DataArray = DataArray.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=True)
-            print("x/y dimensions used")
-        else:
-            raise ValueError("Unspecified lat/lon dimensions in DataArray")
-
-        if DataArray.rio.crs is None:
-            DataArray = DataArray.rio.write_crs(shp_epsg, inplace=True)
-            print(f"DataArray.rio.crs not present, shp_epsg used: {shp_epsg}")
-        else:
-            if DataArray.rio.crs != shp_epsg:
-                # shp_mask = shp_mask.to_crs(DataArray.rio.crs)
-                raise ValueError("DataArray and shp have different crs systems")
-
-        DataArray_masked = DataArray.rio.clip(shp_mask.geometry.apply(mapping), shp_mask.crs, drop=drop_data, invert = invert_shp)
-
-        if "lat" in DataArray_masked.dims:
-            DataArray_masked = DataArray_masked.rename({'lat': 'latitude','lon': 'longitude'})
-        if "x" in DataArray_masked.dims:
-            DataArray_masked = DataArray_masked.rename({'y': 'latitude','x': 'longitude'})
-
-        DataArray_masked['latitude'] = DataArray_masked['latitude'].assign_attrs(standard_name='latitude')
-        DataArray_masked['latitude'] = DataArray_masked['latitude'].assign_attrs(long_name='latitude')
-        DataArray_masked['latitude'] = DataArray_masked['latitude'].assign_attrs(units='degrees_north')
-        DataArray_masked['latitude'] = DataArray_masked['latitude'].assign_attrs(axis='Y')
-
-        DataArray_masked['longitude'] = DataArray_masked['longitude'].assign_attrs(standard_name='longitude')
-        DataArray_masked['longitude'] = DataArray_masked['longitude'].assign_attrs(long_name='longitude')
-        DataArray_masked['longitude'] = DataArray_masked['longitude'].assign_attrs(units='degrees_east')
-        DataArray_masked['longitude'] = DataArray_masked['longitude'].assign_attrs(axis='X')
-
-        return DataArray_masked
+        if isinstance(obj, xr.Dataset):
+            return obj[name] if name in obj.variables else None
+        if isinstance(obj, xr.DataArray):
+            if name in obj.coords:
+                return obj.coords[name]
+            if obj.name == name:
+                return obj
+        return None
 
     @staticmethod
-    def _check_extra_dimensions(Dataset,
-                                permitted_dims):
-        '''
-        Check if dimensions other than lat/lon/time/depth are present.
-        Other permitted_dims can be spedified as a list
-        If extra dimensions are present data_var will not be masked
-        '''
-        acceptable_dimensions = set(['lat', 'lon', 'latitude', 'longitude', 'x', 'y',
-                                     'time', 'avg_time', 'depth', 'z'] + permitted_dims)
-        Dataset_dimensions = set(Dataset.dims)
+    def _mask_crs_from_variable(var):
+        """Resolve a pyproj CRS from one CF grid-mapping variable when possible."""
+        from pyproj import CRS
 
-        extra_dimensions = Dataset_dimensions - acceptable_dimensions
-        return extra_dimensions
+        attrs = dict(getattr(var, 'attrs', {}) or {})
+        for key in ('spatial_ref', 'crs_wkt', 'wkt'):
+            value = attrs.get(key)
+            if value:
+                try:
+                    return CRS.from_wkt(str(value))
+                except Exception:
+                    pass
+        for key in ('epsg_code', 'epsg', 'proj4_params', 'actual_density_proj_str'):
+            value = attrs.get(key)
+            if value not in (None, ''):
+                try:
+                    return CRS.from_user_input(value)
+                except Exception:
+                    pass
+        if attrs.get('grid_mapping_name'):
+            try:
+                return CRS.from_cf(attrs)
+            except Exception:
+                pass
+        return None
+
+    @classmethod
+    def _resolve_mask_grid_crs(cls, obj, raster_crs=None):
+        """Resolve the grid CRS without borrowing the vector-mask CRS."""
+        import xarray as xr
+        from pyproj import CRS
+
+        mapping_names = []
+        if isinstance(obj, xr.Dataset):
+            for var in obj.data_vars.values():
+                gm = var.attrs.get('grid_mapping') or var.encoding.get('grid_mapping')
+                if isinstance(gm, str) and gm and gm not in mapping_names:
+                    mapping_names.append(gm)
+            for default_name in ('crs', 'spatial_ref'):
+                if default_name in obj.variables and default_name not in mapping_names:
+                    mapping_names.append(default_name)
+        elif isinstance(obj, xr.DataArray):
+            gm = obj.attrs.get('grid_mapping') or obj.encoding.get('grid_mapping')
+            if isinstance(gm, str) and gm:
+                mapping_names.append(gm)
+            for default_name in ('crs', 'spatial_ref'):
+                if default_name in obj.coords and default_name not in mapping_names:
+                    mapping_names.append(default_name)
+
+        for name in mapping_names:
+            var = cls._mask_get_variable(obj, name)
+            if var is None:
+                continue
+            crs = cls._mask_crs_from_variable(var)
+            if crs is not None:
+                return crs
+
+        # Optional rioxarray metadata path.  Never require rioxarray for writer output.
+        try:
+            rio_crs = obj.rio.crs
+        except Exception:
+            rio_crs = None
+        if rio_crs is not None:
+            try:
+                return CRS.from_user_input(rio_crs)
+            except Exception as exc:
+                raise ValueError(f"Invalid grid CRS exposed by rioxarray: {rio_crs!r}") from exc
+
+        if raster_crs is not None:
+            try:
+                return CRS.from_user_input(raster_crs)
+            except Exception as exc:
+                raise ValueError(f"Invalid raster_crs: {raster_crs!r}") from exc
+
+        raise ValueError(
+            "Grid CRS is not available from CF grid_mapping/rioxarray metadata; "
+            "supply raster_crs explicitly"
+        )
+
+    @staticmethod
+    def _resolve_vector_crs(shp_mask, shp_epsg=None):
+        """Resolve vector CRS using a non-null object CRS before the explicit fallback."""
+        from pyproj import CRS
+
+        vector_crs = getattr(shp_mask, 'crs', None)
+        if vector_crs is None:
+            vector_crs = shp_epsg
+        if vector_crs is None:
+            raise ValueError("Mask geometry CRS is missing; supply shp_epsg explicitly")
+        try:
+            return CRS.from_user_input(vector_crs)
+        except Exception as exc:
+            raise ValueError(f"Invalid mask geometry CRS: {vector_crs!r}") from exc
+
+    @classmethod
+    def _prepare_mask_geometry(cls, shp_mask, target_crs, shp_epsg=None):
+        """Return one union geometry in target_crs without mutating the caller object."""
+        from pyproj import CRS
+        import shapely
+
+        vector_crs = cls._resolve_vector_crs(shp_mask, shp_epsg=shp_epsg)
+        target_crs = CRS.from_user_input(target_crs)
+
+        if not hasattr(shp_mask, 'geometry'):
+            raise TypeError("shp_mask must provide a geometry collection, such as a GeoDataFrame")
+        work = shp_mask.copy()
+        if getattr(work, 'crs', None) is None:
+            if not hasattr(work, 'set_crs'):
+                raise TypeError("Mask object with missing CRS must support set_crs")
+            work = work.set_crs(vector_crs, allow_override=True)
+        if not vector_crs.equals(target_crs):
+            if not hasattr(work, 'to_crs'):
+                raise TypeError("Mask object must support to_crs when vector and grid CRS differ")
+            work = work.to_crs(target_crs)
+
+        geoms = [g for g in work.geometry if g is not None and not g.is_empty]
+        if not geoms:
+            raise ValueError("Mask geometry contains no non-empty features")
+        geometry = shapely.union_all(geoms)
+        if geometry is None or geometry.is_empty:
+            raise ValueError("Mask geometry union is empty")
+        return geometry
+
+    @staticmethod
+    def _validate_mask_chunk_size(mask_chunk_size):
+        import numpy as np
+
+        if isinstance(mask_chunk_size, (bool, np.bool_)):
+            raise ValueError("mask_chunk_size must be a positive integer")
+        try:
+            value = int(mask_chunk_size)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("mask_chunk_size must be a positive integer") from exc
+        if value <= 0 or value != mask_chunk_size:
+            raise ValueError("mask_chunk_size must be a positive integer")
+        return value
+
+    @classmethod
+    def _detect_mask_grid_topology(cls, obj, raster_crs=None):
+        """Classify supported writer grids without guessing ambiguous layouts."""
+        import xarray as xr
+
+        if not isinstance(obj, (xr.DataArray, xr.Dataset)):
+            raise TypeError("Mask input must be an xarray DataArray or Dataset")
+        dims = set(obj.dims)
+
+        def _var(name):
+            return cls._mask_get_variable(obj, name)
+
+        def _dims(name):
+            v = _var(name)
+            return tuple(v.dims) if v is not None else ()
+
+        # UGRID/face topology first, because face geometry is not a raster y/x grid.
+        if 'face' in dims:
+            fx, fy = _var('face_x'), _var('face_y')
+            flon, flat = _var('face_lon'), _var('face_lat')
+            if fx is not None and fy is not None and _dims('face_x') == ('face',) and _dims('face_y') == ('face',):
+                return {
+                    'kind': 'triangular_unstructured', 'projected': True,
+                    'spatial_dims': ('face',), 'x_name': 'face_x', 'y_name': 'face_y'
+                }
+            if flon is not None and flat is not None and _dims('face_lon') == ('face',) and _dims('face_lat') == ('face',):
+                return {
+                    'kind': 'triangular_unstructured', 'projected': False,
+                    'spatial_dims': ('face',), 'x_name': 'face_lon', 'y_name': 'face_lat'
+                }
+            raise ValueError("face dimension is present but valid face-center coordinates were not found")
+
+        # Historical rectilinear geographic dimension names.
+        for y_name, x_name in (('latitude', 'longitude'), ('lat', 'lon')):
+            if y_name in dims and x_name in dims:
+                yv, xv = _var(y_name), _var(x_name)
+                if yv is not None and xv is not None and yv.ndim == 1 and xv.ndim == 1:
+                    return {
+                        'kind': 'regular_geographic', 'projected': False,
+                        'spatial_dims': (y_name, x_name), 'x_name': x_name, 'y_name': y_name,
+                        'normalize_geographic_aliases': (y_name, x_name) == ('lat', 'lon'),
+                    }
+
+        if 'y' not in dims or 'x' not in dims:
+            raise ValueError(
+                "Unsupported spatial layout: expected regular/curvilinear y/x dimensions or triangular face topology"
+            )
+
+        x2, y2 = _var('x_center'), _var('y_center')
+        if x2 is not None and y2 is not None and set(x2.dims) == {'y', 'x'} and set(y2.dims) == {'y', 'x'}:
+            return {
+                'kind': 'curvilinear_projected', 'projected': True,
+                'spatial_dims': ('y', 'x'), 'x_name': 'x_center', 'y_name': 'y_center'
+            }
+
+        # 2-D geographic center coordinates define a curvilinear grid only when the
+        # native x/y axes are indices rather than physical 1-D coordinates.
+        lon_name = 'lon' if _var('lon') is not None else ('longitude' if _var('longitude') is not None else None)
+        lat_name = 'lat' if _var('lat') is not None else ('latitude' if _var('latitude') is not None else None)
+        xv, yv = _var('x'), _var('y')
+        if lon_name and lat_name:
+            lonv, latv = _var(lon_name), _var(lat_name)
+            if lonv.ndim == 2 and latv.ndim == 2 and set(lonv.dims) == {'y', 'x'} and set(latv.dims) == {'y', 'x'}:
+                x_is_index = xv is None or xv.attrs.get('units') == '1' or 'index' in str(xv.attrs.get('long_name', '')).lower()
+                y_is_index = yv is None or yv.attrs.get('units') == '1' or 'index' in str(yv.attrs.get('long_name', '')).lower()
+                if x_is_index or y_is_index:
+                    return {
+                        'kind': 'curvilinear_geographic', 'projected': False,
+                        'spatial_dims': ('y', 'x'), 'x_name': lon_name, 'y_name': lat_name
+                    }
+
+        if xv is None or yv is None or xv.ndim != 1 or yv.ndim != 1:
+            raise ValueError("y/x grid requires 1-D x/y axes or explicit 2-D center coordinates")
+
+        x_std = str(xv.attrs.get('standard_name', '')).lower()
+        y_std = str(yv.attrs.get('standard_name', '')).lower()
+        x_units = str(xv.attrs.get('units', '')).lower()
+        y_units = str(yv.attrs.get('units', '')).lower()
+        if x_std == 'longitude' and y_std == 'latitude':
+            projected = False
+        elif x_std == 'projection_x_coordinate' and y_std == 'projection_y_coordinate':
+            projected = True
+        elif 'degree' in x_units and 'degree' in y_units:
+            projected = False
+        elif x_units in {'m', 'meter', 'meters', 'metre', 'metres', 'km'} and y_units in {'m', 'meter', 'meters', 'metre', 'metres', 'km'}:
+            projected = True
+        else:
+            crs = cls._resolve_mask_grid_crs(obj, raster_crs=raster_crs)
+            projected = bool(crs.is_projected)
+            if not projected and not crs.is_geographic:
+                raise ValueError("Grid CRS is neither geographic nor projected")
+
+        return {
+            'kind': 'regular_projected' if projected else 'regular_geographic',
+            'projected': projected,
+            'spatial_dims': ('y', 'x'), 'x_name': 'x', 'y_name': 'y',
+            'normalize_geographic_aliases': False,
+        }
+
+    @staticmethod
+    def _chunked_center_intersects(x_values, y_values, geometry, mask_chunk_size, invert=False):
+        """Return a bounded-memory point/geometry mask for equally shaped centers."""
+        import numpy as np
+        import shapely
+
+        x = np.asarray(x_values)
+        y = np.asarray(y_values)
+        if x.shape != y.shape:
+            raise ValueError(f"Center coordinate shapes differ: {x.shape} versus {y.shape}")
+        shape = x.shape
+        xf = x.reshape(-1)
+        yf = y.reshape(-1)
+        out = np.zeros(xf.size, dtype=bool)
+        valid_all = np.isfinite(xf) & np.isfinite(yf)
+        chunk = int(mask_chunk_size)
+        for start in range(0, xf.size, chunk):
+            stop = min(start + chunk, xf.size)
+            valid = valid_all[start:stop]
+            if not np.any(valid):
+                continue
+            local = np.zeros(stop - start, dtype=bool)
+            points = shapely.points(xf[start:stop][valid], yf[start:stop][valid])
+            local[valid] = np.asarray(shapely.intersects(points, geometry), dtype=bool)
+            out[start:stop] = local
+        if invert:
+            out = valid_all & ~out
+        return out.reshape(shape)
+
+    @classmethod
+    def _build_rectilinear_center_mask(cls, obj, topology, geometry, mask_chunk_size=250000, invert=False):
+        """Build one `(y,x)`-like mask without materializing a full coordinate mesh."""
+        import numpy as np
+        import xarray as xr
+
+        mask_chunk_size = cls._validate_mask_chunk_size(mask_chunk_size)
+        y_dim, x_dim = topology['spatial_dims']
+        xv = cls._mask_get_variable(obj, topology['x_name'])
+        yv = cls._mask_get_variable(obj, topology['y_name'])
+        if xv is None or yv is None or xv.ndim != 1 or yv.ndim != 1:
+            raise ValueError("Rectilinear mask requires one-dimensional center axes")
+        x = np.asarray(xv.data)
+        y = np.asarray(yv.data)
+        ny, nx = len(y), len(x)
+        out = np.zeros(ny * nx, dtype=bool)
+        valid_all = np.ones(ny * nx, dtype=bool)
+        import shapely
+        for start in range(0, out.size, mask_chunk_size):
+            stop = min(start + mask_chunk_size, out.size)
+            idx = np.arange(start, stop, dtype=np.int64)
+            rows = idx // nx
+            cols = idx - rows * nx
+            xx = x[cols]
+            yy = y[rows]
+            valid = np.isfinite(xx) & np.isfinite(yy)
+            valid_all[start:stop] = valid
+            if np.any(valid):
+                local = np.zeros(stop - start, dtype=bool)
+                points = shapely.points(xx[valid], yy[valid])
+                local[valid] = np.asarray(shapely.intersects(points, geometry), dtype=bool)
+                out[start:stop] = local
+        if invert:
+            out = valid_all & ~out
+        return xr.DataArray(
+            out.reshape(ny, nx),
+            dims=(y_dim, x_dim),
+            coords={y_dim: obj[y_dim] if y_dim in obj.coords else np.arange(ny),
+                    x_dim: obj[x_dim] if x_dim in obj.coords else np.arange(nx)},
+            name='_spatial_mask',
+        )
+
+    @staticmethod
+    def _structured_selected_window(mask):
+        """Return minimal structured slices containing every selected center."""
+        import numpy as np
+
+        values = np.asarray(mask.data if hasattr(mask, 'data') else mask, dtype=bool)
+        if values.ndim != 2:
+            raise ValueError("Structured spatial mask must be two-dimensional")
+        rows, cols = np.nonzero(values)
+        if rows.size == 0:
+            raise ValueError("Mask geometry selects no structured grid cells")
+        return slice(int(rows.min()), int(rows.max()) + 1), slice(int(cols.min()), int(cols.max()) + 1)
+
+    @classmethod
+    def _drop_structured_mask_extent(cls, obj, mask, spatial_dims):
+        """Crop to the minimal y/x rectangle and return the cropped horizontal mask."""
+        y_dim, x_dim = spatial_dims
+        ys, xs = cls._structured_selected_window(mask)
+        cropped_obj = obj.isel({y_dim: ys, x_dim: xs})
+        cropped_mask = mask.isel({y_dim: ys, x_dim: xs})
+        return cropped_obj, cropped_mask
+
+    @classmethod
+    def _build_curvilinear_center_mask(cls, obj, topology, geometry, mask_chunk_size=250000, invert=False):
+        """Build one structured mask from native 2-D center coordinates."""
+        import numpy as np
+        import xarray as xr
+
+        mask_chunk_size = cls._validate_mask_chunk_size(mask_chunk_size)
+        y_dim, x_dim = topology['spatial_dims']
+        xv = cls._mask_get_variable(obj, topology['x_name'])
+        yv = cls._mask_get_variable(obj, topology['y_name'])
+        if xv is None or yv is None or xv.ndim != 2 or yv.ndim != 2:
+            raise ValueError("Curvilinear mask requires two-dimensional center coordinates")
+        try:
+            xv = xv.transpose(y_dim, x_dim)
+            yv = yv.transpose(y_dim, x_dim)
+        except ValueError as exc:
+            raise ValueError(
+                f"Curvilinear center coordinates must use dimensions {y_dim!r}/{x_dim!r}"
+            ) from exc
+        x = np.asarray(xv.data)
+        y = np.asarray(yv.data)
+        values = cls._chunked_center_intersects(
+            x, y, geometry, mask_chunk_size=mask_chunk_size, invert=invert
+        )
+        return xr.DataArray(
+            values,
+            dims=(y_dim, x_dim),
+            coords={y_dim: obj[y_dim] if y_dim in obj.coords else np.arange(values.shape[0]),
+                    x_dim: obj[x_dim] if x_dim in obj.coords else np.arange(values.shape[1])},
+            name='_spatial_mask',
+        )
+
+    @classmethod
+    def _build_unstructured_face_mask(cls, obj, topology, geometry, mask_chunk_size=250000, invert=False):
+        """Build one boolean face mask from native face-center coordinates."""
+        import numpy as np
+        import xarray as xr
+
+        mask_chunk_size = cls._validate_mask_chunk_size(mask_chunk_size)
+        xv = cls._mask_get_variable(obj, topology['x_name'])
+        yv = cls._mask_get_variable(obj, topology['y_name'])
+        if xv is None or yv is None or tuple(xv.dims) != ('face',) or tuple(yv.dims) != ('face',):
+            raise ValueError("Unstructured mask requires one-dimensional face-center coordinates")
+        values = cls._chunked_center_intersects(
+            np.asarray(xv.data), np.asarray(yv.data), geometry,
+            mask_chunk_size=mask_chunk_size, invert=invert,
+        )
+        return xr.DataArray(
+            values,
+            dims=('face',),
+            coords={'face': obj['face'] if 'face' in obj.coords else np.arange(values.size)},
+            name='_spatial_mask',
+        )
+
+    @staticmethod
+    def _mask_structural_variable_names(obj, topology):
+        """Return variable names that describe grid geometry/topology, not payload."""
+        import xarray as xr
+
+        if not isinstance(obj, xr.Dataset):
+            return set()
+        structural = set(obj.coords)
+        structural.update({
+            'crs', 'spatial_ref', 'mesh', 'face_node_connectivity',
+            'lon', 'lat', 'longitude', 'latitude', 'x', 'y',
+            'x_center', 'y_center', 'lon_bounds', 'lat_bounds',
+            'longitude_bounds', 'latitude_bounds', 'x_bounds', 'y_bounds',
+            'face_lon', 'face_lat', 'face_x', 'face_y',
+            'node_lon', 'node_lat', 'node_x', 'node_y',
+        })
+        structural.update({topology.get('x_name'), topology.get('y_name')})
+        structural.discard(None)
+
+        for name, var in obj.variables.items():
+            attrs = var.attrs
+            if attrs.get('cf_role') in {'mesh_topology', 'face_node_connectivity'}:
+                structural.add(name)
+            if attrs.get('grid_mapping_name') or attrs.get('spatial_ref') or attrs.get('crs_wkt'):
+                if var.ndim == 0:
+                    structural.add(name)
+            if name.endswith(('_bounds', '_bnds')):
+                structural.add(name)
+            bounds = attrs.get('bounds')
+            if isinstance(bounds, str) and bounds:
+                structural.add(bounds)
+            gm = attrs.get('grid_mapping') or var.encoding.get('grid_mapping')
+            if isinstance(gm, str) and gm:
+                structural.add(gm)
+            mesh_name = attrs.get('mesh')
+            if isinstance(mesh_name, str) and mesh_name:
+                structural.add(mesh_name)
+
+        # Follow UGRID mesh references when present.
+        for name, var in obj.variables.items():
+            if var.attrs.get('cf_role') == 'mesh_topology':
+                structural.add(name)
+                for key in ('face_node_connectivity', 'node_coordinates', 'face_coordinates',
+                            'geographic_node_coordinates', 'geographic_face_coordinates'):
+                    value = var.attrs.get(key)
+                    if isinstance(value, str):
+                        structural.update(value.split())
+        return structural
+
+    @staticmethod
+    def _where_preserve_metadata(var, mask):
+        """Apply a broadcast mask while preserving attrs and encoding on the new object."""
+        out = var.where(mask)
+        out.attrs = dict(var.attrs)
+        out.encoding = dict(var.encoding)
+        return out
+
+    @classmethod
+    def _apply_dataset_spatial_mask(cls, ds, mask, topology):
+        """Mask spatial payload variables and preserve structural CF/UGRID variables."""
+        import xarray as xr
+
+        if not isinstance(ds, xr.Dataset):
+            raise TypeError("_apply_dataset_spatial_mask requires an xarray Dataset")
+        out = ds.copy(deep=False)
+        structural = cls._mask_structural_variable_names(ds, topology)
+        spatial_dims = tuple(topology['spatial_dims'])
+        for name, var in ds.data_vars.items():
+            if name in structural:
+                continue
+            if all(dim in var.dims for dim in spatial_dims):
+                out[name] = cls._where_preserve_metadata(var, mask)
+        out.attrs = dict(ds.attrs)
+        return out
+
+    @staticmethod
+    def _drop_unstructured_faces(obj, mask):
+        """Select retained faces while keeping the complete original node table."""
+        import numpy as np
+
+        selected = np.flatnonzero(np.asarray(mask.data, dtype=bool))
+        if selected.size == 0:
+            raise ValueError("Mask geometry selects no unstructured faces")
+        return obj.isel(face=selected), selected
+
+    @classmethod
+    def _normalize_masked_geographic_aliases(cls, obj, topology):
+        """Preserve the historical lat/lon -> latitude/longitude compatibility only."""
+        if topology.get('normalize_geographic_aliases') is not True:
+            return obj
+        out = obj.rename({'lat': 'latitude', 'lon': 'longitude'})
+        if 'latitude' in out.coords:
+            out['latitude'].attrs = dict(out['latitude'].attrs)
+            out['latitude'].attrs.update({
+                'standard_name': 'latitude', 'long_name': 'latitude',
+                'units': 'degrees_north', 'axis': 'Y',
+            })
+        if 'longitude' in out.coords:
+            out['longitude'].attrs = dict(out['longitude'].attrs)
+            out['longitude'].attrs.update({
+                'standard_name': 'longitude', 'long_name': 'longitude',
+                'units': 'degrees_east', 'axis': 'X',
+            })
+        return out
+
+    @classmethod
+    def _mask_DataArray(cls,
+                        DataArray,
+                        shp_mask,
+                        shp_epsg="epsg:4326",
+                        invert_shp=False,
+                        drop_data=False,
+                        raster_crs=None,
+                        mask_chunk_size=250000):
+        """Mask a supported structured or triangular xarray object by cell/face center.
+
+        The routine supports every grid topology written by
+        ``write_netcdf_chemical_density_map``.  Grid CRS and vector CRS are resolved
+        independently.  Projected coordinates are never relabeled as geographic.
+        """
+        import xarray as xr
+
+        if not isinstance(DataArray, (xr.DataArray, xr.Dataset)):
+            raise TypeError("DataArray must be an xarray DataArray or Dataset")
+        if not isinstance(invert_shp, bool) or not isinstance(drop_data, bool):
+            raise ValueError("invert_shp and drop_data must be boolean")
+
+        topology = cls._detect_mask_grid_topology(DataArray, raster_crs=raster_crs)
+        grid_crs = cls._resolve_mask_grid_crs(DataArray, raster_crs=raster_crs)
+        geometry = cls._prepare_mask_geometry(shp_mask, grid_crs, shp_epsg=shp_epsg)
+
+        if topology['kind'] in {'regular_geographic', 'regular_projected'}:
+            mask = cls._build_rectilinear_center_mask(
+                DataArray, topology, geometry,
+                mask_chunk_size=mask_chunk_size, invert=invert_shp,
+            )
+        elif topology['kind'] in {'curvilinear_geographic', 'curvilinear_projected'}:
+            mask = cls._build_curvilinear_center_mask(
+                DataArray, topology, geometry,
+                mask_chunk_size=mask_chunk_size, invert=invert_shp,
+            )
+        elif topology['kind'] == 'triangular_unstructured':
+            mask = cls._build_unstructured_face_mask(
+                DataArray, topology, geometry,
+                mask_chunk_size=mask_chunk_size, invert=invert_shp,
+            )
+        else:
+            raise ValueError(f"Unsupported mask topology: {topology['kind']!r}")
+
+        obj = DataArray
+        active_mask = mask
+        if drop_data:
+            if topology['kind'] == 'triangular_unstructured':
+                obj, selected = cls._drop_unstructured_faces(obj, mask)
+                active_mask = mask.isel(face=selected)
+            else:
+                obj, active_mask = cls._drop_structured_mask_extent(
+                    obj, mask, topology['spatial_dims']
+                )
+
+        if isinstance(obj, xr.Dataset):
+            # For unstructured drop mode every remaining face was selected, so masking
+            # payload values again is unnecessary.  Structural face variables have
+            # already been sliced consistently by isel(face=...).
+            if drop_data and topology['kind'] == 'triangular_unstructured':
+                result = obj.copy(deep=False)
+                result.attrs = dict(obj.attrs)
+            else:
+                result = cls._apply_dataset_spatial_mask(obj, active_mask, topology)
+        else:
+            if not all(dim in obj.dims for dim in topology['spatial_dims']):
+                raise ValueError(
+                    f"DataArray does not contain required spatial dimensions {topology['spatial_dims']}"
+                )
+            if drop_data and topology['kind'] == 'triangular_unstructured':
+                result = obj.copy(deep=False)
+                result.attrs = dict(obj.attrs)
+                result.encoding = dict(obj.encoding)
+            else:
+                result = cls._where_preserve_metadata(obj, active_mask)
+
+        return cls._normalize_masked_geographic_aliases(result, topology)
+
+    @staticmethod
+    def _check_extra_dimensions(Dataset, permitted_dims=None):
+        """Validate optional non-spatial dimension policy without slicing data.
+
+        With ``permitted_dims=None`` all non-spatial payload dimensions are allowed.
+        If a list is supplied, known ChemicalDrift writer dimensions plus the supplied
+        names are accepted.  The helper never selects index zero or modifies input data.
+        """
+        if permitted_dims is None:
+            return set()
+        if isinstance(permitted_dims, (str, bytes)) or not hasattr(permitted_dims, '__iter__'):
+            raise TypeError("permitted_dims must be None or an iterable of dimension names")
+        extra_allowed = list(permitted_dims)
+        if any(not isinstance(name, str) or not name for name in extra_allowed):
+            raise ValueError("permitted_dims must contain non-empty strings")
+        base = {
+            'lat', 'lon', 'latitude', 'longitude', 'x', 'y', 'face', 'node',
+            'time', 'avg_time', 'depth', 'z', 'specie', 'band', 'nv',
+            'nmax_face_nodes', 'depth_bounds_dim', 'time_bounds_dim', 'name_strlen',
+        }
+        acceptable_dimensions = base.union(extra_allowed)
+        return set(Dataset.dims) - acceptable_dimensions
 
     @staticmethod
     def _merge_masked_dataset(DataArray_ls):
-        '''
-        Store DataArrays into a single DataSet
-        '''
+        """Merge DataArray/Dataset objects without changing their topology.
+
+        The legacy caller may supply ``[declared_names, object]`` pairs.  The
+        declared names are used only to name an anonymous DataArray.  Dataset
+        variables are never stacked through ``to_dataarray()`` and dimensions
+        are never collapsed to force compatibility.
+        """
         import xarray as xr
 
-        merged_dataset = xr.Dataset({name[0]: data_array.to_dataarray() for name, data_array in DataArray_ls})
-        merged_dataset = merged_dataset.drop_vars(['variable', 'spatial_ref'])
-        # Remove dimensions without coordinates
-        for variable in merged_dataset.data_vars:
-            dims_with_coords = set([dim for dim in merged_dataset[variable].dims if dim in merged_dataset[variable].coords])
-            all_dims = set(list(merged_dataset[variable].dims))
-            uncommon_dimensions = list(all_dims.symmetric_difference(dims_with_coords))
+        if not isinstance(DataArray_ls, (list, tuple)) or len(DataArray_ls) == 0:
+            raise ValueError("DataArray_ls must be a non-empty list or tuple")
 
-            for uncommon_dim in uncommon_dimensions:
-                if uncommon_dim in merged_dataset.dims:
-                    merged_dataset[variable] = merged_dataset[variable].sel({uncommon_dim: merged_dataset[uncommon_dim][0]})
+        datasets = []
+        seen_data_vars = set()
 
-        return(merged_dataset)
+        for item_index, item in enumerate(DataArray_ls):
+            declared_names = None
+            obj = item
+            if isinstance(item, (list, tuple)) and len(item) == 2:
+                declared_names, obj = item
+
+            if isinstance(obj, xr.DataArray):
+                name = obj.name
+                if name is None:
+                    if isinstance(declared_names, str):
+                        name = declared_names
+                    elif isinstance(declared_names, (list, tuple)) and len(declared_names) == 1:
+                        name = declared_names[0]
+                if not isinstance(name, str) or not name:
+                    raise ValueError(
+                        f"Anonymous DataArray at item {item_index} requires exactly one declared variable name"
+                    )
+                ds = obj.to_dataset(name=name)
+            elif isinstance(obj, xr.Dataset):
+                ds = obj
+            else:
+                raise TypeError(
+                    f"Item {item_index} must contain an xarray DataArray or Dataset, got {type(obj).__name__}"
+                )
+
+            duplicate = seen_data_vars.intersection(ds.data_vars)
+            if duplicate:
+                raise ValueError(
+                    "Duplicate data variable names are not allowed when merging masked datasets: "
+                    + ", ".join(sorted(duplicate))
+                )
+            seen_data_vars.update(ds.data_vars)
+            datasets.append(ds)
+
+        if len(datasets) == 1:
+            return datasets[0].copy(deep=False)
+
+        try:
+            return xr.merge(
+                datasets,
+                compat="equals",
+                join="exact",
+                combine_attrs="no_conflicts",
+            )
+        except (ValueError, TypeError) as exc:
+            raise ValueError(
+                "Masked datasets cannot be merged without changing indexes, coordinates, or metadata"
+            ) from exc
+
+    @staticmethod
+    def _mask_kwargs_dict(value, name):
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise TypeError(f"{name} must be a dict or None")
+        return dict(value)
+
+    @classmethod
+    def _validate_mask_netcdf_request(cls, *, DataArray=None, file_path=None, file_name=None,
+                                      save_masked_file=False, file_output_path=None,
+                                      file_output_name=None, loader='auto', mask_chunk_size=250000,
+                                      open_dataset_kwargs=None, open_rasterio_kwargs=None,
+                                      to_netcdf_kwargs=None):
+        """Validate public mask dispatch arguments before file or geometry I/O."""
+        import os
+
+        if not isinstance(save_masked_file, bool):
+            raise ValueError("save_masked_file must be boolean")
+        direct = DataArray is not None
+        any_file = file_path is not None or file_name is not None
+        complete_file = file_path is not None and file_name is not None
+        if direct and any_file:
+            raise ValueError("Specify either DataArray or file_path/file_name, not both")
+        if not direct and not complete_file:
+            raise ValueError("Specify DataArray or both file_path and file_name")
+        if complete_file:
+            if not isinstance(file_path, (str, bytes, os.PathLike)) or not isinstance(file_name, (str, bytes, os.PathLike)):
+                raise TypeError("file_path and file_name must be path-like")
+        if save_masked_file:
+            if file_output_path is None or file_output_name is None:
+                raise ValueError("file_output_path and file_output_name are required when save_masked_file=True")
+            if not isinstance(file_output_path, (str, bytes, os.PathLike)) or not isinstance(file_output_name, (str, bytes, os.PathLike)):
+                raise TypeError("file_output_path and file_output_name must be path-like")
+        if loader not in {'auto', 'xarray', 'rioxarray'}:
+            raise ValueError("loader must be 'auto', 'xarray', or 'rioxarray'")
+        cls._validate_mask_chunk_size(mask_chunk_size)
+        cls._mask_kwargs_dict(open_dataset_kwargs, 'open_dataset_kwargs')
+        cls._mask_kwargs_dict(open_rasterio_kwargs, 'open_rasterio_kwargs')
+        cls._mask_kwargs_dict(to_netcdf_kwargs, 'to_netcdf_kwargs')
+        return True
+
+    @staticmethod
+    def _select_mask_loader(input_path, loader='auto'):
+        """Select xarray for NetCDF/CF files and optional rioxarray for legacy rasters."""
+        import os
+
+        if loader != 'auto':
+            return loader
+        suffix = os.path.splitext(os.fspath(input_path))[1].lower()
+        if suffix in {'.nc', '.nc4', '.cdf', '.netcdf'}:
+            return 'xarray'
+        return 'rioxarray'
+
+    @classmethod
+    def _open_mask_netcdf_input(cls, input_path, *, loader='auto', chunks=None,
+                                open_dataset_kwargs=None, open_rasterio_kwargs=None):
+        """Open one mask input and return `(object, owned=True, loader_used)`."""
+        import xarray as xr
+
+        selected = cls._select_mask_loader(input_path, loader=loader)
+        if selected == 'xarray':
+            kwargs = cls._mask_kwargs_dict(open_dataset_kwargs, 'open_dataset_kwargs')
+            kwargs.setdefault('decode_coords', 'all')
+            if chunks is not None:
+                if 'chunks' in kwargs:
+                    raise ValueError("Specify chunks either directly or in open_dataset_kwargs, not both")
+                kwargs['chunks'] = chunks
+            obj = xr.open_dataset(input_path, **kwargs)
+            return obj, True, selected
+
+        kwargs = cls._mask_kwargs_dict(open_rasterio_kwargs, 'open_rasterio_kwargs')
+        if chunks is not None:
+            if 'chunks' in kwargs:
+                raise ValueError("Specify chunks either directly or in open_rasterio_kwargs, not both")
+            kwargs['chunks'] = chunks
+        try:
+            import rioxarray
+        except ImportError as exc:
+            raise ImportError(
+                "loader='rioxarray' requires the optional rioxarray package"
+            ) from exc
+        obj = rioxarray.open_rasterio(input_path, **kwargs)
+        return obj, True, selected
+
+    @staticmethod
+    def _sequence_mask_output_name(file_output_name, index):
+        import os
+
+        name = os.fspath(file_output_name)
+        stem, ext = os.path.splitext(name)
+        if not ext:
+            ext = '.nc'
+        return f"{stem}_{int(index):03d}{ext}"
 
     def mask_netcdf_map(self,
                         shp_mask_file,
-                        file_path = None,
-                        file_name = None,
-                        DataArray = None,
-                        shp_epsg = "epsg:4326",
-                        invert_shp = False,
-                        drop_data = False,
-                        save_masked_file = False,
-                        file_output_path = None,
-                        file_output_name = None,
-                        permitted_dims = []
-                         ):
-        '''
-        Mask xarray DataArray using shapefile, return a masked xarray DataArray
-            Used for xarray DataArray with regular lat/lon coordinates.
-            "write_netcdf_chemical_density_map" output must be regridded to regular lat/lon coordinates with "regrid_conc" function
+                        file_path=None,
+                        file_name=None,
+                        DataArray=None,
+                        shp_epsg="epsg:4326",
+                        invert_shp=False,
+                        drop_data=False,
+                        save_masked_file=False,
+                        file_output_path=None,
+                        file_output_name=None,
+                        permitted_dims=None,
+                        raster_crs=None,
+                        chunks=None,
+                        open_dataset_kwargs=None,
+                        open_rasterio_kwargs=None,
+                        loader='auto',
+                        mask_chunk_size=250000,
+                        to_netcdf_kwargs=None):
+        """Mask xarray data with a vector geometry on all ChemicalDrift writer grids.
 
-        shp_mask_file:       string, full path to mask shapefile
-        DataArray:           xarray DataArray to be masked loaded with rioxarray.open_rasterio(DataArray)
-                                 *latitude/longitude, lat/lon, y/x are accepted as coordinates
-        shp_epsg:            string, reference system of shp file (e.g. "epsg:4326")
-        invert_shp:          boolean, select if values inside (False) or outside (True) shp are masked
-        drop_data:           boolean, select if spatial extent of DataArray is mantained (False) or reduced to the extent of shp (True)
-        save_masked_file:    boolean,select if DataArray_masked is saved (True) or returned (False)
-        file_path:           string, path of the file to be masked. Must end with /
-        file_name:           string, name of the DataArray to be masked (.nc)
-        file_output_path:    string, path of the file to be saved. Must end with /
-        file_output_name:    string, name of the DataArray_masked output file (.nc)
-        permitted_dims:      list, name of dimensions in input file acceped for masking
-        '''
+        Supported spatial topologies are regular geographic, curvilinear geographic,
+        regular projected, curvilinear projected, and triangular unstructured grids.
+        Selection uses cell/face centers.  One horizontal mask is broadcast over other
+        payload dimensions; CF/UGRID structural variables remain unmasked.
+
+        Direct DataArray input returns a DataArray.  Direct/file Dataset input returns
+        one self-contained Dataset.  Legacy list/tuple input returns an ordered list.
+        When ``save_masked_file`` is true, the function returns the written path or
+        ordered list of paths.
+        """
+        import os
         import geopandas as gpd
-        import rioxarray
+        import xarray as xr
 
+        self._validate_mask_netcdf_request(
+            DataArray=DataArray,
+            file_path=file_path,
+            file_name=file_name,
+            save_masked_file=save_masked_file,
+            file_output_path=file_output_path,
+            file_output_name=file_output_name,
+            loader=loader,
+            mask_chunk_size=mask_chunk_size,
+            open_dataset_kwargs=open_dataset_kwargs,
+            open_rasterio_kwargs=open_rasterio_kwargs,
+            to_netcdf_kwargs=to_netcdf_kwargs,
+        )
+        if not isinstance(invert_shp, bool) or not isinstance(drop_data, bool):
+            raise ValueError("invert_shp and drop_data must be boolean")
+
+        # Validation is complete before shapefile/raster I/O begins.
         shp_mask = gpd.read_file(shp_mask_file)
-        if hasattr(shp_mask, "crs"):
-            shp_epsg = shp_mask.crs
-            print(f"shp_crs taken from shapefile: {shp_epsg} ")
-        elif shp_epsg is not None:
-            print(f"shp_mask.crs not present, specified shp_epsg used: {shp_epsg}")
-        else:
-            raise ValueError("shp_mask.crs not present and shp_epsg not specified ")
+        input_obj = DataArray
+        owned_input = False
+        loader_used = None
+        if input_obj is None:
+            input_path = os.path.join(os.fspath(file_path), os.fspath(file_name))
+            input_obj, owned_input, loader_used = self._open_mask_netcdf_input(
+                input_path,
+                loader=loader,
+                chunks=chunks,
+                open_dataset_kwargs=open_dataset_kwargs,
+                open_rasterio_kwargs=open_rasterio_kwargs,
+            )
 
-        if DataArray is not None:
-
-            extra_dims = self._check_extra_dimensions(Dataset = DataArray,
-                                                      permitted_dims = permitted_dims)
+        def _mask_one(obj):
+            if not isinstance(obj, (xr.DataArray, xr.Dataset)):
+                raise TypeError(
+                    "Each mask input must be an xarray DataArray or Dataset, "
+                    f"got {type(obj).__name__}"
+                )
+            extra_dims = self._check_extra_dimensions(obj, permitted_dims=permitted_dims)
             if extra_dims:
-                raise ValueError(f'Unpermitted dimensions {extra_dims} are present, check permitted_dims')
+                raise ValueError(
+                    "Unpermitted dimensions are present: " + ", ".join(sorted(extra_dims))
+                )
+            return self._mask_DataArray(
+                DataArray=obj,
+                shp_mask=shp_mask,
+                shp_epsg=shp_epsg,
+                invert_shp=invert_shp,
+                drop_data=drop_data,
+                raster_crs=raster_crs,
+                mask_chunk_size=mask_chunk_size,
+            )
 
-            # Mask input DataArray
-            DataArray_masked = self._mask_DataArray(DataArray = DataArray,
-                               shp_mask = shp_mask,
-                               shp_epsg = shp_epsg,
-                               invert_shp = invert_shp,
-                               drop_data = drop_data)
-            if save_masked_file is True:
-                self._save_masked_DataArray(DataArray_masked = DataArray_masked,
-                                      file_output_path = file_output_path,
-                                      file_output_name = file_output_name)
+        def _close_owned(obj):
+            objects = obj if isinstance(obj, (list, tuple)) else [obj]
+            for item in objects:
+                close = getattr(item, 'close', None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        pass
+
+        try:
+            if isinstance(input_obj, (list, tuple)):
+                masked = [_mask_one(obj) for obj in input_obj]
             else:
-                return(DataArray_masked)
+                masked = _mask_one(input_obj)
 
-        elif file_path is not None and file_name is not None:
-                print("Loading DataArray from disk")
-                DataArray = rioxarray.open_rasterio(file_path + file_name)
+            if not save_masked_file:
+                # Keep internally opened lazy backends alive.  The returned xarray
+                # object owns the backend lifetime from this point.
+                return masked
 
-                if not isinstance(DataArray, list):
-                    # File to mask contains only one variable
-                    extra_dims = self._check_extra_dimensions(Dataset = DataArray,
-                                                              permitted_dims = permitted_dims)
-                    if extra_dims:
-                        raise ValueError(f'Unpermitted dimensions {extra_dims} are present, check permitted_dims')
+            save_kwargs = self._mask_kwargs_dict(to_netcdf_kwargs, 'to_netcdf_kwargs')
+            if isinstance(masked, list):
+                paths = []
+                for index, obj in enumerate(masked):
+                    output_name = self._sequence_mask_output_name(file_output_name, index)
+                    paths.append(self._save_masked_DataArray(
+                        DataArray_masked=obj,
+                        file_output_path=file_output_path,
+                        file_output_name=output_name,
+                        to_netcdf_kwargs=save_kwargs,
+                    ))
+                return paths
 
-                    DataArray_masked = self._mask_DataArray(DataArray = DataArray,
-                                           shp_mask = shp_mask,
-                                           shp_epsg = shp_epsg,
-                                           invert_shp = invert_shp,
-                                           drop_data = drop_data)
-                    if save_masked_file is True:
-                        self._save_masked_DataArray(DataArray_masked = DataArray_masked,
-                                              file_output_path = file_output_path,
-                                              file_output_name = file_output_name)
-                    else:
-                        return(DataArray_masked)
-                else:
-                    # Masked file contains more than one variable
-                    # Store masked and not masked DataArrays
-                    DataArray_masked_ls = []
-                    DataArray_not_masked_ls = []
-                    masked_dataset = None
-                    not_masked_dataset = None
-
-                    for Dataset in DataArray:
-                        extra_dims = self._check_extra_dimensions(Dataset = Dataset,
-                                                                  permitted_dims = permitted_dims)
-                        if extra_dims:
-                            print(f"Extra dimensions found for {str(Dataset.data_vars)[20:]}")
-                            print("Returning original DataArray")
-                            DataArray_not_masked_ls.append([list(Dataset.data_vars), Dataset])
-                        else:
-                            print(f"Masking {str(Dataset.data_vars)[20:]}")
-                            DataArray_masked = self._mask_DataArray(DataArray = Dataset,
-                                                   shp_mask = shp_mask,
-                                                   shp_epsg = shp_epsg,
-                                                   invert_shp = invert_shp,
-                                                   drop_data = drop_data)
-                            DataArray_masked_ls.append([list(DataArray_masked.data_vars), DataArray_masked])
-
-                    if len(DataArray_masked_ls) > 0:
-                        masked_dataset = self._merge_masked_dataset(DataArray_masked_ls)
-                    if len(DataArray_not_masked_ls) > 0:
-                        not_masked_dataset = self._merge_masked_dataset(DataArray_not_masked_ls)
-
-                    if save_masked_file is True:
-                        if masked_dataset is not None:
-                            self._save_masked_DataArray(DataArray_masked = masked_dataset,
-                                                  file_output_path = file_output_path,
-                                                  file_output_name = file_output_name[:-3] + "_MASKED_VARS.nc")
-                        else:
-                            print("No data_var was masked")
-                        if not_masked_dataset is not None:
-                            self._save_masked_DataArray(DataArray_masked = not_masked_dataset,
-                                                  file_output_path = file_output_path,
-                                                  file_output_name = file_output_name[:-3] + "_NOT_MASKED_VARS.nc")
-                        else:
-                            pass
-                    else:
-                        if masked_dataset is not None:
-                            return(masked_dataset)
-                        else:
-                            print("No data_var was masked")
-        else:
-            raise ValueError("DataArray or file_path/file_name not specified")
+            return self._save_masked_DataArray(
+                DataArray_masked=masked,
+                file_output_path=file_output_path,
+                file_output_name=file_output_name,
+                to_netcdf_kwargs=save_kwargs,
+            )
+        except Exception:
+            if owned_input:
+                _close_owned(input_obj)
+            raise
+        finally:
+            if owned_input and save_masked_file:
+                _close_owned(input_obj)
 
     ##### Helpers for create_images
     @staticmethod
