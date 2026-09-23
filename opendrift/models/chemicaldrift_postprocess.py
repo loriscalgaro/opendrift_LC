@@ -7994,8 +7994,6 @@ class ChemicalDriftPostProcessMixin:
             return None, []
         if Verbose:
             print('Included water species:', ', '.join(name for name, _ in included))
-        if 'depth' in out.dims and out.sizes.get('depth', 0) == 1:
-            out = out.isel(depth=0, drop=True)
         return out, included
 
     @staticmethod
@@ -8225,8 +8223,6 @@ class ChemicalDriftPostProcessMixin:
             num = num.sum(dim='depth')
             den = den.sum(dim='depth')
         out = xr.where(den > 0, num / den, np.nan)
-        if (not collapse_depth) and 'depth' in out.dims and out.sizes.get('depth', 0) == 1:
-            out = out.isel(depth=0, drop=True)
         return out, included
 
     def calculate_water_sediment_conc(self,
@@ -8520,7 +8516,7 @@ class ChemicalDriftPostProcessMixin:
                 template = template.isel(specie=0, drop=True)
 
             if "depth" in template.dims:
-                if collapse_depth or template.sizes.get("depth", 0) == 1:
+                if collapse_depth:
                     template = template.isel(depth=0, drop=True)
 
             out = xr.full_like(template, fill_value, dtype=np.float32)
@@ -13043,43 +13039,90 @@ class ChemicalDriftPostProcessMixin:
                               file_output_path,
                               file_output_name):
         import os
+        import warnings
         import xarray as xr
 
         if not os.path.exists(file_output_path):
             os.makedirs(file_output_path)
             print("file_output_path did not exist and was created")
-        else:
-            pass
         print(f"Saving to {file_output_path}")
 
-        if 'grid_mapping' in DataArray_masked.attrs:
-            del DataArray_masked.attrs['grid_mapping'] # delete grid_mapping attribute to avoid "ValueError in safe_setitem" from xarray
-        else:
-            pass
         full_output_path = os.path.join(file_output_path, file_output_name)
+
+        def _metadata_copy(obj):
+            copied = obj.copy(deep=False)
+            copied.attrs = dict(obj.attrs)
+            if isinstance(copied, xr.Dataset):
+                for var_name in copied.variables:
+                    copied[var_name].attrs = dict(obj[var_name].attrs)
+                    copied[var_name].encoding = dict(obj[var_name].encoding)
+            else:
+                copied.encoding = dict(obj.encoding)
+                for coord_name in copied.coords:
+                    copied.coords[coord_name].attrs = dict(obj.coords[coord_name].attrs)
+                    copied.coords[coord_name].encoding = dict(obj.coords[coord_name].encoding)
+            return copied
+
+        def _drop_unresolved_grid_mapping(obj):
+            if isinstance(obj, xr.DataArray):
+                attrs = dict(obj.attrs)
+                mapping_name = attrs.get("grid_mapping")
+                if mapping_name and mapping_name not in obj.coords:
+                    warnings.warn(
+                        f"Removing unresolved grid_mapping={mapping_name!r} from write copy; "
+                        "the caller object is unchanged.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    attrs.pop("grid_mapping", None)
+                    obj.attrs = attrs
+            else:
+                global_attrs = dict(obj.attrs)
+                mapping_name = global_attrs.get("grid_mapping")
+                if mapping_name and mapping_name not in obj.variables:
+                    warnings.warn(
+                        f"Removing unresolved dataset grid_mapping={mapping_name!r} from write copy; "
+                        "the caller object is unchanged.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    global_attrs.pop("grid_mapping", None)
+                    obj.attrs = global_attrs
+                for var_name in obj.data_vars:
+                    attrs = dict(obj[var_name].attrs)
+                    mapping_name = attrs.get("grid_mapping")
+                    if mapping_name and mapping_name not in obj.variables:
+                        warnings.warn(
+                            f"Removing unresolved grid_mapping={mapping_name!r} from variable "
+                            f"{var_name!r} on write copy; the caller object is unchanged.",
+                            RuntimeWarning,
+                            stacklevel=2,
+                        )
+                        attrs.pop("grid_mapping", None)
+                        obj[var_name].attrs = attrs
+            return obj
+
+        write_obj = _drop_unresolved_grid_mapping(_metadata_copy(DataArray_masked))
+
         try:
-            DataArray_masked.to_netcdf(full_output_path)
+            write_obj.to_netcdf(full_output_path)
         except Exception as e:
-            print(f"Error writing netcdf ({e}), trying fallback path...")
-            # Change DataArray_masked to dataset if xarray.core.dataarray.DataArray
-            if isinstance(DataArray_masked, xr.DataArray):
-                DataArray_masked = DataArray_masked.to_dataset()
-                print("Changed DataArray_masked from DataArray to DataSet")
-            # Remove "_FillValue" = np.nan from data_vars and coordinates attributes
-            # Change "_FillValue" to -9999, to avoid "ValueError: cannot convert float NaN to integer"
-            for var_name, var in DataArray_masked.variables.items():
-                if "_FillValue" in var.attrs:
-                    del var.attrs["_FillValue"]
-                    var.attrs["_FillValue"] = -9999
-                    print(f"Changed _FillValue of {var_name} from NaN to -9999")
+            print(f"Error writing netcdf ({e}), trying fallback...")
+            fallback_obj = _metadata_copy(write_obj)
+            if isinstance(fallback_obj, xr.DataArray):
+                data_name = fallback_obj.name or "data"
+                fallback_obj = fallback_obj.to_dataset(name=data_name)
 
-            for coord_name, coord in DataArray_masked.coords.items():
-                if "_FillValue" in coord.attrs:
-                    del coord.attrs["_FillValue"]
-                    coord.attrs["_FillValue"] = -9999
-                    print(f"Changed _FillValue of {coord_name} from NaN to -9999")
+            for var_name in fallback_obj.variables:
+                attrs = dict(fallback_obj[var_name].attrs)
+                if "_FillValue" in attrs:
+                    attrs["_FillValue"] = -9999
+                    fallback_obj[var_name].attrs = attrs
+                    print(f"Changed _FillValue of {var_name} to -9999 on fallback write copy")
 
-            DataArray_masked.to_netcdf(file_output_path + file_output_name)
+            fallback_obj.to_netcdf(full_output_path)
+
+        return full_output_path
 
     @staticmethod
     def _mask_DataArray(DataArray,
@@ -22681,6 +22724,195 @@ class ChemicalDriftPostProcessMixin:
                                 axis="X",)
         return(DataArray)
 
+    @staticmethod
+    def _normalize_vertical_depth_axis(depth_coord):
+        """Validate and normalize layer-top depth coordinates without reindexing data.
+
+        Returns
+        -------
+        physical_depth_top : np.ndarray
+            Positive-down layer-top depths ordered from surface to deepest layer.
+        source_indices : np.ndarray
+            Integer indices selecting the corresponding source depth slices in that order.
+        """
+        depth = np.asarray(depth_coord)
+        if depth.ndim != 1 or depth.size == 0:
+            raise ValueError("depth coordinate must be a non-empty 1D array")
+        if not np.issubdtype(depth.dtype, np.number):
+            raise TypeError("depth coordinate must be numeric")
+
+        depth = depth.astype(np.float64, copy=False)
+        if not np.all(np.isfinite(depth)):
+            raise ValueError("depth coordinate must contain only finite values")
+
+        zero_mask = depth == 0.0
+        if int(np.count_nonzero(zero_mask)) != 1:
+            raise ValueError("depth coordinate must contain exactly one surface value equal to 0")
+
+        has_pos = bool(np.any(depth > 0.0))
+        has_neg = bool(np.any(depth < 0.0))
+        if has_pos and has_neg:
+            raise ValueError("depth coordinate must use one sign convention; mixed positive/negative depths are not supported")
+
+        physical = np.abs(depth)
+        if np.unique(physical).size != physical.size:
+            raise ValueError("depth coordinate contains duplicate physical layer-top depths")
+
+        if physical.size == 1:
+            if physical[0] != 0.0:
+                raise ValueError("the only depth level must be the surface value 0")
+            return physical.copy(), np.array([0], dtype=np.intp)
+
+        delta = np.diff(physical)
+        if np.all(delta > 0.0):
+            source_indices = np.arange(physical.size, dtype=np.intp)
+            physical_ordered = physical
+        elif np.all(delta < 0.0):
+            source_indices = np.arange(physical.size - 1, -1, -1, dtype=np.intp)
+            physical_ordered = physical[::-1]
+        else:
+            raise ValueError("depth coordinate must be monotonic in physical depth")
+
+        if physical_ordered[0] != 0.0:
+            raise ValueError("depth coordinate must include the surface layer top at 0")
+        return physical_ordered.copy(), source_indices
+
+    @staticmethod
+    def _align_vertical_mean_inputs(Conc_DA, Bathymetry_DA):
+        """Align bathymetry to concentration without changing native horizontal topology."""
+        import xarray as xr
+
+        if not isinstance(Conc_DA, xr.DataArray) or not isinstance(Bathymetry_DA, xr.DataArray):
+            raise TypeError("Conc_DA and Bathymetry_DA must be xarray.DataArray objects")
+        if "depth" not in Conc_DA.dims:
+            raise ValueError("Conc_DA must contain a 'depth' dimension")
+        if "depth" in Bathymetry_DA.dims:
+            raise ValueError("Bathymetry_DA must not contain a 'depth' dimension")
+
+        alias_pairs = (("lat", "latitude"), ("latitude", "lat"),
+                       ("lon", "longitude"), ("longitude", "lon"))
+        rename = {}
+        conc_dims = set(Conc_DA.dims)
+        bathy_dims = set(Bathymetry_DA.dims)
+        for source, target in alias_pairs:
+            if target in conc_dims and target not in bathy_dims and source in bathy_dims:
+                rename[source] = target
+                bathy_dims.remove(source)
+                bathy_dims.add(target)
+        if rename:
+            Bathymetry_DA = Bathymetry_DA.rename(rename)
+
+        non_depth_dims = set(Conc_DA.dims) - {"depth"}
+        extra_dims = set(Bathymetry_DA.dims) - non_depth_dims
+        if extra_dims:
+            raise ValueError(
+                "Bathymetry_DA dimensions must be a subset of the concentration non-depth dimensions; "
+                f"unexpected dimensions: {sorted(extra_dims)}"
+            )
+
+        try:
+            Conc_DA, Bathymetry_DA = xr.align(Conc_DA, Bathymetry_DA, join="exact", copy=False)
+        except ValueError as exc:
+            raise ValueError("Concentration and bathymetry coordinates are not exactly aligned") from exc
+
+        return Conc_DA, Bathymetry_DA
+
+    @staticmethod
+    def _vertical_layer_wet_thickness(Bathymetry_DA, layer_top, layer_bottom=None):
+        """Return physical wet thickness for one layer without adding a depth dimension.
+
+        ``layer_top`` and ``layer_bottom`` are positive-down layer-top depths in metres.
+        ``layer_bottom=None`` denotes the deepest represented layer, which extends to
+        local bathymetry. Invalid bathymetry is left with zero support here; the
+        authoritative validity mask is applied by the bounded reducer.
+        """
+        import xarray as xr
+
+        top = float(layer_top)
+        if not np.isfinite(top) or top < 0.0:
+            raise ValueError("layer_top must be finite and >= 0")
+
+        if layer_bottom is None:
+            return xr.where(Bathymetry_DA > top, Bathymetry_DA - top, 0.0)
+
+        bottom = float(layer_bottom)
+        if not np.isfinite(bottom) or bottom <= top:
+            raise ValueError("layer_bottom must be finite and greater than layer_top")
+
+        valid_support = np.isfinite(Bathymetry_DA) & (Bathymetry_DA > top)
+        return xr.where(
+            valid_support,
+            xr.where(Bathymetry_DA < bottom, Bathymetry_DA - top, bottom - top),
+            0.0,
+        )
+
+    @staticmethod
+    def _vertical_mean_valid_bathymetry(Bathymetry_DA):
+        """Return the authoritative wet-domain validity mask for vertical means."""
+        return np.isfinite(Bathymetry_DA) & (Bathymetry_DA > 0.0)
+
+    @staticmethod
+    def _vertical_layer_missing_on_support(concentration_slice, wet_thickness):
+        """Flag missing concentration only where the layer has positive physical support."""
+        return (wet_thickness > 0.0) & (~np.isfinite(concentration_slice))
+
+    def _bounded_vertical_depth_mean(self, Conc_DA, Bathymetry_DA, depth_tops, source_indices):
+        """Reduce depth one layer at a time without a depth-sized weight cube.
+
+        This helper is intentionally expressed as a sequence of non-depth-sized
+        xarray operations. NumPy-backed inputs therefore have a working set bounded
+        by output-sized intermediates rather than ``depth * output`` weights/products.
+        Dask-backed inputs remain lazy because the helper performs no scalar truth
+        evaluation and never accesses the concentration data through ``.values``.
+        """
+        depth_tops = np.asarray(depth_tops, dtype=np.float64)
+        source_indices = np.asarray(source_indices, dtype=np.intp)
+        if depth_tops.ndim != 1 or source_indices.ndim != 1:
+            raise ValueError("depth_tops and source_indices must be 1D")
+        if depth_tops.size == 0 or depth_tops.size != source_indices.size:
+            raise ValueError("depth_tops and source_indices must have the same non-zero length")
+        if "depth" not in Conc_DA.dims:
+            raise ValueError("Conc_DA must contain a 'depth' dimension")
+        if Conc_DA.sizes["depth"] != depth_tops.size:
+            raise ValueError("depth_tops length must match Conc_DA depth size")
+
+        output_dims = tuple(dim for dim in Conc_DA.dims if dim != "depth")
+        valid_bathymetry = self._vertical_mean_valid_bathymetry(Bathymetry_DA)
+        numerator = None
+        missing_on_support = None
+
+        for layer_pos, source_index in enumerate(source_indices):
+            top = float(depth_tops[layer_pos])
+            bottom = (
+                float(depth_tops[layer_pos + 1])
+                if layer_pos + 1 < depth_tops.size
+                else None
+            )
+            wet_thickness = self._vertical_layer_wet_thickness(
+                Bathymetry_DA, top, bottom
+            )
+            concentration_slice = Conc_DA.isel(depth=int(source_index), drop=True)
+            layer_missing = self._vertical_layer_missing_on_support(
+                concentration_slice, wet_thickness
+            )
+            missing_on_support = (
+                layer_missing
+                if missing_on_support is None
+                else (missing_on_support | layer_missing)
+            )
+
+            safe_concentration = concentration_slice.where(
+                np.isfinite(concentration_slice), 0.0
+            ).astype(np.float64)
+            contribution = safe_concentration * wet_thickness.astype(np.float64)
+            numerator = contribution if numerator is None else (numerator + contribution)
+
+        result_valid = valid_bathymetry & (~missing_on_support)
+        result = (numerator / Bathymetry_DA.astype(np.float64)).where(result_valid)
+        if output_dims:
+            result = result.transpose(*output_dims)
+        return result
+
     def vertical_depth_mean(self,
                             Dataset,
                             Topograpy_DA = None,
@@ -22690,187 +22922,72 @@ class ChemicalDriftPostProcessMixin:
                             file_output_path = None,
                             file_output_name = None
                             ):
-        '''
-        Calculate the weighted average over "depth" for a concentration dataarray using the bathimerty to calculate average weights.
-        Use with outputs of "calculate_water_sediment_conc" and " write_netcdf_chemical_density_map" functions
-        Depth must contain 0, and its value indicate the upper limit of the vertical level
+        """Calculate a bathymetry-weighted vertical mean over layer-top depths.
 
-        Dataset:           xarray DataSet, containing concentration (and topography) dataarray
-            * latitude      (latitude) float32
-            * longitude     (longitude) float32
-            * depth         (depth) float32 (Expected like [-2, -1, 0])
-            * other dims
-        Topograpy_DA :     xarray DataArray, with topograpy corresponding to Dataset (positive downword)
-            * latitude      (latitude) float32
-            * longitude     (longitude) float32
-        variable_name:     string, name of variable in DataSet to be averaged
-        topograpy_name:    string, name of topograpy variable in Dataset
-        save_file:         boolean, select if averege file is saved
-        file_output_path:  string, path of the file to be saved. Must end with /
-        file_output_name:  string, name of the average DataArray output file (.nc)
-        '''
+        The concentration variable must contain a one-dimensional ``depth``
+        coordinate whose values identify the top of each represented layer.
+        Depth may use positive-down values or one legacy negative-down sign
+        convention, but it must contain exactly one surface value at 0 and be
+        monotonic in physical depth. The deepest represented layer extends to
+        local bathymetry.
 
+        Horizontal topology is preserved. Rectilinear geographic, projected
+        x/y, curvilinear y/x with auxiliary lon/lat, and unstructured face
+        dimensions are accepted when concentration and bathymetry coordinates
+        align exactly. Only historical lat/latitude and lon/longitude bathymetry
+        aliases may be normalized internally.
+
+        Missing concentration in a layer with positive physical thickness
+        invalidates that column/time mean. Missing values in layers with zero
+        physical support do not. Bathymetry must be finite and strictly positive;
+        invalid bathymetry returns NaN.
+        """
         import xarray as xr
 
-        if "depth" not in Dataset.dims:
-            raise ValueError("depth not in Dataset.dims")
+        if not isinstance(Dataset, xr.Dataset):
+            raise TypeError("Dataset must be an xarray.Dataset")
+        if variable_name is None:
+            raise ValueError("variable_name must be specified")
+        if variable_name not in Dataset.data_vars:
+            raise ValueError(f"Variable '{variable_name}' not found in Dataset")
+
+        Conc_DA = Dataset[variable_name]
+        if "depth" not in Conc_DA.dims:
+            raise ValueError(f"Variable '{variable_name}' must contain a 'depth' dimension")
 
         if save_file is True:
-            if not ((file_output_path is not None) & (file_output_name is not None)):
+            if file_output_path is None or file_output_name is None:
                 raise ValueError("file_output_path or file_output_name not specified")
 
-        # Specify bathimetry if not included in Dataset
         if topograpy_name is not None:
             if topograpy_name not in Dataset.data_vars:
                 raise ValueError(f"Topography variable '{topograpy_name}' not found in Dataset")
             Bathymetry_DA = Dataset[topograpy_name]
         else:
-            if (Topograpy_DA is None) or (not isinstance(Topograpy_DA, xr.DataArray)):
+            if not isinstance(Topograpy_DA, xr.DataArray):
                 raise ValueError("topograpy array not in Dataset and not specified")
             Bathymetry_DA = Topograpy_DA
 
-        # Bathimetry is expected positive downward
-        if (Bathymetry_DA <= 0).any():
-            print("Changed <= 0 to np.nan in bathimetry")
-            Bathymetry_DA = xr.where(Bathymetry_DA <= 0,
-                                     np.nan,
-                                     Bathymetry_DA)
-
-        Conc_DA = Dataset[variable_name]
-        Conc_DA = self._rename_dimensions(Conc_DA)
-        Bathymetry_DA = self._rename_dimensions(Bathymetry_DA)
-
-        # Check if ["latitude", "longitude"] have the same values
-        dims_values = []
-        for DataArray in [Conc_DA, Bathymetry_DA]:
-            # Initialize dict to store dimension values for this DataArray
-            DataArray_dims_values = {}
-            # Iterate through ["latitude", "longitude"]
-            for dim in ["latitude", "longitude"]:
-                # Get the dimension values if the dimension exists in the DataArray
-                if dim in DataArray.dims:
-                    DataArray_dims_values[dim] = DataArray[dim].values
-                else:
-                    raise ValueError("Uncommon dimensions are present in Conc_DA and Bathymetry_DA")
-            # Append the dimension values for this DataArray to the list
-            dims_values.append(DataArray_dims_values)
-
-        self._check_dims_values(dims_values)
-
-        Bathymetry_mask = ((Bathymetry_DA == 0) | np.isnan(Bathymetry_DA))
-        Landmask = (Conc_DA.sel(**{"depth": 0})).isnull()
-        # Prepare weights for avarage
-        # Depth is expected like  [-2, -1, 0], then formatted to ascending positive [-1, 0] -> [0, 1]
-        Conc_DA = Conc_DA.assign_coords(
-            depth=("depth", np.abs(Conc_DA["depth"].values))
+        Conc_DA, Bathymetry_DA = self._align_vertical_mean_inputs(
+            Conc_DA, Bathymetry_DA
         )
-        Conc_DA = Conc_DA.sortby("depth")
-
-        depth_levels = np.array(Conc_DA.depth.values)
-        if depth_levels[0] != 0:
-            raise ValueError("Depth coordinate must end at 0 (surface level)")
-
-        ### Construct weights
-        # depth_levels: 1D numpy array, ascending, with 0 at the surface
-        depth_vals = np.asarray(depth_levels, dtype=float)
-        abs_depth = np.abs(depth_vals)
-
-        if depth_vals[0] != 0:
-            raise ValueError("Depth coordinate must start at 0 for this weighting scheme.")
-
-        # "top" of each layer (in absolute depth)
-        depth_top = xr.DataArray(
-            abs_depth,
-            dims=("depth",),
-            coords={"depth": depth_vals},
+        depth_tops, source_indices = self._normalize_vertical_depth_axis(
+            Conc_DA["depth"].values
         )
 
-        # "bottom" of each layer is the next depth; last one left as NaN
-        depth_bottom_vals = np.empty_like(abs_depth)
-        depth_bottom_vals[:-1] = abs_depth[1:]
-        depth_bottom_vals[-1] = np.nan  # last layer handled separately
-
-        depth_bottom = xr.DataArray(
-            depth_bottom_vals,
-            dims=("depth",),
-            coords={"depth": depth_vals},
+        weighted_avg = self._bounded_vertical_depth_mean(
+            Conc_DA, Bathymetry_DA, depth_tops, source_indices
         )
-
-        # Broadcast bathymetry to have a depth dimension
-        # Bathymetry_DA: (latitude, longitude)
-        H = Bathymetry_DA  # (latitude, longitude)
-
-        # Broadcast to 3D (depth, latitude, longitude)
-        top3, H3 = xr.broadcast(depth_top, H)
-        bottom3, _ = xr.broadcast(depth_bottom, H)
-
-        # Layer thickness for all but last layer (last layer uses separate rule)
-        layer_thickness = bottom3 - top3
-
-        # Initialize weights array
-        weights_array_fin = xr.zeros_like(H3)
-
-        # Masks for "full" vs "partial" coverage for all but last layer
-        full = H3 > bottom3                      # bathymetry deeper than layer bottom
-        partial = (H3 > top3) & (H3 <= bottom3)  # bathymetry within layer
-
-        # For full layers: thickness / H
-        weights_array_fin = xr.where(
-            full,
-            layer_thickness / H3,
-            weights_array_fin
-        )
-
-        # For partial layers: (H - top) / H
-        weights_array_fin = xr.where(
-            partial,
-            (H3 - top3) / H3,
-            weights_array_fin
-        )
-
-        # Handle the last (deepest) layer: index -1
-        last_depth = depth_vals[-1]
-        top_last = abs_depth[-1]
-
-        H_last = H3.sel(depth=last_depth)
-        w_last = xr.where(
-            H_last > top_last, # Last depth layer is lower than bathymetry, so weight = 0
-            (H_last - top_last) / H_last,  # Last depth layer accounts for water until bathymetry
-            0.0
-        )
-
-        weights_array_fin.loc[dict(depth=last_depth)] = w_last
-
-        # Apply bathymetry mask (0 or NaN) and clean up
-        weights_array_fin = xr.where(
-            Bathymetry_mask,
-            0,          # bathymetry 0 or NaN -> weight 0
-            weights_array_fin
-        )
-
-        weights_array_fin = weights_array_fin.fillna(0)
-
-        # Check that weights sum to ~1 where non-zero
-        weights_array_check = weights_array_fin.sum(dim="depth")
-        weights_array_check = (weights_array_check != 0) & (np.abs(weights_array_check - 1) > 1e-10)
-
-        if weights_array_check.sum() > 0:
-            raise ValueError("weights_array sum higher >1 or <0")
-
-        # Conc_DA can be (time, depth, lat, lon) or (depth, lat, lon)
-        # weights_array_fin has no time dimension and will broadcast over time automatically
-        weighted_avg = (Conc_DA * weights_array_fin).sum(dim="depth", skipna=True)
-
-        # Re-apply landmask and set name
-        weighted_avg = weighted_avg.where(~Landmask)
         weighted_avg.name = variable_name
+        weighted_avg.attrs = Conc_DA.attrs.copy()
 
         if save_file is True:
-                self._save_masked_DataArray(DataArray_masked = weighted_avg,
-                                                  file_output_path = file_output_path,
-                                                  file_output_name = file_output_name)
-        else:
-            return(weighted_avg)
+            self._save_masked_DataArray(
+                DataArray_masked=weighted_avg,
+                file_output_path=file_output_path,
+                file_output_name=file_output_name,
+            )
+        return weighted_avg
 
     ##### Helpers for concat_simulation
     @staticmethod
