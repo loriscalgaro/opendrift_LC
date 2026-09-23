@@ -8782,7 +8782,6 @@ class ChemicalDriftPostProcessMixin:
                     'actual_density_proj_str',
                     'weight_name',
                     'weight_mode',
-                    'phase_units_metadata_mode',
 
                     'bathymetry_remap',
                     'bathymetry_conservative_backend',
@@ -8807,10 +8806,7 @@ class ChemicalDriftPostProcessMixin:
                 dst_ds.attrs['history'] = (old_history + '\n' + addition).strip() if old_history else addition
 
             def _copy_support_vars(dst_ds, src_ds, extra_grid_mapping_names=None):
-                # Keep support-variable insertion deterministic.  Do not use a set here:
-                # xarray assignment order can affect whether attached auxiliary coordinates
-                # are merged before or after their standalone support variables.
-                support_vars = (
+                support_vars = {
                     # CRS / mesh
                     'crs', 'mesh', 'face', 'node', 'face_node_connectivity',
 
@@ -8838,15 +8834,10 @@ class ChemicalDriftPostProcessMixin:
                     'cell_size', 'lat_resol', 'lon_resol',
                     'dx', 'dy', 'input_lat_resol_deg', 'input_lon_resol_deg',
                     'smoothing_cells',
-                )
+                }
 
                 if extra_grid_mapping_names:
-                    base_names = set(support_vars)
-                    extras = tuple(sorted({
-                        str(gm) for gm in extra_grid_mapping_names
-                        if gm and str(gm) not in base_names
-                    }))
-                    support_vars = support_vars + extras
+                    support_vars |= {gm for gm in extra_grid_mapping_names if gm}
 
                 for name in support_vars:
                     if name not in src_ds.variables or name in dst_ds.variables or name in dst_ds.coords:
@@ -8861,17 +8852,7 @@ class ChemicalDriftPostProcessMixin:
                         for dim in src_var.dims
                     ):
                         continue
-
-                    # Assign only the underlying Variable, not the DataArray.  A DataArray
-                    # can carry auxiliary coordinates (for example lon/lat), which makes
-                    # the merge order observable and formerly caused PYTHONHASHSEED-
-                    # dependent MergeError failures.  deep=False preserves lazy/backed
-                    # storage and avoids a full data copy.
-                    raw_var = src_var.variable.copy(deep=False)
-                    if name in src_ds.coords:
-                        dst_ds.coords[name] = raw_var
-                    else:
-                        dst_ds[name] = raw_var
+                    dst_ds[name] = src_var
 
             def _rebuild_derived_time_metadata(dst_ds, src_ds):
                 dst_ds.attrs.pop('time_coverage_start', None)
@@ -11672,7 +11653,7 @@ class ChemicalDriftPostProcessMixin:
                 )
 
             return {
-                "schema_version": 2,
+                "schema_version": 1,
                 "execution_mode": "estimate" if dry_run else "seed",
                 "dry_run": bool(dry_run),
                 "mode": str(mode),
