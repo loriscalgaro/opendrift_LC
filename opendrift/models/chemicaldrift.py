@@ -642,6 +642,18 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         required_variables.update(_required_group)
     del _required_group
 
+    # Absolute numerical-zero tolerances for physical quantities where exact
+    # zero is a valid state. These are deliberately unit-specific and are used
+    # with rtol=0 semantics; they are not generic model tolerances.
+    _BED_STRESS_ZERO_ATOL_PA = 1.0e-12
+    _WAVE_HEIGHT_ZERO_ATOL_M = 1.0e-12
+    _WAVE_BEARING_BOUNDARY_ATOL_DEG = 1.0e-10
+    _SED_O2_CONC_ZERO_ATOL_MMOL_M3 = 1.0e-12
+    _SED_LENGTH_ZERO_ATOL_M = 1.0e-12
+    _SED_O2_RATE_ZERO_ATOL_MMOL_M3_S = 1.0e-18
+    _SED_O2_FLUX_ZERO_ATOL_MMOL_M2_S = 1.0e-18
+    _SED_BIOIRRIGATION_RATE_ZERO_ATOL_S_1 = 1.0e-18
+
     ###########################################################################
     # Set-up and OpenDrift lifecycle
     ###########################################################################
@@ -3522,6 +3534,23 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         print(f"[DEBUG {name}: shape={a.shape}, n={n}, min={vmin}, max={vmax}, sample={head}")
 
     @staticmethod
+    def _canonicalize_numerical_zero(value, *, atol):
+        """Map only finite values inside an absolute zero band to exact zero.
+
+        This helper deliberately performs no sign or domain validation. Callers
+        retain their existing physical validation after canonicalization, so a
+        materially negative value remains invalid. ``atol`` is absolute and
+        quantity-specific; no relative tolerance is applied.
+        """
+        atol = float(atol)
+        if not np.isfinite(atol) or atol < 0.0:
+            raise ValueError(f"Numerical-zero atol must be finite and >= 0, got {atol}")
+        arr = np.asarray(value, dtype=float).copy()
+        finite = np.isfinite(arr)
+        arr[finite & (np.abs(arr) <= atol)] = 0.0
+        return arr
+
+    @staticmethod
     def _validate_scalar_param(name, value, *, finite=True, gt=None, ge=None, lt=None, le=None):
         x = float(value)
         if finite and not np.isfinite(x):
@@ -5789,6 +5818,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                     f'{name} must be scalar or have one value per active element.')
             tau = values.copy() if idx is None else values[np.asarray(idx, dtype=np.int64)]
 
+        tau = self._canonicalize_numerical_zero(
+            tau, atol=self._BED_STRESS_ZERO_ATOL_PA)
         invalid = ~np.isfinite(tau) | (tau < 0.0)
         if np.any(invalid):
             raise ValueError(
@@ -5809,6 +5840,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             if self._has_reader_variable(name):
                 raise ValueError(f'{name} is advertised by a reader but has no available data.')
             return None
+        tau = self._canonicalize_numerical_zero(
+            tau, atol=self._BED_STRESS_ZERO_ATOL_PA)
         invalid = ~np.isfinite(tau) | (tau < 0.0)
         if np.any(invalid):
             raise ValueError(
@@ -5831,10 +5864,17 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             values = self._wave_reader_array(name, idx=idx)
             if values is None:
                 continue
-            values = np.asarray(values, dtype=float)
-            # Accepted geographic bearings: [0, 360]. Reject finite fill values
-            # rather than silently wrapping, e.g. -99999, into a valid bearing.
-            valid = np.isfinite(values) & (values >= 0) & (values <= 360)
+            values = np.asarray(values, dtype=float).copy()
+            # Accept only roundoff-sized excursions immediately outside the
+            # physical [0, 360] boundary. Arbitrary finite fill values remain
+            # invalid and are never modulo-wrapped into a valid bearing.
+            bearing_atol = self._WAVE_BEARING_BOUNDARY_ATOL_DEG
+            finite = np.isfinite(values)
+            low_boundary = finite & (values < 0.0) & (values >= -bearing_atol)
+            high_boundary = finite & (values > 360.0) & (values <= 360.0 + bearing_atol)
+            values[low_boundary] = 0.0
+            values[high_boundary] = 360.0
+            valid = finite & (values >= 0.0) & (values <= 360.0)
             take = ~np.isfinite(direction) & valid
             direction[take] = (values[take] + offset) % 360.0
             if np.any(take):
@@ -6054,7 +6094,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         height = self._required_wave_environment_array(
             'sea_surface_wave_significant_height')
-        height = np.asarray(height, dtype=float)
+        height = self._canonicalize_numerical_zero(
+            height, atol=self._WAVE_HEIGHT_ZERO_ATOL_M)
         x_wind = np.asarray(self._env_array('x_wind', 0.0), dtype=float)
         y_wind = np.asarray(self._env_array('y_wind', 0.0), dtype=float)
         wind_speed = np.hypot(x_wind, y_wind)
@@ -6219,6 +6260,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             result['tau_wave'] = np.empty(0, dtype=float)
             return result
         tau = self._required_wave_environment_array('sea_floor_wave_stress', idx=idx)
+        tau = self._canonicalize_numerical_zero(
+            tau, atol=self._BED_STRESS_ZERO_ATOL_PA)
         bad = ~np.isfinite(tau) | (tau < 0)
         if np.any(bad):
             raise ValueError(
@@ -6262,7 +6305,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         height = self._required_wave_environment_array(
             'sea_surface_wave_significant_height', idx=idx)
-        height = np.asarray(height, dtype=float)
+        height = self._canonicalize_numerical_zero(
+            height, atol=self._WAVE_HEIGHT_ZERO_ATOL_M)
 
         # Hs must be finite and non-negative wherever the element is wet. Invalid
         # values are stopped here and never enter the wave calculations.
@@ -6464,6 +6508,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         kappa = 0.41
         g = 9.81
         eps = 1e-12
+        stress_eps = self._BED_STRESS_ZERO_ATOL_PA
 
         T = self._env_array('sea_water_temperature', 10.0, idx=idx)
         S = self._env_array('sea_water_salinity', 34.0, idx=idx)
@@ -6647,11 +6692,15 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         ec_x = np.zeros(n, dtype=float)
         ec_y = np.zeros(n, dtype=float)
         tau_vec = np.hypot(tau_bx, tau_by)
-        has_current = np.isfinite(tau_vec) & (tau_vec > eps)
+        current_active = np.isfinite(tau_c) & (tau_c > stress_eps)
+        has_current = (
+            current_active & np.isfinite(tau_vec) & (tau_vec > stress_eps)
+        )
         ec_x[has_current] = tau_bx[has_current] / tau_vec[has_current]
         ec_y[has_current] = tau_by[has_current] / tau_vec[has_current]
 
         tau_wave = None
+        wave_active = np.zeros(n, dtype=bool)
         ew_x = np.zeros(n, dtype=float)
         ew_y = np.zeros(n, dtype=float)
         has_wave_dir = np.zeros(n, dtype=bool)
@@ -6663,6 +6712,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 raise ValueError('Current stress contains non-finite values; check current velocity forcing.')
             wave = self._wave_stress(rho=rho, idx=idx)
             tau_wave = wave['tau_wave']
+            wave_active = np.isfinite(tau_wave) & (tau_wave > stress_eps)
             wave_to_dir = self._wave_to_direction_array(idx=idx)
             if wave_to_dir is not None:
                 has_wave_dir = np.isfinite(wave_to_dir)
@@ -6692,11 +6742,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             dir_x[use_current_dir] = ec_x[use_current_dir]
             dir_y[use_current_dir] = ec_y[use_current_dir]
 
-            active_wave_dir = has_wave_dir
-            if tau_wave is not None:
-                active_wave_dir = has_wave_dir & (tau_wave > eps)
-            else:
-                active_wave_dir = np.zeros(n, dtype=bool)
+            active_wave_dir = has_wave_dir & wave_active
 
             use_wave_dir = (~use_current_dir) & active_wave_dir
             dir_x[use_wave_dir] = ew_x[use_wave_dir]
@@ -6707,11 +6753,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         if combo == 'SOULSBY_CLARKE':
             if tau_wave is not None:
 
-                # Ignore floating-point residual stresses when deciding whether
-                # a physical direction is required for the directional combination.
-                stress_eps = 1.0e-12  # Pa
-                current_active = np.isfinite(tau_c) & (tau_c > stress_eps)
-                wave_active = np.isfinite(tau_wave) & (tau_wave > stress_eps)
+                # Use one material-activity definition for all directional
+                # decisions. Sub-tolerance direct-reader residuals were already
+                # canonicalized to exact zero at ingestion.
                 both = current_active & wave_active
 
                 if np.any(both & (~has_wave_dir | ~has_current)):
@@ -6740,22 +6784,22 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 tau_eff_y = tau_m * ec_y + sign * tau_wave * ew_y
                 tau_eff = np.hypot(tau_eff_x, tau_eff_y)
 
-                current_only = (tau_c > 0) & (tau_wave == 0)
-                wave_only = (tau_wave > 0) & (tau_c == 0)
-                tau_eff[current_only] = tau_c[current_only]
-                tau_eff[wave_only] = tau_wave[wave_only]
+                only_current_active = current_active & ~wave_active
+                only_wave_active = wave_active & ~current_active
+                tau_eff[only_current_active] = tau_c[only_current_active]
+                tau_eff[only_wave_active] = tau_wave[only_wave_active]
 
             if tau_other is not None:
                 tau_eff = np.sqrt(tau_eff ** 2 + tau_other ** 2)
 
                 # keep same direction if possible, otherwise fall back to current then wave direction
                 mag = np.hypot(tau_eff_x, tau_eff_y)
-                nonzero = mag > eps
+                nonzero = mag > stress_eps
                 if np.any(nonzero):
                     tau_eff_x[nonzero] *= tau_eff[nonzero] / mag[nonzero]
                     tau_eff_y[nonzero] *= tau_eff[nonzero] / mag[nonzero]
 
-                zero_with_mag = (~nonzero) & (tau_eff > eps)
+                zero_with_mag = (~nonzero) & (tau_eff > stress_eps)
                 if np.any(zero_with_mag):
                     dir_x, dir_y = _fallback_direction()
                     tau_eff_x[zero_with_mag] = tau_eff[zero_with_mag] * dir_x[zero_with_mag]
@@ -6791,8 +6835,13 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             tau_eff_y = tau_eff * dir_y
 
         if use_wave:
-            # NaNs distinguish unknown direction from an actual zero stress.
-            unknown_direction = (tau_eff > 0) & (np.hypot(tau_eff_x, tau_eff_y) == 0)
+            # NaNs distinguish materially active stress with unknown direction
+            # from an actual numerical/physical zero-stress state.
+            effective_active = np.isfinite(tau_eff) & (tau_eff > stress_eps)
+            vector_mag = np.hypot(tau_eff_x, tau_eff_y)
+            unknown_direction = effective_active & (
+                ~np.isfinite(vector_mag) | (vector_mag <= stress_eps)
+            )
             tau_eff_x[unknown_direction] = np.nan
             tau_eff_y[unknown_direction] = np.nan
 
@@ -7966,7 +8015,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
     ###########################################################################
 
     def _sediment_oxygen_map_or_config(self, env_name, config_name, idx, *,
-                                       ge=None, gt=None, le=None, lt=None):
+                                       ge=None, gt=None, le=None, lt=None,
+                                       zero_atol=None):
         """
         Return a local sediment-O2 input using the model-wide map -> config rule.
 
@@ -7994,6 +8044,11 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             return out
 
         mapped = np.asarray(mapped, dtype=float)
+        if zero_atol is not None:
+            # Only reader-derived values are zero-canonicalized here. The
+            # configured fallback above keeps its exact user-specified value.
+            mapped = self._canonicalize_numerical_zero(
+                mapped, atol=zero_atol)
         valid = np.isfinite(mapped)
         if ge is not None:
             valid &= mapped >= ge
@@ -8023,6 +8078,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         oxygen = self._env_array(
             'mole_concentration_of_dissolved_molecular_oxygen_in_sea_water',
             225.0, idx=idx,)
+        oxygen = self._canonicalize_numerical_zero(
+            oxygen, atol=self._SED_O2_CONC_ZERO_ATOL_MMOL_M3)
         return self._validate_array_param(
             "bottom_water_oxygen", oxygen, ge=0.0)
 
@@ -8043,6 +8100,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             'chemical:sediment:mixing_depth',
             idx,
             ge=0.0,
+            zero_atol=self._SED_LENGTH_ZERO_ATOL_M,
         )
 
     def _local_sediment_oxygen_porosity(self, idx):
@@ -8235,7 +8293,10 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 )
             alpha0 = np.full(idx.size, alpha_cfg, dtype=float)
         else:
-            mapped_alpha = np.asarray(mapped_alpha, dtype=float)
+            mapped_alpha = self._canonicalize_numerical_zero(
+                mapped_alpha,
+                atol=self._SED_BIOIRRIGATION_RATE_ZERO_ATOL_S_1,
+            )
             valid = np.isfinite(mapped_alpha) & (mapped_alpha >= 0.0)
             if np.any(~valid) and not alpha_cfg_ok:
                 raise ValueError(
@@ -8847,6 +8908,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             'chemical:sediment:oxygen_penetration_depth',
             idx,
             ge=0.0,
+            zero_atol=self._SED_LENGTH_ZERO_ATOL_M,
         )
         oxygen = self._mean_parabolic_sediment_oxygen(
             C_bottom, H_active, L_oxygen
@@ -8896,6 +8958,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'chemical:sediment:oxygen_consumption_rate',
                 idx,
                 ge=0.0,
+                zero_atol=self._SED_O2_RATE_ZERO_ATOL_MMOL_M3_S,
             )
             reacting = (R_oxygen > 0.0) & (C_bottom > 0.0)
             L_oxygen[C_bottom == 0.0] = 0.0
@@ -8914,6 +8977,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'chemical:sediment:benthic_oxygen_flux',
                 idx,
                 ge=0.0,
+                zero_atol=self._SED_O2_FLUX_ZERO_ATOL_MMOL_M2_S,
             )
             consuming = (oxygen_flux > 0.0) & (C_bottom > 0.0)
             L_oxygen[(oxygen_flux > 0.0) & (C_bottom == 0.0)] = 0.0
@@ -9000,6 +9064,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'chemical:sediment:oxygen_consumption_rate',
                 idx,
                 ge=0.0,
+                zero_atol=self._SED_O2_RATE_ZERO_ATOL_MMOL_M3_S,
             )
             C_surface, L_oxygen, oxygen_flux = self._zero_order_dbl_surface_depth(
                 C_bottom, porosity, D_s, R_oxygen, k_bl
@@ -9011,6 +9076,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'chemical:sediment:benthic_oxygen_flux',
                 idx,
                 ge=0.0,
+                zero_atol=self._SED_O2_FLUX_ZERO_ATOL_MMOL_M2_S,
             )
 
             transport_capacity = k_bl * C_bottom
@@ -9409,18 +9475,21 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             'chemical:sediment:oxygen_consumption_rate_upper',
             idx,
             ge=0.0,
+            zero_atol=self._SED_O2_RATE_ZERO_ATOL_MMOL_M3_S,
         )
         R_lower = self._sediment_oxygen_map_or_config(
             'sediment_oxygen_consumption_rate_lower',
             'chemical:sediment:oxygen_consumption_rate_lower',
             idx,
             ge=0.0,
+            zero_atol=self._SED_O2_RATE_ZERO_ATOL_MMOL_M3_S,
         )
         h1 = self._sediment_oxygen_map_or_config(
             'sediment_oxygen_reactivity_transition_depth',
             'chemical:sediment:oxygen_reactivity_transition_depth',
             idx,
             ge=0.0,
+            zero_atol=self._SED_LENGTH_ZERO_ATOL_M,
         )
 
         C_surface = np.zeros(idx.size, dtype=float)
