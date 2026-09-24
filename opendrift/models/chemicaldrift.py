@@ -6706,23 +6706,40 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         if combo == 'SOULSBY_CLARKE':
             if tau_wave is not None:
-                both = (tau_wave > 0) & (tau_c > 0)
+
+                # Ignore floating-point residual stresses when deciding whether
+                # a physical direction is required for the directional combination.
+                stress_eps = 1.0e-12  # Pa
+                current_active = np.isfinite(tau_c) & (tau_c > stress_eps)
+                wave_active = np.isfinite(tau_wave) & (tau_wave > stress_eps)
+                both = current_active & wave_active
+
                 if np.any(both & (~has_wave_dir | ~has_current)):
                     raise ValueError(
                         'SOULSBY_CLARKE needs finite wave and current directions '
-                        'where both stresses are positive. Supply to/from wave '
-                        'direction and bottom or depth-averaged current velocity, '
-                        'or select the scalar sum/max/rss combination.')
+                        'where both stresses are materially positive '
+                        f'(>{stress_eps:g} Pa). Supply to/from wave direction and '
+                        'bottom or depth-averaged current velocity, or select the '
+                        'scalar sum/max/rss combination.'
+                    )
+
                 total = tau_c + tau_wave
-                fraction = np.divide(tau_wave, total, out=np.zeros(n), where=total > 0)
-                tau_m = tau_c * (1.0 + 1.2*fraction**3.2)
-                # Choose the half-cycle that reinforces the current projection.
-                dot = ec_x*ew_x + ec_y*ew_y
+                fraction = np.divide(
+                    tau_wave,
+                    total,
+                    out=np.zeros(n),
+                    where=total > 0
+                )
+                tau_m = tau_c * (1.0 + 1.2 * fraction**3.2)
+
+                # Choose the wave half-cycle that reinforces the current projection.
+                dot = ec_x * ew_x + ec_y * ew_y
                 sign = np.where(dot < 0, -1.0, 1.0)
-                tau_eff_x = tau_m*ec_x + sign*tau_wave*ew_x
-                tau_eff_y = tau_m*ec_y + sign*tau_wave*ew_y
+
+                tau_eff_x = tau_m * ec_x + sign * tau_wave * ew_x
+                tau_eff_y = tau_m * ec_y + sign * tau_wave * ew_y
                 tau_eff = np.hypot(tau_eff_x, tau_eff_y)
-                # Preserve scalar forcing even if its direction is unknowable.
+
                 current_only = (tau_c > 0) & (tau_wave == 0)
                 wave_only = (tau_wave > 0) & (tau_c == 0)
                 tau_eff[current_only] = tau_c[current_only]
@@ -9847,7 +9864,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         Parameters
         ----------
         HalfSatO_w/s : float
-            Oxygen half-saturation constant [g/m3]. Must be > 0. 
+            Oxygen half-saturation constant [g/m3]. Must be > 0.
             Water calls pass HalfSatO_w and sediment calls pass HalfSatO_s.
         k_Anaerobic_water : float
             Anaerobic biodegradation rate constant [1/h]. Must be >= 0.
