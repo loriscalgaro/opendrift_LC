@@ -23,6 +23,7 @@ The initial version is based on Radionuclides module by Magne Simonsen
 """
 
 import numpy as np
+import json
 import logging; logger = logging.getLogger(__name__)
 
 from opendrift.models.physics_methods import seawater_dynamic_viscosity
@@ -432,6 +433,15 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
     )
 
     required_variables = {}
+
+    # Finite framework sentinels used to carry reader gaps through OpenDrift
+    # until ChemicalDrift can apply its variable-specific fallback policy.
+    # These are missing-data markers only; they are unrelated to the numerical
+    # near-zero tolerances defined below.
+    _ENV_NEGATIVE_SENTINEL = -1.0
+    _ENV_NONPOSITIVE_SENTINEL = 0.0
+    _ENV_SIGNED_VECTOR_SENTINEL = float(np.float32(9.969209968386869e36))
+
     BASE_REQUIRED_VARIABLES = {
         # Hydrodynamics
         'x_sea_water_velocity': {'fallback': None},                            # m/s
@@ -453,8 +463,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         'doc': {'fallback': 0.0},                                              # mmol C/kg
         'spm': {'fallback': 1},                                                # g/m3
         # Organic-carbon fractions
-        'f_OC_spm': {'fallback': 0.01},                                        # gOC/g
-        'f_OC_sed': {'fallback': 0.01},                                        # gOC/g
+        'f_OC_spm': {'fallback': _ENV_NEGATIVE_SENTINEL},                                        # gOC/g
+        'f_OC_sed': {'fallback': _ENV_NEGATIVE_SENTINEL},                                        # gOC/g
         # pH fields used for pH-dependent sorption/speciation corrections
         'sea_water_ph_reported_on_total_scale': {'fallback': 8.1, 'profiles': True,}, # pH units, dimensionless
         'pH_sediment': {'fallback': 6.9, 'profiles': False,},                         # pH units, dimensionless
@@ -463,13 +473,13 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
     }
     SEDIMENT_EXCHANGE_REQUIRED_VARIABLES = {
         # Sediment-layer geometry
-        'active_sediment_layer_thickness': {'fallback': 0},                    # m
+        'active_sediment_layer_thickness': {'fallback': _ENV_NEGATIVE_SENTINEL},                    # m
         'interaction_sediment_layer_thickness': {'fallback': 0},               # m
         # Needed to check sediment exchange by adsorption/desorption.
         'ocean_mixed_layer_thickness': {'fallback': 50,'important': False,},   # m
         # Local organic-carbon fractions used when updating f_OC after particle/sediment transitions.
-        'f_OC_spm': {'fallback': 0.01},                                        # gOC/g
-        'f_OC_sed': {'fallback': 0.01},                                        # gOC/g
+        'f_OC_spm': {'fallback': _ENV_NEGATIVE_SENTINEL},                                        # gOC/g
+        'f_OC_sed': {'fallback': _ENV_NEGATIVE_SENTINEL},                                        # gOC/g
     }
     DIRECT_CURRENT_STRESS_REQUIRED_VARIABLES = {
         # Optional preferred hydro-model current bed stress
@@ -479,8 +489,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
     }
     SEDIMENT_BOTTOM_VELOCITY_REQUIRED_VARIABLES = {
     # Needed by LOG_Z0 and GRAIN_D50 fallback stress modes
-    'x_bottom_sea_water_velocity': {'fallback': 0, 'important': False,},       # m/s
-    'y_bottom_sea_water_velocity': {'fallback': 0, 'important': False,},       # m/s
+    'x_bottom_sea_water_velocity': {'fallback': _ENV_SIGNED_VECTOR_SENTINEL, 'important': False,},       # m/s
+    'y_bottom_sea_water_velocity': {'fallback': _ENV_SIGNED_VECTOR_SENTINEL, 'important': False,},       # m/s
     'bottom_layer_thickness': {'fallback': 0.0, 'important': False,},          # m
     }
     SEDIMENT_LOG_Z0_REQUIRED_VARIABLES = {
@@ -494,36 +504,36 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
     }
     SEDIMENT_BULK_FLOW_REQUIRED_VARIABLES = {
         # Needed by MANNING, CHEZY, WHITE_COLEBROOK modes
-        'x_depth_averaged_sea_water_velocity': {'fallback': 0, 'important': False,},  # m/s
-        'y_depth_averaged_sea_water_velocity': {'fallback': 0, 'important': False,},  # m/s
+        'x_depth_averaged_sea_water_velocity': {'fallback': _ENV_SIGNED_VECTOR_SENTINEL, 'important': False,},  # m/s
+        'y_depth_averaged_sea_water_velocity': {'fallback': _ENV_SIGNED_VECTOR_SENTINEL, 'important': False,},  # m/s
         'hydraulic_radius': {'fallback': 0, 'important': False,},                     # m
     }
     SEDIMENT_RESUSPENSION_REQUIRED_VARIABLES = {
         # Optional mapped cohesive erodibility
-        'sea_floor_erodibility_M': {'fallback': 0, 'important': False,},       # kg m-2 s-1 Pa-1
+        'sea_floor_erodibility_M': {'fallback': _ENV_NEGATIVE_SENTINEL, 'important': False,},       # kg m-2 s-1 Pa-1
         # Optional mapped critical shear stress
         'sea_floor_resuspension_critstress': {'fallback': 0, 'important': False,}, # Pa
     }
     OTHER_STRESS_REQUIRED_VARIABLES = {
-        'sea_floor_other_stress': {'fallback': np.nan, 'important': False,},        # Pa
+        'sea_floor_other_stress': {'fallback': _ENV_NEGATIVE_SENTINEL, 'important': False,},        # Pa
     }
     WAVE_STRESS_REQUIRED_VARIABLES = {
     # Surface-wave forcing; no direct wave-stress/orbital-velocity inputs.
     'sea_surface_wave_significant_height': {'fallback': None},
     # A missing period is tolerated only at genuinely calm/dry locations.
     'sea_surface_wave_period_at_variance_spectral_density_maximum': {
-        'fallback': np.nan, 'important': False},
+        'fallback': _ENV_NONPOSITIVE_SENTINEL, 'important': False},
     }
 
     WAVE_DIRECTION_REQUIRED_VARIABLES = {
         'sea_surface_wave_to_direction': {
-            'fallback': np.nan, 'important': False},
+            'fallback': _ENV_NEGATIVE_SENTINEL, 'important': False},
         'sea_surface_wave_from_direction': {
-            'fallback': np.nan, 'important': False},
+            'fallback': _ENV_NEGATIVE_SENTINEL, 'important': False},
     }
     DIRECT_WAVE_STRESS_REQUIRED_VARIABLES = {
         # Wave-only stress amplitude [Pa], not total wave-current stress.
-        'sea_floor_wave_stress': {'fallback': None},
+        'sea_floor_wave_stress': {'fallback': _ENV_NEGATIVE_SENTINEL},
     }
     VOLATILIZATION_REQUIRED_VARIABLES = {
         'ocean_mixed_layer_thickness': {'fallback': 50,'important': False,},          # m
@@ -541,58 +551,59 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         'pH_sediment': {'fallback': 6.9, 'profiles': False,},                         # pH units, dimensionless
     }
     # Optional mapped sediment-oxygen fields used only by the selected
-    # sediment oxygen model. np.nan fallbacks intentionally preserve the
-    # distinction between a reader-supplied map and the configured fallback.
+    # sediment oxygen model. Finite out-of-domain sentinels carry local reader
+    # gaps through OpenDrift; ChemicalDrift decodes them before applying the
+    # established map -> config or map -> derived fallback rules.
     SEDIMENT_OXYGEN_GEOMETRY_REQUIRED_VARIABLES = {
-        'active_sediment_layer_thickness': {'fallback': 0,
+        'active_sediment_layer_thickness': {'fallback': _ENV_NEGATIVE_SENTINEL,
             'important': False, 'profiles': False,},  # m
     }
 
     SEDIMENT_OXYGEN_OPD_REQUIRED_VARIABLES = {
-        'sediment_oxygen_penetration_depth': {'fallback': np.nan,
+        'sediment_oxygen_penetration_depth': {'fallback': _ENV_NEGATIVE_SENTINEL,
             'important': False,'profiles': False,},  # m
     }
 
     SEDIMENT_OXYGEN_TRANSPORT_REQUIRED_VARIABLES = {
-        'sea_floor_porosity': {'fallback': np.nan,
+        'sea_floor_porosity': {'fallback': _ENV_NONPOSITIVE_SENTINEL,
             'important': False,'profiles': False,},  # 1, m3 pore water / m3 bulk sediment
-        'sediment_oxygen_diffusivity': {'fallback': np.nan,
+        'sediment_oxygen_diffusivity': {'fallback': _ENV_NONPOSITIVE_SENTINEL,
             'important': False, 'profiles': False,},  # m2/s, effective molecular pore-water diffusivity
     }
 
     SEDIMENT_OXYGEN_PERMEABILITY_REQUIRED_VARIABLES = {
-        'sea_floor_permeability': {'fallback': np.nan,
+        'sea_floor_permeability': {'fallback': _ENV_NONPOSITIVE_SENTINEL,
             'important': False, 'profiles': False,},  # m2
     }
 
     SEDIMENT_OXYGEN_BIOIRRIGATION_REQUIRED_VARIABLES = {
-        'sediment_bioirrigation_alpha0': {'fallback': np.nan,
+        'sediment_bioirrigation_alpha0': {'fallback': _ENV_NEGATIVE_SENTINEL,
             'important': False, 'profiles': False,},  # s-1
-        'sediment_bioirrigation_depth_scale': {'fallback': np.nan,
+        'sediment_bioirrigation_depth_scale': {'fallback': _ENV_NONPOSITIVE_SENTINEL,
             'important': False, 'profiles': False,},  # m
     }
 
     SEDIMENT_OXYGEN_VOLUMETRIC_REQUIRED_VARIABLES = {
-        'sediment_oxygen_consumption_rate': {'fallback': np.nan,
+        'sediment_oxygen_consumption_rate': {'fallback': _ENV_NEGATIVE_SENTINEL,
             'important': False, 'profiles': False,},  # mmol O2 m-3 bulk sediment s-1
     }
 
     SEDIMENT_OXYGEN_FLUX_REQUIRED_VARIABLES = {
-        'benthic_oxygen_flux': {'fallback': np.nan,
+        'benthic_oxygen_flux': {'fallback': _ENV_NEGATIVE_SENTINEL,
             'important': False, 'profiles': False,},  # mmol O2 m-2 s-1, positive into sediment
     }
 
     SEDIMENT_OXYGEN_DBL_REQUIRED_VARIABLES = {
-        'diffusive_boundary_layer_thickness': {'fallback': np.nan,
+        'diffusive_boundary_layer_thickness': {'fallback': _ENV_NONPOSITIVE_SENTINEL,
             'important': False, 'profiles': False,},  # m
     }
 
     SEDIMENT_OXYGEN_TWO_LAYER_REQUIRED_VARIABLES = {
-        'sediment_oxygen_consumption_rate_upper': {'fallback': np.nan,
+        'sediment_oxygen_consumption_rate_upper': {'fallback': _ENV_NEGATIVE_SENTINEL,
             'important': False, 'profiles': False,},  # mmol O2 m-3 bulk sediment s-1
-        'sediment_oxygen_consumption_rate_lower': {'fallback': np.nan,
+        'sediment_oxygen_consumption_rate_lower': {'fallback': _ENV_NEGATIVE_SENTINEL,
             'important': False, 'profiles': False,},  # mmol O2 m-3 bulk sediment s-1
-        'sediment_oxygen_reactivity_transition_depth': {'fallback': np.nan,
+        'sediment_oxygen_reactivity_transition_depth': {'fallback': _ENV_NEGATIVE_SENTINEL,
             'important': False, 'profiles': False,},  # m
     }
 
@@ -641,6 +652,98 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
     ):
         required_variables.update(_required_group)
     del _required_group
+
+    # ChemicalDrift-owned missing-data policy metadata. Physical fallback
+    # formulas remain in the existing helper functions; this registry only
+    # defines how framework-level reader gaps are carried to those helpers.
+    ENVIRONMENT_INPUT_POLICIES = {
+        'f_OC_spm': {'policy': 'CONFIG', 'sentinel': _ENV_NEGATIVE_SENTINEL,
+            'domain': 'GT_ZERO', 'config_key': 'chemical:transformations:fOC_SPM',
+            'zero_is_physical': False},
+        'f_OC_sed': {'policy': 'CONFIG', 'sentinel': _ENV_NEGATIVE_SENTINEL,
+            'domain': 'GT_ZERO', 'config_key': 'chemical:transformations:fOC_sed',
+            'zero_is_physical': False},
+        'sea_floor_erodibility_M': {'policy': 'CONFIG', 'sentinel': _ENV_NEGATIVE_SENTINEL,
+            'domain': 'GE_ZERO', 'config_key': 'chemical:sediment:erodibility_M',
+            'zero_is_physical': True},
+        'sea_floor_current_stress': {'policy': 'LOCAL_REJECT', 'sentinel': _ENV_NEGATIVE_SENTINEL,
+            'domain': 'GE_ZERO', 'zero_is_physical': True},
+        'sea_floor_wave_stress': {'policy': 'LOCAL_REJECT', 'sentinel': _ENV_NEGATIVE_SENTINEL,
+            'domain': 'GE_ZERO', 'zero_is_physical': True},
+        'x_bottom_sea_water_velocity': {'policy': 'CONDITIONAL', 'sentinel': _ENV_SIGNED_VECTOR_SENTINEL,
+            'domain': 'SIGNED', 'zero_is_physical': True},
+        'y_bottom_sea_water_velocity': {'policy': 'CONDITIONAL', 'sentinel': _ENV_SIGNED_VECTOR_SENTINEL,
+            'domain': 'SIGNED', 'zero_is_physical': True},
+        'x_depth_averaged_sea_water_velocity': {'policy': 'CONDITIONAL', 'sentinel': _ENV_SIGNED_VECTOR_SENTINEL,
+            'domain': 'SIGNED', 'zero_is_physical': True},
+        'y_depth_averaged_sea_water_velocity': {'policy': 'CONDITIONAL', 'sentinel': _ENV_SIGNED_VECTOR_SENTINEL,
+            'domain': 'SIGNED', 'zero_is_physical': True},
+        'sea_surface_wave_period_at_variance_spectral_density_maximum': {
+            'policy': 'CONDITIONAL', 'sentinel': _ENV_NONPOSITIVE_SENTINEL,
+            'domain': 'GT_ZERO', 'zero_is_physical': False},
+        'sea_surface_wave_to_direction': {'policy': 'CONDITIONAL', 'sentinel': _ENV_NEGATIVE_SENTINEL,
+            'domain': 'BEARING', 'zero_is_physical': True},
+        'sea_surface_wave_from_direction': {'policy': 'CONDITIONAL', 'sentinel': _ENV_NEGATIVE_SENTINEL,
+            'domain': 'BEARING', 'zero_is_physical': True},
+        'sea_floor_other_stress': {'policy': 'LOCAL_REJECT', 'sentinel': _ENV_NEGATIVE_SENTINEL,
+            'domain': 'GE_ZERO', 'zero_is_physical': True},
+        'active_sediment_layer_thickness': {'policy': 'CONFIG', 'sentinel': _ENV_NEGATIVE_SENTINEL,
+            'domain': 'GE_ZERO', 'config_key': 'chemical:sediment:mixing_depth',
+            'zero_is_physical': True},
+        'interaction_sediment_layer_thickness': {'policy': 'CONFIG', 'sentinel': _ENV_NONPOSITIVE_SENTINEL,
+            'domain': 'GT_ZERO', 'config_key': 'chemical:sediment:layer_thickness',
+            'zero_is_physical': False},
+        'bottom_layer_thickness': {'policy': 'CONFIG', 'sentinel': _ENV_NONPOSITIVE_SENTINEL,
+            'domain': 'GT_ZERO', 'config_key': 'chemical:sediment:bottom_layer_thickness',
+            'zero_is_physical': False},
+        'sea_floor_roughness_length': {'policy': 'CONFIG', 'sentinel': _ENV_NONPOSITIVE_SENTINEL,
+            'domain': 'GT_ZERO', 'config_key': 'chemical:sediment:roughness_length',
+            'zero_is_physical': False},
+        'sea_floor_d50': {'policy': 'CONFIG', 'sentinel': _ENV_NONPOSITIVE_SENTINEL,
+            'domain': 'GT_ZERO', 'config_key': 'chemical:sediment:d50',
+            'zero_is_physical': False},
+        'hydraulic_radius': {'policy': 'DERIVED', 'sentinel': _ENV_NONPOSITIVE_SENTINEL,
+            'domain': 'GT_ZERO', 'config_key': 'chemical:sediment:bulk_hydraulic_radius',
+            'resolution': 'CONFIG_THEN_DERIVED', 'zero_is_physical': False},
+        'sea_floor_resuspension_critstress': {'policy': 'DERIVED', 'sentinel': _ENV_NONPOSITIVE_SENTINEL,
+            'domain': 'GT_ZERO', 'resolution': 'MODE_DEPENDENT',
+            'zero_is_physical': False},
+        'sediment_oxygen_penetration_depth': {'policy': 'CONFIG', 'sentinel': _ENV_NEGATIVE_SENTINEL,
+            'domain': 'GE_ZERO', 'config_key': 'chemical:sediment:oxygen_penetration_depth',
+            'zero_is_physical': True},
+        'sea_floor_porosity': {'policy': 'CONFIG', 'sentinel': _ENV_NONPOSITIVE_SENTINEL,
+            'domain': 'GT_ZERO', 'config_key': 'chemical:sediment:porosity',
+            'zero_is_physical': False},
+        'sediment_oxygen_diffusivity': {'policy': 'DERIVED', 'sentinel': _ENV_NONPOSITIVE_SENTINEL,
+            'domain': 'GT_ZERO', 'zero_is_physical': False},
+        'sea_floor_permeability': {'policy': 'CONFIG', 'sentinel': _ENV_NONPOSITIVE_SENTINEL,
+            'domain': 'GT_ZERO', 'config_key': 'chemical:sediment:oxygen_permeability',
+            'zero_is_physical': False},
+        'sediment_bioirrigation_alpha0': {'policy': 'CONFIG', 'sentinel': _ENV_NEGATIVE_SENTINEL,
+            'domain': 'GE_ZERO', 'config_key': 'chemical:sediment:oxygen_bioirrigation_alpha0',
+            'zero_is_physical': True},
+        'sediment_bioirrigation_depth_scale': {'policy': 'CONFIG', 'sentinel': _ENV_NONPOSITIVE_SENTINEL,
+            'domain': 'GT_ZERO', 'config_key': 'chemical:sediment:oxygen_bioirrigation_depth_scale',
+            'zero_is_physical': False},
+        'sediment_oxygen_consumption_rate': {'policy': 'CONFIG', 'sentinel': _ENV_NEGATIVE_SENTINEL,
+            'domain': 'GE_ZERO', 'config_key': 'chemical:sediment:oxygen_consumption_rate',
+            'zero_is_physical': True},
+        'benthic_oxygen_flux': {'policy': 'CONFIG', 'sentinel': _ENV_NEGATIVE_SENTINEL,
+            'domain': 'GE_ZERO', 'config_key': 'chemical:sediment:benthic_oxygen_flux',
+            'zero_is_physical': True},
+        'diffusive_boundary_layer_thickness': {'policy': 'CONFIG', 'sentinel': _ENV_NONPOSITIVE_SENTINEL,
+            'domain': 'GT_ZERO', 'config_key': 'chemical:sediment:oxygen_dbl_thickness',
+            'zero_is_physical': False},
+        'sediment_oxygen_consumption_rate_upper': {'policy': 'CONFIG', 'sentinel': _ENV_NEGATIVE_SENTINEL,
+            'domain': 'GE_ZERO', 'config_key': 'chemical:sediment:oxygen_consumption_rate_upper',
+            'zero_is_physical': True},
+        'sediment_oxygen_consumption_rate_lower': {'policy': 'CONFIG', 'sentinel': _ENV_NEGATIVE_SENTINEL,
+            'domain': 'GE_ZERO', 'config_key': 'chemical:sediment:oxygen_consumption_rate_lower',
+            'zero_is_physical': True},
+        'sediment_oxygen_reactivity_transition_depth': {'policy': 'CONFIG', 'sentinel': _ENV_NEGATIVE_SENTINEL,
+            'domain': 'GE_ZERO', 'config_key': 'chemical:sediment:oxygen_reactivity_transition_depth',
+            'zero_is_physical': True},
+    }
 
     # Absolute numerical-zero tolerances for physical quantities where exact
     # zero is a valid state. These are deliberately unit-specific and are used
@@ -912,6 +1015,24 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'description': 'Fraction of buried-sediment leaking that returns to Sediment slowly reversible (rest goes to Sediment reversible).'},
             'chemical:compound': {'type': 'str', 'default': '', 'min_length': 0, 'max_length': 256,
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Name of modelled chemical' },
+            # Environment input data-quality reporting. Reporting is observational
+            # by default and does not alter the physics or fallback policy.
+            'chemical:environment:data_quality_report': {'type': 'bool', 'default': True,
+                'level': CONFIG_LEVEL_ADVANCED,
+                'description': 'Collect aggregate reader/fallback data-quality statistics for active ChemicalDrift environmental inputs.'},
+            'chemical:environment:data_quality_log_level': {'type': 'enum',
+                'enum': ['OFF', 'SUMMARY', 'WARNING'], 'default': 'SUMMARY',
+                'level': CONFIG_LEVEL_ADVANCED,
+                'description': 'Logging level for the aggregate ChemicalDrift environmental data-quality report.'},
+            'chemical:environment:data_quality_warn_fraction': {'type': 'float', 'default': 0.05,
+                'min': 0.0, 'max': 1.0, 'level': CONFIG_LEVEL_ADVANCED,
+                'description': 'Warn when missing/invalid input fraction for a policy-managed variable exceeds this fraction in one timestep.'},
+            'chemical:environment:data_quality_abort_fraction': {'type': 'float', 'default': -1.0,
+                'min': -1.0, 'max': 1.0, 'level': CONFIG_LEVEL_ADVANCED,
+                'description': 'Optional per-timestep missing/invalid fraction that aborts the run; negative disables aborts.'},
+            'chemical:environment:data_quality_json': {'type': 'str', 'default': '',
+                'min_length': 0, 'max_length': 4096, 'level': CONFIG_LEVEL_ADVANCED,
+                'description': 'Optional JSON output path for the aggregate environmental data-quality report; empty disables file output.'},
             # Bed shear stress / roughness
             'chemical:sediment:stress_param_mode': {'type': 'enum',
                 'enum': ['LOG_Z0', 'MANNING', 'CHEZY', 'WHITE_COLEBROOK', 'GRAIN_D50'],
@@ -1451,13 +1572,100 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                     req.update(self.SEDIMENT_BOTTOM_VELOCITY_REQUIRED_VARIABLES)
                     req.update(self.SEDIMENT_BULK_FLOW_REQUIRED_VARIABLES)
 
-                # Missing mapped roughness must remain distinguishable from zero.
-                if 'sea_floor_roughness_length' in req:
-                    req['sea_floor_roughness_length'] = {
-                        'fallback': np.nan,
-                        'important': False,
-                    }
         return req
+
+    @classmethod
+    def _validate_required_variable_policy_declarations(cls):
+        """Reject duplicate required-variable fallback declarations that diverge."""
+        groups = (
+            cls.BASE_REQUIRED_VARIABLES, cls.PARTITIONING_REQUIRED_VARIABLES,
+            cls.SEDIMENT_EXCHANGE_REQUIRED_VARIABLES,
+            cls.DIRECT_CURRENT_STRESS_REQUIRED_VARIABLES,
+            cls.SEDIMENT_BOTTOM_VELOCITY_REQUIRED_VARIABLES,
+            cls.SEDIMENT_LOG_Z0_REQUIRED_VARIABLES,
+            cls.SEDIMENT_GRAIN_D50_REQUIRED_VARIABLES,
+            cls.SEDIMENT_BULK_FLOW_REQUIRED_VARIABLES,
+            cls.SEDIMENT_RESUSPENSION_REQUIRED_VARIABLES,
+            cls.OTHER_STRESS_REQUIRED_VARIABLES, cls.WAVE_STRESS_REQUIRED_VARIABLES,
+            cls.WAVE_DIRECTION_REQUIRED_VARIABLES, cls.DIRECT_WAVE_STRESS_REQUIRED_VARIABLES,
+            cls.SEDIMENT_OXYGEN_GEOMETRY_REQUIRED_VARIABLES,
+            cls.SEDIMENT_OXYGEN_OPD_REQUIRED_VARIABLES,
+            cls.SEDIMENT_OXYGEN_TRANSPORT_REQUIRED_VARIABLES,
+            cls.SEDIMENT_OXYGEN_PERMEABILITY_REQUIRED_VARIABLES,
+            cls.SEDIMENT_OXYGEN_BIOIRRIGATION_REQUIRED_VARIABLES,
+            cls.SEDIMENT_OXYGEN_VOLUMETRIC_REQUIRED_VARIABLES,
+            cls.SEDIMENT_OXYGEN_FLUX_REQUIRED_VARIABLES,
+            cls.SEDIMENT_OXYGEN_DBL_REQUIRED_VARIABLES,
+            cls.SEDIMENT_OXYGEN_TWO_LAYER_REQUIRED_VARIABLES,
+        )
+        seen = {}
+        for group in groups:
+            for name, spec in group.items():
+                if name not in cls.ENVIRONMENT_INPUT_POLICIES:
+                    continue
+                fallback = spec.get('fallback')
+                if name in seen and fallback != seen[name]:
+                    raise RuntimeError(
+                        f'Conflicting required-variable fallback declarations for {name}: '
+                        f'{seen[name]!r} versus {fallback!r}.')
+                seen[name] = fallback
+        for name, policy in cls.ENVIRONMENT_INPUT_POLICIES.items():
+            if name in seen and seen[name] != policy['sentinel']:
+                raise RuntimeError(
+                    f'Required-variable fallback for {name}={seen[name]!r} does not '
+                    f'match policy sentinel {policy["sentinel"]!r}.')
+        return True
+
+    def _sync_policy_environment_fallbacks(self, req):
+        """Synchronize actual OpenDrift fallback config with active policy sentinels.
+
+        ``Environment`` owns the fallback configuration and shares the simulation
+        config dictionary. Calling ``self.env.set_config`` remains valid after
+        seeding, unlike the simulation-level set_config method. Policy-managed
+        environment fallbacks are implementation sentinels, not user physical
+        defaults; physical defaults belong to the documented ``chemical:*`` keys.
+        """
+        if not hasattr(self, 'env'):
+            return
+        for name, spec in req.items():
+            policy = self.ENVIRONMENT_INPUT_POLICIES.get(name)
+            if policy is None:
+                continue
+            expected = float(policy['sentinel'])
+            declared = spec.get('fallback')
+            if declared != expected:
+                raise RuntimeError(
+                    f'Active required-variable fallback for {name}={declared!r} '
+                    f'does not match policy sentinel {expected!r}.')
+            key = f'environment:fallback:{name}'
+            try:
+                current = self.env.get_config(key)
+            except (KeyError, ValueError) as exc:
+                raise RuntimeError(f'Missing OpenDrift fallback config key {key!r}.') from exc
+            if current is not None and float(current) != expected:
+                config_key = policy.get('config_key')
+                guidance = (f'; set {config_key} for the physical fallback'
+                            if config_key else '')
+                raise ValueError(
+                    f'{key} is policy-managed and must remain the internal sentinel '
+                    f'{expected!r}, got {current!r}{guidance}.')
+            self.env.set_config(key, expected)
+
+    def _validate_runtime_fallback_parity(self, req):
+        if not hasattr(self, 'env'):
+            return True
+        for name, spec in req.items():
+            policy = self.ENVIRONMENT_INPUT_POLICIES.get(name)
+            if policy is None:
+                continue
+            expected = float(policy['sentinel'])
+            actual = self.env.get_config(f'environment:fallback:{name}')
+            envspec = self.env.required_variables.get(name, {})
+            if spec.get('fallback') != expected or envspec.get('fallback') != expected:
+                raise RuntimeError(f'Required-variable fallback parity failed for {name}.')
+            if actual is None or float(actual) != expected:
+                raise RuntimeError(f'OpenDrift environment fallback parity failed for {name}.')
+        return True
 
     def _sync_required_variables_from_config(self):
         """
@@ -1472,6 +1680,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         been added before this subset is finalized, rebuild the relevant parts of
         Environment.priority_list from the readers already attached to the model.
         """
+        self._validate_environment_input_policies()
+        self._validate_required_variable_policy_declarations()
         req = self._build_required_variables()
 
         self.required_variables = req
@@ -1480,6 +1690,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             return req
 
         self.env.required_variables = req
+        self._sync_policy_environment_fallbacks(req)
+        self._validate_runtime_fallback_parity(req)
 
         # Keep profile/desired-variable metadata synchronized.
         self.env.required_profiles = [
@@ -2632,7 +2844,18 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         ``sea_floor_current_stress`` field is included in that output schema.
         """
         self._resolve_reader_dependent_requirements()
-        return super(ChemicalDrift, self).run(*args, **kwargs)
+        self._initialize_data_quality_report()
+        run_status = 'FAILED'
+        try:
+            result = super(ChemicalDrift, self).run(*args, **kwargs)
+            run_status = 'COMPLETED'
+            return result
+        finally:
+            try:
+                self._finalize_data_quality_report(status=run_status)
+            except Exception as exc:
+                # Reporting must never hide the model's primary result/error.
+                logger.warning('Could not finalize environment data-quality report: %s', exc)
 
     def prepare_run(self):
         self._configure_element_type_from_config()
@@ -3550,6 +3773,446 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         arr[finite & (np.abs(arr) <= atol)] = 0.0
         return arr
 
+    @classmethod
+    def _environment_input_policy(cls, name):
+        """Return immutable-style metadata for a policy-managed environment field."""
+        policy = cls.ENVIRONMENT_INPUT_POLICIES.get(name)
+        return None if policy is None else dict(policy)
+
+    @classmethod
+    def _environment_missing_sentinel(cls, name):
+        policy = cls.ENVIRONMENT_INPUT_POLICIES.get(name)
+        return None if policy is None else float(policy['sentinel'])
+
+    @classmethod
+    def _policy_missing_mask(cls, name, values):
+        """Return cells that represent an unresolved framework/reader gap.
+
+        Exact finite sentinel equality is intentional. No magnitude or near-zero
+        heuristic is used here, so missing-data handling cannot weaken the
+        quantity-specific numerical-zero rules.
+        """
+        arr = np.asarray(values, dtype=float)
+        policy = cls.ENVIRONMENT_INPUT_POLICIES.get(name)
+        missing = ~np.isfinite(arr)
+        if policy is not None:
+            sentinel = float(policy['sentinel'])
+            missing |= (arr == sentinel)
+        return missing
+
+    @classmethod
+    def _decode_policy_missing(cls, name, values):
+        arr = np.asarray(values, dtype=float).copy()
+        missing = cls._policy_missing_mask(name, arr)
+        if np.any(missing):
+            arr[missing] = np.nan
+        return arr
+
+    @classmethod
+    def _validate_environment_input_policies(cls):
+        allowed_policy = {'HARD', 'CONFIG', 'DERIVED', 'CONDITIONAL', 'LOCAL_REJECT'}
+        allowed_domain = {'GT_ZERO', 'GE_ZERO', 'BEARING', 'SIGNED'}
+        for name, spec in cls.ENVIRONMENT_INPUT_POLICIES.items():
+            if spec.get('policy') not in allowed_policy:
+                raise RuntimeError(f'Invalid environment policy for {name}: {spec.get("policy")!r}')
+            domain = spec.get('domain')
+            if domain not in allowed_domain:
+                raise RuntimeError(f'Invalid environment domain for {name}: {domain!r}')
+            sentinel = float(spec.get('sentinel'))
+            if not np.isfinite(sentinel):
+                raise RuntimeError(f'Environment sentinel for {name} must be finite.')
+            if domain == 'GT_ZERO' and sentinel > 0.0:
+                raise RuntimeError(f'Environment sentinel for {name} collides with valid >0 domain.')
+            if domain == 'GE_ZERO' and sentinel >= 0.0:
+                raise RuntimeError(f'Environment sentinel for {name} collides with valid >=0 domain.')
+            if domain == 'BEARING' and 0.0 <= sentinel <= 360.0:
+                raise RuntimeError(f'Environment sentinel for {name} collides with bearing domain.')
+            if domain == 'SIGNED' and sentinel != cls._ENV_SIGNED_VECTOR_SENTINEL:
+                raise RuntimeError(f'Signed-vector sentinel mismatch for {name}.')
+        return True
+
+    def _data_quality_enabled(self):
+        try:
+            return bool(self.get_config('chemical:environment:data_quality_report'))
+        except (KeyError, ValueError, AttributeError):
+            return False
+
+    def _data_quality_time_string(self):
+        value = getattr(self, 'time', None)
+        if value is None:
+            return None
+        try:
+            return value.isoformat()
+        except AttributeError:
+            return str(value)
+
+    def _data_quality_config_value(self, policy):
+        key = policy.get('config_key')
+        if not key:
+            return None
+        try:
+            value = self.get_config(key)
+        except (KeyError, ValueError, AttributeError):
+            return None
+        if isinstance(value, np.generic):
+            value = value.item()
+        return value
+
+    def _initialize_data_quality_report(self):
+        """Initialize bounded-memory environment-input quality accounting."""
+        if not self._data_quality_enabled():
+            self._environment_data_quality = None
+            self._data_quality_last_scan_key = None
+            return None
+
+        variables = {}
+        active = getattr(self, 'required_variables', {}) or {}
+        for name in sorted(set(active).intersection(self.ENVIRONMENT_INPUT_POLICIES)):
+            policy = self.ENVIRONMENT_INPUT_POLICIES[name]
+            variables[name] = {
+                'policy': policy['policy'],
+                'domain': policy['domain'],
+                'sentinel': float(policy['sentinel']),
+                'zero_is_physical': bool(policy.get('zero_is_physical', False)),
+                'config_key': policy.get('config_key'),
+                'config_value': self._data_quality_config_value(policy),
+                'resolution': policy.get('resolution', policy['policy']),
+                'evaluated': 0,
+                'reader_valid': 0,
+                'reader_valid_zero': 0,
+                'reader_missing': 0,
+                'reader_invalid': 0,
+                'no_reader_evaluated': 0,
+                'fallback_used': 0,
+                'config_fallback': 0,
+                'derived_fallback': 0,
+                'mode_dependent_fallback': 0,
+                'conditional_problem': 0,
+                'conditional_unused': 0,
+                'hard_missing': 0,
+                'unresolved': 0,
+                'steps_evaluated': 0,
+                'steps_with_problem': 0,
+                'max_problem_fraction': 0.0,
+                'first_problem_time': None,
+                'last_problem_time': None,
+                'shape_errors': 0,
+                'warning_steps': 0,
+                'first_warning_time': None,
+                'last_warning_time': None,
+            }
+        self._environment_data_quality = {
+            'schema_version': 1,
+            'status': 'RUNNING',
+            'start_model_time': self._data_quality_time_string(),
+            'end_model_time': None,
+            'variables': variables,
+            'virtual_outcomes': {},
+            'summary': {},
+            'warnings': [],
+        }
+        self._data_quality_last_scan_key = None
+        self._data_quality_conditional_seen = set()
+        self._data_quality_finalized = False
+        return self._environment_data_quality
+
+    def _data_quality_raw_array(self, name, idx=None):
+        """Return raw environment values without decoding policy sentinels."""
+        if idx is None:
+            try:
+                n = int(self.num_elements_active())
+            except Exception:
+                n = 0
+        else:
+            idx = np.asarray(idx, dtype=np.int64).ravel()
+            n = idx.size
+
+        env = getattr(self, 'environment', None)
+        raw = getattr(env, name, None) if env is not None else None
+        if raw is None:
+            return np.full(n, np.nan, dtype=float), False
+
+        arr = np.ma.asarray(raw, dtype=float).filled(np.nan)
+        if arr.ndim == 0 or arr.size == 1:
+            return np.full(n, float(arr.reshape(-1)[0]), dtype=float), True
+
+        try:
+            total = int(self.num_elements_active())
+        except Exception:
+            total = arr.size
+        if arr.ndim != 1 or arr.size != total:
+            return np.full(n, np.nan, dtype=float), False
+        if idx is None:
+            return np.asarray(arr, dtype=float).copy(), True
+        return np.asarray(arr, dtype=float)[idx].copy(), True
+
+    def _data_quality_normalize_values(self, name, values):
+        """Apply only the same quantity-specific numerical-zero normalization used by physics."""
+        out = np.asarray(values, dtype=float).copy()
+        zero_atol = {
+            'sea_floor_current_stress': self._BED_STRESS_ZERO_ATOL_PA,
+            'sea_floor_wave_stress': self._BED_STRESS_ZERO_ATOL_PA,
+            'sea_floor_other_stress': self._BED_STRESS_ZERO_ATOL_PA,
+            'sea_floor_resuspension_critstress': self._BED_STRESS_ZERO_ATOL_PA,
+            'active_sediment_layer_thickness': self._SED_LENGTH_ZERO_ATOL_M,
+            'sediment_oxygen_penetration_depth': self._SED_LENGTH_ZERO_ATOL_M,
+            'sediment_oxygen_reactivity_transition_depth': self._SED_LENGTH_ZERO_ATOL_M,
+            'sediment_oxygen_consumption_rate': self._SED_O2_RATE_ZERO_ATOL_MMOL_M3_S,
+            'sediment_oxygen_consumption_rate_upper': self._SED_O2_RATE_ZERO_ATOL_MMOL_M3_S,
+            'sediment_oxygen_consumption_rate_lower': self._SED_O2_RATE_ZERO_ATOL_MMOL_M3_S,
+            'benthic_oxygen_flux': self._SED_O2_FLUX_ZERO_ATOL_MMOL_M2_S,
+            'sediment_bioirrigation_alpha0': self._SED_BIOIRRIGATION_RATE_ZERO_ATOL_S_1,
+        }.get(name)
+        if zero_atol is not None:
+            sentinel_mask = self._policy_missing_mask(name, out)
+            candidate = ~sentinel_mask
+            if np.any(candidate):
+                out[candidate] = self._canonicalize_numerical_zero(
+                    out[candidate], atol=zero_atol)
+        if name in ('sea_surface_wave_to_direction', 'sea_surface_wave_from_direction'):
+            missing = self._policy_missing_mask(name, out)
+            finite = np.isfinite(out) & ~missing
+            atol = self._WAVE_BEARING_BOUNDARY_ATOL_DEG
+            low = finite & (out < 0.0) & (out >= -atol)
+            high = finite & (out > 360.0) & (out <= 360.0 + atol)
+            out[low] = 0.0
+            out[high] = 360.0
+        return out
+
+    def _data_quality_masks(self, name, values):
+        raw = np.asarray(values, dtype=float)
+        policy = self.ENVIRONMENT_INPUT_POLICIES[name]
+        missing = self._policy_missing_mask(name, raw)
+        values = self._data_quality_normalize_values(name, raw)
+        candidate = ~missing & np.isfinite(values)
+        domain = policy['domain']
+        if domain == 'GT_ZERO':
+            valid = candidate & (values > 0.0)
+        elif domain == 'GE_ZERO':
+            valid = candidate & (values >= 0.0)
+        elif domain == 'BEARING':
+            valid = candidate & (values >= 0.0) & (values <= 360.0)
+        elif domain == 'SIGNED':
+            valid = candidate
+        else:
+            valid = np.zeros(values.shape, dtype=bool)
+        invalid = ~missing & ~valid
+        physical_zero = (
+            valid & bool(policy.get('zero_is_physical', False)) & (values == 0.0)
+        )
+        return missing, invalid, valid, physical_zero
+
+    def _data_quality_resolution_counts(self, name, problem_count):
+        if problem_count <= 0:
+            return
+        report = getattr(self, '_environment_data_quality', None)
+        if not report or name not in report['variables']:
+            return
+        rec = report['variables'][name]
+        policy = self.ENVIRONMENT_INPUT_POLICIES[name]
+        mode = policy.get('resolution', policy['policy'])
+        if policy['policy'] == 'CONFIG' or mode == 'CONFIG':
+            rec['config_fallback'] += int(problem_count)
+            rec['fallback_used'] += int(problem_count)
+        elif mode == 'CONFIG_THEN_DERIVED':
+            value = self._data_quality_config_value(policy)
+            try:
+                use_config = np.isfinite(float(value)) and float(value) > 0.0
+            except (TypeError, ValueError):
+                use_config = False
+            key = 'config_fallback' if use_config else 'derived_fallback'
+            rec[key] += int(problem_count)
+            rec['fallback_used'] += int(problem_count)
+        elif mode == 'MODE_DEPENDENT':
+            rec['mode_dependent_fallback'] += int(problem_count)
+            rec['fallback_used'] += int(problem_count)
+        elif policy['policy'] == 'DERIVED' or mode == 'DERIVED':
+            rec['derived_fallback'] += int(problem_count)
+            rec['fallback_used'] += int(problem_count)
+        elif policy['policy'] == 'LOCAL_REJECT':
+            rec['hard_missing'] += int(problem_count)
+        elif policy['policy'] == 'CONDITIONAL':
+            rec['conditional_problem'] += int(problem_count)
+
+    def _data_quality_scan_step(self):
+        """Scan active policy-managed environment fields exactly once per model step."""
+        if not self._data_quality_enabled():
+            return
+        if getattr(self, '_environment_data_quality', None) is None:
+            self._initialize_data_quality_report()
+        report = getattr(self, '_environment_data_quality', None)
+        if not report:
+            return
+        n = int(self.num_elements_active())
+        scan_key = (self._data_quality_time_string(), n)
+        if scan_key == getattr(self, '_data_quality_last_scan_key', None):
+            return
+        self._data_quality_last_scan_key = scan_key
+        self._data_quality_conditional_seen = set()
+        now = self._data_quality_time_string()
+        warn_fraction = float(self.get_config(
+            'chemical:environment:data_quality_warn_fraction'))
+        abort_fraction = float(self.get_config(
+            'chemical:environment:data_quality_abort_fraction'))
+        log_mode = self.get_config('chemical:environment:data_quality_log_level')
+
+        for name, rec in report['variables'].items():
+            raw, shape_ok = self._data_quality_raw_array(name)
+            if not shape_ok:
+                rec['shape_errors'] += 1
+            missing, invalid, valid, physical_zero = self._data_quality_masks(name, raw)
+            problem = missing | invalid
+            count = raw.size
+            nproblem = int(np.count_nonzero(problem))
+            rec['evaluated'] += int(count)
+            rec['reader_valid'] += int(np.count_nonzero(valid))
+            rec['reader_valid_zero'] += int(np.count_nonzero(physical_zero))
+            rec['reader_missing'] += int(np.count_nonzero(missing))
+            rec['reader_invalid'] += int(np.count_nonzero(invalid))
+            rec['steps_evaluated'] += 1
+            if not self._has_reader_variable(name):
+                rec['no_reader_evaluated'] += int(count)
+            if nproblem:
+                rec['steps_with_problem'] += 1
+                fraction = (nproblem / count) if count else 0.0
+                rec['max_problem_fraction'] = max(
+                    float(rec['max_problem_fraction']), float(fraction))
+                if rec['first_problem_time'] is None:
+                    rec['first_problem_time'] = now
+                rec['last_problem_time'] = now
+                self._data_quality_resolution_counts(name, nproblem)
+                if fraction > warn_fraction:
+                    warning = (
+                        f'{name}: missing/invalid fraction {fraction:.3%} exceeds '
+                        f'warning threshold {warn_fraction:.3%} at {now}.')
+                    if rec['warning_steps'] == 0:
+                        rec['first_warning_time'] = now
+                        # Keep at most one warning string per variable so report
+                        # memory remains O(number of active input variables).
+                        report['warnings'].append(warning)
+                    rec['warning_steps'] += 1
+                    rec['last_warning_time'] = now
+                    if log_mode == 'WARNING':
+                        logger.warning('Data quality: %s', warning)
+                if abort_fraction >= 0.0 and fraction > abort_fraction:
+                    raise RuntimeError(
+                        f'Data-quality abort: {name} missing/invalid fraction '
+                        f'{fraction:.3%} exceeds configured threshold '
+                        f'{abort_fraction:.3%}.')
+
+    def _data_quality_note_conditional(self, name, idx, required_mask):
+        """Resolve conditional gaps for one field without changing its physics."""
+        report = getattr(self, '_environment_data_quality', None)
+        if not report or name not in report['variables']:
+            return
+        seen = getattr(self, '_data_quality_conditional_seen', set())
+        if name in seen:
+            return
+        seen.add(name)
+        self._data_quality_conditional_seen = seen
+        idx = np.asarray(idx, dtype=np.int64).ravel()
+        required = np.broadcast_to(np.asarray(required_mask, dtype=bool), (idx.size,))
+        raw, _ = self._data_quality_raw_array(name, idx=idx)
+        missing, invalid, _, _ = self._data_quality_masks(name, raw)
+        problem = missing | invalid
+        rec = report['variables'][name]
+        rec['hard_missing'] += int(np.count_nonzero(problem & required))
+        rec['conditional_unused'] += int(np.count_nonzero(problem & ~required))
+
+    def _data_quality_note_virtual(self, name, outcome, count):
+        report = getattr(self, '_environment_data_quality', None)
+        if not report or count <= 0:
+            return
+        rec = report['virtual_outcomes'].setdefault(name, {
+            'conditional_unused': 0, 'hard_missing': 0, 'unresolved': 0})
+        if outcome not in rec:
+            rec[outcome] = 0
+        rec[outcome] += int(count)
+
+    def _finalize_data_quality_report(self, status='COMPLETED'):
+        report = getattr(self, '_environment_data_quality', None)
+        if not report or getattr(self, '_data_quality_finalized', False):
+            return report
+        self._data_quality_finalized = True
+        report['status'] = str(status)
+        report['end_model_time'] = self._data_quality_time_string()
+
+        # A successful run proves that any still-pending conditional gap did not
+        # become a hard requirement. Failed/incomplete runs retain it as unresolved.
+        for rec in report['variables'].values():
+            if rec['policy'] == 'CONDITIONAL':
+                accounted = rec['conditional_unused'] + rec['hard_missing']
+                pending = max(0, rec['conditional_problem'] - accounted)
+                if status == 'COMPLETED':
+                    rec['conditional_unused'] += pending
+                else:
+                    rec['unresolved'] += pending
+
+        for rec in report['variables'].values():
+            evaluated = int(rec.get('evaluated', 0))
+            denom = float(evaluated) if evaluated else 1.0
+            rec['reader_valid_fraction'] = (
+                float(rec.get('reader_valid', 0)) / denom if evaluated else 0.0)
+            rec['problem_fraction'] = (
+                float(rec.get('reader_missing', 0) + rec.get('reader_invalid', 0))
+                / denom if evaluated else 0.0)
+            rec['fallback_fraction'] = (
+                float(rec.get('fallback_used', 0)) / denom if evaluated else 0.0)
+
+        total = {
+            key: int(sum(rec.get(key, 0) for rec in report['variables'].values()))
+            for key in (
+                'evaluated', 'reader_valid', 'reader_valid_zero', 'reader_missing',
+                'reader_invalid', 'fallback_used', 'config_fallback',
+                'derived_fallback', 'mode_dependent_fallback',
+                'conditional_unused', 'hard_missing', 'unresolved')
+        }
+        warn_fraction = float(self.get_config(
+            'chemical:environment:data_quality_warn_fraction'))
+        threshold_warning = any(
+            float(rec['max_problem_fraction']) > warn_fraction
+            for rec in report['variables'].values())
+        hard = total['hard_missing'] + total['unresolved']
+        overall = 'CRITICAL' if hard else ('WARNING' if threshold_warning else 'OK')
+        total['overall_quality'] = overall
+        report['summary'] = total
+
+        log_mode = self.get_config('chemical:environment:data_quality_log_level')
+        if log_mode != 'OFF':
+            logger.info(
+                'Environment data quality: %s; evaluated=%d, reader_missing=%d, '
+                'reader_invalid=%d, fallback_used=%d, conditional_unused=%d, '
+                'hard_missing=%d, unresolved=%d',
+                overall, total['evaluated'], total['reader_missing'],
+                total['reader_invalid'], total['fallback_used'],
+                total['conditional_unused'], total['hard_missing'],
+                total['unresolved'])
+            if log_mode == 'SUMMARY':
+                for name, rec in sorted(report['variables'].items()):
+                    logger.info(
+                        '  data-quality %-55s valid=%6.2f%% problem=%6.2f%% '
+                        'fallback=%6.2f%% hard=%d unresolved=%d',
+                        name, 100.0 * rec['reader_valid_fraction'],
+                        100.0 * rec['problem_fraction'],
+                        100.0 * rec['fallback_fraction'],
+                        rec['hard_missing'], rec['unresolved'])
+
+        path = self.get_config('chemical:environment:data_quality_json')
+        if path:
+            try:
+                with open(path, 'w', encoding='utf-8') as handle:
+                    json.dump(report, handle, indent=2, sort_keys=True)
+            except Exception as exc:
+                logger.warning('Could not write environment data-quality JSON %r: %s', path, exc)
+        return report
+
+    def get_environment_data_quality_report(self):
+        """Return a detached JSON-compatible copy of the current aggregate report."""
+        report = getattr(self, '_environment_data_quality', None)
+        if report is None:
+            return None
+        return json.loads(json.dumps(report, default=str))
+
     @staticmethod
     def _validate_scalar_param(name, value, *, finite=True, gt=None, ge=None, lt=None, le=None):
         x = float(value)
@@ -3666,12 +4329,15 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         if idx is None:
             if arr.ndim == 0:
-                return np.full(n, float(arr), dtype=float)
-            return arr
+                out = np.full(n, float(arr), dtype=float)
+            else:
+                out = arr
+        elif arr.ndim == 0:
+            out = np.full(idx.size, float(arr), dtype=float)
+        else:
+            out = arr[idx]
 
-        if arr.ndim == 0:
-            return np.full(idx.size, float(arr), dtype=float)
-        return arr[idx]
+        return self._decode_policy_missing(name, out)
 
     def _sanitize_positive_with_fallback(self, values, fallback):
         """Return finite positive values, replacing non-finite or <=0 with fallback."""
@@ -4030,7 +4696,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             Sed_H_int = np.minimum(Sed_H_nominal, water_depth).astype(np.float32, copy=False)
 
             # Active sediment layer thickness used in k14 numerator
-            Sed_L_eff = np.where(Sed_L_env > 0, Sed_L_env, Sed_L_0).astype(np.float32, copy=False)
+            Sed_L_eff = np.where(
+                np.isfinite(Sed_L_env) & (Sed_L_env >= 0.0),
+                Sed_L_env, Sed_L_0).astype(np.float32, copy=False)
 
             return Sed_H_int, Sed_L_eff, water_depth, mld
 
@@ -5657,10 +6325,12 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         n = self.num_elements_active()
         if values.ndim == 0 or values.size == 1:
             count = n if idx is None else np.asarray(idx).size
-            return np.full(count, float(values.reshape(-1)[0]), dtype=float)
-        if values.ndim != 1 or values.size != n:
-            raise ValueError(f'{name} must be scalar or have one value per active element.')
-        return values.copy() if idx is None else values[np.asarray(idx, dtype=np.int64)]
+            out = np.full(count, float(values.reshape(-1)[0]), dtype=float)
+        else:
+            if values.ndim != 1 or values.size != n:
+                raise ValueError(f'{name} must be scalar or have one value per active element.')
+            out = values.copy() if idx is None else values[np.asarray(idx, dtype=np.int64)]
+        return self._decode_policy_missing(name, out)
 
     def _required_wave_environment_array(self, name, idx=None):
         """Return already-loaded wave forcing without re-checking reader availability.
@@ -5685,10 +6355,12 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         n = self.num_elements_active()
         if values.ndim == 0 or values.size == 1:
             count = n if idx is None else np.asarray(idx).size
-            return np.full(count, float(values.reshape(-1)[0]), dtype=float)
-        if values.ndim != 1 or values.size != n:
-            raise ValueError(f'{name} must be scalar or have one value per active element.')
-        return values.copy() if idx is None else values[np.asarray(idx, dtype=np.int64)]
+            out = np.full(count, float(values.reshape(-1)[0]), dtype=float)
+        else:
+            if values.ndim != 1 or values.size != n:
+                raise ValueError(f'{name} must be scalar or have one value per active element.')
+            out = values.copy() if idx is None else values[np.asarray(idx, dtype=np.int64)]
+        return self._decode_policy_missing(name, out)
 
     def _bottom_velocity_components(self, idx=None):
         """Return bottom-layer velocity components.
@@ -5818,6 +6490,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                     f'{name} must be scalar or have one value per active element.')
             tau = values.copy() if idx is None else values[np.asarray(idx, dtype=np.int64)]
 
+        tau = self._decode_policy_missing(name, tau)
         tau = self._canonicalize_numerical_zero(
             tau, atol=self._BED_STRESS_ZERO_ATOL_PA)
         invalid = ~np.isfinite(tau) | (tau < 0.0)
@@ -6320,6 +6993,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         # Only wet elements with strictly positive Hs need Tp, roughness,
         # viscosity, dispersion, orbital velocity or wave-friction calculations.
         active = wet & (height > 0.0)
+        self._data_quality_note_conditional(
+            'sea_surface_wave_period_at_variance_spectral_density_maximum',
+            idx, active)
         if not np.any(active):
             return result
 
@@ -6615,6 +7291,20 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                         f"{Param_mode} requires x_bottom_sea_water_velocity and "
                         f"y_bottom_sea_water_velocity when sea_floor_current_stress is unavailable.")
 
+                u_b = np.asarray(u_b, dtype=float)
+                v_b = np.asarray(v_b, dtype=float)
+                missing_velocity = ~np.isfinite(u_b) | ~np.isfinite(v_b)
+                if np.any(missing_velocity):
+                    required_here = np.ones(n, dtype=bool)
+                    self._data_quality_note_conditional(
+                        'x_bottom_sea_water_velocity', idx, required_here)
+                    self._data_quality_note_conditional(
+                        'y_bottom_sea_water_velocity', idx, required_here)
+                    raise ValueError(
+                        f"{Param_mode} requires finite x/y bottom-sea-water velocity "
+                        f"for every evaluated element; found "
+                        f"{int(np.count_nonzero(missing_velocity))} unresolved "
+                        "reader value(s).")
                 speed = np.hypot(u_b, v_b)
                 z_ref = 0.5 * dz_bot
 
@@ -6645,6 +7335,20 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                         f"{Param_mode} requires x_depth_averaged_sea_water_velocity and "
                         f"y_depth_averaged_sea_water_velocity when sea_floor_current_stress is unavailable.")
 
+                u_da = np.asarray(u_da, dtype=float)
+                v_da = np.asarray(v_da, dtype=float)
+                missing_velocity = ~np.isfinite(u_da) | ~np.isfinite(v_da)
+                if np.any(missing_velocity):
+                    required_here = np.ones(n, dtype=bool)
+                    self._data_quality_note_conditional(
+                        'x_depth_averaged_sea_water_velocity', idx, required_here)
+                    self._data_quality_note_conditional(
+                        'y_depth_averaged_sea_water_velocity', idx, required_here)
+                    raise ValueError(
+                        f"{Param_mode} requires finite x/y depth-averaged sea-water "
+                        f"velocity for every evaluated element; found "
+                        f"{int(np.count_nonzero(missing_velocity))} unresolved "
+                        "reader value(s).")
                 speed = np.hypot(u_da, v_da)
 
                 # Hydraulic radius for MANNING / CHEZY / WHITE_COLEBROOK.
@@ -6758,7 +7462,11 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 # canonicalized to exact zero at ingestion.
                 both = current_active & wave_active
 
-                if np.any(both & (~has_wave_dir | ~has_current)):
+                missing_direction = both & (~has_wave_dir | ~has_current)
+                if np.any(missing_direction):
+                    self._data_quality_note_virtual(
+                        'soulsby_clarke_direction', 'hard_missing',
+                        int(np.count_nonzero(missing_direction)))
                     raise ValueError(
                         'SOULSBY_CLARKE needs finite wave and current directions '
                         'where both stresses are materially positive '
@@ -7182,7 +7890,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         Sed_L_env = self._env_array('active_sediment_layer_thickness', 0.0, idx=idx)
         Sed_L_0 = float(self.get_config('chemical:sediment:mixing_depth'))
-        Sed_L_eff = np.where(Sed_L_env > 0.0, Sed_L_env, Sed_L_0)
+        Sed_L_eff = np.where(
+            np.isfinite(Sed_L_env) & (Sed_L_env >= 0.0),
+            Sed_L_env, Sed_L_0)
 
         rho_s = float(self.get_config('chemical:sediment:density'))
         poro = float(self.get_config('chemical:sediment:porosity'))
@@ -11488,6 +12198,10 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
     def update(self):
         """Update positions and properties of Chemical particles."""
+        # Scan policy-managed environmental inputs once per timestep before
+        # ChemicalDrift applies local config/derived/conditional fallbacks.
+        self._data_quality_scan_step()
+
         # Workaround due to conversion of datatype
         self.elements.specie = self.elements.specie.astype(np.int32)
 
