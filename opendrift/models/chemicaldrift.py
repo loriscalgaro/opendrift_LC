@@ -11483,7 +11483,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                         Ox_water = (
                             self._env_array(
                                 'mole_concentration_of_dissolved_molecular_oxygen_in_sea_water',
-                                7.25,
+                                225.0,  # mmol/m3 O2; keep local fallback consistent with required_variables
                                 idx=idx_W,
                             )
                             if W_deg else np.empty(0, dtype=float)
