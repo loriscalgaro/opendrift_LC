@@ -28,6 +28,23 @@ class Environment(Timeable, Configurable):
 
     __finalized__ = False
 
+    # Provenance for the most recent get_environment() call. Codes are compact
+    # uint8 values so provenance remains O(number of requested values) and does
+    # not retain run history. The public get_environment() return signature is
+    # intentionally unchanged.
+    PROVENANCE_UNKNOWN = np.uint8(0)
+    PROVENANCE_READER = np.uint8(1)
+    PROVENANCE_CONSTANT = np.uint8(2)
+    PROVENANCE_FALLBACK = np.uint8(3)
+    PROVENANCE_HARD_MISSING = np.uint8(4)
+    PROVENANCE_LABELS = {
+        int(PROVENANCE_UNKNOWN): 'UNKNOWN',
+        int(PROVENANCE_READER): 'READER',
+        int(PROVENANCE_CONSTANT): 'CONSTANT',
+        int(PROVENANCE_FALLBACK): 'FALLBACK',
+        int(PROVENANCE_HARD_MISSING): 'HARD_MISSING',
+    }
+
     def __init__(self, required_variables, _config):
         super().__init__()
 
@@ -37,6 +54,15 @@ class Environment(Timeable, Configurable):
 
         self.required_variables = required_variables
         self._config = _config  # reference to simulation config
+
+        # Ephemeral provenance for the most recent environment lookup. These
+        # arrays are replaced on every get_environment() call. They are not a
+        # trajectory history and therefore do not grow with simulation length.
+        self.last_environment_provenance = {}
+        self.last_environment_profile_provenance = {}
+        self.last_environment_provenance_sources = {}
+        self.last_environment_source_available = {}
+        self.last_environment_provenance_time = None
 
         # Add constant and fallback environment variables to config
         c = {}
@@ -373,6 +399,46 @@ class Environment(Timeable, Configurable):
 
         return variable_groups, reader_groups, missing_variables
 
+    @classmethod
+    def provenance_label(cls, code):
+        """Return the stable label for an environment provenance code."""
+        return cls.PROVENANCE_LABELS.get(int(code), 'UNKNOWN')
+
+    @staticmethod
+    def _is_constant_reader(reader):
+        """Return True for OpenDrift's explicit environment constant reader."""
+        module = getattr(reader.__class__, '__module__', '')
+        return module.endswith('.reader_constant')
+
+    def get_last_environment_provenance(self, variable=None, profiles=False, copy=True):
+        """Return provenance for the most recent ``get_environment`` call.
+
+        Provenance is diagnostic metadata only. It does not alter interpolation,
+        fallback values, or the public return signature of ``get_environment``.
+        """
+        data = (self.last_environment_profile_provenance if profiles
+                else self.last_environment_provenance)
+        if variable is not None:
+            value = data.get(variable)
+            if value is None:
+                return None
+            return value.copy() if copy else value
+        if copy:
+            return {name: value.copy() for name, value in data.items()}
+        return data
+
+    def filter_last_environment_provenance(self, keep):
+        """Filter current-call provenance after model elements are removed."""
+        keep = np.asarray(keep, dtype=bool).ravel()
+        for name, value in list(self.last_environment_provenance.items()):
+            value = np.asarray(value)
+            if value.ndim == 1 and value.size == keep.size:
+                self.last_environment_provenance[name] = value[keep]
+        for name, value in list(self.last_environment_profile_provenance.items()):
+            value = np.asarray(value)
+            if value.ndim == 2 and value.shape[1] == keep.size:
+                self.last_environment_profile_provenance[name] = value[:, keep]
+
     def _lazy_readers(self):
         return [r for r in self.readers if self.readers[r].is_lazy is True]
 
@@ -539,6 +605,14 @@ class Environment(Timeable, Configurable):
         assert self.__finalized__ is True, 'The environment has not been finalized.'
 
         self.timer_start('main loop:readers')
+        # Clear stale provenance immediately. A failing lookup must never leave
+        # metadata from an earlier timestep looking current.
+        self.last_environment_provenance = {}
+        self.last_environment_profile_provenance = {}
+        self.last_environment_provenance_sources = {}
+        self.last_environment_source_available = {}
+        self.last_environment_provenance_time = time
+
         # Initialise ndarray to hold environment variables
         dtype = [(var, np.float32) for var in variables]
         env = np.ma.array(np.zeros(len(lon)) * np.nan, dtype=dtype)
@@ -589,6 +663,16 @@ class Environment(Timeable, Configurable):
         # For each variable/reader group:
         variable_groups, reader_groups, missing_variables = \
             self.get_reader_groups(variables)
+
+        # Keep current-call source provenance separately from the returned
+        # numerical values. Finite fallbacks are preloaded below for historical
+        # OpenDrift behavior, so numerical equality cannot identify fallback use.
+        provenance = {
+            var: np.full(num_elements_active, self.PROVENANCE_UNKNOWN, dtype=np.uint8)
+            for var in variables
+        }
+        profile_provenance = {}
+
         for variable in variables:  # Fill with fallback value if no reader
             co = self.get_config('environment:fallback:%s' % variable)
             if co is not None:
@@ -692,8 +776,23 @@ class Environment(Timeable, Configurable):
                         continue
                     if var not in env.dtype.names:
                         continue  # Skipping variables that are only used to derive needed variables
-                    env[var][missing_indices] = np.ma.masked_invalid(
+                    incoming = np.ma.masked_invalid(
                         env_tmp[var][0:len(missing_indices)]).astype('float32')
+                    env[var][missing_indices] = incoming
+
+                    # Mirror the actual assignment. If a later reader is called
+                    # for this variable group, its invalid value may replace an
+                    # earlier value with a mask, so provenance must also reset.
+                    provenance[var][missing_indices] = self.PROVENANCE_UNKNOWN
+                    source_code = (
+                        self.PROVENANCE_CONSTANT
+                        if self._is_constant_reader(reader)
+                        else self.PROVENANCE_READER
+                    )
+                    valid_incoming = ~np.ma.getmaskarray(incoming)
+                    if np.any(valid_incoming):
+                        provenance[var][missing_indices[valid_incoming]] = source_code
+
                     if profiles_from_reader is not None and var in profiles_from_reader:
                         if 'env_profiles' not in locals():
                             env_profiles = env_profiles_tmp
@@ -714,14 +813,37 @@ class Environment(Timeable, Configurable):
                             # len(missing_indices) since 2 points might have been added and not removed
                             env_profiles_tmp[var] = np.ma.atleast_2d(
                                 env_profiles_tmp[var])
-                            env_profiles[var][np.ix_(z_ind, missing_indices)] = \
-                                np.ma.masked_invalid(env_profiles_tmp[var][z_ind,0:len(missing_indices)]).astype('float32')
+                            incoming_profile = np.ma.masked_invalid(
+                                env_profiles_tmp[var][z_ind,0:len(missing_indices)]
+                            ).astype('float32')
+                            env_profiles[var][np.ix_(z_ind, missing_indices)] = incoming_profile
+
+                            if (var not in profile_provenance or
+                                    profile_provenance[var].shape != env_profiles[var].shape):
+                                profile_provenance[var] = np.full(
+                                    env_profiles[var].shape,
+                                    self.PROVENANCE_UNKNOWN,
+                                    dtype=np.uint8)
+                                existing_valid = ~np.ma.getmaskarray(
+                                    np.ma.masked_invalid(env_profiles[var]))
+                                profile_provenance[var][existing_valid] = source_code
+                            target_provenance = profile_provenance[var][
+                                np.ix_(z_ind, missing_indices)].copy()
+                            target_provenance[:] = self.PROVENANCE_UNKNOWN
+                            valid_profile = ~np.ma.getmaskarray(incoming_profile)
+                            target_provenance[valid_profile] = source_code
+                            profile_provenance[var][
+                                np.ix_(z_ind, missing_indices)] = target_provenance
+
                             # For profiles with different numbers of layers, we extrapolate
                             if env_profiles[var].shape[0] > 1:
                                 missingbottom = np.isnan(
                                     env_profiles[var][-1, :])
                                 env_profiles[var][
                                     -1, missingbottom] = env_profiles[var][
+                                        -2, missingbottom]
+                                profile_provenance[var][
+                                    -1, missingbottom] = profile_provenance[var][
                                         -2, missingbottom]
 
                 # Detect elements with missing data, for present reader group
@@ -780,15 +902,30 @@ class Environment(Timeable, Configurable):
         #                                   or var not in profiles):
         #        continue
         for var in variables:
-            if self.get_config(f'environment:fallback:{var}') is None:
-                continue
-            mask = env[var].mask
             fallback = self.get_config(f'environment:fallback:{var}')
-            if any(mask == True):
+            if fallback is None:
+                unresolved = provenance[var] == self.PROVENANCE_UNKNOWN
+                provenance[var][unresolved] = self.PROVENANCE_HARD_MISSING
+                if var in profile_provenance:
+                    unresolved_profile = (
+                        profile_provenance[var] == self.PROVENANCE_UNKNOWN)
+                    profile_provenance[var][unresolved_profile] = \
+                        self.PROVENANCE_HARD_MISSING
+                continue
+
+            mask = np.ma.getmaskarray(env[var])
+            if np.any(mask):
                 logger.debug(
                     '    Using fallback value %s for %s for %s elements' %
-                    (fallback, var, np.sum(mask == True)))
+                    (fallback, var, np.sum(mask)))
                 env[var][mask] = fallback
+
+            # Finite defaults are also preloaded for variables with no usable
+            # reader at this timestep. Provenance, not value equality, records
+            # that those cells are fallback-derived.
+            unresolved = provenance[var] == self.PROVENANCE_UNKNOWN
+            provenance[var][unresolved] = self.PROVENANCE_FALLBACK
+
             # Profiles
             if profiles is not None and var in profiles:
                 if 'env_profiles' not in locals():
@@ -802,12 +939,30 @@ class Environment(Timeable, Configurable):
                         % (fallback, var))
                     env_profiles[var] = fallback*\
                         np.ma.ones((len(env_profiles['z']), num_elements_active))
+                    profile_provenance[var] = np.full(
+                        env_profiles[var].shape, self.PROVENANCE_FALLBACK,
+                        dtype=np.uint8)
                 else:
-                    mask = env_profiles[var].mask
-                    num_masked_values_per_element = np.sum(mask == True)
+                    if (var not in profile_provenance or
+                            profile_provenance[var].shape != env_profiles[var].shape):
+                        profile_provenance[var] = np.full(
+                            env_profiles[var].shape, self.PROVENANCE_UNKNOWN,
+                            dtype=np.uint8)
+                    # Copy the mask before filling. NumPy masked-array assignment
+                    # can clear the original mask in place, which would otherwise
+                    # erase provenance for the cells that receive the fallback.
+                    mask = np.ma.getmaskarray(env_profiles[var]).copy()
+                    num_masked_values_per_element = np.sum(mask, axis=0)
                     num_missing_profiles = np.sum(
                         num_masked_values_per_element == len(env_profiles['z']))
                     env_profiles[var][mask] = fallback
+                    profile_provenance[var][mask] = self.PROVENANCE_FALLBACK
+                    unresolved_profile = (
+                        profile_provenance[var] == self.PROVENANCE_UNKNOWN)
+                    # Values already present when provenance tracking began are
+                    # reader-derived. This can occur for the first profile block.
+                    profile_provenance[var][unresolved_profile] = \
+                        self.PROVENANCE_READER
                     logger.debug(
                         '      Using fallback value %s for %s for %s profiles' %
                         (
@@ -906,6 +1061,22 @@ class Environment(Timeable, Configurable):
             missing = np.ma.mask_or(missing,
                                     np.ma.masked_invalid(env[var]).mask,
                                     shrink=False)
+
+        # Publish current-call provenance without changing the public return
+        # signature. ``priority_list`` is authoritative for whether a source was
+        # configured; per-cell codes distinguish supplied values from fallbacks.
+        self.last_environment_provenance = {
+            var: provenance[var].copy() for var in variables
+        }
+        self.last_environment_profile_provenance = {
+            var: value.copy() for var, value in profile_provenance.items()
+        }
+        self.last_environment_provenance_sources = {
+            var: tuple(self.priority_list.get(var, ())) for var in variables
+        }
+        self.last_environment_source_available = {
+            var: bool(self.priority_list.get(var, ())) for var in variables
+        }
 
         # Convert dictionary to recarray and return
         if 'env_profiles' not in locals():

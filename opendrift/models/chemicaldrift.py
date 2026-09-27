@@ -745,6 +745,127 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             'zero_is_physical': True},
     }
 
+    # Reporting policy is intentionally separate from the sentinel transport
+    # policy above. Older ChemicalDrift variables keep their established finite
+    # physical defaults; Environment provenance tells the report whether a value
+    # came from a source or from that default.
+    ENVIRONMENT_DATA_QUALITY_POLICIES = {}
+    for _dq_name, _dq_policy in ENVIRONMENT_INPUT_POLICIES.items():
+        _dq_copy = dict(_dq_policy)
+        _dq_copy['mechanism'] = 'SENTINEL'
+        _dq_copy.setdefault('warn_on_fallback', True)
+        ENVIRONMENT_DATA_QUALITY_POLICIES[_dq_name] = _dq_copy
+    del _dq_name, _dq_policy, _dq_copy
+
+    ENVIRONMENT_DATA_QUALITY_POLICIES.update({
+        'x_sea_water_velocity': {
+            'policy': 'HARD', 'domain': 'SIGNED', 'fallback': None,
+            'zero_is_physical': True, 'mechanism': 'NONE',
+            'warn_on_fallback': True},
+        'y_sea_water_velocity': {
+            'policy': 'HARD', 'domain': 'SIGNED', 'fallback': None,
+            'zero_is_physical': True, 'mechanism': 'NONE',
+            'warn_on_fallback': True},
+        'upward_sea_water_velocity': {
+            'policy': 'DEFAULT', 'domain': 'SIGNED', 'fallback': 0.0,
+            'zero_is_physical': True, 'mechanism': 'FRAMEWORK_DEFAULT',
+            'warn_on_fallback': False},
+        'sea_surface_height': {
+            'policy': 'DEFAULT', 'domain': 'FINITE', 'fallback': 0.0,
+            'zero_is_physical': True, 'mechanism': 'FRAMEWORK_DEFAULT',
+            'warn_on_fallback': False},
+        'x_wind': {
+            'policy': 'DEFAULT', 'domain': 'SIGNED', 'fallback': 0.0,
+            'zero_is_physical': True, 'mechanism': 'FRAMEWORK_DEFAULT',
+            'warn_on_fallback': False},
+        'y_wind': {
+            'policy': 'DEFAULT', 'domain': 'SIGNED', 'fallback': 0.0,
+            'zero_is_physical': True, 'mechanism': 'FRAMEWORK_DEFAULT',
+            'warn_on_fallback': False},
+        'ocean_vertical_diffusivity': {
+            'policy': 'DEFAULT', 'domain': 'GE_ZERO', 'fallback': 0.0001,
+            'zero_is_physical': True, 'mechanism': 'FRAMEWORK_DEFAULT',
+            'warn_on_fallback': False},
+        'horizontal_diffusivity': {
+            'policy': 'DEFAULT', 'domain': 'GE_ZERO', 'fallback': 0.0,
+            'zero_is_physical': True, 'mechanism': 'FRAMEWORK_DEFAULT',
+            'warn_on_fallback': False},
+        'land_binary_mask': {
+            'policy': 'HARD', 'domain': 'FINITE', 'fallback': None,
+            'zero_is_physical': True, 'mechanism': 'NONE',
+            'warn_on_fallback': True},
+        'sea_floor_depth_below_sea_level': {
+            'policy': 'DEFAULT', 'domain': 'GE_ZERO', 'fallback': 10000.0,
+            'zero_is_physical': True, 'mechanism': 'FRAMEWORK_DEFAULT',
+            'resolution': 'GENERIC_DEFAULT_WAVE_SOURCE_REQUIRED',
+            'warn_on_fallback': False},
+        'sea_water_temperature': {
+            'policy': 'DEFAULT', 'domain': 'FINITE', 'fallback': 10.0,
+            'zero_is_physical': True, 'mechanism': 'FRAMEWORK_DEFAULT',
+            'warn_on_fallback': False},
+        'sea_water_salinity': {
+            'policy': 'DEFAULT', 'domain': 'FINITE', 'fallback': 34.0,
+            'zero_is_physical': True, 'mechanism': 'FRAMEWORK_DEFAULT',
+            'warn_on_fallback': False},
+        'doc': {
+            'policy': 'DEFAULT', 'domain': 'GE_ZERO', 'fallback': 0.0,
+            'zero_is_physical': True, 'mechanism': 'FRAMEWORK_DEFAULT',
+            'warn_on_fallback': False},
+        'spm': {
+            'policy': 'DEFAULT', 'domain': 'GE_ZERO', 'fallback': 1.0,
+            'zero_is_physical': True, 'mechanism': 'FRAMEWORK_DEFAULT',
+            'warn_on_fallback': False},
+        'sea_water_ph_reported_on_total_scale': {
+            'policy': 'DEFAULT', 'domain': 'FINITE', 'fallback': 8.1,
+            'zero_is_physical': True, 'mechanism': 'FRAMEWORK_DEFAULT',
+            'warn_on_fallback': False},
+        'pH_sediment': {
+            'policy': 'DEFAULT', 'domain': 'FINITE', 'fallback': 6.9,
+            'zero_is_physical': True, 'mechanism': 'FRAMEWORK_DEFAULT',
+            'warn_on_fallback': False},
+        'ocean_mixed_layer_thickness': {
+            'policy': 'DEFAULT', 'domain': 'GE_ZERO', 'fallback': 50.0,
+            'zero_is_physical': True, 'mechanism': 'FRAMEWORK_DEFAULT',
+            'warn_on_fallback': False},
+        'mole_concentration_of_dissolved_molecular_oxygen_in_sea_water': {
+            'policy': 'DEFAULT', 'domain': 'GE_ZERO', 'fallback': 225.0,
+            'zero_is_physical': True, 'mechanism': 'FRAMEWORK_DEFAULT',
+            'warn_on_fallback': False},
+        'solar_irradiance': {
+            'policy': 'DEFAULT', 'domain': 'GE_ZERO', 'fallback': 241.0,
+            'zero_is_physical': True, 'mechanism': 'FRAMEWORK_DEFAULT',
+            'warn_on_fallback': False},
+        'mole_concentration_of_phytoplankton_expressed_as_carbon_in_sea_water': {
+            'policy': 'DEFAULT', 'domain': 'GE_ZERO', 'fallback': 0.0,
+            'zero_is_physical': True, 'mechanism': 'FRAMEWORK_DEFAULT',
+            'warn_on_fallback': False},
+        'sea_surface_wave_significant_height': {
+            'policy': 'HARD', 'domain': 'GE_ZERO', 'fallback': None,
+            'zero_is_physical': True, 'mechanism': 'NONE',
+            'source_required_pre_run': True, 'warn_on_fallback': True},
+    })
+
+    # No source for this optional contribution means that the contribution is
+    # not provided. If a source exists, local gaps remain strict errors.
+    ENVIRONMENT_DATA_QUALITY_POLICIES['sea_floor_other_stress'] = dict(
+        ENVIRONMENT_INPUT_POLICIES['sea_floor_other_stress'],
+        policy='OPTIONAL_SOURCE_LOCAL_REJECT',
+        mechanism='SENTINEL',
+        warn_on_fallback=True,
+    )
+
+    # The conditional local semantics do not weaken the pre-run source
+    # requirement for calculated-wave period or SOULSBY_CLARKE direction.
+    ENVIRONMENT_DATA_QUALITY_POLICIES[
+        'sea_surface_wave_period_at_variance_spectral_density_maximum'
+    ]['source_required_pre_run'] = True
+    ENVIRONMENT_DATA_QUALITY_POLICIES[
+        'sea_surface_wave_to_direction'
+    ]['source_required_pre_run'] = True
+    ENVIRONMENT_DATA_QUALITY_POLICIES[
+        'sea_surface_wave_from_direction'
+    ]['source_required_pre_run'] = True
+
     # Absolute numerical-zero tolerances for physical quantities where exact
     # zero is a valid state. These are deliberately unit-specific and are used
     # with rtol=0 semantics; they are not generic model tolerances.
@@ -1681,6 +1802,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         Environment.priority_list from the readers already attached to the model.
         """
         self._validate_environment_input_policies()
+        self._validate_environment_data_quality_policies()
         self._validate_required_variable_policy_declarations()
         req = self._build_required_variables()
 
@@ -3831,6 +3953,40 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 raise RuntimeError(f'Signed-vector sentinel mismatch for {name}.')
         return True
 
+    @classmethod
+    def _validate_environment_data_quality_policies(cls):
+        """Validate complete reporting coverage without changing physics."""
+        declared = set(cls.required_variables)
+        covered = set(cls.ENVIRONMENT_DATA_QUALITY_POLICIES)
+        missing = sorted(declared - covered)
+        extra = sorted(covered - declared)
+        if missing or extra:
+            raise RuntimeError(
+                'Environment data-quality policy coverage mismatch; '
+                f'missing={missing}, extra={extra}.')
+        allowed_policy = {
+            'HARD', 'DEFAULT', 'CONFIG', 'DERIVED', 'CONDITIONAL',
+            'LOCAL_REJECT', 'OPTIONAL_SOURCE_LOCAL_REJECT'}
+        allowed_domain = {'FINITE', 'GT_ZERO', 'GE_ZERO', 'BEARING', 'SIGNED'}
+        for name, spec in cls.ENVIRONMENT_DATA_QUALITY_POLICIES.items():
+            if spec.get('policy') not in allowed_policy:
+                raise RuntimeError(
+                    f'Invalid data-quality policy for {name}: '
+                    f'{spec.get("policy")!r}')
+            if spec.get('domain') not in allowed_domain:
+                raise RuntimeError(
+                    f'Invalid data-quality domain for {name}: '
+                    f'{spec.get("domain")!r}')
+            if spec.get('mechanism') == 'SENTINEL':
+                sentinel_policy = cls.ENVIRONMENT_INPUT_POLICIES.get(name)
+                if sentinel_policy is None:
+                    raise RuntimeError(
+                        f'Sentinel reporting policy for {name} has no input policy.')
+                if float(spec['sentinel']) != float(sentinel_policy['sentinel']):
+                    raise RuntimeError(
+                        f'Report/input sentinel mismatch for {name}.')
+        return True
+
     def _data_quality_enabled(self):
         try:
             return bool(self.get_config('chemical:environment:data_quality_report'))
@@ -3865,44 +4021,61 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             self._data_quality_last_scan_key = None
             return None
 
+        self._validate_environment_data_quality_policies()
         variables = {}
         active = getattr(self, 'required_variables', {}) or {}
-        for name in sorted(set(active).intersection(self.ENVIRONMENT_INPUT_POLICIES)):
-            policy = self.ENVIRONMENT_INPUT_POLICIES[name]
+        for name in sorted(active):
+            policy = self.ENVIRONMENT_DATA_QUALITY_POLICIES[name]
+            sentinel = policy.get('sentinel')
             variables[name] = {
                 'policy': policy['policy'],
                 'domain': policy['domain'],
-                'sentinel': float(policy['sentinel']),
+                'mechanism': policy.get('mechanism'),
+                'sentinel': None if sentinel is None else float(sentinel),
                 'zero_is_physical': bool(policy.get('zero_is_physical', False)),
                 'config_key': policy.get('config_key'),
                 'config_value': self._data_quality_config_value(policy),
+                'default_value': policy.get('fallback'),
                 'resolution': policy.get('resolution', policy['policy']),
+                'source_required_pre_run': bool(
+                    policy.get('source_required_pre_run', False)),
+                'warn_on_fallback': bool(policy.get('warn_on_fallback', True)),
                 'evaluated': 0,
                 'reader_valid': 0,
+                'constant_valid': 0,
                 'reader_valid_zero': 0,
                 'reader_missing': 0,
                 'reader_invalid': 0,
                 'no_reader_evaluated': 0,
                 'fallback_used': 0,
+                'default_fallback': 0,
                 'config_fallback': 0,
                 'derived_fallback': 0,
                 'mode_dependent_fallback': 0,
+                'source_gap_fallback': 0,
+                'no_source_fallback': 0,
+                'optional_not_provided': 0,
                 'conditional_problem': 0,
                 'conditional_unused': 0,
                 'hard_missing': 0,
                 'unresolved': 0,
+                'profile_evaluated': 0,
+                'profile_reader_valid': 0,
+                'profile_constant_valid': 0,
+                'profile_fallback_used': 0,
+                'profile_hard_missing': 0,
                 'steps_evaluated': 0,
                 'steps_with_problem': 0,
                 'max_problem_fraction': 0.0,
+                'warning_steps': 0,
                 'first_problem_time': None,
                 'last_problem_time': None,
                 'shape_errors': 0,
-                'warning_steps': 0,
                 'first_warning_time': None,
                 'last_warning_time': None,
             }
         self._environment_data_quality = {
-            'schema_version': 1,
+            'schema_version': 2,
             'status': 'RUNNING',
             'start_model_time': self._data_quality_time_string(),
             'end_model_time': None,
@@ -3946,6 +4119,43 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             return np.asarray(arr, dtype=float).copy(), True
         return np.asarray(arr, dtype=float)[idx].copy(), True
 
+    def _environment_provenance_array(self, name, idx=None):
+        """Return current-step Environment provenance aligned with elements."""
+        manager = getattr(self, 'env', None)
+        getter = getattr(manager, 'get_last_environment_provenance', None)
+        if getter is None:
+            return None
+        values = getter(name, copy=False)
+        if values is None:
+            return None
+        values = np.asarray(values, dtype=np.uint8)
+        try:
+            n = int(self.num_elements_active())
+        except Exception:
+            n = values.size
+        if values.ndim != 1 or values.size != n:
+            return None
+        if idx is None:
+            return values
+        idx = np.asarray(idx, dtype=np.int64).ravel()
+        return values[idx]
+
+    def _environment_source_available(self, name):
+        manager = getattr(self, 'env', None)
+        mapping = getattr(manager, 'last_environment_source_available', None)
+        if isinstance(mapping, dict) and name in mapping:
+            return bool(mapping[name])
+        return self._has_explicit_environment_source(name)
+
+    def _environment_fallback_used_mask(self, name, idx=None):
+        """Return cells filled by OpenDrift fallback, or None if unavailable."""
+        provenance = self._environment_provenance_array(name, idx=idx)
+        manager = getattr(self, 'env', None)
+        fallback_code = getattr(manager, 'PROVENANCE_FALLBACK', None)
+        if provenance is None or fallback_code is None:
+            return None
+        return provenance == fallback_code
+
     def _data_quality_normalize_values(self, name, values):
         """Apply only the same quantity-specific numerical-zero normalization used by physics."""
         out = np.asarray(values, dtype=float).copy()
@@ -3981,19 +4191,22 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
     def _data_quality_masks(self, name, values):
         raw = np.asarray(values, dtype=float)
-        policy = self.ENVIRONMENT_INPUT_POLICIES[name]
-        missing = self._policy_missing_mask(name, raw)
+        policy = self.ENVIRONMENT_DATA_QUALITY_POLICIES[name]
+        input_policy = self.ENVIRONMENT_INPUT_POLICIES.get(name)
+        missing = ~np.isfinite(raw)
+        if input_policy is not None:
+            missing |= self._policy_missing_mask(name, raw)
         values = self._data_quality_normalize_values(name, raw)
         candidate = ~missing & np.isfinite(values)
         domain = policy['domain']
-        if domain == 'GT_ZERO':
+        if domain in ('FINITE', 'SIGNED'):
+            valid = candidate
+        elif domain == 'GT_ZERO':
             valid = candidate & (values > 0.0)
         elif domain == 'GE_ZERO':
             valid = candidate & (values >= 0.0)
         elif domain == 'BEARING':
             valid = candidate & (values >= 0.0) & (values <= 360.0)
-        elif domain == 'SIGNED':
-            valid = candidate
         else:
             valid = np.zeros(values.shape, dtype=bool)
         invalid = ~missing & ~valid
@@ -4002,18 +4215,31 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         )
         return missing, invalid, valid, physical_zero
 
-    def _data_quality_resolution_counts(self, name, problem_count):
-        if problem_count <= 0:
+    def _data_quality_resolution_counts(
+            self, name, fallback_count=0, invalid_count=0, source_available=True):
+        fallback_count = int(fallback_count)
+        invalid_count = int(invalid_count)
+        if fallback_count <= 0 and invalid_count <= 0:
             return
         report = getattr(self, '_environment_data_quality', None)
         if not report or name not in report['variables']:
             return
         rec = report['variables'][name]
-        policy = self.ENVIRONMENT_INPUT_POLICIES[name]
-        mode = policy.get('resolution', policy['policy'])
-        if policy['policy'] == 'CONFIG' or mode == 'CONFIG':
-            rec['config_fallback'] += int(problem_count)
-            rec['fallback_used'] += int(problem_count)
+        policy = self.ENVIRONMENT_DATA_QUALITY_POLICIES[name]
+        policy_name = policy['policy']
+        mode = policy.get('resolution', policy_name)
+
+        if policy_name == 'OPTIONAL_SOURCE_LOCAL_REJECT' and not source_available:
+            rec['optional_not_provided'] += fallback_count
+            return
+
+        total = fallback_count + invalid_count
+        if policy_name == 'DEFAULT':
+            rec['default_fallback'] += fallback_count
+            rec['fallback_used'] += fallback_count
+        elif policy_name == 'CONFIG' or mode == 'CONFIG':
+            rec['config_fallback'] += total
+            rec['fallback_used'] += total
         elif mode == 'CONFIG_THEN_DERIVED':
             value = self._data_quality_config_value(policy)
             try:
@@ -4021,21 +4247,22 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             except (TypeError, ValueError):
                 use_config = False
             key = 'config_fallback' if use_config else 'derived_fallback'
-            rec[key] += int(problem_count)
-            rec['fallback_used'] += int(problem_count)
+            rec[key] += total
+            rec['fallback_used'] += total
         elif mode == 'MODE_DEPENDENT':
-            rec['mode_dependent_fallback'] += int(problem_count)
-            rec['fallback_used'] += int(problem_count)
-        elif policy['policy'] == 'DERIVED' or mode == 'DERIVED':
-            rec['derived_fallback'] += int(problem_count)
-            rec['fallback_used'] += int(problem_count)
-        elif policy['policy'] == 'LOCAL_REJECT':
-            rec['hard_missing'] += int(problem_count)
-        elif policy['policy'] == 'CONDITIONAL':
-            rec['conditional_problem'] += int(problem_count)
+            rec['mode_dependent_fallback'] += total
+            rec['fallback_used'] += total
+        elif policy_name == 'DERIVED' or mode == 'DERIVED':
+            rec['derived_fallback'] += total
+            rec['fallback_used'] += total
+        elif policy_name in ('HARD', 'LOCAL_REJECT',
+                             'OPTIONAL_SOURCE_LOCAL_REJECT'):
+            rec['hard_missing'] += total
+        elif policy_name == 'CONDITIONAL':
+            rec['conditional_problem'] += total
 
     def _data_quality_scan_step(self):
-        """Scan active policy-managed environment fields exactly once per model step."""
+        """Scan active environmental inputs once, before element deactivation."""
         if not self._data_quality_enabled():
             return
         if getattr(self, '_environment_data_quality', None) is None:
@@ -4056,22 +4283,86 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             'chemical:environment:data_quality_abort_fraction'))
         log_mode = self.get_config('chemical:environment:data_quality_log_level')
 
+        manager = getattr(self, 'env', None)
+        reader_code = getattr(manager, 'PROVENANCE_READER', None)
+        constant_code = getattr(manager, 'PROVENANCE_CONSTANT', None)
+        fallback_code = getattr(manager, 'PROVENANCE_FALLBACK', None)
+        hard_code = getattr(manager, 'PROVENANCE_HARD_MISSING', None)
+
         for name, rec in report['variables'].items():
             raw, shape_ok = self._data_quality_raw_array(name)
             if not shape_ok:
                 rec['shape_errors'] += 1
             missing, invalid, valid, physical_zero = self._data_quality_masks(name, raw)
-            problem = missing | invalid
+            provenance = self._environment_provenance_array(name)
+            source_available = self._environment_source_available(name)
+
+            if provenance is not None and all(
+                    code is not None for code in
+                    (reader_code, constant_code, fallback_code, hard_code)):
+                from_reader = provenance == reader_code
+                from_constant = provenance == constant_code
+                from_fallback = provenance == fallback_code
+                hard_missing = provenance == hard_code
+                supplied = from_reader | from_constant
+                supplied_valid = supplied & valid
+                supplied_invalid = supplied & invalid
+                fallback_count = int(np.count_nonzero(from_fallback))
+                hard_count = int(np.count_nonzero(hard_missing))
+                invalid_count = int(np.count_nonzero(supplied_invalid))
+
+                rec['reader_valid'] += int(np.count_nonzero(from_reader & valid))
+                rec['constant_valid'] += int(np.count_nonzero(from_constant & valid))
+                rec['reader_valid_zero'] += int(np.count_nonzero(
+                    supplied_valid & physical_zero))
+                rec['reader_invalid'] += invalid_count
+                if source_available:
+                    rec['reader_missing'] += fallback_count + hard_count
+                    rec['source_gap_fallback'] += fallback_count
+                else:
+                    rec['no_reader_evaluated'] += int(raw.size)
+                    rec['no_source_fallback'] += fallback_count
+
+                self._data_quality_resolution_counts(
+                    name, fallback_count=fallback_count,
+                    invalid_count=invalid_count + hard_count,
+                    source_available=source_available)
+
+                policy = self.ENVIRONMENT_DATA_QUALITY_POLICIES[name]
+                optional_absent = (
+                    policy['policy'] == 'OPTIONAL_SOURCE_LOCAL_REJECT'
+                    and not source_available)
+                if optional_absent:
+                    problem = supplied_invalid
+                else:
+                    problem = supplied_invalid | from_fallback | hard_missing
+                warning_problem = supplied_invalid | hard_missing
+                if bool(policy.get('warn_on_fallback', True)) and not optional_absent:
+                    warning_problem |= from_fallback
+            else:
+                # Backward-compatible fallback for lightweight test doubles or
+                # older Environment objects without provenance support. Sentinel
+                # policies remain unambiguous; fixed defaults cannot be inferred
+                # from numerical equality and are therefore not fabricated.
+                input_policy = self.ENVIRONMENT_INPUT_POLICIES.get(name)
+                problem = missing | invalid
+                warning_problem = problem.copy()
+                rec['reader_valid'] += int(np.count_nonzero(valid))
+                rec['reader_valid_zero'] += int(np.count_nonzero(physical_zero))
+                rec['reader_missing'] += int(np.count_nonzero(missing))
+                rec['reader_invalid'] += int(np.count_nonzero(invalid))
+                if not source_available:
+                    rec['no_reader_evaluated'] += int(raw.size)
+                if input_policy is not None:
+                    self._data_quality_resolution_counts(
+                        name, fallback_count=int(np.count_nonzero(missing)),
+                        invalid_count=int(np.count_nonzero(invalid)),
+                        source_available=source_available)
+
             count = raw.size
             nproblem = int(np.count_nonzero(problem))
             rec['evaluated'] += int(count)
-            rec['reader_valid'] += int(np.count_nonzero(valid))
-            rec['reader_valid_zero'] += int(np.count_nonzero(physical_zero))
-            rec['reader_missing'] += int(np.count_nonzero(missing))
-            rec['reader_invalid'] += int(np.count_nonzero(invalid))
             rec['steps_evaluated'] += 1
-            if not self._has_reader_variable(name):
-                rec['no_reader_evaluated'] += int(count)
             if nproblem:
                 rec['steps_with_problem'] += 1
                 fraction = (nproblem / count) if count else 0.0
@@ -4080,25 +4371,47 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 if rec['first_problem_time'] is None:
                     rec['first_problem_time'] = now
                 rec['last_problem_time'] = now
-                self._data_quality_resolution_counts(name, nproblem)
-                if fraction > warn_fraction:
-                    warning = (
-                        f'{name}: missing/invalid fraction {fraction:.3%} exceeds '
-                        f'warning threshold {warn_fraction:.3%} at {now}.')
-                    if rec['warning_steps'] == 0:
-                        rec['first_warning_time'] = now
-                        # Keep at most one warning string per variable so report
-                        # memory remains O(number of active input variables).
-                        report['warnings'].append(warning)
-                    rec['warning_steps'] += 1
-                    rec['last_warning_time'] = now
-                    if log_mode == 'WARNING':
-                        logger.warning('Data quality: %s', warning)
-                if abort_fraction >= 0.0 and fraction > abort_fraction:
-                    raise RuntimeError(
-                        f'Data-quality abort: {name} missing/invalid fraction '
-                        f'{fraction:.3%} exceeds configured threshold '
-                        f'{abort_fraction:.3%}.')
+
+            warning_count = int(np.count_nonzero(warning_problem))
+            warning_fraction = (warning_count / count) if count else 0.0
+            if warning_count and warning_fraction > warn_fraction:
+                warning = (
+                    f'{name}: reportable missing/invalid fraction '
+                    f'{warning_fraction:.3%} exceeds warning threshold '
+                    f'{warn_fraction:.3%} at {now}.')
+                if rec['warning_steps'] == 0:
+                    rec['first_warning_time'] = now
+                    report['warnings'].append(warning)
+                rec['warning_steps'] += 1
+                rec['last_warning_time'] = now
+                if log_mode == 'WARNING':
+                    logger.warning('Data quality: %s', warning)
+            if abort_fraction >= 0.0 and warning_fraction > abort_fraction:
+                raise RuntimeError(
+                    f'Data-quality abort: {name} reportable missing/invalid '
+                    f'fraction {warning_fraction:.3%} exceeds configured '
+                    f'threshold {abort_fraction:.3%}.')
+
+            # Profile provenance is reported separately so depth levels do not
+            # distort element-level fallback fractions.
+            profile_getter = getattr(manager, 'get_last_environment_provenance', None)
+            if profile_getter is not None:
+                profile = profile_getter(name, profiles=True, copy=False)
+                if profile is not None:
+                    profile = np.asarray(profile, dtype=np.uint8)
+                    rec['profile_evaluated'] += int(profile.size)
+                    if reader_code is not None:
+                        rec['profile_reader_valid'] += int(np.count_nonzero(
+                            profile == reader_code))
+                    if constant_code is not None:
+                        rec['profile_constant_valid'] += int(np.count_nonzero(
+                            profile == constant_code))
+                    if fallback_code is not None:
+                        rec['profile_fallback_used'] += int(np.count_nonzero(
+                            profile == fallback_code))
+                    if hard_code is not None:
+                        rec['profile_hard_missing'] += int(np.count_nonzero(
+                            profile == hard_code))
 
     def _data_quality_note_conditional(self, name, idx, required_mask):
         """Resolve conditional gaps for one field without changing its physics."""
@@ -4115,6 +4428,15 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         raw, _ = self._data_quality_raw_array(name, idx=idx)
         missing, invalid, _, _ = self._data_quality_masks(name, raw)
         problem = missing | invalid
+        provenance = self._environment_provenance_array(name, idx=idx)
+        manager = getattr(self, 'env', None)
+        if provenance is not None and manager is not None:
+            fallback_code = getattr(manager, 'PROVENANCE_FALLBACK', None)
+            hard_code = getattr(manager, 'PROVENANCE_HARD_MISSING', None)
+            if fallback_code is not None:
+                problem |= provenance == fallback_code
+            if hard_code is not None:
+                problem |= provenance == hard_code
         rec = report['variables'][name]
         rec['hard_missing'] += int(np.count_nonzero(problem & required))
         rec['conditional_unused'] += int(np.count_nonzero(problem & ~required))
@@ -4153,24 +4475,34 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             denom = float(evaluated) if evaluated else 1.0
             rec['reader_valid_fraction'] = (
                 float(rec.get('reader_valid', 0)) / denom if evaluated else 0.0)
+            rec['source_valid_fraction'] = (
+                float(rec.get('reader_valid', 0) + rec.get('constant_valid', 0))
+                / denom if evaluated else 0.0)
             rec['problem_fraction'] = (
                 float(rec.get('reader_missing', 0) + rec.get('reader_invalid', 0))
                 / denom if evaluated else 0.0)
             rec['fallback_fraction'] = (
                 float(rec.get('fallback_used', 0)) / denom if evaluated else 0.0)
+            rec['default_fallback_fraction'] = (
+                float(rec.get('default_fallback', 0)) / denom if evaluated else 0.0)
+            rec['optional_not_provided_fraction'] = (
+                float(rec.get('optional_not_provided', 0)) / denom
+                if evaluated else 0.0)
 
         total = {
             key: int(sum(rec.get(key, 0) for rec in report['variables'].values()))
             for key in (
-                'evaluated', 'reader_valid', 'reader_valid_zero', 'reader_missing',
-                'reader_invalid', 'fallback_used', 'config_fallback',
+                'evaluated', 'reader_valid', 'constant_valid',
+                'reader_valid_zero', 'reader_missing', 'reader_invalid',
+                'fallback_used', 'default_fallback', 'config_fallback',
                 'derived_fallback', 'mode_dependent_fallback',
-                'conditional_unused', 'hard_missing', 'unresolved')
+                'optional_not_provided', 'conditional_unused',
+                'hard_missing', 'unresolved', 'profile_evaluated',
+                'profile_reader_valid', 'profile_constant_valid',
+                'profile_fallback_used', 'profile_hard_missing')
         }
-        warn_fraction = float(self.get_config(
-            'chemical:environment:data_quality_warn_fraction'))
         threshold_warning = any(
-            float(rec['max_problem_fraction']) > warn_fraction
+            int(rec.get('warning_steps', 0)) > 0
             for rec in report['variables'].values())
         hard = total['hard_missing'] + total['unresolved']
         overall = 'CRITICAL' if hard else ('WARNING' if threshold_warning else 'OK')
@@ -4180,19 +4512,22 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         log_mode = self.get_config('chemical:environment:data_quality_log_level')
         if log_mode != 'OFF':
             logger.info(
-                'Environment data quality: %s; evaluated=%d, reader_missing=%d, '
-                'reader_invalid=%d, fallback_used=%d, conditional_unused=%d, '
-                'hard_missing=%d, unresolved=%d',
-                overall, total['evaluated'], total['reader_missing'],
+                'Environment data quality: %s; evaluated=%d, reader_valid=%d, '
+                'constant_valid=%d, reader_missing=%d, reader_invalid=%d, '
+                'fallback_used=%d, default_fallback=%d, optional_not_provided=%d, '
+                'conditional_unused=%d, hard_missing=%d, unresolved=%d',
+                overall, total['evaluated'], total['reader_valid'],
+                total['constant_valid'], total['reader_missing'],
                 total['reader_invalid'], total['fallback_used'],
+                total['default_fallback'], total['optional_not_provided'],
                 total['conditional_unused'], total['hard_missing'],
                 total['unresolved'])
             if log_mode == 'SUMMARY':
                 for name, rec in sorted(report['variables'].items()):
                     logger.info(
-                        '  data-quality %-55s valid=%6.2f%% problem=%6.2f%% '
+                        '  data-quality %-55s source_valid=%6.2f%% problem=%6.2f%% '
                         'fallback=%6.2f%% hard=%d unresolved=%d',
-                        name, 100.0 * rec['reader_valid_fraction'],
+                        name, 100.0 * rec['source_valid_fraction'],
                         100.0 * rec['problem_fraction'],
                         100.0 * rec['fallback_fraction'],
                         rec['hard_missing'], rec['unresolved'])
@@ -6572,9 +6907,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         The generic ChemicalDrift/OpenDrift bathymetry fallback is retained for
         normal model operation, but it is not valid physical bathymetry for wave
-        attenuation. CALCULATED wave stress therefore rejects local bathymetry
-        values that are missing, negative, or equal to the configured generic
-        bathymetry fallback.
+        attenuation when it was inserted as a fallback. CALCULATED wave stress
+        therefore rejects missing, negative, or fallback-derived bathymetry. A
+        reader value that is numerically equal to the generic fallback is valid.
 
         A non-positive final water-column thickness after applying sea-surface
         elevation is allowed and represents a locally dry point.
@@ -6588,26 +6923,23 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         bad = ~np.isfinite(bathy) | (bathy < 0.0)
 
-        # The configured generic fallback is a software fallback, not physical
-        # bathymetry for CALCULATED wave attenuation.
-        bathy_fallback = self.get_config(
-            'environment:fallback:sea_floor_depth_below_sea_level')
-
-        if bathy_fallback is not None:
-            try:
-                bathy_fallback = float(bathy_fallback)
-            except (TypeError, ValueError):
-                bathy_fallback = np.nan
-
-            if np.isfinite(bathy_fallback):
-                bad |= np.isclose(bathy,
-                    bathy_fallback, rtol=0.0, atol=1.0e-12)
+        # The generic 10000 m fallback remains valid for ordinary water-column
+        # operation. CALCULATED wave attenuation, however, requires physical
+        # bathymetry. Use Environment provenance rather than numerical equality
+        # so a genuine reader value of exactly 10000 m remains valid.
+        fallback_used = self._environment_fallback_used_mask(
+            'sea_floor_depth_below_sea_level', idx=idx)
+        if fallback_used is None:
+            raise RuntimeError(
+                'CALCULATED wave stress requires Environment fallback provenance '
+                'for sea_floor_depth_below_sea_level.')
+        bad |= np.asarray(fallback_used, dtype=bool)
 
         if np.any(bad):
             raise ValueError(
                 'CALCULATED wave stress requires valid physical bathymetry; '
                 f'{int(np.count_nonzero(bad))} element(s) contain missing, '
-                'negative, or fallback-valued sea_floor_depth_below_sea_level.')
+                'negative, or fallback-derived sea_floor_depth_below_sea_level.')
 
         mode = self.get_config('chemical:sediment:wave_depth_convention')
 
@@ -6807,9 +7139,11 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         The parent processing is retained for all other environment variables.
         """
         if not self._wave_forcing_active():
-            return super(
+            result = super(
                 ChemicalDrift, self
             ).calculate_missing_environment_variables()
+            self._data_quality_scan_step()
+            return result
 
         protected_names = []
         if self._wave_stress_source() == 'CALCULATED':
@@ -6850,6 +7184,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         ):
             self._warn_calm_wave_with_wind()
 
+        self._data_quality_scan_step()
         return result
 
     def _validate_wave_stress_source(self):
@@ -12198,9 +12533,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
     def update(self):
         """Update positions and properties of Chemical particles."""
-        # Scan policy-managed environmental inputs once per timestep before
-        # ChemicalDrift applies local config/derived/conditional fallbacks.
-        self._data_quality_scan_step()
+        # Environment data quality is scanned in
+        # calculate_missing_environment_variables(), before BaseModel can remove
+        # elements for unresolved required inputs.
 
         # Workaround due to conversion of datatype
         self.elements.specie = self.elements.specie.astype(np.int32)

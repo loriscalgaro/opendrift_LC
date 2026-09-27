@@ -1814,6 +1814,9 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         logger.debug('Removed %i elements.' % (np.sum(indices)))
         if hasattr(self, 'environment'):
             self.environment = self.environment[~indices]
+            if hasattr(self, 'env') and hasattr(
+                    self.env, 'filter_last_environment_provenance'):
+                self.env.filter_last_environment_provenance(~indices)
             logger.debug('Removed %i values from environment.' %
                          (np.sum(indices)))
         if hasattr(self, 'environment_profiles') and \
