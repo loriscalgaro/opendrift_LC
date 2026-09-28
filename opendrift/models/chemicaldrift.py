@@ -1570,6 +1570,19 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         # Dynamic partitioning needs SPM/DOC, fOC, pH, and mixed-layer depth.
         if dynamic_partitioning:
             req.update(self.PARTITIONING_REQUIRED_VARIABLES)
+
+            # Dissolved <-> reversible-sediment partitioning also uses the local
+            # interaction and active-layer geometry in update_transfer_rates().
+            # Request those fields even when deposition/resuspension are disabled;
+            # otherwise they are absent from self.environment and a physical zero
+            # active-layer thickness silently collapses the LMM->sediment rate.
+            transfer_setup = self.get_config('chemical:transfer_setup')
+            sediment_partitioning_active = (
+                transfer_setup in ('organics', 'metals', '137Cs_rev', 'custom')
+                and bool(self.get_config('chemical:species:Sediment_reversible'))
+            )
+            if sediment_partitioning_active:
+                req.update(self.SEDIMENT_EXCHANGE_REQUIRED_VARIABLES)
         # Single-rate degradation may need extra environmental fields.
         if degradation_enabled and degradation_mode == 'SingleRateConstants':
             if bool(self.get_config('chemical:transformations:Biodegradation')):
@@ -7799,6 +7812,10 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
                 missing_direction = both & (~has_wave_dir | ~has_current)
                 if np.any(missing_direction):
+                    self._data_quality_note_conditional(
+                        'sea_surface_wave_to_direction', idx, missing_direction)
+                    self._data_quality_note_conditional(
+                        'sea_surface_wave_from_direction', idx, missing_direction)
                     self._data_quality_note_virtual(
                         'soulsby_clarke_direction', 'hard_missing',
                         int(np.count_nonzero(missing_direction)))

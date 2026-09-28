@@ -203,6 +203,18 @@ def test_environment_provenance_marks_explicit_constant_as_source():
         == env.PROVENANCE_CONSTANT)
 
 
+def test_environment_provenance_nan_constant_uses_fallback_but_keeps_source_available():
+    reader = _ProvenanceConstantReader(
+        'constant_reader', 'sea_water_temperature', [np.nan])
+    env = _provenance_environment(10000.0, [reader])
+    values, _, _ = _get_temperature_environment(env)
+    assert np.all(values.sea_water_temperature == 10000.0)
+    assert np.all(
+        env.last_environment_provenance['sea_water_temperature']
+        == env.PROVENANCE_FALLBACK)
+    assert env.last_environment_source_available['sea_water_temperature'] is True
+
+
 def test_environment_provenance_distinguishes_hard_missing_from_fallback():
     reader = _ProvenanceDummyReader(
         'reader', 'sea_water_temperature', [np.nan, 2.0, np.nan])
