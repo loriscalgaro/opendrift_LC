@@ -200,6 +200,9 @@ class Chemical(Lagrangian3DArray):
         ('z_ref', {'dtype': np.float32, 'units': 'm', 'seed': True, 'default': np.nan}),
         ('z0', {'dtype': np.float32, 'units': 'm', 'seed': True, 'default': np.nan}),
         ('tau_wave', {'dtype': np.float32, 'units': 'Pa', 'seed': True, 'default': np.nan}),
+        ('tau_other_x', {'dtype': np.float32, 'units': 'Pa', 'seed': True, 'default': np.nan}),
+        ('tau_other_y', {'dtype': np.float32, 'units': 'Pa', 'seed': True, 'default': np.nan}),
+        ('tau_other', {'dtype': np.float32, 'units': 'Pa', 'seed': True, 'default': np.nan}),
         ('wave_orbital_velocity', {'dtype': np.float32, 'units': 'm/s', 'seed': True, 'default': np.nan}),
         ('wave_excursion', {'dtype': np.float32, 'units': 'm', 'seed': True, 'default': np.nan}),
         ('wave_number', {'dtype': np.float32, 'units': '1/m', 'seed': True, 'default': np.nan}),
@@ -218,6 +221,7 @@ class Chemical(Lagrangian3DArray):
         'rho', 'Cd',
         'speed', 'z_ref',
         'z0','tau_wave',
+        'tau_other_x', 'tau_other_y', 'tau_other',
         'wave_orbital_velocity', 'wave_excursion', 'wave_number',
         'wave_friction_factor', 'wave_z0', 'wave_water_depth',
         'p_res', 'p_dep',
@@ -515,7 +519,13 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         'sea_floor_resuspension_critstress': {'fallback': 0, 'important': False,}, # Pa
     }
     OTHER_STRESS_REQUIRED_VARIABLES = {
-        'sea_floor_other_stress': {'fallback': _ENV_NEGATIVE_SENTINEL, 'important': False,},        # Pa
+        # Optional externally supplied directional bed-stress contribution.
+        # Components are signed; the large finite sentinel is outside the
+        # physical range but preserves negative stresses as valid values.
+        'x_sea_floor_other_stress': {
+            'fallback': _ENV_SIGNED_VECTOR_SENTINEL, 'important': False,},  # Pa
+        'y_sea_floor_other_stress': {
+            'fallback': _ENV_SIGNED_VECTOR_SENTINEL, 'important': False,},  # Pa
     }
     WAVE_STRESS_REQUIRED_VARIABLES = {
     # Surface-wave forcing; no direct wave-stress/orbital-velocity inputs.
@@ -685,8 +695,12 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             'domain': 'BEARING', 'zero_is_physical': True},
         'sea_surface_wave_from_direction': {'policy': 'CONDITIONAL', 'sentinel': _ENV_NEGATIVE_SENTINEL,
             'domain': 'BEARING', 'zero_is_physical': True},
-        'sea_floor_other_stress': {'policy': 'LOCAL_REJECT', 'sentinel': _ENV_NEGATIVE_SENTINEL,
-            'domain': 'GE_ZERO', 'zero_is_physical': True},
+        'x_sea_floor_other_stress': {
+            'policy': 'LOCAL_REJECT', 'sentinel': _ENV_SIGNED_VECTOR_SENTINEL,
+            'domain': 'SIGNED', 'zero_is_physical': True},
+        'y_sea_floor_other_stress': {
+            'policy': 'LOCAL_REJECT', 'sentinel': _ENV_SIGNED_VECTOR_SENTINEL,
+            'domain': 'SIGNED', 'zero_is_physical': True},
         'active_sediment_layer_thickness': {'policy': 'CONFIG', 'sentinel': _ENV_NEGATIVE_SENTINEL,
             'domain': 'GE_ZERO', 'config_key': 'chemical:sediment:mixing_depth',
             'zero_is_physical': True},
@@ -847,12 +861,15 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
     # No source for this optional contribution means that the contribution is
     # not provided. If a source exists, local gaps remain strict errors.
-    ENVIRONMENT_DATA_QUALITY_POLICIES['sea_floor_other_stress'] = dict(
-        ENVIRONMENT_INPUT_POLICIES['sea_floor_other_stress'],
-        policy='OPTIONAL_SOURCE_LOCAL_REJECT',
-        mechanism='SENTINEL',
-        warn_on_fallback=True,
-    )
+    for _other_stress_name in (
+            'x_sea_floor_other_stress', 'y_sea_floor_other_stress'):
+        ENVIRONMENT_DATA_QUALITY_POLICIES[_other_stress_name] = dict(
+            ENVIRONMENT_INPUT_POLICIES[_other_stress_name],
+            policy='OPTIONAL_SOURCE_LOCAL_REJECT',
+            mechanism='SENTINEL',
+            warn_on_fallback=True,
+        )
+    del _other_stress_name
 
     # The conditional local semantics do not weaken the pre-run source
     # requirement for calculated-wave period or SOULSBY_CLARKE direction.
@@ -1217,11 +1234,11 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'description': 'Wave roughness source. CURRENT_MODE follows the current-stress mode; LOG_Z0 uses mapped/configured z0; GRAIN_D50 uses ks=2.5*d50; NIKURADSE uses configured nikuradse_ks.'},
             'chemical:sediment:include_other_stress': {'type': 'bool', 'default': False,
                 'level': CONFIG_LEVEL_BASIC,
-                'description': 'Whether to include externally provided other bed stress when available.'},
+                'description': 'Include the optional directional other bed-stress forcing from signed x_sea_floor_other_stress and y_sea_floor_other_stress components in Pa. Both components must be supplied together; neither component means that the optional contribution is absent, while a partial pair or any local missing component is rejected.'},
             'chemical:sediment:shear_stress_combination': {'type': 'enum',
                 'enum': ['sum', 'max', 'rss', 'SOULSBY_CLARKE'], 'default': 'sum',
                 'level': CONFIG_LEVEL_ADVANCED,
-                'description': 'sum/max/rss combine stress magnitudes heuristically. SOULSBY_CLARKE is the legacy name for the simplified Soulsby wave-current peak formulation, evaluated over both wave half-cycles; other stress is then added in quadrature.'},
+                'description': 'sum/max/rss preserve their established scalar current-wave magnitude heuristics while using the signed x/y other-stress vector to determine the combined diagnostic direction. SOULSBY_CLARKE is the legacy name for the simplified Soulsby wave-current peak formulation evaluated over both wave half-cycles; the directional other stress is vector-added to that wave-current resultant.'},
             'chemical:sediment:use_critstress_heterogeneity': {
                 'type': 'bool', 'default': True,
                 'level': CONFIG_LEVEL_BASIC,
@@ -1675,6 +1692,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 ):
                     req.update(self.SEDIMENT_GRAIN_D50_REQUIRED_VARIABLES)
 
+            combo = self.get_config(
+                'chemical:sediment:shear_stress_combination')
+
             if include_other_stress:
                 req.update(self.OTHER_STRESS_REQUIRED_VARIABLES)
             if include_wave_stress:
@@ -1693,18 +1713,19 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                     req.update(self.DIRECT_WAVE_STRESS_REQUIRED_VARIABLES)
                     # Bathymetry/roughness may still be needed by current stress
                     # and sediment exchange, but are not required by DIRECT waves.
-                combo = self.get_config(
-                    'chemical:sediment:shear_stress_combination')
 
-                if combo == 'SOULSBY_CLARKE':
+            if combo == 'SOULSBY_CLARKE' and (
+                    include_wave_stress or include_other_stress):
+                if include_wave_stress:
                     # Wave direction is required for the directional wave-current
                     # combination, but either "to" or "from" direction is sufficient.
                     for name, spec in self.WAVE_DIRECTION_REQUIRED_VARIABLES.items():
                         if self._has_explicit_environment_source(name):
                             req[name] = dict(spec)
-                    # Direct scalar current stress still needs a current direction.
-                    req.update(self.SEDIMENT_BOTTOM_VELOCITY_REQUIRED_VARIABLES)
-                    req.update(self.SEDIMENT_BULK_FLOW_REQUIRED_VARIABLES)
+                # A direct scalar current stress needs a current direction whenever
+                # SOULSBY_CLARKE combines it with an active wave or other vector.
+                req.update(self.SEDIMENT_BOTTOM_VELOCITY_REQUIRED_VARIABLES)
+                req.update(self.SEDIMENT_BULK_FLOW_REQUIRED_VARIABLES)
 
         return req
 
@@ -2959,15 +2980,17 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         ``required_variables`` before entering ``OceanDrift.run()`` if they are
         to be stored in the trajectory NetCDF as well as used by the physics.
 
-        At present the only reader-dependent source choice is the optional direct
-        current bed stress. Keeping the resolution in one helper makes the pre-run
-        and ``prepare_run()`` paths identical and idempotent.
+        Reader-dependent source choices include the optional direct current
+        bed stress and the optional directional other-stress pair. Keeping source
+        resolution here makes the pre-run and ``prepare_run()`` paths identical
+        and idempotent.
         """
         self._reader_variables = set()
         for _, reader in self.env.readers.items():
             self._reader_variables.update(getattr(reader, 'variables', []))
 
         self._resolve_current_stress_source()
+        self._resolve_other_stress_source()
         return self._sync_required_variables_from_config()
 
     def run(self, *args, **kwargs):
@@ -4093,6 +4116,19 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             'start_model_time': self._data_quality_time_string(),
             'end_model_time': None,
             'variables': variables,
+            'source_relationships': {
+                'directional_other_stress_pair': {
+                    'members': [
+                        'x_sea_floor_other_stress',
+                        'y_sea_floor_other_stress',
+                    ],
+                    'atomic': True,
+                    'missing_partner_is_error': True,
+                    'status': getattr(
+                        self, '_other_stress_source_pair_status',
+                        'NOT_EVALUATED'),
+                },
+            },
             'virtual_outcomes': {},
             'summary': {},
             'warnings': [],
@@ -4175,7 +4211,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         zero_atol = {
             'sea_floor_current_stress': self._BED_STRESS_ZERO_ATOL_PA,
             'sea_floor_wave_stress': self._BED_STRESS_ZERO_ATOL_PA,
-            'sea_floor_other_stress': self._BED_STRESS_ZERO_ATOL_PA,
+            'x_sea_floor_other_stress': self._BED_STRESS_ZERO_ATOL_PA,
+            'y_sea_floor_other_stress': self._BED_STRESS_ZERO_ATOL_PA,
             'sea_floor_resuspension_critstress': self._BED_STRESS_ZERO_ATOL_PA,
             'active_sediment_layer_thickness': self._SED_LENGTH_ZERO_ATOL_M,
             'sediment_oxygen_penetration_depth': self._SED_LENGTH_ZERO_ATOL_M,
@@ -4471,6 +4508,11 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         self._data_quality_finalized = True
         report['status'] = str(status)
         report['end_model_time'] = self._data_quality_time_string()
+        pair_meta = report.get('source_relationships', {}).get(
+            'directional_other_stress_pair')
+        if pair_meta is not None:
+            pair_meta['status'] = getattr(
+                self, '_other_stress_source_pair_status', pair_meta['status'])
 
         # A successful run proves that any still-pending conditional gap did not
         # become a hard requirement. Failed/incomplete runs retain it as unresolved.
@@ -4517,7 +4559,18 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         threshold_warning = any(
             int(rec.get('warning_steps', 0)) > 0
             for rec in report['variables'].values())
-        hard = total['hard_missing'] + total['unresolved']
+        virtual_hard_missing = int(sum(
+            rec.get('hard_missing', 0)
+            for rec in report.get('virtual_outcomes', {}).values()))
+        virtual_unresolved = int(sum(
+            rec.get('unresolved', 0)
+            for rec in report.get('virtual_outcomes', {}).values()))
+        total['virtual_hard_missing'] = virtual_hard_missing
+        total['virtual_unresolved'] = virtual_unresolved
+        hard = (
+            total['hard_missing'] + total['unresolved']
+            + virtual_hard_missing + virtual_unresolved
+        )
         overall = 'CRITICAL' if hard else ('WARNING' if threshold_warning else 'OK')
         total['overall_quality'] = overall
         report['summary'] = total
@@ -4528,13 +4581,15 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'Environment data quality: %s; evaluated=%d, reader_valid=%d, '
                 'constant_valid=%d, reader_missing=%d, reader_invalid=%d, '
                 'fallback_used=%d, default_fallback=%d, optional_not_provided=%d, '
-                'conditional_unused=%d, hard_missing=%d, unresolved=%d',
+                'conditional_unused=%d, hard_missing=%d, unresolved=%d, '
+                'virtual_hard_missing=%d, virtual_unresolved=%d',
                 overall, total['evaluated'], total['reader_valid'],
                 total['constant_valid'], total['reader_missing'],
                 total['reader_invalid'], total['fallback_used'],
                 total['default_fallback'], total['optional_not_provided'],
                 total['conditional_unused'], total['hard_missing'],
-                total['unresolved'])
+                total['unresolved'], total['virtual_hard_missing'],
+                total['virtual_unresolved'])
             if log_mode == 'SUMMARY':
                 for name, rec in sorted(report['variables'].items()):
                     logger.info(
@@ -6807,6 +6862,57 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                     self.get_config('chemical:sediment:stress_param_mode'))
         return self._current_stress_source
 
+    def _resolve_other_stress_source(self):
+        """Resolve the optional directional other-stress source as one pair.
+
+        The contribution is used only when sediment exchange and
+        ``chemical:sediment:include_other_stress`` are enabled. Neither component
+        supplied means that the optional contribution is absent. Supplying exactly
+        one component is an error because treating the missing partner as zero
+        would silently change the supplied stress direction.
+        """
+        sediment_exchange_enabled = bool(
+            self.get_config('chemical:sediment:enable_deposition') or
+            self.get_config('chemical:sediment:enable_resuspension')
+        )
+        needed = bool(
+            sediment_exchange_enabled and
+            self.get_config('chemical:sediment:include_other_stress')
+        )
+        x_name = 'x_sea_floor_other_stress'
+        y_name = 'y_sea_floor_other_stress'
+        has_x = bool(needed and self._has_explicit_environment_source(x_name))
+        has_y = bool(needed and self._has_explicit_environment_source(y_name))
+
+        if not needed:
+            self._other_stress_source_pair_status = 'INACTIVE'
+        elif has_x != has_y:
+            supplied = x_name if has_x else y_name
+            missing = y_name if has_x else x_name
+            self._other_stress_source_available = False
+            self._other_stress_source_pair_status = 'PARTIAL_ERROR'
+            self._data_quality_note_virtual(
+                'directional_other_stress_pair', 'hard_missing', 1)
+            raise ValueError(
+                'Directional other bed stress is an atomic x/y forcing pair: '
+                f'{supplied!r} is supplied but {missing!r} is missing. Supply both '
+                'signed Pa components or neither component.'
+            )
+
+        self._other_stress_source_available = bool(has_x and has_y)
+        if needed:
+            self._other_stress_source_pair_status = (
+                'AVAILABLE' if self._other_stress_source_available else 'ABSENT')
+            if self._other_stress_source_available:
+                logger.info(
+                    'Other bed-stress source=DIRECTIONAL (reader/constant supplied '
+                    'x_sea_floor_other_stress and y_sea_floor_other_stress).')
+            else:
+                logger.info(
+                    'Other bed-stress source=ABSENT; neither directional component '
+                    'is supplied, so the optional contribution is omitted.')
+        return self._other_stress_source_available
+
     def _direct_current_stress_array(self, idx=None):
         """Return current local DIRECT stress values selected in prepare_run().
 
@@ -6848,27 +6954,60 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'expected finite, non-negative magnitudes in Pa.')
         return tau
 
-    def _bed_stress_array(self, name, idx=None):
-        """Read an optional non-current stress magnitude [Pa], preserving masks.
+    def _required_other_stress_component_array(self, name, idx=None):
+        """Return one loaded signed component of the resolved other-stress pair.
 
-        This helper retains reader-availability discovery for optional stress
-        fields such as ``sea_floor_other_stress``.  Direct current stress uses
-        ``_direct_current_stress_array()`` instead, because its source is frozen
-        once in prepare_run().
+        Source availability is frozen by ``_resolve_other_stress_source()``.
+        This helper only aligns the already-loaded environment value with the
+        requested elements and decodes the component-specific missing sentinel.
         """
-        tau = self._wave_reader_array(name, idx=idx)
-        if tau is None:
-            if self._has_reader_variable(name):
-                raise ValueError(f'{name} is advertised by a reader but has no available data.')
-            return None
-        tau = self._canonicalize_numerical_zero(
-            tau, atol=self._BED_STRESS_ZERO_ATOL_PA)
-        invalid = ~np.isfinite(tau) | (tau < 0.0)
+        valid_names = (
+            'x_sea_floor_other_stress', 'y_sea_floor_other_stress')
+        if name not in valid_names:
+            raise ValueError(f'Unknown directional other-stress component: {name!r}')
+
+        raw = getattr(self.environment, name, None)
+        if raw is None:
+            raise RuntimeError(
+                f'Required directional other-stress forcing {name!r} was resolved '
+                'before the run, but is absent from the current environment state.')
+
+        values = np.ma.asarray(raw, dtype=float).filled(np.nan)
+        n = self.num_elements_active()
+        if values.ndim == 0 or values.size == 1:
+            count = n if idx is None else np.asarray(idx).size
+            out = np.full(count, float(values.reshape(-1)[0]), dtype=float)
+        else:
+            if values.ndim != 1 or values.size != n:
+                raise ValueError(
+                    f'{name} must be scalar or have one value per active element.')
+            out = values.copy() if idx is None else values[np.asarray(idx, dtype=np.int64)]
+
+        out = self._decode_policy_missing(name, out)
+        out = self._canonicalize_numerical_zero(
+            out, atol=self._BED_STRESS_ZERO_ATOL_PA)
+        invalid = ~np.isfinite(out)
         if np.any(invalid):
+            self._data_quality_note_virtual(
+                'directional_other_stress_pair', 'hard_missing',
+                int(np.count_nonzero(invalid)))
             raise ValueError(
-                f'{name} contains {int(invalid.sum())} invalid stress values; '
-                'expected finite, non-negative magnitudes in Pa.')
-        return tau
+                f'{name} contains {int(np.count_nonzero(invalid))} unresolved '
+                'missing or non-finite local value(s); directional other stress '
+                'requires finite signed Pa components wherever the supplied pair '
+                'is evaluated.')
+        return out
+
+    def _other_stress_components(self, idx=None):
+        """Return resolved directional other stress as x, y, and magnitude."""
+        if not bool(getattr(self, '_other_stress_source_available', False)):
+            return None
+        tau_x = self._required_other_stress_component_array(
+            'x_sea_floor_other_stress', idx=idx)
+        tau_y = self._required_other_stress_component_array(
+            'y_sea_floor_other_stress', idx=idx)
+        tau = np.hypot(tau_x, tau_y)
+        return tau_x, tau_y, tau
 
     def _wave_to_direction_array(self, idx=None):
         """Geographic propagation bearing, clockwise from north; NaN if absent.
@@ -7486,14 +7625,20 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         Wave stress uses the selected CALCULATED (default) or DIRECT source.
         When current_only=True, wave and other stresses are excluded. This path
         is used by the sediment-O2 permeability-dispersion parameterization.
-        sum/max/rss are scalar heuristic combinations. Their vector diagnostics
-        use a surrogate current direction (or wave axis if current is absent).
-        SOULSBY_CLARKE is used to name the simplified Soulsby peak formulation applied,
-        not the full Soulsby-Clarke boundary-layer model.
-        It evaluates both +/- wave half-cycles and saves the larger vector.
-        With no physical direction, diagnostic components are NaN, while the
-        scalar stress remains usable. Other stress is non-directional and is
-        added in quadrature in the SOULSBY_CLARKE branch.
+        Directional other stress is supplied by the signed Pa components
+        x_sea_floor_other_stress and y_sea_floor_other_stress. The pair is
+        optional as a whole: neither source means no contribution, while a
+        partial pair or a local missing component is rejected.
+
+        sum/max/rss preserve their scalar current-wave magnitude heuristics.
+        Their effective x/y diagnostics incorporate the actual other-stress
+        vector and are rescaled to the selected heuristic magnitude; max ties
+        retain the current-wave base direction. SOULSBY_CLARKE is the legacy
+        name for the simplified Soulsby peak formulation, not the full
+        Soulsby-Clarke boundary-layer model. It evaluates both +/- wave
+        half-cycles and then vector-adds the directional other stress. With a
+        materially positive effective stress but no defensible direction,
+        diagnostic components are NaN rather than an invented zero vector.
         """
         if idx is None:
             idx = np.arange(self.num_elements_active(), dtype=np.int64)
@@ -7521,6 +7666,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'z_ref': empty,
                 'z0': empty,
                 'tau_wave': empty,
+                'tau_other_x': empty,
+                'tau_other_y': empty,
+                'tau_other': empty,
                 'wave_orbital_velocity': empty,
                 'wave_excursion': empty,
                 'wave_number': empty,
@@ -7591,6 +7739,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                     'z_ref': nan.copy(),
                     'z0': nan.copy(),
                     'tau_wave': zeros.copy(),
+                    'tau_other_x': zeros.copy(),
+                    'tau_other_y': zeros.copy(),
+                    'tau_other': zeros.copy(),
                     'wave_orbital_velocity': nan.copy(),
                     'wave_excursion': nan.copy(),
                     'wave_number': nan.copy(),
@@ -7733,7 +7884,13 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         combo = self.get_config('chemical:sediment:shear_stress_combination')
 
-        tau_other = self._bed_stress_array('sea_floor_other_stress', idx=idx) if use_other else None
+        tau_other_x = np.zeros(n, dtype=float)
+        tau_other_y = np.zeros(n, dtype=float)
+        tau_other = None
+        if use_other:
+            other_stress = self._other_stress_components(idx=idx)
+            if other_stress is not None:
+                tau_other_x, tau_other_y, tau_other = other_stress
 
         # Defaults: effective = current-only
         tau_eff_x = tau_bx.copy()
@@ -7772,20 +7929,12 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                     wave_to_dir[has_wave_dir])
 
         def _fallback_direction():
-            """
-            Return a surrogate unit direction for effective bed-stress components.
-            Priority:
-              1) current-stress direction, if current stress is nonzero
-              2) wave direction, but only where wave direction is available
-                 and wave stress is actively contributing (tau_wave > eps)
-              3) no direction (0, 0) if neither current nor active wave
-                 direction is available
+            """Return the established surrogate current/wave direction.
 
-            This helper is used only when the effective stress magnitude has been
-            computed by a non-directional heuristic combination, or when a
-            directional combination later loses direction information
-            (for example, adding non-directional 'other' stress to a zero vector).
-            It does not invent a direction for purely non-directional stress.
+            Priority remains current direction, then the direction of a materially
+            active wave. ``known`` is false only where no such direction exists.
+            The scalar sum/max/rss semantics continue to use this surrogate for
+            their current/wave base contribution.
             """
             dir_x = np.zeros(n, dtype=float)
             dir_y = np.zeros(n, dtype=float)
@@ -7795,12 +7944,38 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             dir_y[use_current_dir] = ec_y[use_current_dir]
 
             active_wave_dir = has_wave_dir & wave_active
-
             use_wave_dir = (~use_current_dir) & active_wave_dir
             dir_x[use_wave_dir] = ew_x[use_wave_dir]
             dir_y[use_wave_dir] = ew_y[use_wave_dir]
+            known = use_current_dir | use_wave_dir
+            return dir_x, dir_y, known
 
-            return dir_x, dir_y
+        def _scale_direction_to_magnitude(target, seed_x, seed_y, known):
+            """Scale a directional seed to a prescribed heuristic magnitude."""
+            target = np.asarray(target, dtype=float)
+            seed_x = np.asarray(seed_x, dtype=float)
+            seed_y = np.asarray(seed_y, dtype=float)
+            known = np.asarray(known, dtype=bool)
+            out_x = np.zeros(n, dtype=float)
+            out_y = np.zeros(n, dtype=float)
+            seed_mag = np.hypot(seed_x, seed_y)
+            active = np.isfinite(target) & (target > stress_eps)
+            usable = (
+                active & known & np.isfinite(seed_mag) & (seed_mag > stress_eps)
+            )
+            if np.any(usable):
+                scale = target[usable] / seed_mag[usable]
+                out_x[usable] = seed_x[usable] * scale
+                out_y[usable] = seed_y[usable] * scale
+            unknown = active & ~usable
+            out_x[unknown] = np.nan
+            out_y[unknown] = np.nan
+            return out_x, out_y
+
+        other_active = (
+            np.zeros(n, dtype=bool) if tau_other is None
+            else np.isfinite(tau_other) & (tau_other > stress_eps)
+        )
 
         if combo == 'SOULSBY_CLARKE':
             if tau_wave is not None:
@@ -7849,61 +8024,112 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 tau_eff[only_current_active] = tau_c[only_current_active]
                 tau_eff[only_wave_active] = tau_wave[only_wave_active]
 
-            if tau_other is not None:
-                tau_eff = np.sqrt(tau_eff ** 2 + tau_other ** 2)
+            if tau_other is not None and np.any(other_active):
+                # The supplied other stress is a true signed vector. Add it to
+                # the already-resolved Soulsby/current-wave resultant rather than
+                # increasing the scalar magnitude in quadrature.
+                base_active = np.isfinite(tau_eff) & (tau_eff > stress_eps)
+                base_vec_mag = np.hypot(tau_eff_x, tau_eff_y)
+                base_direction_missing = base_active & (
+                    ~np.isfinite(base_vec_mag) | (base_vec_mag <= stress_eps)
+                )
+                cannot_add_directionally = other_active & base_direction_missing
+                if np.any(cannot_add_directionally):
+                    self._data_quality_note_virtual(
+                        'soulsby_clarke_other_stress_direction', 'hard_missing',
+                        int(np.count_nonzero(cannot_add_directionally)))
+                    raise ValueError(
+                        'SOULSBY_CLARKE cannot directionally add the supplied '
+                        'x/y other bed stress where the materially active '
+                        'current/wave resultant has no finite direction. Supply '
+                        'the required current/wave direction inputs for those '
+                        'elements or use a scalar heuristic combination mode.')
 
-                # keep same direction if possible, otherwise fall back to current then wave direction
-                mag = np.hypot(tau_eff_x, tau_eff_y)
-                nonzero = mag > stress_eps
-                if np.any(nonzero):
-                    tau_eff_x[nonzero] *= tau_eff[nonzero] / mag[nonzero]
-                    tau_eff_y[nonzero] *= tau_eff[nonzero] / mag[nonzero]
+                tau_eff_x[other_active] += tau_other_x[other_active]
+                tau_eff_y[other_active] += tau_other_y[other_active]
+                tau_eff[other_active] = np.hypot(
+                    tau_eff_x[other_active], tau_eff_y[other_active])
 
-                zero_with_mag = (~nonzero) & (tau_eff > stress_eps)
-                if np.any(zero_with_mag):
-                    dir_x, dir_y = _fallback_direction()
-                    tau_eff_x[zero_with_mag] = tau_eff[zero_with_mag] * dir_x[zero_with_mag]
-                    tau_eff_y[zero_with_mag] = tau_eff[zero_with_mag] * dir_y[zero_with_mag]
+        elif combo in ('sum', 'max', 'rss'):
+            # Preserve the established scalar current/wave heuristic for each
+            # mode. The directional other-stress pair participates in the
+            # diagnostic/resultant direction instead of being collapsed to an
+            # anonymous scalar contribution.
+            base_dir_x, base_dir_y, base_dir_known = _fallback_direction()
 
-        elif combo == 'sum':
-            if tau_wave is not None:
-                tau_eff = tau_eff + tau_wave
-            if tau_other is not None:
-                tau_eff = tau_eff + tau_other
+            if combo == 'sum':
+                tau_base = tau_c.copy()
+                if tau_wave is not None:
+                    tau_base = tau_base + tau_wave
+            elif combo == 'max':
+                tau_base = tau_c.copy()
+                if tau_wave is not None:
+                    tau_base = np.maximum(tau_base, tau_wave)
+            else:  # rss
+                tau_base_sq = tau_c ** 2
+                if tau_wave is not None:
+                    tau_base_sq = tau_base_sq + tau_wave ** 2
+                tau_base = np.sqrt(tau_base_sq)
 
-        elif combo == 'max':
-            if tau_wave is not None:
-                tau_eff = np.maximum(tau_eff, tau_wave)
-            if tau_other is not None:
-                tau_eff = np.maximum(tau_eff, tau_other)
+            base_active = np.isfinite(tau_base) & (tau_base > stress_eps)
+            base_seed_x = tau_base * base_dir_x
+            base_seed_y = tau_base * base_dir_y
+            base_known_for_result = (~base_active) | base_dir_known
 
-        elif combo == 'rss':
-            tau_sq = tau_eff ** 2
-            if tau_wave is not None:
-                tau_sq = tau_sq + tau_wave ** 2
-            if tau_other is not None:
-                tau_sq = tau_sq + tau_other ** 2
-            tau_eff = np.sqrt(tau_sq)
+            if tau_other is None:
+                tau_eff = tau_base
+                tau_eff_x, tau_eff_y = _scale_direction_to_magnitude(
+                    tau_eff, base_seed_x, base_seed_y, base_known_for_result)
+            elif combo == 'sum':
+                tau_eff = tau_base + tau_other
+                tau_eff_x, tau_eff_y = _scale_direction_to_magnitude(
+                    tau_eff,
+                    base_seed_x + tau_other_x,
+                    base_seed_y + tau_other_y,
+                    base_known_for_result)
+            elif combo == 'max':
+                # Strict greater-than makes ties deterministic: an exact tie
+                # retains the established current/wave base direction.
+                other_wins = tau_other > tau_base
+                tau_eff = np.maximum(tau_base, tau_other)
+                seed_x = np.where(other_wins, tau_other_x, base_seed_x)
+                seed_y = np.where(other_wins, tau_other_y, base_seed_y)
+                direction_known = np.where(
+                    other_wins, True, base_known_for_result)
+                tau_eff_x, tau_eff_y = _scale_direction_to_magnitude(
+                    tau_eff, seed_x, seed_y, direction_known)
+            else:  # rss
+                tau_eff = np.sqrt(tau_base ** 2 + tau_other ** 2)
+                tau_eff_x, tau_eff_y = _scale_direction_to_magnitude(
+                    tau_eff,
+                    base_seed_x + tau_other_x,
+                    base_seed_y + tau_other_y,
+                    base_known_for_result)
 
         else:
             raise ValueError(f"Unknown shear_stress_combination: {combo!r}")
 
-        # For non-directional combinations, rebuild consistent vector components
-        if combo != 'SOULSBY_CLARKE':
-            dir_x, dir_y = _fallback_direction()
-            tau_eff_x = tau_eff * dir_x
-            tau_eff_y = tau_eff * dir_y
+        # NaNs distinguish materially active stress with unknown direction
+        # from an actual numerical/physical zero-stress state. This applies to
+        # every combination mode, including an active directional other stress
+        # when waves are disabled.
+        effective_active = np.isfinite(tau_eff) & (tau_eff > stress_eps)
+        vector_mag = np.hypot(tau_eff_x, tau_eff_y)
+        unknown_direction = effective_active & (
+            ~np.isfinite(vector_mag) | (vector_mag <= stress_eps)
+        )
+        tau_eff_x[unknown_direction] = np.nan
+        tau_eff_y[unknown_direction] = np.nan
 
-        if use_wave:
-            # NaNs distinguish materially active stress with unknown direction
-            # from an actual numerical/physical zero-stress state.
-            effective_active = np.isfinite(tau_eff) & (tau_eff > stress_eps)
+        known_direction = effective_active & ~unknown_direction
+        if np.any(known_direction):
             vector_mag = np.hypot(tau_eff_x, tau_eff_y)
-            unknown_direction = effective_active & (
-                ~np.isfinite(vector_mag) | (vector_mag <= stress_eps)
-            )
-            tau_eff_x[unknown_direction] = np.nan
-            tau_eff_y[unknown_direction] = np.nan
+            if np.any(~np.isclose(
+                    vector_mag[known_direction], tau_eff[known_direction],
+                    rtol=1.0e-12, atol=stress_eps)):
+                raise RuntimeError(
+                    'Effective bed-stress vector components are inconsistent '
+                    'with tau_effective after stress combination.')
 
         ustar_eff = np.sqrt(np.maximum(tau_eff, 0.0) / np.maximum(rho, eps))
 
@@ -7912,6 +8138,10 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             'tau_by': tau_by,                  # current-only y-component
             'tau_current': tau_c,              # current-only magnitude
             'tau_wave': tau_wave if tau_wave is not None else np.zeros(n, dtype=float),
+            'tau_other_x': tau_other_x,
+            'tau_other_y': tau_other_y,
+            'tau_other': (
+                tau_other if tau_other is not None else np.zeros(n, dtype=float)),
             **{name: wave[name] for name in
                ('wave_orbital_velocity', 'wave_excursion', 'wave_number',
                 'wave_friction_factor', 'wave_z0', 'wave_water_depth')},
@@ -8416,6 +8646,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             self.elements.z0[idx] = stress['z0']
 
         self.elements.tau_wave[idx] = stress['tau_wave']
+        self.elements.tau_other_x[idx] = stress['tau_other_x']
+        self.elements.tau_other_y[idx] = stress['tau_other_y']
+        self.elements.tau_other[idx] = stress['tau_other']
         for name in ('wave_orbital_velocity', 'wave_excursion', 'wave_number',
                      'wave_friction_factor', 'wave_z0', 'wave_water_depth'):
             values = np.asarray(stress[name], dtype=float)
@@ -9295,7 +9528,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         )
 
         # The empirical relation is current-shear based. Do not include wave or
-        # non-directional 'other' stress in u_star for this parameterization.
+        # optional directional other bed stress in u_star for this parameterization.
         stress = self.compute_bottom_shear_stress(idx=idx, current_only=True)
         tau_current = self._validate_array_param(
             'oxygen_dispersion_current_stress', stress['tau_current'], ge=0.0
