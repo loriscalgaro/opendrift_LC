@@ -17446,7 +17446,10 @@ class ChemicalDriftPostProcessMixin:
         'hydraulic_radius': {'units': 'm', 'long_name': 'Hydraulic radius'},
         'sea_floor_erodibility_M': {'units': 'kg m-2 s-1 Pa-1', 'long_name': 'Sea-floor cohesive erodibility coefficient'},
         'sea_floor_resuspension_critstress': {'units': 'Pa', 'long_name': 'Sea-floor critical shear stress for resuspension'},
-        'sea_floor_other_stress': {'units': 'Pa', 'long_name': 'Additional sea-floor shear stress'},
+        'x_sea_floor_other_stress': {
+            'units': 'Pa', 'long_name': 'Eastward additional sea-floor shear-stress component'},
+        'y_sea_floor_other_stress': {
+            'units': 'Pa', 'long_name': 'Northward additional sea-floor shear-stress component'},
         'sea_surface_wave_significant_height': {'units': 'm', 'long_name': 'Significant wave height'},
         'sea_surface_wave_period_at_variance_spectral_density_maximum': {
             'units': 's', 'long_name': 'Wave period at variance spectral-density maximum'},
@@ -18277,6 +18280,7 @@ class ChemicalDriftPostProcessMixin:
             'chemical:sediment:enable_resuspension',
             'chemical:sediment:stress_param_mode',
             'chemical:sediment:include_wave_stress',
+            'chemical:sediment:include_other_stress',
             'chemical:sediment:wave_stress_source',
             'chemical:sediment:shear_stress_combination',
             'chemical:sediment:oxygen_model',
