@@ -39,7 +39,6 @@ class Chemical(Lagrangian3DArray):
 
     BASE_CHEMICAL_VARIABLES = [
         ('diameter', {'dtype': np.float32, 'units': 'm', 'default': 0.}),
-        ('d50', {'dtype': np.float32, 'units': 'm', 'default': 0.}),
         ('density', {'dtype': np.float32, 'units': 'kg/m^3', 'default': 2650.}),
         ('critstress_factor', {'dtype': np.float32, 'units': '', 'default': 1.0}),
         ('f_OC', {'dtype': np.float32, 'units': '', 'default': 0.01}),
@@ -212,6 +211,8 @@ class Chemical(Lagrangian3DArray):
         ('p_res', {'dtype': np.float32, 'units': '1', 'seed': True, 'default': np.nan}),
         ('p_dep', {'dtype': np.float32, 'units': '1', 'seed': True, 'default': np.nan}),
         ('tau_cr_res', {'dtype': np.float32, 'units': 'Pa', 'seed': True, 'default': np.nan}),
+        ('tau_cr_dep', {'dtype': np.float32, 'units': 'Pa', 'seed': True, 'default': np.nan}),
+        ('deposition_stress_factor', {'dtype': np.float32, 'units': '1', 'seed': True, 'default': np.nan}),
     ]
     BED_INTERACTION_VARIABLE_NAMES = (
         'tau_bx','tau_by',
@@ -225,7 +226,7 @@ class Chemical(Lagrangian3DArray):
         'wave_orbital_velocity', 'wave_excursion', 'wave_number',
         'wave_friction_factor', 'wave_z0', 'wave_water_depth',
         'p_res', 'p_dep',
-        'tau_cr_res',
+        'tau_cr_res', 'tau_cr_dep', 'deposition_stress_factor',
             )
 
     # Optional sediment-oxygen diagnostics. Only the subset required by the
@@ -1196,7 +1197,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'description': 'Nikuradse roughness for WHITE_COLEBROOK mode, used with depth-averaged velocity and hydraulic radius/depth.'},
             'chemical:sediment:d50': {'type': 'float', 'default': 2.0e-4,
                 'min': 1e-8, 'max': 1, 'units': 'm', 'level': CONFIG_LEVEL_ADVANCED,
-                'description': 'Median grain size for GRAIN_D50 mode and d50-based critical stress. The per-element d50 is initialized from particle diameter at seeding and is then used for d50-based critical-stress calculations, while diameter continues to control terminal velocity. In USER mode, mapped sea_floor_d50 is rejected and chemical:sediment:d50 must equal chemical:particle_diameter so that carrier size remains uniform without hidden d50-driven jumps.'},
+                'description': 'Median bed grain size used as the fallback for mapped sea_floor_d50, GRAIN_D50 roughness, wave roughness, and acquisition of a new sediment carrier. It is not a persistent element property; elements.diameter is the authoritative Lagrangian carrier size.'},
             'chemical:sediment:cd_min': {'type': 'float', 'default': 0.0,
                 'min': 0, 'max': 1, 'units': '', 'level': CONFIG_LEVEL_ADVANCED,
                 'description': 'Lower bound for drag coefficient.'},
@@ -1270,41 +1271,72 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'description': 'Probabilistic sediment exchange scheme.'},
             'chemical:sediment:deposition_reduction_factor': {'type': 'float', 'default': -1.0,
                 'min': -1.0, 'max': 1.0, 'units': '', 'level': CONFIG_LEVEL_ADVANCED,
-                'description': 'If >= 0, use a constant deposition reduction factor. If < 0, use Krone-type stress reduction.'},
+                'description': 'Deprecated legacy override. Keep at -1; select explicit cohesive/noncohesive deposition models instead.'},
             'chemical:sediment:enable_deposition': {'type': 'bool', 'default': True,
                 'level': CONFIG_LEVEL_BASIC,
                 'description': 'Enable suspended-to-bed deposition probability.'},
             'chemical:sediment:enable_resuspension': {'type': 'bool', 'default': True,
                 'level': CONFIG_LEVEL_BASIC,
                 'description': 'Enable bed-to-suspended resuspension probability.'},
+            'chemical:sediment:exchange_branch': {'type': 'enum',
+                'enum': ['AUTO', 'NONCOHESIVE', 'COHESIVE'], 'default': 'COHESIVE',
+                'level': CONFIG_LEVEL_BASIC,
+                'description': 'Shared deposition/resuspension branch. AUTO classifies the transported element by its authoritative diameter.'},
+            'chemical:sediment:cohesive_diameter_threshold': {'type': 'float', 'default': 6.25e-5,
+                'min': 1e-9, 'max': 1.0, 'units': 'm', 'level': CONFIG_LEVEL_ADVANCED,
+                'description': 'Operational AUTO boundary between cohesive and noncohesive carrier sizes. Diameter equal to the threshold is NONCOHESIVE.'},
+            'chemical:sediment:deposition_model_cohesive': {'type': 'enum',
+                'enum': ['KRONE_USER', 'KRONE_SETTLING', 'CONTINUOUS'], 'default': 'KRONE_USER',
+                'level': CONFIG_LEVEL_BASIC,
+                'description': 'Cohesive deposition stress/capture model.'},
+            'chemical:sediment:deposition_model_noncohesive': {'type': 'enum',
+                'enum': ['GESSLER_USER', 'GESSLER_SHIELDS', 'CONTINUOUS'], 'default': 'GESSLER_USER',
+                'level': CONFIG_LEVEL_BASIC,
+                'description': 'Noncohesive deposition stress/capture model.'},
             'chemical:sediment:deposition_critstress': {'type': 'float', 'default': 0.05,
                 'min': 0, 'max': 1e6, 'units': 'Pa', 'level': CONFIG_LEVEL_ESSENTIAL,
-                'description': 'Critical shear stress for deposition/sedimentation.'},
+                'description': 'Legacy deposition threshold retained as a compatibility fallback when a branch-specific USER threshold is unset.'},
+            'chemical:sediment:deposition_critstress_cohesive': {'type': 'float', 'default': -1.0,
+                'min': -1.0, 'max': 1e6, 'units': 'Pa', 'level': CONFIG_LEVEL_ESSENTIAL,
+                'description': 'User cohesive Krone deposition threshold [Pa]. A negative value uses legacy deposition_critstress as a compatibility fallback.'},
+            'chemical:sediment:deposition_critstress_noncohesive': {'type': 'float', 'default': -1.0,
+                'min': -1.0, 'max': 1e6, 'units': 'Pa', 'level': CONFIG_LEVEL_ESSENTIAL,
+                'description': 'User noncohesive Gessler 50-percent deposition reference stress [Pa]. A negative value uses legacy deposition_critstress as a compatibility fallback.'},
+            'chemical:sediment:gessler_sigma': {'type': 'float', 'default': 0.57,
+                'min': 1e-6, 'max': 10.0, 'units': '1', 'level': CONFIG_LEVEL_ADVANCED,
+                'description': 'Relative critical-stress standard deviation used by the Gessler deposition probability model.'},
+            'chemical:sediment:deposition_shields_method': {'type': 'enum',
+                'enum': ['soulsby_whitehouse', 'van_rijn', 'laursen', 'mpm', 'wu'],
+                'default': 'soulsby_whitehouse', 'level': CONFIG_LEVEL_ADVANCED,
+                'description': 'Shields/mobility relation used to derive noncohesive Gessler reference stress from element diameter.'},
+            'chemical:sediment:cohesive_settling_threshold_variant': {'type': 'enum',
+                'enum': ['POHLMANN_PULS_KRESTENITIS'], 'default': 'POHLMANN_PULS_KRESTENITIS',
+                'level': CONFIG_LEVEL_ADVANCED,
+                'description': 'Named frozen coefficient set for the settling-velocity-dependent cohesive deposition threshold. Upstream attribution is retained as a provenance caveat.'},
             'chemical:sediment:resuspension_critstress': {'type': 'float', 'default': 0.5,
                 'min': 0, 'max': 1e6, 'units': 'Pa', 'level': CONFIG_LEVEL_ESSENTIAL,
-                'description': 'Critical shear stress for resuspension/erosion. If a mapped sea_floor_resuspension_critstress reader is supplied, that mapped value is preferred locally; otherwise this configured value or the d50-based calculation is used.'},
+                'description': 'Critical shear stress for resuspension/erosion. If a mapped sea_floor_resuspension_critstress reader is supplied, that mapped value is preferred locally; otherwise this configured value or the diameter-based calculation is used.'},
             'chemical:sediment:resuspension_critustar': {'type': 'float', 'default': -1.0,
                 'min': -1.0, 'max': 100.0, 'units': 'm/s', 'level': CONFIG_LEVEL_ADVANCED,
                 'description': 'Critical shear velocity for resuspension. If >= 0, override resuspension_critstress using tau_cr = rho * ustar^2. If < 0, use resuspension_critstress directly.'},
-            # D50-based critical stress
             'chemical:sediment:resuspension_critstress_mode': {'type': 'enum',
-                'enum': ['USER', 'FROM_D50'], 'default': 'USER',
+                'enum': ['USER', 'FROM_DIAMETER', 'FROM_D50'], 'default': 'USER',
                 'level': CONFIG_LEVEL_BASIC,
-                'description': 'Use user-specified resuspension_critstress or compute it from d50.'},
+                'description': 'Use prescribed resuspension stress or calculate it from authoritative element diameter. FROM_D50 is a deprecated alias for FROM_DIAMETER.'},
             'chemical:sediment:resuspension_critstress_branch': {'type': 'enum',
                 'enum': ['AUTO', 'NONCOHESIVE', 'COHESIVE'], 'default': 'COHESIVE',
                 'level': CONFIG_LEVEL_ADVANCED,
-                'description': 'Branch used when computing resuspension_critstress from d50.'},
+                'description': 'Deprecated compatibility alias for chemical:sediment:exchange_branch.'},
             'chemical:sediment:resuspension_critstress_method': {'type': 'enum',
                 'enum': ['soulsby_whitehouse', 'van_rijn', 'laursen', 'mpm', 'wu'],
                 'default': 'soulsby_whitehouse', 'level': CONFIG_LEVEL_ADVANCED,
-                'description': 'Noncohesive method used when computing resuspension_critstress from d50.'},
+                'description': 'Noncohesive method used when computing resuspension_critstress from element diameter.'},
             'chemical:sediment:critstress_rho_s': {'type': 'float', 'default': 2650.0,
                 'min': 1000.0, 'max': 10000.0, 'units': 'kg/m3', 'level': CONFIG_LEVEL_ADVANCED,
-                'description': 'Sediment density used in d50-based critical stress calculation.'},
+                'description': 'Sediment density used in diameter-based critical stress calculation.'},
             'chemical:sediment:critstress_nu': {'type': 'float', 'default': 1.004e-6,
                 'min': 1e-8, 'max': 1e-3, 'units': 'm2/s', 'level': CONFIG_LEVEL_ADVANCED,
-                'description': 'Kinematic viscosity used in d50-based critical stress calculation.'},
+                'description': 'Kinematic viscosity used in diameter-based critical stress calculation.'},
             'chemical:sediment:critstress_owen_rho_d': {'type': 'float', 'default': -1.0,
                 'min': -1.0, 'max': 1e6, 'units': '', 'level': CONFIG_LEVEL_ADVANCED,
                 'description': 'Dry bulk density for cohesive Owen-type critical stress.'},
@@ -1578,12 +1610,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         stress_mode = self.get_config('chemical:sediment:stress_param_mode')
         oxygen_dispersion_active = self._oxygen_permeability_dispersion_active()
         oxygen_bioirrigation_active = self._oxygen_bioirrigation_active()
-        resuspension_critstress_mode = self.get_config(
-            'chemical:sediment:resuspension_critstress_mode'
-        )
-        resuspension_branch = self.get_config(
-            'chemical:sediment:resuspension_critstress_branch'
-        )
+        resuspension_critstress_mode = self._resolved_resuspension_critstress_mode()
+        exchange_branch = self._resolved_exchange_branch_config()
         # Dynamic partitioning needs SPM/DOC, fOC, pH, and mixed-layer depth.
         if dynamic_partitioning:
             req.update(self.PARTITIONING_REQUIRED_VARIABLES)
@@ -1682,15 +1710,13 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             # WHITE_COLEBROOK uses configured nikuradse_ks for z0 internally, so no
             # sea_floor_roughness_length reader is needed unless wave stress needs
             # reader z0 through another mode.
+            # Bed d50 remains an environmental/bed property in every exchange
+            # mode. It is needed for local sediment-carrier acquisition and may also
+            # be needed by GRAIN_D50 roughness. USER threshold mode never suppresses it.
+            req.update(self.SEDIMENT_GRAIN_D50_REQUIRED_VARIABLES)
+
             if do_res:
                 req.update(self.SEDIMENT_RESUSPENSION_REQUIRED_VARIABLES)
-                # Mapped d50 is useful for FROM_D50 or AUTO d50-based branch logic.
-                # In USER mode, the model intentionally rejects mapped sea_floor_d50.
-                if (
-                    resuspension_critstress_mode == 'FROM_D50' or
-                    resuspension_branch == 'AUTO'
-                ):
-                    req.update(self.SEDIMENT_GRAIN_D50_REQUIRED_VARIABLES)
 
             combo = self.get_config(
                 'chemical:sediment:shear_stress_combination')
@@ -2972,6 +2998,23 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         for var_name in sorted(k for k in vars(self) if k.startswith('num_')):
             self.result[var_name] = getattr(self, var_name)
 
+        # Branch-aware exchange provenance. Store these as dataset attributes when
+        # possible so they remain model-level metadata rather than element state.
+        attrs = getattr(self.result, 'attrs', None)
+        if attrs is not None:
+            attrs.update({
+                'chemical_element_size_state': 'diameter_only',
+                'chemical_exchange_branch': self._resolved_exchange_branch_config(),
+                'chemical_cohesive_diameter_threshold_m': float(self.get_config('chemical:sediment:cohesive_diameter_threshold')),
+                'chemical_resuspension_critstress_mode': self._resolved_resuspension_critstress_mode(),
+                'chemical_deposition_model_cohesive': self.get_config('chemical:sediment:deposition_model_cohesive'),
+                'chemical_deposition_model_noncohesive': self.get_config('chemical:sediment:deposition_model_noncohesive'),
+                'chemical_gessler_sigma': float(self.get_config('chemical:sediment:gessler_sigma')),
+                'chemical_deposition_shields_method': self.get_config('chemical:sediment:deposition_shields_method'),
+                'chemical_cohesive_settling_threshold_variant': self.get_config('chemical:sediment:cohesive_settling_threshold_variant'),
+                'chemical_cohesive_settling_variant_provenance': 'POHLMANN_PULS_KRESTENITIS; upstream attribution differs between preprint/final secondary presentation',
+            })
+
     def _resolve_reader_dependent_requirements(self):
         """Finalize reader-dependent environmental requirements for this run.
 
@@ -3058,25 +3101,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                  self.get_config('chemical:sediment:enable_resuspension'))):
             self._validate_wave_stress_source()
 
-        if self._user_resuspension_threshold_overrides_d50() and self._d50_map_reader_present():
-            raise ValueError(
-                'A mapped sea_floor_d50 reader cannot be supplied when '
-                'chemical:sediment:resuspension_critstress_mode == USER. In USER mode '
-                'critical stress is user-prescribed, so the d50 map would be unused and '
-                'chemical:sediment:d50 is required to remain uniform and equal to '
-                'chemical:particle_diameter. Remove the d50 reader or switch to FROM_D50.'
-            )
-
-        if self._user_resuspension_threshold_overrides_d50():
-            sed_d50 = float(self.get_config('chemical:sediment:d50'))
-            part_diam = float(self.get_config('chemical:particle_diameter'))
-            if not np.isclose(sed_d50, part_diam, rtol=0.0, atol=0.0):
-                raise ValueError(
-                    'chemical:sediment:d50 must equal chemical:particle_diameter when '
-                    'chemical:sediment:resuspension_critstress_mode == USER, because '
-                    'USER mode forbids mapped d50 and assumes one uniform carrier/bed size. '
-                    f'Got chemical:sediment:d50={sed_d50} and chemical:particle_diameter={part_diam}.'
-                )
+        self._validate_deposition_configuration()
 
         # Model-level ChemicalDrift state is exported separately from element
         # trajectories using semantic/collision-safe dimensions.
@@ -3463,20 +3488,41 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
     def seed_from_dataset(self, ds, trajectory_time_index=-1, time=None,
                           keep_properties=True, **kwargs):
-        """Restart/reseed from an OpenDrift dataset with Chemical lifecycle setup.
+        """Restart/reseed with one-way migration to the diameter-only schema.
 
-        Element properties are still delegated to OpenDrift's implementation.
-        This only prepares the concrete Chemical schema/model state before
-        the OpenDrift Config->Ready transition and captures run-level state for
-        restoration after seeding.
+        Legacy element ``d50`` is accepted only as migration input. If ``diameter``
+        is absent, legacy positive d50 is copied to diameter. If both exist,
+        diameter is authoritative. The legacy variable is dropped before the
+        parent OpenDrift restoration so dual persistent state is never recreated.
         """
         self._prepare_restart_lifecycle()
+
+        ds_for_seed = ds
+        variables = getattr(ds, 'variables', {})
+        if 'd50' in variables:
+            try:
+                ds_for_seed = ds.copy()
+                if 'diameter' not in variables:
+                    ds_for_seed['diameter'] = ds_for_seed['d50'].copy()
+                    logger.warning(
+                        'Migrating legacy restart element d50 to diameter; '
+                        'persistent element d50 is removed in the current schema.')
+                else:
+                    logger.warning(
+                        'Legacy restart contains both diameter and d50; diameter is '
+                        'authoritative and legacy d50 is dropped.')
+                ds_for_seed = ds_for_seed.drop_vars('d50')
+            except Exception as exc:
+                raise ValueError(
+                    'Could not migrate legacy restart d50 to diameter-only state: '
+                    f'{exc}') from exc
+
         restart_state = self._capture_restart_model_state(
-            ds, trajectory_time_index, keep_properties)
+            ds_for_seed, trajectory_time_index, keep_properties)
         self._validate_restart_model_state(restart_state)
 
         super(ChemicalDrift, self).seed_from_dataset(
-            ds,
+            ds_for_seed,
             trajectory_time_index=trajectory_time_index,
             time=time,
             keep_properties=keep_properties,
@@ -3596,39 +3642,6 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
             return crit_default
 
-        def _default_d50_from_specie(specie_arr, diameter_arr, sediment_d50_arr=None):
-            specie_arr = np.asarray(specie_arr, dtype=int).ravel()
-            diameter_arr = np.asarray(diameter_arr, dtype=float).ravel()
-            d50_default = np.zeros(specie_arr.size, dtype=float)
-            name_to_idx = {name: i for i, name in enumerate(self.name_species)}
-
-            particle_names = {
-                "Particle reversible", "Particle slowly reversible", "Particle irreversible",
-            }
-            sediment_names = {
-                "Sediment reversible", "Sediment slowly reversible", "Sediment buried", "Sediment irreversible",
-            }
-            particle_idx = {name_to_idx[n] for n in particle_names if n in name_to_idx}
-            sediment_idx = {name_to_idx[n] for n in sediment_names if n in name_to_idx}
-
-            if particle_idx:
-                mask_part = np.isin(specie_arr, list(particle_idx))
-                d50_default[mask_part] = np.maximum(diameter_arr[mask_part], 0.0)
-
-            if sediment_idx:
-                mask_sed = np.isin(specie_arr, list(sediment_idx))
-                if np.any(mask_sed):
-                    if sediment_d50_arr is None:
-                        sedvals = np.full(int(np.sum(mask_sed)), float(self.get_config('chemical:sediment:d50')), dtype=float)
-                    else:
-                        sedvals = np.asarray(sediment_d50_arr, dtype=float).ravel()
-                        if sedvals.size != int(np.sum(mask_sed)):
-                            raise ValueError(
-                                f"sediment_d50_arr has size {sedvals.size}, expected {int(np.sum(mask_sed))}")
-                    d50_default[mask_sed] = np.maximum(sedvals, 0.0)
-
-            return d50_default
-
         # Speciation handling
         if 'specie' in kwargs and kwargs['specie'] is not None:
             sp = kwargs['specie']
@@ -3706,112 +3719,70 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             for i, sp_name in enumerate(self.name_species):
                 logger.debug("%9s %3s %-24s", int(counts[i]), i, sp_name)
 
-        # Diameter assignment (respect explicit per-element diameters)
-        diam_in = kwargs.get("diameter", None)
+        # Diameter assignment: single authoritative Lagrangian size state.
+        # Fresh-state carrier semantics override stale d50-style inputs.
+        legacy_d50_seed = kwargs.pop('d50', None)
+        if legacy_d50_seed is not None:
+            logger.warning(
+                "Ignoring fresh-seed 'd50': persistent element d50 was removed; "
+                "use diameter for explicit particle carriers or bed sea_floor_d50/"
+                "chemical:sediment:d50 for sediment carrier acquisition.")
 
-        arr = _as_per_element_array(diam_in, num_elements, "diameter")
-        sediment_seed_d50 = None
-        if arr is not None:
-            kwargs["diameter"] = np.maximum(arr, 0.0)
-        else:
-            dia_diss = float(self.get_config('chemical:dissolved_diameter'))
-            dia_part = float(self.get_config('chemical:particle_diameter'))
-            dia_doc = float(self.get_config('chemical:doc_particle_diameter'))
-            sigma_part_ln = float(self.get_config('chemical:particle_diameter_uncertainty'))
-            sigma_doc_ln = float(self.get_config('chemical:doc_particle_diameter_uncertainty'))
+        diam_in = kwargs.get('diameter', None)
+        diam_arr = _as_per_element_array(diam_in, num_elements, 'diameter')
+        dia_part = float(self.get_config('chemical:particle_diameter'))
+        sigma_part_ln = float(self.get_config('chemical:particle_diameter_uncertainty'))
 
-            init_diam = np.full(num_elements, dia_diss, dtype=float)
+        init_diam = np.zeros(num_elements, dtype=float)
+        name_to_idx = {name: i for i, name in enumerate(self.name_species)}
+        particle_names = {
+            'Particle reversible', 'Particle slowly reversible', 'Particle irreversible',
+        }
+        sediment_names = {
+            'Sediment reversible', 'Sediment slowly reversible',
+            'Sediment buried', 'Sediment irreversible',
+        }
+        doclike_names = {'Humic colloid', 'Polymer'}
+        dissolved_names = {'LMM', 'LMMcation', 'LMManion', 'Colloid'}
+        particle_idx = {name_to_idx[n] for n in particle_names if n in name_to_idx}
+        sediment_idx = {name_to_idx[n] for n in sediment_names if n in name_to_idx}
+        doclike_idx = {name_to_idx[n] for n in doclike_names if n in name_to_idx}
+        dissolved_idx = {name_to_idx[n] for n in dissolved_names if n in name_to_idx}
 
-            name_to_idx = {name: i for i, name in enumerate(self.name_species)}
-
-            particle_names = {
-                "Particle reversible",
-                "Particle slowly reversible",
-                "Particle irreversible",
-            }
-            sediment_names = {
-                "Sediment reversible",
-                "Sediment slowly reversible",
-                "Sediment buried",
-                "Sediment irreversible",
-            }
-            particle_idx = {name_to_idx[n] for n in particle_names if n in name_to_idx}
-            sediment_idx = {name_to_idx[n] for n in sediment_names if n in name_to_idx}
-
-            humic_idx = name_to_idx.get("Humic colloid", None)
-            polymer_idx = name_to_idx.get("Polymer", None)
-            colloid_idx = name_to_idx.get("Colloid", None)
-
-            if particle_idx:
-                mask_part = np.isin(init_specie, list(particle_idx))
-                nmask = int(mask_part.sum())
-                if nmask > 0:
-                    if diam_in is not None and np.isscalar(diam_in):
-                        dia_seed = float(diam_in)
-                    else:
-                        dia_seed = dia_part
+        if particle_idx:
+            mask_part = np.isin(init_specie, list(particle_idx))
+            n_part = int(mask_part.sum())
+            if n_part:
+                if diam_arr is not None:
+                    vals = np.asarray(diam_arr[mask_part], dtype=float).copy()
+                    bad = (~np.isfinite(vals)) | (vals <= 0.0)
+                    if np.any(bad):
+                        vals[bad] = self._sample_lognormal_diameter(
+                            median_diameter=dia_part,
+                            sigma_ln=sigma_part_ln,
+                            n=int(np.sum(bad)))
+                    init_diam[mask_part] = vals
+                else:
+                    median = float(diam_in) if (diam_in is not None and np.isscalar(diam_in)) else dia_part
+                    if not np.isfinite(median) or median <= 0.0:
+                        raise ValueError('Particle seed diameter/median must be finite and > 0')
                     init_diam[mask_part] = self._sample_lognormal_diameter(
-                        median_diameter=dia_seed,
+                        median_diameter=median,
                         sigma_ln=sigma_part_ln,
-                        n=nmask)
+                        n=n_part)
 
-            if sediment_idx:
-                mask_sed = np.isin(init_specie, list(sediment_idx))
-                nsed = int(mask_sed.sum())
-                if nsed > 0:
-                    # During seeding, self.environment may not exist yet.
-                    # Therefore sediment-seeded elements use the configured fallback d50,
-                    # while mapped/local bed d50 can still be used later during runtime.
-                    sediment_seed_d50 = np.full(
-                        nsed,
-                        float(self.get_config('chemical:sediment:d50')),
-                        dtype=float
-                    )
-                    init_diam[mask_sed] = np.maximum(sediment_seed_d50, 0.0)
+        if sediment_idx:
+            mask_sed = np.isin(init_specie, list(sediment_idx))
+            # Internal unresolved sentinel only. Runtime resolution uses local bed d50.
+            init_diam[mask_sed] = -1.0
 
-            if humic_idx is not None:
-                mask = init_specie == humic_idx
-                if np.any(mask):
-                    init_diam[mask] = self._sample_lognormal_diameter(
-                        median_diameter=dia_doc,
-                        sigma_ln=sigma_doc_ln,
-                        n=int(np.sum(mask)))
+        # LMM/ionic dissolved/colloid and unaggregated DOC-like states are hard zero.
+        if dissolved_idx:
+            init_diam[np.isin(init_specie, list(dissolved_idx))] = 0.0
+        if doclike_idx:
+            init_diam[np.isin(init_specie, list(doclike_idx))] = 0.0
 
-            if polymer_idx is not None:
-                mask = init_specie == polymer_idx
-                if np.any(mask):
-                    init_diam[mask] = self._sample_lognormal_diameter(
-                        median_diameter=dia_doc,
-                        sigma_ln=sigma_doc_ln,
-                        n=int(np.sum(mask)))
-
-            if colloid_idx is not None:
-                mask = init_specie == colloid_idx
-                if np.any(mask):
-                    init_diam[mask] = dia_diss
-
-            kwargs["diameter"] = np.maximum(init_diam, 0.0)
-
-        # d50 assignment (respect explicit per-element values; default: particles use current diameter, sediments use local bed d50, dissolved/doc-like species use 0)
-        d50_in = kwargs.get("d50", None)
-        d50_default = _default_d50_from_specie(init_specie, kwargs["diameter"], sediment_d50_arr=sediment_seed_d50)
-        d50_arr = _as_per_element_array(d50_in, num_elements, "d50")
-        if d50_arr is not None:
-            d50_arr = np.asarray(d50_arr, dtype=float).copy()
-            bad = (~np.isfinite(d50_arr)) | (d50_arr < 0.0)
-            if np.any(bad):
-                logger.warning("Replacing %s negative/non-finite d50 values during seeding with species-based defaults.", int(np.sum(bad)))
-                d50_arr[bad] = d50_default[bad]
-            kwargs["d50"] = d50_arr
-        elif d50_in is not None and np.isscalar(d50_in):
-            d50_scalar = float(d50_in)
-            if (not np.isfinite(d50_scalar)) or (d50_scalar < 0.0):
-                logger.warning("Received scalar d50=%s during seeding; replacing with species-based defaults.", d50_scalar)
-                kwargs["d50"] = d50_default
-            else:
-                kwargs["d50"] = np.full(num_elements, d50_scalar, dtype=float)
-        else:
-            kwargs["d50"] = d50_default
+        kwargs['diameter'] = init_diam
 
         # f_OC assignment (respect explicit per-element values, but never keep <= 0)
         foc_in = kwargs.get("f_OC", None)
@@ -5594,390 +5565,100 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             self.elements.f_OC[idx] = self._local_sediment_fOC(idx)
 
     def update_chemical_diameter(self, changed_idx=None, old_species=None, new_species=None):
-        """
-        Update particle diameter when an element changes species.
+        """Update the sole persistent carrier-size state after species changes.
 
-        changed_idx : array-like of int
-            Global element indices that changed species.
-        old_species : array-like of int
-            Species before the transition, same length as changed_idx.
-        new_species : array-like of int
-            Species after the transition, same length as changed_idx.
-
-        Carrier-diameter behavior
-        -------------------------
-        1) Seeded elements start with d50 = diameter.
-        2) Suspended-particle phase:
-               terminal velocity uses diameter.
-        3) Particle -> sediment transitions interpreted as deposition:
-               keep the previous diameter unchanged.
-        4) Direct non-particle -> sediment association:
-               diameter <- local bed d50 (mapped sea_floor_d50 if available,
-               otherwise config chemical:sediment:d50)
-        5) Sediment -> particle transitions interpreted as resuspension:
-               keep the previous diameter unchanged.
-        6) Entering DOC-like carrier species:
-               diameter ~ lognormal(median=doc_particle_diameter, sigma=sigma_doc_ln)
-        7) Entering dissolved / colloid species:
-               diameter = dissolved_diameter.
-
-        Note
-        ----
-        Diameter controls terminal velocity, while per-element d50 controls any
-        d50-based bed-threshold calculation. Deposition and resuspension preserve the
-        current diameter. Only direct bed-associated sorption / direct sediment
-        association rewrites diameter to the local sediment d50. In USER mode,
-        mapped sea_floor_d50 is rejected and chemical:sediment:d50 must equal
-        chemical:particle_diameter, so these sediment-association updates remain
-        spatially uniform and consistent.
-
-        Updated families
-        ----------------
-        Particle family:            prev, psrev, pirrev
-        Sediment family:            srev, ssrev, sirrev, sburied
-        Dissolved family:           lmm, lmmanion, lmmcation, colloid
-        DOC-like family:            humic colloid, polymer
+        Rules:
+          * sediment -> particle and particle -> sediment preserve positive diameter;
+          * direct non-particle -> sediment acquires local bed d50;
+          * ordinary non-DOC -> particle acquires the SPM diameter distribution;
+          * Humic colloid/Polymer -> particle aggregation acquires the DOC-aggregate
+            diameter distribution;
+          * entering LMM/ionic/colloid/Humic/Polymer resets diameter to zero.
         """
         if changed_idx is None or old_species is None or new_species is None:
             return
-
         idx_all = np.asarray(changed_idx, dtype=np.int64).ravel()
         sp_in = np.asarray(old_species, dtype=int).ravel()
         sp_out = np.asarray(new_species, dtype=int).ravel()
-
         if idx_all.size == 0:
             return
-
         if not (idx_all.size == sp_in.size == sp_out.size):
-            raise ValueError(
-                "changed_idx, old_species, and new_species must have the same length."
-            )
-
-        # Keep only actual species changes.
+            raise ValueError('changed_idx, old_species, and new_species must have the same length.')
         changed = sp_in != sp_out
         if not np.any(changed):
             return
-
-        idx_all = idx_all[changed]
-        sp_in = sp_in[changed]
-        sp_out = sp_out[changed]
+        idx_all, sp_in, sp_out = idx_all[changed], sp_in[changed], sp_out[changed]
 
         dia_part = float(self.get_config('chemical:particle_diameter'))
         dia_doc = float(self.get_config('chemical:doc_particle_diameter'))
-        dia_diss = float(self.get_config('chemical:dissolved_diameter'))
-
         sigma_part_ln = float(self.get_config('chemical:particle_diameter_uncertainty'))
         sigma_doc_ln = float(self.get_config('chemical:doc_particle_diameter_uncertainty'))
 
-        particle_species = []
-        if hasattr(self, 'num_prev'):
-            particle_species.append(self.num_prev)
-        if hasattr(self, 'num_psrev'):
-            particle_species.append(self.num_psrev)
-        if hasattr(self, 'num_pirrev'):
-            particle_species.append(self.num_pirrev)
-
-        sediment_species = []
-        if hasattr(self, 'num_srev'):
-            sediment_species.append(self.num_srev)
-        if hasattr(self, 'num_ssrev'):
-            sediment_species.append(self.num_ssrev)
-        if hasattr(self, 'num_sirrev'):
-            sediment_species.append(self.num_sirrev)
-        if hasattr(self, 'num_sburied'):
-            sediment_species.append(self.num_sburied)
-
-        dissolved_species = []
-        if hasattr(self, 'num_lmm'):
-            dissolved_species.append(self.num_lmm)
-        if hasattr(self, 'num_lmmanion'):
-            dissolved_species.append(self.num_lmmanion)
-        if hasattr(self, 'num_lmmcation'):
-            dissolved_species.append(self.num_lmmcation)
-        if hasattr(self, 'num_col'):
-            dissolved_species.append(self.num_col)
-
-        doclike_species = []
-        if hasattr(self, 'num_humcol'):
-            doclike_species.append(self.num_humcol)
-        if hasattr(self, 'num_polymer'):
-            doclike_species.append(self.num_polymer)
+        particle_species = [getattr(self, a) for a in ('num_prev','num_psrev','num_pirrev') if hasattr(self,a)]
+        sediment_species = [getattr(self, a) for a in ('num_srev','num_ssrev','num_sirrev','num_sburied') if hasattr(self,a)]
+        dissolved_species = [getattr(self, a) for a in ('num_lmm','num_lmmanion','num_lmmcation','num_col') if hasattr(self,a)]
+        doclike_species = [getattr(self, a) for a in ('num_humcol','num_polymer') if hasattr(self,a)]
 
         def _isin(values, species):
-            if len(species) == 0:
-                return np.zeros(values.shape, dtype=bool)
-            return np.isin(values, species)
-
-        def _assign_lognormal(idx, median_diameter, sigma_ln, label):
+            return np.isin(values, species) if species else np.zeros(values.shape, dtype=bool)
+        def _sample(idx, median, sigma, label):
             idx = np.asarray(idx, dtype=np.int64).ravel()
-            n = idx.size
-            if n == 0:
-                return
-
-            self.elements.diameter[idx] = self._sample_lognormal_diameter(
-                median_diameter=median_diameter, sigma_ln=sigma_ln,
-                n=n,)
-            logger.debug("Updated %s diameter for %s elements", label, n)
-
-        def _assign_constant_or_array(idx, values, label):
+            if idx.size:
+                vals = self._sample_lognormal_diameter(median_diameter=median, sigma_ln=sigma, n=idx.size)
+                if np.any(~np.isfinite(vals) | (vals <= 0.0)):
+                    raise ValueError(f'{label} carrier diameter must be finite and > 0')
+                self.elements.diameter[idx] = vals
+        def _assign(idx, values, label):
             idx = np.asarray(idx, dtype=np.int64).ravel()
-            n = idx.size
-            if n == 0:
+            if not idx.size:
                 return
-
             arr = np.asarray(values, dtype=float)
-
             if arr.ndim == 0:
-                self.elements.diameter[idx] = float(arr)
+                arr = np.full(idx.size, float(arr), dtype=float)
             else:
-                if arr.size != n:
-                    raise ValueError(
-                        f"{label} diameter array has size {arr.size}, expected {n}"
-                    )
-                self.elements.diameter[idx] = arr
+                arr = arr.ravel()
+            if arr.size != idx.size or np.any(~np.isfinite(arr) | (arr <= 0.0)):
+                raise ValueError(f'{label} carrier diameter must be finite and > 0')
+            self.elements.diameter[idx] = arr
 
-            logger.debug("Updated %s diameter for %s elements", label, n)
-
-        was_particle = _isin(sp_in, particle_species)
-        is_particle = _isin(sp_out, particle_species)
-
-        was_sediment = _isin(sp_in, sediment_species)
-        is_sediment = _isin(sp_out, sediment_species)
-
-        was_dissolved = _isin(sp_in, dissolved_species)
+        was_particle, is_particle = _isin(sp_in, particle_species), _isin(sp_out, particle_species)
+        was_sediment, is_sediment = _isin(sp_in, sediment_species), _isin(sp_out, sediment_species)
         is_dissolved = _isin(sp_out, dissolved_species)
-
-        was_doclike = _isin(sp_in, doclike_species)
         is_doclike = _isin(sp_out, doclike_species)
+        was_doclike = _isin(sp_in, doclike_species)
 
-        # Entering suspended-particle family.
         entered_particle = is_particle & (~was_particle)
         if np.any(entered_particle):
-            # Sediment -> particle: resuspension, preserve diameter.
-            resuspended_idx = idx_all[entered_particle & was_sediment]
-            if resuspended_idx.size:
-                logger.debug(
-                    "Preserved diameter for %s resuspended particle elements",
-                    resuspended_idx.size,
-                )
+            # Sediment -> particle is resuspension: preserve the sediment carrier size.
+            preserved = entered_particle & was_sediment
+            if np.any(preserved):
+                vals = np.asarray(self.elements.diameter[idx_all[preserved]], dtype=float)
+                if np.any(~np.isfinite(vals) | (vals <= 0.0)):
+                    raise ValueError('Resuspended sediment requires a resolved positive carrier diameter')
 
-            # Other -> particle: assign new carrier diameter.
             from_other = entered_particle & (~was_sediment)
             if np.any(from_other):
-                from_other_idx = idx_all[from_other]
-                from_other_old_sp = sp_in[from_other]
+                aggregate = from_other & was_doclike
+                _sample(idx_all[aggregate], dia_doc, sigma_doc_ln, 'DOC aggregate')
+                ordinary = from_other & (~was_doclike)
+                _sample(idx_all[ordinary], dia_part, sigma_part_ln, 'SPM')
 
-                if hasattr(self, 'num_humcol'):
-                    from_humic = from_other_old_sp == self.num_humcol
-                else:
-                    from_humic = np.zeros(from_other_old_sp.shape, dtype=bool)
-
-                humic_idx = from_other_idx[from_humic]
-                other_idx = from_other_idx[~from_humic]
-
-                if humic_idx.size:
-                    _assign_lognormal(
-                        humic_idx,
-                        dia_doc,
-                        sigma_doc_ln,
-                        'particle-from-humic',
-                    )
-
-                if other_idx.size:
-                    _assign_lognormal(
-                        other_idx,
-                        dia_part,
-                        sigma_part_ln,
-                        'particle',
-                    )
-
-        # Entering sediment family.
         entered_sediment = is_sediment & (~was_sediment)
         if np.any(entered_sediment):
-            # Particle -> sediment: deposition, preserve diameter.
-            deposited_idx = idx_all[entered_sediment & was_particle]
-            if deposited_idx.size:
-                logger.debug(
-                    "Preserved diameter for %s deposited sediment elements",
-                    deposited_idx.size,
-                )
+            deposited = entered_sediment & was_particle
+            if np.any(deposited):
+                vals = np.asarray(self.elements.diameter[idx_all[deposited]], dtype=float)
+                if np.any(~np.isfinite(vals) | (vals <= 0.0)):
+                    raise ValueError('Depositing particle requires a positive carrier diameter')
+            direct = entered_sediment & (~was_particle)
+            if np.any(direct):
+                _assign(idx_all[direct], self._local_bed_d50(idx=idx_all[direct]), 'local bed')
 
-            # Non-particle -> sediment: direct bed association, use local bed d50.
-            direct_assoc_idx = idx_all[entered_sediment & (~was_particle)]
-            if direct_assoc_idx.size:
-                local_bed_d50 = self._local_bed_d50(idx=direct_assoc_idx)
-                _assign_constant_or_array(
-                    direct_assoc_idx,
-                    local_bed_d50,
-                    'sediment-local-bed-d50',
-                )
+        zero_state = is_dissolved | is_doclike
+        if np.any(zero_state):
+            self.elements.diameter[idx_all[zero_state]] = 0.0
 
-        # Entering dissolved / colloid family.
-        entered_dissolved = is_dissolved & (~was_dissolved)
-        if np.any(entered_dissolved):
-            _assign_constant_or_array(
-                idx_all[entered_dissolved],
-                dia_diss,
-                'dissolved',
-            )
 
-        # Entering DOC-like family.
-        entered_doclike = is_doclike & (~was_doclike)
-        if np.any(entered_doclike):
-            entered_doclike_idx = idx_all[entered_doclike]
-            entered_doclike_new_sp = sp_out[entered_doclike]
-
-            if hasattr(self, 'num_humcol'):
-                humic_idx = entered_doclike_idx[entered_doclike_new_sp == self.num_humcol]
-                if humic_idx.size:
-                    _assign_lognormal(
-                        humic_idx,
-                        dia_doc,
-                        sigma_doc_ln,
-                        'humic colloid',
-                    )
-
-            if hasattr(self, 'num_polymer'):
-                polymer_idx = entered_doclike_idx[entered_doclike_new_sp == self.num_polymer]
-                if polymer_idx.size:
-                    _assign_lognormal(
-                        polymer_idx,
-                        dia_doc,
-                        sigma_doc_ln,
-                        'polymer',
-                    )
-
-    def update_chemical_d50(self, changed_idx=None, old_species=None, new_species=None):
-        """
-        Update per-element d50 only for elements that changed species.
-
-        Rules
-        -----
-        1) Sediment -> particle resuspension:
-               preserve bed-associated d50.
-        2) Particle -> sediment deposition:
-               preserve d50.
-        3) Non-sediment -> particle:
-               assign particle_diameter as d50.
-        4) Non-particle -> sediment:
-               assign local bed d50.
-        5) Entering dissolved-like species:
-               d50 = 0.
-        """
-        if changed_idx is None or old_species is None or new_species is None:
-            return
-
-        idx_all = np.asarray(changed_idx, dtype=np.int64).ravel()
-        sp_in = np.asarray(old_species, dtype=int).ravel()
-        sp_out = np.asarray(new_species, dtype=int).ravel()
-
-        if idx_all.size == 0:
-            return
-
-        if not (idx_all.size == sp_in.size == sp_out.size):
-            raise ValueError(
-                "changed_idx, old_species, and new_species must have the same length."
-            )
-
-        # Keep only actual species changes.
-        changed = sp_in != sp_out
-        if not np.any(changed):
-            return
-
-        idx_all = idx_all[changed]
-        sp_in = sp_in[changed]
-        sp_out = sp_out[changed]
-
-        particle_species = []
-        if hasattr(self, 'num_prev'):
-            particle_species.append(self.num_prev)
-        if hasattr(self, 'num_psrev'):
-            particle_species.append(self.num_psrev)
-        if hasattr(self, 'num_pirrev'):
-            particle_species.append(self.num_pirrev)
-
-        sediment_species = []
-        if hasattr(self, 'num_srev'):
-            sediment_species.append(self.num_srev)
-        if hasattr(self, 'num_ssrev'):
-            sediment_species.append(self.num_ssrev)
-        if hasattr(self, 'num_sirrev'):
-            sediment_species.append(self.num_sirrev)
-        if hasattr(self, 'num_sburied'):
-            sediment_species.append(self.num_sburied)
-
-        dissolved_like_species = []
-        if hasattr(self, 'num_lmm'):
-            dissolved_like_species.append(self.num_lmm)
-        if hasattr(self, 'num_lmmanion'):
-            dissolved_like_species.append(self.num_lmmanion)
-        if hasattr(self, 'num_lmmcation'):
-            dissolved_like_species.append(self.num_lmmcation)
-        if hasattr(self, 'num_col'):
-            dissolved_like_species.append(self.num_col)
-        if hasattr(self, 'num_humcol'):
-            dissolved_like_species.append(self.num_humcol)
-        if hasattr(self, 'num_polymer'):
-            dissolved_like_species.append(self.num_polymer)
-
-        def _isin(values, species):
-            if len(species) == 0:
-                return np.zeros(values.shape, dtype=bool)
-            return np.isin(values, species)
-
-        was_particle = _isin(sp_in, particle_species)
-        is_particle = _isin(sp_out, particle_species)
-
-        was_sediment = _isin(sp_in, sediment_species)
-        is_sediment = _isin(sp_out, sediment_species)
-
-        was_dissolved = _isin(sp_in, dissolved_like_species)
-        is_dissolved = _isin(sp_out, dissolved_like_species)
-
-        # Entering particle family.
-        entered_particle = is_particle & (~was_particle)
-        if np.any(entered_particle):
-            # Sediment -> particle: resuspension, preserve d50.
-            resuspended_idx = idx_all[entered_particle & was_sediment]
-            if resuspended_idx.size:
-                logger.debug(
-                    "Preserved d50 for %s resuspended particle elements",
-                    resuspended_idx.size,
-                )
-
-            # Other -> particle: assign configured particle d50.
-            from_other_idx = idx_all[entered_particle & (~was_sediment)]
-            if from_other_idx.size:
-                self._assign_d50_to_elements(
-                    from_other_idx,
-                    particle_d50=float(self.get_config('chemical:particle_diameter')),
-                    dissolved_value=0.0,
-                )
-
-        # Entering sediment family.
-        entered_sediment = is_sediment & (~was_sediment)
-        if np.any(entered_sediment):
-            # Particle -> sediment: deposition, preserve d50.
-            deposited_idx = idx_all[entered_sediment & was_particle]
-            if deposited_idx.size:
-                logger.debug(
-                    "Preserved d50 for %s deposited sediment elements",
-                    deposited_idx.size,
-                )
-
-            # Other -> sediment: assign local bed d50.
-            direct_assoc_idx = idx_all[entered_sediment & (~was_particle)]
-            if direct_assoc_idx.size:
-                self._assign_d50_to_elements(
-                    direct_assoc_idx,
-                    sediment_d50=self._local_bed_d50(idx=direct_assoc_idx),
-                    dissolved_value=0.0,
-                )
-
-        # Entering dissolved-like family.
-        entered_dissolved = is_dissolved & (~was_dissolved)
-        if np.any(entered_dissolved):
-            self.elements.d50[idx_all[entered_dissolved]] = 0.0
 
     def sorption_to_sediments(self, changed_idx=None, old_species=None, new_species=None):
         """
@@ -6195,7 +5876,6 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
           - assign critstress heterogeneity to elements entering sediment pools
           - update cumulative transition counters ntransformations[i, j]
           - update diameter via update_chemical_diameter()
-          - update d50 via update_chemical_d50()
           - update f_OC via update_chemical_fOC()
           - update z/moving state for sorption/desorption relative to sediments
         '''
@@ -6337,9 +6017,6 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             changed_idx=changed_idx, old_species=old_species,
             new_species=new_species,)
 
-        self.update_chemical_d50(
-            changed_idx=changed_idx, old_species=old_species,
-            new_species=new_species,)
 
         self.update_chemical_fOC(
             changed_idx=changed_idx, old_species=old_species,
@@ -6456,29 +6133,20 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
     # Helpers for sediment properties and bed maps
     ###########################################################################
 
-    def _user_resuspension_threshold_overrides_d50(self):
-        """Return True when USER mode is selected for resuspension critical stress."""
-        mode = self.get_config('chemical:sediment:resuspension_critstress_mode')
-        return mode == 'USER'
 
-    def _d50_map_reader_present(self):
-        """Return True if any active reader advertises a mapped bed-d50 variable."""
-        return 'sea_floor_d50' in getattr(self, '_reader_variables', set())
+
+
 
     def _local_bed_d50(self, idx=None):
-        """
-        Return local bed median grain size d50 [m].
+        """Return local bed median grain size d50 [m] as an environmental property.
 
-        If USER mode is active, mapped d50 is intentionally ignored and a spatially
-        uniform value from chemical:sediment:d50 is returned. In that mode critical
-        stress is user-prescribed, mapped d50 is forbidden, and the uniform fallback
-        is used wherever a local bed d50 is queried.
-
-        Otherwise the priority is:
-          1) environment.sea_floor_d50 if supplied by a reader
-          2) config fallback chemical:sediment:d50
+        Priority is mapped ``sea_floor_d50`` where finite/positive, then positive
+        configured ``chemical:sediment:d50``. USER exchange thresholds never
+        suppress or reject the map.
         """
         fallback = float(self.get_config('chemical:sediment:d50'))
+        if not np.isfinite(fallback) or fallback <= 0.0:
+            raise ValueError('chemical:sediment:d50 must be finite and > 0')
         if idx is None:
             try:
                 n = self.num_elements_active()
@@ -6487,8 +6155,6 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         else:
             idx = np.asarray(idx, dtype=np.int64).ravel()
             n = idx.size
-        if self._user_resuspension_threshold_overrides_d50():
-            return np.full(n, fallback, dtype=float)
         if not hasattr(self, 'environment'):
             return np.full(n, fallback, dtype=float)
         d50 = self._optional_env_array('sea_floor_d50', idx=idx)
@@ -6538,69 +6204,23 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             out[invalid] = np.nan
         return out
 
-    def _element_or_local_d50(self, idx=None):
-        """
-        Return per-element d50 [m] for bed-physics calculations.
-        Priority:
-          1) self.elements.d50 if > 0
-          2) local mapped bed d50 from reader
-          3) config fallback chemical:sediment:d50
+    def _element_exchange_diameter(self, idx=None):
+        """Return authoritative positive element diameter for grain-size physics.
+
+        A transported element never falls back to the receiving-bed d50. Invalid or
+        unresolved carrier size is therefore an explicit model-state error.
         """
         if idx is None:
-            elem = np.asarray(self.elements.d50, dtype=float)
-            n = self.num_elements_active()
+            out = np.asarray(self.elements.diameter, dtype=float)
         else:
             idx = np.asarray(idx, dtype=np.int64).ravel()
-            elem = np.asarray(self.elements.d50[idx], dtype=float)
-            n = idx.size
-        out = np.asarray(elem, dtype=float).copy()
-        invalid = (~np.isfinite(out)) | (out <= 0.0)
-        if np.any(invalid):
-            fallback = self._local_bed_d50(idx=idx)
-            if np.asarray(fallback).ndim == 0:
-                fallback = np.full(n, float(fallback), dtype=float)
-            out[invalid] = np.asarray(fallback, dtype=float)[invalid]
+            out = np.asarray(self.elements.diameter[idx], dtype=float)
+        out = np.asarray(out, dtype=float).copy()
+        if np.any(~np.isfinite(out) | (out <= 0.0)):
+            raise ValueError('Grain-size-dependent exchange requires finite positive elements.diameter')
         return out
 
-    def _assign_d50_to_elements(self, idx, particle_d50=None, sediment_d50=None, dissolved_value=0.0):
-        """Assign per-element d50 values after seeding or species reassignment."""
-        idx = np.asarray(idx, dtype=np.int64).ravel()
-        if idx.size == 0:
-            return
-        specie = np.asarray(self.elements.specie[idx], dtype=int)
-        particle_species = []
-        if hasattr(self, 'num_prev'):
-            particle_species.append(self.num_prev)
-        if hasattr(self, 'num_psrev'):
-            particle_species.append(self.num_psrev)
-        if hasattr(self, 'num_pirrev'):
-            particle_species.append(self.num_pirrev)
-        sediment_species = []
-        if hasattr(self, 'num_srev'):
-            sediment_species.append(self.num_srev)
-        if hasattr(self, 'num_ssrev'):
-            sediment_species.append(self.num_ssrev)
-        if hasattr(self, 'num_sirrev'):
-            sediment_species.append(self.num_sirrev)
-        if hasattr(self, 'num_sburied'):
-            sediment_species.append(self.num_sburied)
-        particle_mask = np.isin(specie, particle_species) if len(particle_species) > 0 else np.zeros(idx.size, dtype=bool)
-        sediment_mask = np.isin(specie, sediment_species) if len(sediment_species) > 0 else np.zeros(idx.size, dtype=bool)
-        other_mask = ~(particle_mask | sediment_mask)
-        if particle_d50 is not None and np.any(particle_mask):
-            pd = np.asarray(particle_d50, dtype=float)
-            if pd.ndim == 0:
-                self.elements.d50[idx[particle_mask]] = float(pd)
-            else:
-                self.elements.d50[idx[particle_mask]] = pd[particle_mask]
-        if sediment_d50 is not None and np.any(sediment_mask):
-            sd = np.asarray(sediment_d50, dtype=float)
-            if sd.ndim == 0:
-                self.elements.d50[idx[sediment_mask]] = float(sd)
-            else:
-                self.elements.d50[idx[sediment_mask]] = sd[sediment_mask]
-        if np.any(other_mask):
-            self.elements.d50[idx[other_mask]] = float(dissolved_value)
+
 
     def _sanitize_foc(self, values, fallback):
         """
@@ -7580,7 +7200,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
     def _wave_roughness_length_array(self, idx=None):
         """Positive z0 [m] for wave friction; ks=30*z0, or ks=2.5*d50.
 
-        Reuses existing mapped/configured fallback policy and USER d50 rules.
+        Reuses the mapped/configured bed-d50 fallback policy independently of exchange threshold mode.
         Current roughness and its z0 diagnostic retain their existing meaning.
         """
         mode = self._resolved_wave_roughness_mode()
@@ -7596,8 +7216,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                     logger.warning('Replacing %s invalid wave z0 values with configured roughness_length.', int(bad.sum()))
                     z0 = np.where(bad, fallback, z0)
         elif mode == 'GRAIN_D50':
-            # Preserve USER semantics; otherwise keep masks until fallback selection.
-            d50 = None if self._user_resuspension_threshold_overrides_d50() else self._wave_reader_array('sea_floor_d50', idx=idx)
+            d50 = self._wave_reader_array('sea_floor_d50', idx=idx)
             fallback = float(self.get_config('chemical:sediment:d50'))
             if d50 is None:
                 d50 = np.full(n, fallback, dtype=float)
@@ -8160,30 +7779,49 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
     # Helpers for resuspension thresholds and probabilities
     ###########################################################################
 
-    def _resuspension_branch(self, idx=None):
+    def _resolved_exchange_branch_config(self):
+        """Resolve canonical exchange branch with one-way legacy alias support."""
+        canonical = self.get_config('chemical:sediment:exchange_branch')
+        legacy = self.get_config('chemical:sediment:resuspension_critstress_branch')
+        # Preserve an explicitly non-default legacy selection when the new key still
+        # has its backward-compatible default COHESIVE value.
+        if canonical == 'COHESIVE' and legacy != 'COHESIVE':
+            logger.warning(
+                'chemical:sediment:resuspension_critstress_branch is deprecated; '
+                'use chemical:sediment:exchange_branch.')
+            return legacy
+        return canonical
+
+    def _resolved_resuspension_critstress_mode(self):
+        mode = self.get_config('chemical:sediment:resuspension_critstress_mode')
+        if mode == 'FROM_D50':
+            logger.warning(
+                'chemical:sediment:resuspension_critstress_mode=FROM_D50 is '
+                'deprecated; interpreting it as FROM_DIAMETER.')
+            return 'FROM_DIAMETER'
+        return mode
+
+    def _exchange_branch(self, idx=None):
+        """Return shared COHESIVE/NONCOHESIVE exchange branch.
+
+        AUTO classification uses authoritative element diameter. Exact equality to
+        the configured boundary is NONCOHESIVE.
         """
-        Return the resuspension branch used by the timestep-dependent erosion model.
-        Explicit NONCOHESIVE/COHESIVE settings are returned directly.
-        For AUTO, d50 >= 0.0625 mm is treated as NONCOHESIVE, finer material as COHESIVE.
-        If no usable d50 exists, erodibility_M > 0 implies COHESIVE, else NONCOHESIVE.
-        Returns either a scalar branch string or an array of branch strings.
-        """
-        branch_cfg = self.get_config('chemical:sediment:resuspension_critstress_branch')
+        branch_cfg = self._resolved_exchange_branch_config()
         if branch_cfg in ('NONCOHESIVE', 'COHESIVE'):
             return branch_cfg
-        d50_m = self._element_or_local_d50(idx=idx)
-        d50_m = np.asarray(d50_m, dtype=float)
-        branch = np.full(d50_m.shape, '', dtype='<U12')
-        valid = np.isfinite(d50_m) & (d50_m > 0.0)
-        if np.any(valid):
-            d50_mm = d50_m[valid] * 1e3
-            branch[valid] = np.where(d50_mm >= 0.0625, 'NONCOHESIVE', 'COHESIVE')
-        if np.any(~valid):
-            M_loc = np.asarray(self._local_erodibility_M(idx=idx), dtype=float)
-            if M_loc.ndim == 0:
-                M_loc = np.full(d50_m.shape, float(M_loc), dtype=float)
-            branch[~valid] = np.where(M_loc[~valid] > 0.0, 'COHESIVE', 'NONCOHESIVE')
-        return branch if branch.ndim > 0 else str(branch)
+        if branch_cfg != 'AUTO':
+            raise ValueError(f'Unknown exchange_branch: {branch_cfg!r}')
+        diameter = self._element_exchange_diameter(idx=idx)
+        threshold = float(self.get_config('chemical:sediment:cohesive_diameter_threshold'))
+        if not np.isfinite(threshold) or threshold <= 0.0:
+            raise ValueError('cohesive_diameter_threshold must be finite and > 0')
+        branch = np.where(diameter >= threshold, 'NONCOHESIVE', 'COHESIVE')
+        return branch if np.asarray(branch).ndim > 0 else str(branch)
+
+    def _resuspension_branch(self, idx=None):
+        """Deprecated internal alias for the shared exchange classifier."""
+        return self._exchange_branch(idx=idx)
 
     def classify_sediment(self, d50_mm: float) -> str:
         """
@@ -8296,24 +7934,11 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         return a * (rho_d ** b)
 
     def get_resuspension_critstress(self, idx=None):
-        """
-        Return the local resuspension critical shear stress [Pa].
-        1) USER
-           a) If critical shear velocity is provided:
-                  tau_cr = rho_w * ustar_cr^2
-           b) Otherwise use the configured constant:
-                  tau_cr = resuspension_critstress
-        2) FROM_D50
-           a) Determine cohesive vs noncohesive branch
-           b) NONCOHESIVE:
-                  theta_cr <- selected Shields relation
-                  tau_cr   = theta_cr * (rho_s - rho_w) * g * d50
-           c) COHESIVE:
-                  tau_cr = a * rho_d^b
-        Optional heterogeneity
-        If enabled:
-            tau_cr <- tau_cr * critstress_factor
-        This lets each bed element carry a persistent multiplicative modifier.
+        """Return local resuspension critical shear stress [Pa].
+
+        USER is prescribed threshold physics and is independent of mapped bed d50.
+        FROM_DIAMETER uses authoritative transported-element diameter. FROM_D50 is
+        accepted only as a deprecated configuration alias for FROM_DIAMETER.
         """
         if idx is None:
             n = self.num_elements_active()
@@ -8321,54 +7946,45 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             idx = np.asarray(idx, dtype=np.int64).ravel()
             n = idx.size
 
-        mode = self.get_config('chemical:sediment:resuspension_critstress_mode')
-
+        mode = self._resolved_resuspension_critstress_mode()
         if mode == 'USER':
             ustar_cr = float(self.get_config('chemical:sediment:resuspension_critustar'))
-
             if ustar_cr >= 0.0:
-                # Convert user-specified critical shear velocity to critical shear stress
                 T = self._env_array('sea_water_temperature', 10.0, idx=idx)
                 S = self._env_array('sea_water_salinity', 34.0, idx=idx)
                 rho_w = self.sea_water_density(T=T, S=S)
                 tau_cr = rho_w * (ustar_cr ** 2)
             else:
-                tau_cr = np.full(n,
-                    float(self.get_config('chemical:sediment:resuspension_critstress')),
-                    dtype=float)
-
-        elif mode == 'FROM_D50':
-            d50_m = self._element_or_local_d50(idx=idx)
-            d50_m = np.asarray(d50_m, dtype=float)
-            if np.any(d50_m <= 0.0):
-                raise ValueError('A positive element/local d50 is required when resuspension_critstress_mode == FROM_D50')
-            branch = self._resuspension_branch(idx=idx)
-            if isinstance(branch, str):
-                branch_arr = np.full(n, branch, dtype='<U12')
-            else:
-                branch_arr = np.asarray(branch, dtype='<U12')
-                if branch_arr.size != n:
-                    raise ValueError('Local resuspension branch array has wrong size')
+                tau0 = float(self.get_config('chemical:sediment:resuspension_critstress'))
+                if not np.isfinite(tau0) or tau0 <= 0.0:
+                    raise ValueError('USER resuspension_critstress must be finite and > 0')
+                tau_cr = np.full(n, tau0, dtype=float)
+        elif mode == 'FROM_DIAMETER':
+            diameter = self._element_exchange_diameter(idx=idx)
+            branch = self._exchange_branch(idx=idx)
+            branch_arr = np.full(n, branch, dtype='<U12') if isinstance(branch, str) else np.asarray(branch, dtype='<U12').ravel()
+            if branch_arr.size != n:
+                raise ValueError('Local exchange branch array has wrong size')
             tau_cr = np.zeros(n, dtype=float)
             rho_s = float(self.get_config('chemical:sediment:critstress_rho_s'))
             nu = float(self.get_config('chemical:sediment:critstress_nu'))
             T = self._env_array('sea_water_temperature', 10.0, idx=idx)
             S = self._env_array('sea_water_salinity', 34.0, idx=idx)
-            rho_w = self.sea_water_density(T=T, S=S)
+            rho_w = np.asarray(self.sea_water_density(T=T, S=S), dtype=float)
             mask_non = branch_arr == 'NONCOHESIVE'
             if np.any(mask_non):
                 method = self.get_config('chemical:sediment:resuspension_critstress_method')
-                d50_non = d50_m[mask_non]
-                rho_w_non = rho_w[mask_non]
+                d = diameter[mask_non]
+                rw = rho_w[mask_non]
                 if method == 'soulsby_whitehouse':
-                    theta = self.theta_cr_soulsby_whitehouse(d50_non, rho_s=rho_s, rho_w=rho_w_non, nu=nu, g=9.81)
+                    theta = self.theta_cr_soulsby_whitehouse(d, rho_s=rho_s, rho_w=rw, nu=nu, g=9.81)
                 elif method == 'van_rijn':
-                    theta = self.theta_cr_van_rijn(d50_non, rho_s=rho_s, rho_w=rho_w_non, nu=nu, g=9.81)
+                    theta = self.theta_cr_van_rijn(d, rho_s=rho_s, rho_w=rw, nu=nu, g=9.81)
                 elif method in {'laursen', 'mpm', 'wu'}:
                     theta = np.full(np.sum(mask_non), self.theta_cr_constant(method), dtype=float)
                 else:
                     raise ValueError(f'Unknown noncohesive method: {method!r}')
-                tau_cr[mask_non] = np.maximum(theta * (rho_s - rho_w_non) * 9.81 * d50_non, 0.0)
+                tau_cr[mask_non] = np.maximum(theta * (rho_s - rw) * 9.81 * d, 0.0)
             mask_coh = branch_arr == 'COHESIVE'
             if np.any(mask_coh):
                 rho_d = float(self.get_config('chemical:sediment:critstress_owen_rho_d'))
@@ -8376,31 +7992,24 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 b = float(self.get_config('chemical:sediment:critstress_owen_b'))
                 if rho_d <= 0 or a <= 0 or b <= 0:
                     raise ValueError('Cohesive resuspension_critstress requires positive critstress_owen_rho_d, critstress_owen_a, and critstress_owen_b')
-                tau0 = self.tau_ce_owen(rho_d=rho_d, a=a, b=b)
-                tau_cr[mask_coh] = tau0
-
+                tau_cr[mask_coh] = self.tau_ce_owen(rho_d=rho_d, a=a, b=b)
         else:
             raise ValueError(f'Unknown resuspension_critstress_mode: {mode!r}')
 
         tau_cr_map = self._local_resuspension_critstress_map(idx=idx)
         if tau_cr_map is not None:
-            tau_cr_map = np.asarray(tau_cr_map, dtype=float)
-            if tau_cr_map.ndim == 0:
-                tau_cr_map = np.full(n, float(tau_cr_map), dtype=float)
-            elif tau_cr_map.size != n:
+            mapped = np.asarray(tau_cr_map, dtype=float)
+            if mapped.ndim == 0:
+                mapped = np.full(n, float(mapped), dtype=float)
+            elif mapped.size != n:
                 raise ValueError('Local resuspension critical-stress map has wrong size')
-            valid_map = np.isfinite(tau_cr_map) & (tau_cr_map > 0.0)
-            if np.any(valid_map):
-                tau_cr = np.where(valid_map, tau_cr_map, tau_cr)
+            valid = np.isfinite(mapped) & (mapped > 0.0)
+            tau_cr = np.where(valid, mapped, tau_cr)
 
         if self.get_config('chemical:sediment:use_critstress_heterogeneity'):
-            if idx is None:
-                eta = np.asarray(self.elements.critstress_factor, dtype=float)
-            else:
-                eta = np.asarray(self.elements.critstress_factor[idx], dtype=float)
-            tau_cr = tau_cr * np.maximum(eta, 1e-12)
-
-        return tau_cr
+            eta = np.asarray(self.elements.critstress_factor if idx is None else self.elements.critstress_factor[idx], dtype=float)
+            tau_cr = np.asarray(tau_cr, dtype=float) * np.maximum(eta, 1e-12)
+        return np.asarray(tau_cr, dtype=float)
 
     def krone_deposition_reduction(self, tau, tau_cr_dep):
         """
@@ -8422,37 +8031,217 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         tau_cr_res = np.asarray(tau_cr_res, dtype=float)
         return np.maximum(0.0, tau / np.maximum(tau_cr_res, 1e-30) - 1.0)
 
-    def deposition_probability(self, tau, ws, dt, h_b):
-        """
-        Compute deposition probability over one timestep.
+    def _resolved_user_deposition_threshold(self, branch):
+        branch = str(branch).upper()
+        if branch == 'COHESIVE':
+            key = 'chemical:sediment:deposition_critstress_cohesive'
+        elif branch == 'NONCOHESIVE':
+            key = 'chemical:sediment:deposition_critstress_noncohesive'
+        else:
+            raise ValueError(f'Unknown deposition branch: {branch!r}')
+        value = float(self.get_config(key))
+        if value <= 0.0:
+            value = float(self.get_config('chemical:sediment:deposition_critstress'))
+        if not np.isfinite(value) or value <= 0.0:
+            raise ValueError(f'{key} (or legacy deposition_critstress fallback) must be finite and > 0')
+        return value
 
-        1) Deposition reduction factor:
-           a) if a constant deposition_reduction_factor is configured:
-                  alpha_d = constant
-           b) otherwise use Krone-type reduction:
-                  alpha_d = max(0, 1 - tau / tau_cr_dep)
-        2) Deposition hazard:
-               k_dep = ws * alpha_d / h_b
-           where:
-               ws   = settling velocity magnitude toward the bed [m/s]
-               h_b  = near-bed interaction-layer thickness [m]
-        3) Timestep probability:
-               p_dep = 1 - exp(-k_dep * dt)
-        """
-        tau_cr_dep = float(self.get_config('chemical:sediment:deposition_critstress'))
-        h_b = np.maximum(np.asarray(h_b, dtype=float), 1e-30)
-        ws = np.maximum(np.asarray(ws, dtype=float), 0.0)
-
+    def _validate_deposition_configuration(self):
+        if not self.get_config('chemical:sediment:enable_deposition'):
+            return
         dep_red = float(self.get_config('chemical:sediment:deposition_reduction_factor'))
         if dep_red >= 0.0:
-            alpha_d = np.full_like(np.asarray(tau, dtype=float), dep_red, dtype=float)
+            raise ValueError(
+                'chemical:sediment:deposition_reduction_factor is deprecated by the '
+                'branch-aware deposition API; keep it at -1 and select an explicit model.')
+        threshold = float(self.get_config('chemical:sediment:cohesive_diameter_threshold'))
+        if not np.isfinite(threshold) or threshold <= 0.0:
+            raise ValueError('cohesive_diameter_threshold must be finite and > 0')
+        coh = self.get_config('chemical:sediment:deposition_model_cohesive')
+        non = self.get_config('chemical:sediment:deposition_model_noncohesive')
+        if coh == 'KRONE_USER':
+            self._resolved_user_deposition_threshold('COHESIVE')
+        elif coh == 'KRONE_SETTLING':
+            variant = self.get_config('chemical:sediment:cohesive_settling_threshold_variant')
+            if variant != 'POHLMANN_PULS_KRESTENITIS':
+                raise ValueError(f'Unknown cohesive settling-threshold variant: {variant!r}')
+        elif coh != 'CONTINUOUS':
+            raise ValueError(f'Unknown cohesive deposition model: {coh!r}')
+        if non == 'GESSLER_USER':
+            self._resolved_user_deposition_threshold('NONCOHESIVE')
+        elif non == 'GESSLER_SHIELDS':
+            method = self.get_config('chemical:sediment:deposition_shields_method')
+            if method not in ('soulsby_whitehouse','van_rijn','laursen','mpm','wu'):
+                raise ValueError(f'Unknown deposition Shields method: {method!r}')
+        elif non != 'CONTINUOUS':
+            raise ValueError(f'Unknown noncohesive deposition model: {non!r}')
+        if non.startswith('GESSLER'):
+            sigma = float(self.get_config('chemical:sediment:gessler_sigma'))
+            if not np.isfinite(sigma) or sigma <= 0.0:
+                raise ValueError('chemical:sediment:gessler_sigma must be finite and > 0')
+
+    def _cohesive_settling_critical_velocity(self, ws):
+        """Critical deposition shear velocity for the frozen named coefficient set."""
+        variant = self.get_config('chemical:sediment:cohesive_settling_threshold_variant')
+        if variant != 'POHLMANN_PULS_KRESTENITIS':
+            raise ValueError(f'Unknown cohesive settling-threshold variant: {variant!r}')
+        ws = np.asarray(ws, dtype=float)
+        if np.any(~np.isfinite(ws) | (ws < 0.0)):
+            raise ValueError('Settling-speed magnitude must be finite and >= 0')
+        out = np.full(ws.shape, np.nan, dtype=float)
+        positive = ws > 0.0
+        low = positive & (ws <= 5.0e-5)
+        mid = positive & (ws > 5.0e-5) & (ws <= 5.0e-4)
+        high = positive & (ws > 5.0e-4)
+        out[low] = 0.008
+        out[mid] = 0.008 + 0.02 * (np.log10(ws[mid]) + 4.3)
+        out[high] = 0.028
+        return out
+
+    def _cohesive_deposition_reference_stress(self, idx, ws, rho_w, model):
+        ws = np.asarray(ws, dtype=float)
+        rho_w = np.asarray(rho_w, dtype=float)
+        if rho_w.ndim == 0:
+            rho_w = np.full(ws.shape, float(rho_w), dtype=float)
+        if rho_w.shape != ws.shape or np.any(~np.isfinite(rho_w) | (rho_w <= 0.0)):
+            raise ValueError('KRONE_SETTLING requires finite positive local water density')
+        if model == 'KRONE_USER':
+            return np.full(ws.shape, self._resolved_user_deposition_threshold('COHESIVE'), dtype=float)
+        if model == 'KRONE_SETTLING':
+            ustar = self._cohesive_settling_critical_velocity(ws)
+            return rho_w * ustar**2
+        if model == 'CONTINUOUS':
+            return np.full(ws.shape, np.nan, dtype=float)
+        raise ValueError(f'Unknown cohesive deposition model: {model!r}')
+
+    def _noncohesive_deposition_reference_stress(self, idx, model):
+        idx = np.asarray(idx, dtype=np.int64).ravel()
+        n = idx.size
+        if model == 'GESSLER_USER':
+            return np.full(n, self._resolved_user_deposition_threshold('NONCOHESIVE'), dtype=float)
+        if model == 'CONTINUOUS':
+            return np.full(n, np.nan, dtype=float)
+        if model != 'GESSLER_SHIELDS':
+            raise ValueError(f'Unknown noncohesive deposition model: {model!r}')
+        d = self._element_exchange_diameter(idx=idx)
+        rho_s = float(self.get_config('chemical:sediment:critstress_rho_s'))
+        nu = float(self.get_config('chemical:sediment:critstress_nu'))
+        T = self._env_array('sea_water_temperature', 10.0, idx=idx)
+        S = self._env_array('sea_water_salinity', 34.0, idx=idx)
+        rho_w = np.asarray(self.sea_water_density(T=T, S=S), dtype=float)
+        if np.any(~np.isfinite(rho_w) | (rho_w <= 0.0)):
+            raise ValueError('GESSLER_SHIELDS requires finite positive water density')
+        method = self.get_config('chemical:sediment:deposition_shields_method')
+        if method == 'soulsby_whitehouse':
+            theta = self.theta_cr_soulsby_whitehouse(d, rho_s=rho_s, rho_w=rho_w, nu=nu, g=9.81)
+        elif method == 'van_rijn':
+            theta = self.theta_cr_van_rijn(d, rho_s=rho_s, rho_w=rho_w, nu=nu, g=9.81)
+        elif method in {'laursen','mpm','wu'}:
+            theta = np.full(n, self.theta_cr_constant(method), dtype=float)
         else:
-            alpha_d = self.krone_deposition_reduction(tau, tau_cr_dep)
+            raise ValueError(f'Unknown deposition Shields method: {method!r}')
+        tau_ref = np.maximum(theta * (rho_s - rho_w) * 9.81 * d, 0.0)
+        if np.any(~np.isfinite(tau_ref) | (tau_ref <= 0.0)):
+            raise ValueError('Calculated noncohesive deposition reference stress must be finite and > 0')
+        return tau_ref
 
-        k_dep = ws * alpha_d / h_b
-        p_dep = (1.0 - np.exp(-k_dep * dt))
+    def _gessler_deposition_factor(self, tau, tau_ref, sigma):
+        tau = np.asarray(tau, dtype=float)
+        tau_ref = np.asarray(tau_ref, dtype=float)
+        sigma = float(sigma)
+        if np.any(~np.isfinite(tau) | (tau < 0.0)):
+            raise ValueError('Effective bed stress must be finite and >= 0')
+        if np.any(~np.isfinite(tau_ref) | (tau_ref <= 0.0)):
+            raise ValueError('Gessler reference stress must be finite and > 0')
+        if not np.isfinite(sigma) or sigma <= 0.0:
+            raise ValueError('Gessler sigma must be finite and > 0')
+        out = np.ones(np.broadcast(tau, tau_ref).shape, dtype=float)
+        t = np.broadcast_to(tau, out.shape)
+        tr = np.broadcast_to(tau_ref, out.shape)
+        positive = t > 0.0
+        if np.any(positive):
+            from scipy.special import ndtr
+            y = (tr[positive] / t[positive] - 1.0) / sigma
+            out[positive] = ndtr(y)
+        return np.clip(out, 0.0, 1.0)
 
-        return np.clip(p_dep, 0.0, 1.0)
+    def _deposition_stress_factor(self, idx, tau, ws, rho_w):
+        idx = np.asarray(idx, dtype=np.int64).ravel()
+        tau = np.asarray(tau, dtype=float).ravel()
+        ws = np.asarray(ws, dtype=float).ravel()
+        rho_w = np.asarray(rho_w, dtype=float).ravel()
+        n = idx.size
+        if not (tau.size == ws.size == rho_w.size == n):
+            raise ValueError('Deposition branch inputs must have matching lengths')
+        if np.any(~np.isfinite(tau) | (tau < 0.0)):
+            raise ValueError('Effective bed stress must be finite and >= 0')
+        if np.any(~np.isfinite(ws) | (ws < 0.0)):
+            raise ValueError('Settling-speed magnitude must be finite and >= 0')
+        branch = self._exchange_branch(idx=idx)
+        branch_arr = np.full(n, branch, dtype='<U12') if isinstance(branch, str) else np.asarray(branch, dtype='<U12').ravel()
+        if branch_arr.size != n:
+            raise ValueError('Exchange branch array has wrong size')
+        alpha = np.empty(n, dtype=float)
+        tau_cr_dep = np.full(n, np.nan, dtype=float)
+
+        coh = branch_arr == 'COHESIVE'
+        if np.any(coh):
+            model = self.get_config('chemical:sediment:deposition_model_cohesive')
+            ref = self._cohesive_deposition_reference_stress(idx[coh], ws[coh], rho_w[coh], model)
+            tau_cr_dep[coh] = ref
+            if model == 'CONTINUOUS':
+                alpha[coh] = 1.0
+            else:
+                # ws==0 has zero hazard; avoid interpreting NaN threshold as physics.
+                zero_ws = ws[coh] == 0.0
+                a = np.ones(np.sum(coh), dtype=float)
+                eval_mask = ~zero_ws
+                if np.any(eval_mask):
+                    a[eval_mask] = self.krone_deposition_reduction(tau[coh][eval_mask], ref[eval_mask])
+                alpha[coh] = a
+
+        non = branch_arr == 'NONCOHESIVE'
+        if np.any(non):
+            model = self.get_config('chemical:sediment:deposition_model_noncohesive')
+            ref = self._noncohesive_deposition_reference_stress(idx[non], model)
+            tau_cr_dep[non] = ref
+            if model == 'CONTINUOUS':
+                alpha[non] = 1.0
+            else:
+                alpha[non] = self._gessler_deposition_factor(
+                    tau[non], ref, self.get_config('chemical:sediment:gessler_sigma'))
+        unknown = ~(coh | non)
+        if np.any(unknown):
+            raise ValueError(f'Unknown exchange branch values: {np.unique(branch_arr[unknown]).tolist()}')
+        if np.any(~np.isfinite(alpha) | (alpha < 0.0) | (alpha > 1.0)):
+            raise ValueError('Deposition stress factor must be finite and within [0, 1]')
+        return alpha, tau_cr_dep
+
+    def _deposition_probability_from_factor(self, alpha_d, ws, dt, h_b):
+        alpha_d = np.asarray(alpha_d, dtype=float)
+        ws = np.asarray(ws, dtype=float)
+        h_b = np.asarray(h_b, dtype=float)
+        dt = float(dt)
+        if np.any(~np.isfinite(alpha_d) | (alpha_d < 0.0) | (alpha_d > 1.0)):
+            raise ValueError('Deposition stress factor must be finite and within [0,1]')
+        if np.any(~np.isfinite(ws) | (ws < 0.0)):
+            raise ValueError('Settling-speed magnitude must be finite and >= 0')
+        if np.any(~np.isfinite(h_b) | (h_b <= 0.0)):
+            raise ValueError('Interaction-layer thickness must be finite and > 0')
+        if not np.isfinite(dt) or dt < 0.0:
+            raise ValueError('Deposition timestep must be finite and >= 0')
+        hazard = ws * alpha_d / h_b
+        return np.clip(-np.expm1(-hazard * dt), 0.0, 1.0)
+
+    def deposition_probability(self, tau, ws, dt, h_b):
+        """Deprecated legacy Krone-only compatibility helper.
+
+        Production deposition uses the branch-aware dispatcher. This helper keeps
+        the historical scalar-threshold calculation available to external callers.
+        """
+        tau_cr = self._resolved_user_deposition_threshold('COHESIVE')
+        alpha = self.krone_deposition_reduction(tau, tau_cr)
+        return self._deposition_probability_from_factor(alpha, ws, dt, h_b)
 
     def _local_erodible_mass_per_area(self, idx=None):
         """
@@ -8530,7 +8319,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             dt = self.time_step.total_seconds()
         dt = float(dt)
 
-        branch = self._resuspension_branch(idx=idx)
+        branch = self._exchange_branch(idx=idx)
         if isinstance(branch, str):
             branch_arr = np.full(tau.shape, branch, dtype='<U12')
         else:
@@ -8626,10 +8415,11 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         p_dep=None,
         p_res=None,
         tau_cr_res=None,
+        tau_cr_dep=None,
+        deposition_stress_factor=None,
     ):
         if not self._save_bed_interaction():
             return
-
         self.elements.tau_bx[idx] = stress['tau_bx']
         self.elements.tau_by[idx] = stress['tau_by']
         self.elements.tau_current[idx] = stress['tau_current']
@@ -8641,10 +8431,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         self.elements.Cd[idx] = stress['Cd']
         self.elements.speed[idx] = stress['speed']
         self.elements.z_ref[idx] = stress['z_ref']
-
         if stress.get('z0', None) is not None:
             self.elements.z0[idx] = stress['z0']
-
         self.elements.tau_wave[idx] = stress['tau_wave']
         self.elements.tau_other_x[idx] = stress['tau_other_x']
         self.elements.tau_other_y[idx] = stress['tau_other_y']
@@ -8653,20 +8441,19 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                      'wave_friction_factor', 'wave_z0', 'wave_water_depth'):
             values = np.asarray(stress[name], dtype=float)
             target = getattr(self.elements, name)
-            # Float32 output may not represent very large deep-water friction
-            # factors; retain finite stress but mark unavailable diagnostics NaN.
             limit = np.finfo(target.dtype).max
             values = np.where(np.isfinite(values) & (np.abs(values) <= limit), values, np.nan)
             target[idx] = values
-
         if p_dep is not None:
             self.elements.p_dep[idx] = p_dep
-
         if p_res is not None:
             self.elements.p_res[idx] = p_res
-
         if tau_cr_res is not None:
             self.elements.tau_cr_res[idx] = tau_cr_res
+        if tau_cr_dep is not None:
+            self.elements.tau_cr_dep[idx] = tau_cr_dep
+        if deposition_stress_factor is not None:
+            self.elements.deposition_stress_factor[idx] = deposition_stress_factor
 
     ###########################################################################
     # Main sediment dynamics functions
@@ -8788,18 +8575,25 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             0.0,
         )
 
-        p_dep = self.deposition_probability(
+        deposition_stress_factor, tau_cr_dep = self._deposition_stress_factor(
+            idx=idx_dep,
             tau=tau_dep,
+            ws=ws_dep,
+            rho_w=np.asarray(stress_dep['rho'], dtype=float),
+        )
+        p_dep = self._deposition_probability_from_factor(
+            alpha_d=deposition_stress_factor,
             ws=ws_dep,
             dt=dt,
             h_b=h_b_dep,
         )
 
-        # Optional debug storage.
         self._store_bed_interaction(
             idx_dep,
             stress_dep,
             p_dep=p_dep,
+            tau_cr_dep=tau_cr_dep,
+            deposition_stress_factor=deposition_stress_factor,
         )
 
         hit_dep_local = np.random.random(idx_dep.size) < p_dep
@@ -9082,7 +8876,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
           4) Compute local settling speed toward the bed:
                  ws = max(-terminal_velocity, 0)
           5) Compute timestep deposition probability:
-                 p_dep = deposition_probability(tau_b, ws, dt, h_b)
+                 alpha_D, tau_cr_dep = _deposition_stress_factor(...); p_dep = _deposition_probability_from_factor(...)
           6) Perform a Monte Carlo deposition draw.
           7) For deposited elements:
                  specie <- corresponding sediment species
@@ -9116,7 +8910,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
           - Buried sediment remains immobile.
           - Elements are clipped so they cannot end above the sea surface.
           - f_OC is preserved across deposition and resuspension.
-          - Diameter is updated once at the end using initial -> final species.
+          - Carrier diameter is updated once at the end using initial -> final species.
 
           - copy only specie0, because it is needed after in-place updates
           - use z0 as a read-only start-of-step view
@@ -9145,7 +8939,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         # Start-of-step snapshot.
         #
         # specie0 must be copied because self.elements.specie will be updated
-        # in place below, while specie0 is still needed for diameter/d50 updates.
+        # in place below, while specie0 is still needed for diameter updates.
         specie0 = np.asarray(self.elements.specie, dtype=np.int32).copy()
 
         # z0 is only read before any in-place z update is applied, so a view is enough.
@@ -9193,11 +8987,6 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         self.elements.moving[idx_all] = moving_all
         self.elements.critstress_factor[idx_all] = crit_all
         self.update_chemical_diameter(
-            changed_idx=idx_all,
-            old_species=old_species_all,
-            new_species=new_species_all,
-        )
-        self.update_chemical_d50(
             changed_idx=idx_all,
             old_species=old_species_all,
             new_species=new_species_all,
@@ -12638,68 +12427,35 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
     # Runtime post-seeding map updates
     ###########################################################################
 
-    def _apply_mapped_bed_d50_to_new_elements(self):
-        """
-        Seeding can occur before self.environment exists, so sediment elements are
-        initially assigned the configured fallback d50 in seed_elements(). This helper
-        replaces that fallback with the local mapped/configured bed d50 as soon as
-        readers/environment are available.
+    def _resolve_new_sediment_diameter(self):
+        """Resolve the internal -1 sediment-size sentinel before physical processes.
 
-        The update is applied only once, using:
-            self.elements.age_seconds <= 0.0
-        as the one-shot condition for "first update after seeding".
-
-        Only sediment species are updated:
-          - Sediment reversible
-          - Sediment slowly reversible
-          - Sediment buried
-          - Sediment irreversible
-        Both:
-          - self.elements.d50
-          - self.elements.diameter
-        are updated to the same value, explicitly avoiding any mismatch between
-        particle diameter and d50 for sediment elements.
-        Values are taken from self._local_bed_d50(idx=...), which already handles:
-          - mapped bed d50 when available at runtime
-          - configured fallback chemical:sediment:d50
-          - USER-mode override behavior, if applicable
+        Only negative sediment diameters are resolved from local mapped/configured bed
+        d50. Already positive sediment/transported diameters are preserved exactly.
+        Any sediment element that remains non-finite or non-positive is a hard error.
         """
-        # Environment/readers may not exist during seeding; this helper is runtime-only
         if not hasattr(self, 'environment'):
             return
-        # One-shot trigger: only newly active elements at their first runtime update
-        ages = np.asarray(self.elements.age_seconds, dtype=float)
-        dt_s = float(abs(self.time_step.total_seconds()))
-
-        if logger.isEnabledFor(logging.DEBUG) and ages.size > 0:
-            logger.debug(
-                "self.elements.age_seconds: mean [%s] min [%s] max [%s]",
-                float(ages.mean()), float(ages.min()), float(ages.max()),
-            )
-        eps = 1e-9
-        newmask = np.asarray(ages <= dt_s + eps, dtype=bool)
-        if not np.any(newmask):
+        sediment_species = [getattr(self, a) for a in ('num_srev','num_ssrev','num_sirrev','num_sburied') if hasattr(self,a)]
+        if not sediment_species:
             return
-        name_to_idx = {name: i for i, name in enumerate(self.name_species)}
-        sediment_names = {
-            "Sediment reversible",
-            "Sediment slowly reversible",
-            "Sediment buried",
-            "Sediment irreversible",
-        }
-        sediment_idx = {name_to_idx[n] for n in sediment_names if n in name_to_idx}
-        if not sediment_idx:
-            return
-        sedmask = newmask & np.isin(self.elements.specie, list(sediment_idx))
+        specie = np.asarray(self.elements.specie, dtype=int)
+        sedmask = np.isin(specie, sediment_species)
         if not np.any(sedmask):
             return
-        ii = np.flatnonzero(sedmask)
-        # _local_bed_d50 already handles map/config fallback and USER-mode logic.
-        d50_local = np.asarray(self._local_bed_d50(idx=ii), dtype=float).ravel()
-        d50_local = np.maximum(d50_local, 0.0)
-        # Keep sediment d50 and diameter explicitly identical.
-        self.elements.d50[ii] = d50_local
-        self.elements.diameter[ii] = d50_local
+        diameter = np.asarray(self.elements.diameter, dtype=float)
+        unresolved = sedmask & (diameter < 0.0)
+        if np.any(unresolved):
+            idx = np.flatnonzero(unresolved)
+            resolved = np.asarray(self._local_bed_d50(idx=idx), dtype=float).ravel()
+            if resolved.size != idx.size or np.any(~np.isfinite(resolved) | (resolved <= 0.0)):
+                raise ValueError('Could not resolve positive sediment carrier diameter from local bed d50')
+            self.elements.diameter[idx] = resolved
+        final = np.asarray(self.elements.diameter, dtype=float)
+        bad = sedmask & (~np.isfinite(final) | (final <= 0.0))
+        if np.any(bad):
+            raise ValueError(
+                'Sediment carrier diameter must be resolved to a finite positive value before physics')
 
     def _apply_mapped_fOC_to_new_elements(self):
         """
@@ -12790,8 +12546,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         # Workaround due to conversion of datatype
         self.elements.specie = self.elements.specie.astype(np.int32)
 
-        # First-step remap of sediment d50 from reader/configured local bed values
-        self._apply_mapped_bed_d50_to_new_elements()
+        # Resolve the internal sediment-size sentinel before any physics.
+        self._resolve_new_sediment_diameter()
         # First-step remap of carrier f_OC from reader/configured local values
         self._apply_mapped_fOC_to_new_elements()
 
