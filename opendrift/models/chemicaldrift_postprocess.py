@@ -17482,6 +17482,22 @@ class ChemicalDriftPostProcessMixin:
             'units': 'mmol C m-3', 'long_name': 'Phytoplankton carbon concentration in sea water'},
     }
 
+    # Model-level provenance written by the authoritative ChemicalDrift result.
+    # These attributes describe resolved bed-exchange/deposition semantics and are
+    # kept separate from element diagnostics and environmental variables.
+    _SUMMARY_MODEL_PROVENANCE_ATTRS = (
+        'chemical_element_size_state',
+        'chemical_exchange_branch',
+        'chemical_cohesive_diameter_threshold_m',
+        'chemical_resuspension_critstress_mode',
+        'chemical_deposition_model_cohesive',
+        'chemical_deposition_model_noncohesive',
+        'chemical_gessler_sigma',
+        'chemical_deposition_shields_method',
+        'chemical_cohesive_settling_threshold_variant',
+        'chemical_cohesive_settling_variant_provenance',
+    )
+
     _CHEMICAL_DEFINITION_CLASS = None
     _CHEMICALDRIFT_POSTPROCESS_REGISTRY_INITIALIZED = False
 
@@ -17536,6 +17552,27 @@ class ChemicalDriftPostProcessMixin:
                 'summary_mode': 'mean',
                 'zeros_valid': True,
             }
+        # Give the branch-aware deposition diagnostics explicit scientific names.
+        # Their units and availability still come from the authoritative Chemical
+        # element definitions above; this only refines post-processing semantics.
+        _deposition_diagnostic_metadata = {
+            'p_dep': {
+                'long_name': 'Timestep deposition probability for eligible near-bed elements',
+                'summary_mode': 'mean', 'zeros_valid': True,
+            },
+            'tau_cr_dep': {
+                'long_name': 'Deposition reference bed shear stress used by the active branch model',
+                'summary_mode': 'mean', 'zeros_valid': True,
+            },
+            'deposition_stress_factor': {
+                'long_name': 'Dimensionless deposition stress/capture factor',
+                'summary_mode': 'mean', 'zeros_valid': True,
+            },
+        }
+        for _name, _meta in _deposition_diagnostic_metadata.items():
+            if _name in registry:
+                registry[_name].update(_meta)
+
         for _name, _definition in chemical_definition_cls.SEDIMENT_OXYGEN_DIAGNOSTIC_DEFINITIONS.items():
             registry[_name] = {
                 'source': 'element',
@@ -18278,6 +18315,24 @@ class ChemicalDriftPostProcessMixin:
             'chemical:transformations:solar_input_unit',
             'chemical:sediment:enable_deposition',
             'chemical:sediment:enable_resuspension',
+            # Branch-aware deposition configuration. These values are required to
+            # interpret p_dep/tau_cr_dep/deposition_stress_factor and to reproduce
+            # the cohesive/noncohesive selection used by the authoritative model.
+            'chemical:sediment:layer_thickness',
+            'chemical:sediment:exchange_branch',
+            'chemical:sediment:resuspension_critstress_branch',
+            'chemical:sediment:cohesive_diameter_threshold',
+            'chemical:sediment:deposition_reduction_factor',
+            'chemical:sediment:deposition_model_cohesive',
+            'chemical:sediment:deposition_model_noncohesive',
+            'chemical:sediment:deposition_critstress',
+            'chemical:sediment:deposition_critstress_cohesive',
+            'chemical:sediment:deposition_critstress_noncohesive',
+            'chemical:sediment:gessler_sigma',
+            'chemical:sediment:deposition_shields_method',
+            'chemical:sediment:cohesive_settling_threshold_variant',
+            'chemical:sediment:critstress_rho_s',
+            'chemical:sediment:critstress_nu',
             'chemical:sediment:stress_param_mode',
             'chemical:sediment:include_wave_stress',
             'chemical:sediment:include_other_stress',
@@ -18292,6 +18347,25 @@ class ChemicalDriftPostProcessMixin:
         for key in config_keys:
             try:
                 out[key] = self._netcdf_safe_attr_value(self.get_config(key))
+            except Exception:
+                continue
+        return out
+
+    def _summary_model_provenance_metadata(self):
+        """Return authoritative ChemicalDrift result-level provenance when available.
+
+        Older compatible results may not contain these attributes. Missing
+        provenance is therefore tolerated and represented by an empty mapping.
+        """
+        result = getattr(self, 'result', None)
+        attrs = getattr(result, 'attrs', None)
+        if attrs is None:
+            return {}
+        out = {}
+        for key in self._SUMMARY_MODEL_PROVENANCE_ATTRS:
+            try:
+                if key in attrs:
+                    out[key] = self._netcdf_safe_attr_value(attrs[key])
             except Exception:
                 continue
         return out
@@ -19653,6 +19727,7 @@ class ChemicalDriftPostProcessMixin:
                 })
 
         config_meta = self._summary_configuration_metadata()
+        model_provenance = self._summary_model_provenance_metadata()
         filter_meta = {
             'shp_file_path': str(shp_file_path) if shp_file_path is not None else None,
             'lon_min': lon_min, 'lon_max': lon_max,
@@ -19682,10 +19757,16 @@ class ChemicalDriftPostProcessMixin:
             ),
             'summary_filter_json': json.dumps(filter_meta, default=str, sort_keys=True),
             'chemicaldrift_configuration_json': json.dumps(config_meta, default=str, sort_keys=True),
+            'chemicaldrift_model_provenance_json': json.dumps(
+                model_provenance, default=str, sort_keys=True),
         })
         for key, value in config_meta.items():
             attr_name = 'config_' + key.replace(':', '_').replace('-', '_')
             summary_ds.attrs[attr_name] = self._netcdf_safe_attr_value(value)
+        for key, value in model_provenance.items():
+            # Preserve the exact authoritative result attribute name so summary
+            # files can be interpreted without reconstructing model internals.
+            summary_ds.attrs[key] = self._netcdf_safe_attr_value(value)
 
         # CSV/DataFrame is a compatibility view generated from the final Dataset.
         df = self._summary_dataset_to_dataframe(summary_ds, mass_unit, time_unit)
@@ -23273,6 +23354,22 @@ class ChemicalDriftPostProcessMixin:
                          if ds.attrs.get('chemicaldrift_configuration_json') not in (None, '')}
         if len(config_values) > 1:
             warnings.warn('Input summaries were generated with different ChemicalDrift configuration metadata.', RuntimeWarning)
+
+        input_model_provenance = [
+            ds.attrs.get('chemicaldrift_model_provenance_json') for ds in ds_list
+        ]
+        model_provenance_values = {
+            str(value) for value in input_model_provenance if value not in (None, '')
+        }
+        if len(model_provenance_values) > 1:
+            warnings.warn(
+                'Input summaries were generated with different ChemicalDrift model provenance metadata.',
+                RuntimeWarning)
+        model_provenance_complete = (
+            len(input_model_provenance) == len(ds_list)
+            and all(value not in (None, '') for value in input_model_provenance)
+        )
+
         histories = [str(ds.attrs.get('history')) for ds in ds_list if ds.attrs.get('history')]
         input_filters = [ds.attrs.get('summary_filter_json') for ds in ds_list if ds.attrs.get('summary_filter_json')]
         combined.attrs.update({
@@ -23285,6 +23382,9 @@ class ChemicalDriftPostProcessMixin:
             'input_summary_kinds_json': json.dumps(input_kinds),
             'input_summary_filters_json': json.dumps(input_filters, default=str),
             'input_histories_json': json.dumps(histories, default=str),
+            'input_model_provenance_json': json.dumps(
+                input_model_provenance, default=str),
+            'model_provenance_complete': str(bool(model_provenance_complete)).lower(),
             'time_harmonization_mode': align_mode,
             'target_time_step': str(freq_used) if freq_used is not None else 'union',
             'coarsest_input_time_step': str(coarsest),
@@ -23298,6 +23398,19 @@ class ChemicalDriftPostProcessMixin:
                 'sine/cosine components; cumulative process masses additive; interval amounts regenerated by '
                 'differencing; derived ratios recomputed'),
         })
+
+        # Preserve a single authoritative provenance record only when every input
+        # supplies it and all inputs agree. Otherwise the per-input JSON above is
+        # the non-lossy record and no merged provenance is asserted.
+        if model_provenance_complete and len(model_provenance_values) == 1:
+            combined.attrs['chemicaldrift_model_provenance_json'] = next(
+                iter(model_provenance_values))
+            for key in self._SUMMARY_MODEL_PROVENANCE_ATTRS:
+                values = [ds.attrs.get(key) for ds in ds_list]
+                if all(value not in (None, '') for value in values):
+                    normalized = {str(value) for value in values}
+                    if len(normalized) == 1:
+                        combined.attrs[key] = self._netcdf_safe_attr_value(values[0])
 
         def _to_dataframe(ds):
             if np.issubdtype(ds['time'].dtype, np.datetime64):
