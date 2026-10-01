@@ -133,9 +133,9 @@ class Oil(Lagrangian3DArray):
             'wind_drift_factor',
             {
                 'dtype':
-                np.float32,  # TODO: inherit from
+                np.float32,  # TODO: inherit from OceanDrift
                 'units':
-                '%',  # OceanDrift
+                '1',
                 'description':
                 'Elements at the ocean surface are moved by '
                 'this fraction of the wind vector, in addition to '
@@ -181,13 +181,13 @@ class Oil(Lagrangian3DArray):
                  'description': 'Biodegradation half time in days for surface oil slick'}),
         ('fraction_evaporated', {
             'dtype': np.float32,
-            'units': '%',  # TODO: should be fraction and not percent
+            'units': '1',
             'seed': False,
             'default': 0
         }),
         ('water_fraction', {
             'dtype': np.float32,
-            'units': '%',
+            'units': '1',
             'seed': False,
             'default': 0
         }),
