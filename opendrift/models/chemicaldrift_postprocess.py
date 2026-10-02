@@ -17444,7 +17444,7 @@ class ChemicalDriftPostProcessMixin:
         'x_depth_averaged_sea_water_velocity': {'units': 'm s-1', 'long_name': 'Eastward depth-averaged sea-water velocity'},
         'y_depth_averaged_sea_water_velocity': {'units': 'm s-1', 'long_name': 'Northward depth-averaged sea-water velocity'},
         'hydraulic_radius': {'units': 'm', 'long_name': 'Hydraulic radius'},
-        'sea_floor_erodibility_M': {'units': 'kg m-2 s-1 Pa-1', 'long_name': 'Sea-floor cohesive erodibility coefficient'},
+        'sea_floor_erodibility_Kd': {'units': 'kg m-2 s-1 Pa-1', 'long_name': 'Sea-floor cohesive excess-stress erosion slope Kd'},
         'sea_floor_resuspension_critstress': {'units': 'Pa', 'long_name': 'Sea-floor critical shear stress for resuspension'},
         'x_sea_floor_other_stress': {
             'units': 'Pa', 'long_name': 'Eastward additional sea-floor shear-stress component'},
@@ -17494,8 +17494,8 @@ class ChemicalDriftPostProcessMixin:
         'chemical_deposition_model_noncohesive',
         'chemical_gessler_sigma',
         'chemical_deposition_shields_method',
-        'chemical_cohesive_settling_threshold_variant',
-        'chemical_cohesive_settling_variant_provenance',
+        'chemical_cohesive_settling_threshold_source',
+        'chemical_cohesive_settling_threshold_upstream_attribution',
     )
 
     _CHEMICAL_DEFINITION_CLASS = None
@@ -18320,17 +18320,19 @@ class ChemicalDriftPostProcessMixin:
             # the cohesive/noncohesive selection used by the authoritative model.
             'chemical:sediment:layer_thickness',
             'chemical:sediment:exchange_branch',
-            'chemical:sediment:resuspension_critstress_branch',
             'chemical:sediment:cohesive_diameter_threshold',
-            'chemical:sediment:deposition_reduction_factor',
             'chemical:sediment:deposition_model_cohesive',
             'chemical:sediment:deposition_model_noncohesive',
-            'chemical:sediment:deposition_critstress',
             'chemical:sediment:deposition_critstress_cohesive',
             'chemical:sediment:deposition_critstress_noncohesive',
             'chemical:sediment:gessler_sigma',
             'chemical:sediment:deposition_shields_method',
-            'chemical:sediment:cohesive_settling_threshold_variant',
+            'chemical:sediment:resuspension_critstress_mode',
+            'chemical:sediment:resuspension_critstress_method',
+            'chemical:sediment:resuspension_probability_model',
+            'chemical:sediment:erodibility_Kd',
+            'chemical:sediment:noncohesive_resuspension_timescale',
+            'chemical:sediment:noncohesive_excess_shear_exponent',
             'chemical:sediment:critstress_rho_s',
             'chemical:sediment:critstress_nu',
             'chemical:sediment:stress_param_mode',
