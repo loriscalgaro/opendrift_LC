@@ -515,7 +515,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
     }
     SEDIMENT_RESUSPENSION_REQUIRED_VARIABLES = {
         # Optional mapped cohesive erodibility
-        'sea_floor_erodibility_M': {'fallback': _ENV_NEGATIVE_SENTINEL, 'important': False,},       # kg m-2 s-1 Pa-1
+        'sea_floor_erodibility_Kd': {'fallback': _ENV_NEGATIVE_SENTINEL, 'important': False,},       # kg m-2 s-1 Pa-1
         # Optional mapped critical shear stress
         'sea_floor_resuspension_critstress': {'fallback': 0, 'important': False,}, # Pa
     }
@@ -674,8 +674,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         'f_OC_sed': {'policy': 'CONFIG', 'sentinel': _ENV_NEGATIVE_SENTINEL,
             'domain': 'GT_ZERO', 'config_key': 'chemical:transformations:fOC_sed',
             'zero_is_physical': False},
-        'sea_floor_erodibility_M': {'policy': 'CONFIG', 'sentinel': _ENV_NEGATIVE_SENTINEL,
-            'domain': 'GE_ZERO', 'config_key': 'chemical:sediment:erodibility_M',
+        'sea_floor_erodibility_Kd': {'policy': 'CONFIG', 'sentinel': _ENV_NEGATIVE_SENTINEL,
+            'domain': 'GE_ZERO', 'config_key': 'chemical:sediment:erodibility_Kd',
             'zero_is_physical': True},
         'sea_floor_current_stress': {'policy': 'LOCAL_REJECT', 'sentinel': _ENV_NEGATIVE_SENTINEL,
             'domain': 'GE_ZERO', 'zero_is_physical': True},
@@ -1251,9 +1251,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             # Probabilistic exchange scheme
             'chemical:sediment:save_bed_interaction': {'type': 'bool', 'default': False,
                 'level': CONFIG_LEVEL_BASIC, 'description': 'Toggle save of sediment probabilistic exchange scheme arrays'},
-            'chemical:sediment:erodibility_M': {'type': 'float', 'default': 1.0e-4,
+            'chemical:sediment:erodibility_Kd': {'type': 'float', 'default': 1.0e-4,
                 'min': 0.0, 'max': 1.0, 'units': 'kg m-2 s-1 Pa-1', 'level': CONFIG_LEVEL_ADVANCED,
-                'description': 'Partheniades erodibility coefficient for cohesive resuspension. Used as a uniform fallback when no sea_floor_erodibility_M reader is supplied; a mapped erodibility field is preferred when available.'},
+                'description': 'Cohesive excess-stress erosion slope Kd used in E = Kd * max(tau - tau_cr, 0). Used as a uniform fallback when no sea_floor_erodibility_Kd reader is supplied; a mapped erodibility field is preferred when available.'},
             'chemical:sediment:noncohesive_resuspension_timescale': {'type': 'float', 'default': 3600.0,
                 'min': 1e-6, 'max': 1e9, 'units': 's', 'level': CONFIG_LEVEL_ADVANCED,
                 'description': 'Characteristic timescale for noncohesive excess-shear pickup probability.'},
@@ -1264,14 +1264,11 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'enum': ['INSTANTANEOUS_EXCESS_SHEAR', 'TIMESTEP_DEPENDENT'],
                 'default': 'TIMESTEP_DEPENDENT',
                 'level': CONFIG_LEVEL_ADVANCED,
-                'description': 'Resuspension probability model. INSTANTANEOUS_EXCESS_SHEAR reproduces the old time-independent excess-shear probability; TIMESTEP_DEPENDENT uses timestep-dependent pickup/erosion probability.'},
+                'description': 'Resuspension probability model. INSTANTANEOUS_EXCESS_SHEAR is a LEGACY per-update, dt-independent formulation that is timestep-refinement inconsistent and is retained only for reproducing or comparing legacy runs. TIMESTEP_DEPENDENT is the default and recommended timestep-dependent pickup/erosion probability model.'},
             'chemical:sediment:exchange_scheme': {'type': 'enum',
                 'enum': ['EXCESS_SHEAR_PROBABILITY'],'default': 'EXCESS_SHEAR_PROBABILITY',
                 'level': CONFIG_LEVEL_ESSENTIAL,
                 'description': 'Probabilistic sediment exchange scheme.'},
-            'chemical:sediment:deposition_reduction_factor': {'type': 'float', 'default': -1.0,
-                'min': -1.0, 'max': 1.0, 'units': '', 'level': CONFIG_LEVEL_ADVANCED,
-                'description': 'Deprecated legacy override. Keep at -1; select explicit cohesive/noncohesive deposition models instead.'},
             'chemical:sediment:enable_deposition': {'type': 'bool', 'default': True,
                 'level': CONFIG_LEVEL_BASIC,
                 'description': 'Enable suspended-to-bed deposition probability.'},
@@ -1293,26 +1290,19 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'enum': ['GESSLER_USER', 'GESSLER_SHIELDS', 'CONTINUOUS'], 'default': 'GESSLER_USER',
                 'level': CONFIG_LEVEL_BASIC,
                 'description': 'Noncohesive deposition stress/capture model.'},
-            'chemical:sediment:deposition_critstress': {'type': 'float', 'default': 0.05,
-                'min': 0, 'max': 1e6, 'units': 'Pa', 'level': CONFIG_LEVEL_ESSENTIAL,
-                'description': 'Legacy deposition threshold retained as a compatibility fallback when a branch-specific USER threshold is unset.'},
-            'chemical:sediment:deposition_critstress_cohesive': {'type': 'float', 'default': -1.0,
-                'min': -1.0, 'max': 1e6, 'units': 'Pa', 'level': CONFIG_LEVEL_ESSENTIAL,
-                'description': 'User cohesive Krone deposition threshold [Pa]. A negative value uses legacy deposition_critstress as a compatibility fallback.'},
-            'chemical:sediment:deposition_critstress_noncohesive': {'type': 'float', 'default': -1.0,
-                'min': -1.0, 'max': 1e6, 'units': 'Pa', 'level': CONFIG_LEVEL_ESSENTIAL,
-                'description': 'User noncohesive Gessler 50-percent deposition reference stress [Pa]. A negative value uses legacy deposition_critstress as a compatibility fallback.'},
+            'chemical:sediment:deposition_critstress_cohesive': {'type': 'float', 'default': 0.05,
+                'min': 0.0, 'max': 1e6, 'units': 'Pa', 'level': CONFIG_LEVEL_ESSENTIAL,
+                'description': 'User cohesive Krone deposition threshold [Pa]. Must be finite and > 0 when KRONE_USER is active.'},
+            'chemical:sediment:deposition_critstress_noncohesive': {'type': 'float', 'default': 0.05,
+                'min': 0.0, 'max': 1e6, 'units': 'Pa', 'level': CONFIG_LEVEL_ESSENTIAL,
+                'description': 'User noncohesive Gessler 50-percent deposition reference stress [Pa]. Must be finite and > 0 when GESSLER_USER is active.'},
             'chemical:sediment:gessler_sigma': {'type': 'float', 'default': 0.57,
                 'min': 1e-6, 'max': 10.0, 'units': '1', 'level': CONFIG_LEVEL_ADVANCED,
                 'description': 'Relative critical-stress standard deviation used by the Gessler deposition probability model.'},
             'chemical:sediment:deposition_shields_method': {'type': 'enum',
-                'enum': ['soulsby_whitehouse', 'van_rijn', 'laursen', 'mpm', 'wu'],
+                'enum': ['soulsby_whitehouse', 'van_rijn'],
                 'default': 'soulsby_whitehouse', 'level': CONFIG_LEVEL_ADVANCED,
                 'description': 'Shields/mobility relation used to derive noncohesive Gessler reference stress from element diameter.'},
-            'chemical:sediment:cohesive_settling_threshold_variant': {'type': 'enum',
-                'enum': ['POHLMANN_PULS_KRESTENITIS'], 'default': 'POHLMANN_PULS_KRESTENITIS',
-                'level': CONFIG_LEVEL_ADVANCED,
-                'description': 'Named frozen coefficient set for the settling-velocity-dependent cohesive deposition threshold. Upstream attribution is retained as a provenance caveat.'},
             'chemical:sediment:resuspension_critstress': {'type': 'float', 'default': 0.5,
                 'min': 0, 'max': 1e6, 'units': 'Pa', 'level': CONFIG_LEVEL_ESSENTIAL,
                 'description': 'Critical shear stress for resuspension/erosion. If a mapped sea_floor_resuspension_critstress reader is supplied, that mapped value is preferred locally; otherwise this configured value or the diameter-based calculation is used.'},
@@ -1320,15 +1310,11 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'min': -1.0, 'max': 100.0, 'units': 'm/s', 'level': CONFIG_LEVEL_ADVANCED,
                 'description': 'Critical shear velocity for resuspension. If >= 0, override resuspension_critstress using tau_cr = rho * ustar^2. If < 0, use resuspension_critstress directly.'},
             'chemical:sediment:resuspension_critstress_mode': {'type': 'enum',
-                'enum': ['USER', 'FROM_DIAMETER', 'FROM_D50'], 'default': 'USER',
+                'enum': ['USER', 'FROM_DIAMETER'], 'default': 'USER',
                 'level': CONFIG_LEVEL_BASIC,
-                'description': 'Use prescribed resuspension stress or calculate it from authoritative element diameter. FROM_D50 is a deprecated alias for FROM_DIAMETER.'},
-            'chemical:sediment:resuspension_critstress_branch': {'type': 'enum',
-                'enum': ['AUTO', 'NONCOHESIVE', 'COHESIVE'], 'default': 'COHESIVE',
-                'level': CONFIG_LEVEL_ADVANCED,
-                'description': 'Deprecated compatibility alias for chemical:sediment:exchange_branch.'},
+                'description': 'Use prescribed resuspension stress or calculate it from authoritative element diameter.'},
             'chemical:sediment:resuspension_critstress_method': {'type': 'enum',
-                'enum': ['soulsby_whitehouse', 'van_rijn', 'laursen', 'mpm', 'wu'],
+                'enum': ['soulsby_whitehouse', 'van_rijn'],
                 'default': 'soulsby_whitehouse', 'level': CONFIG_LEVEL_ADVANCED,
                 'description': 'Noncohesive method used when computing resuspension_critstress from element diameter.'},
             'chemical:sediment:critstress_rho_s': {'type': 'float', 'default': 2650.0,
@@ -3011,8 +2997,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'chemical_deposition_model_noncohesive': self.get_config('chemical:sediment:deposition_model_noncohesive'),
                 'chemical_gessler_sigma': float(self.get_config('chemical:sediment:gessler_sigma')),
                 'chemical_deposition_shields_method': self.get_config('chemical:sediment:deposition_shields_method'),
-                'chemical_cohesive_settling_threshold_variant': self.get_config('chemical:sediment:cohesive_settling_threshold_variant'),
-                'chemical_cohesive_settling_variant_provenance': 'POHLMANN_PULS_KRESTENITIS; upstream attribution differs between preprint/final secondary presentation',
+                'chemical_cohesive_settling_threshold_source': 'Krestenitis et al. (2007), Eq. 17',
+                'chemical_cohesive_settling_threshold_upstream_attribution': 'Pohlmann & Puls (1994), as attributed by Krestenitis et al. (2007)',
             })
 
     def _resolve_reader_dependent_requirements(self):
@@ -6162,23 +6148,23 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             return np.full(n, fallback, dtype=float)
         return self._sanitize_positive_with_fallback(d50, fallback)
 
-    def _local_erodibility_M(self, idx=None):
+    def _local_erodibility_Kd(self, idx=None):
         """
-        Return local cohesive erodibility coefficient M [kg m-2 s-1 Pa-1].
+        Return local cohesive excess-stress erosion slope Kd [kg m-2 s-1 Pa-1].
 
         Priority:
-          1) environment.sea_floor_erodibility_M if supplied by a reader
-          2) config fallback chemical:sediment:erodibility_M
+          1) environment.sea_floor_erodibility_Kd if supplied by a reader
+          2) config fallback chemical:sediment:erodibility_Kd
 
         Negative or non-finite mapped values are replaced by the config fallback.
         Zero is allowed and locally disables cohesive erosion.
         """
-        fallback = float(self.get_config('chemical:sediment:erodibility_M'))
+        fallback = float(self.get_config('chemical:sediment:erodibility_Kd'))
         n = self.num_elements_active() if idx is None else np.asarray(idx, dtype=np.int64).ravel().size
-        M = self._optional_env_array('sea_floor_erodibility_M', idx=idx)
-        if M is None:
+        Kd = self._optional_env_array('sea_floor_erodibility_Kd', idx=idx)
+        if Kd is None:
             return np.full(n, fallback, dtype=float)
-        out = np.asarray(M, dtype=float).copy()
+        out = np.asarray(Kd, dtype=float).copy()
         invalid = (~np.isfinite(out)) | (out < 0.0)
         if np.any(invalid):
             out[invalid] = fallback
@@ -7780,26 +7766,12 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
     ###########################################################################
 
     def _resolved_exchange_branch_config(self):
-        """Resolve canonical exchange branch with one-way legacy alias support."""
-        canonical = self.get_config('chemical:sediment:exchange_branch')
-        legacy = self.get_config('chemical:sediment:resuspension_critstress_branch')
-        # Preserve an explicitly non-default legacy selection when the new key still
-        # has its backward-compatible default COHESIVE value.
-        if canonical == 'COHESIVE' and legacy != 'COHESIVE':
-            logger.warning(
-                'chemical:sediment:resuspension_critstress_branch is deprecated; '
-                'use chemical:sediment:exchange_branch.')
-            return legacy
-        return canonical
+        """Return the canonical configured exchange branch."""
+        return self.get_config('chemical:sediment:exchange_branch')
 
     def _resolved_resuspension_critstress_mode(self):
-        mode = self.get_config('chemical:sediment:resuspension_critstress_mode')
-        if mode == 'FROM_D50':
-            logger.warning(
-                'chemical:sediment:resuspension_critstress_mode=FROM_D50 is '
-                'deprecated; interpreting it as FROM_DIAMETER.')
-            return 'FROM_DIAMETER'
-        return mode
+        """Return the canonical configured resuspension critical-stress mode."""
+        return self.get_config('chemical:sediment:resuspension_critstress_mode')
 
     def _exchange_branch(self, idx=None):
         """Return shared COHESIVE/NONCOHESIVE exchange branch.
@@ -7818,10 +7790,6 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             raise ValueError('cohesive_diameter_threshold must be finite and > 0')
         branch = np.where(diameter >= threshold, 'NONCOHESIVE', 'COHESIVE')
         return branch if np.asarray(branch).ndim > 0 else str(branch)
-
-    def _resuspension_branch(self, idx=None):
-        """Deprecated internal alias for the shared exchange classifier."""
-        return self._exchange_branch(idx=idx)
 
     def classify_sediment(self, d50_mm: float) -> str:
         """
@@ -7885,14 +7853,16 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
     def theta_cr_van_rijn(self, d_m, rho_s=2650.0, rho_w=1000.0, nu=1.004e-6, g=9.81):
         """
         Compute critical Shields parameter using the Van Rijn piecewise relation.
-        For D* = dimensionless grain size:
-            theta = 0.24  * D*^-1.00     for D* <= 4
+        For D* = dimensionless grain size, with D* >= 1:
+            theta = 0.24  * D*^-1.00     for 1 <= D* <= 4
             theta = 0.14  * D*^-0.64     for 4   < D* <= 10
             theta = 0.04  * D*^-0.10     for 10  < D* <= 20
             theta = 0.013 * D*^0.29      for 20  < D* <= 150
-            theta = 0.056                for D* > 150
+            theta = 0.055                for D* > 150
         """
         D_star = self.dimensionless_grain_size(d_m, rho_s=rho_s, rho_w=rho_w, nu=nu, g=g)
+        if np.any(~np.isfinite(D_star) | (D_star < 1.0)):
+            raise ValueError('Van Rijn critical Shields relation requires finite D* >= 1')
         theta = np.empty_like(D_star, dtype=float)
         m1 = D_star <= 4.0
         m2 = (D_star > 4.0) & (D_star <= 10.0)
@@ -7903,23 +7873,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         theta[m2] = 0.14 * D_star[m2] ** -0.64
         theta[m3] = 0.04 * D_star[m3] ** -0.10
         theta[m4] = 0.013 * D_star[m4] ** 0.29
-        theta[m5] = 0.056
+        theta[m5] = 0.055
         return theta
-
-    def theta_cr_constant(self, method):
-        """
-        Return a constant critical Shields parameter for selected literature formulas.
-            laursen -> 0.039
-            mpm     -> 0.047
-            wu      -> 0.030
-        """
-        if method == 'laursen':
-            return 0.039
-        elif method == 'mpm':
-            return 0.047
-        elif method == 'wu':
-            return 0.030
-        raise ValueError("method must be one of: 'laursen', 'mpm', 'wu'")
 
     def tau_ce_owen(self, rho_d, a, b):
         """
@@ -7937,8 +7892,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         """Return local resuspension critical shear stress [Pa].
 
         USER is prescribed threshold physics and is independent of mapped bed d50.
-        FROM_DIAMETER uses authoritative transported-element diameter. FROM_D50 is
-        accepted only as a deprecated configuration alias for FROM_DIAMETER.
+        FROM_DIAMETER uses authoritative transported-element diameter.
         """
         if idx is None:
             n = self.num_elements_active()
@@ -7980,8 +7934,6 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                     theta = self.theta_cr_soulsby_whitehouse(d, rho_s=rho_s, rho_w=rw, nu=nu, g=9.81)
                 elif method == 'van_rijn':
                     theta = self.theta_cr_van_rijn(d, rho_s=rho_s, rho_w=rw, nu=nu, g=9.81)
-                elif method in {'laursen', 'mpm', 'wu'}:
-                    theta = np.full(np.sum(mask_non), self.theta_cr_constant(method), dtype=float)
                 else:
                     raise ValueError(f'Unknown noncohesive method: {method!r}')
                 tau_cr[mask_non] = np.maximum(theta * (rho_s - rw) * 9.81 * d, 0.0)
@@ -8040,20 +7992,13 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         else:
             raise ValueError(f'Unknown deposition branch: {branch!r}')
         value = float(self.get_config(key))
-        if value <= 0.0:
-            value = float(self.get_config('chemical:sediment:deposition_critstress'))
         if not np.isfinite(value) or value <= 0.0:
-            raise ValueError(f'{key} (or legacy deposition_critstress fallback) must be finite and > 0')
+            raise ValueError(f'{key} must be finite and > 0')
         return value
 
     def _validate_deposition_configuration(self):
         if not self.get_config('chemical:sediment:enable_deposition'):
             return
-        dep_red = float(self.get_config('chemical:sediment:deposition_reduction_factor'))
-        if dep_red >= 0.0:
-            raise ValueError(
-                'chemical:sediment:deposition_reduction_factor is deprecated by the '
-                'branch-aware deposition API; keep it at -1 and select an explicit model.')
         threshold = float(self.get_config('chemical:sediment:cohesive_diameter_threshold'))
         if not np.isfinite(threshold) or threshold <= 0.0:
             raise ValueError('cohesive_diameter_threshold must be finite and > 0')
@@ -8062,16 +8007,14 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         if coh == 'KRONE_USER':
             self._resolved_user_deposition_threshold('COHESIVE')
         elif coh == 'KRONE_SETTLING':
-            variant = self.get_config('chemical:sediment:cohesive_settling_threshold_variant')
-            if variant != 'POHLMANN_PULS_KRESTENITIS':
-                raise ValueError(f'Unknown cohesive settling-threshold variant: {variant!r}')
+            pass
         elif coh != 'CONTINUOUS':
             raise ValueError(f'Unknown cohesive deposition model: {coh!r}')
         if non == 'GESSLER_USER':
             self._resolved_user_deposition_threshold('NONCOHESIVE')
         elif non == 'GESSLER_SHIELDS':
             method = self.get_config('chemical:sediment:deposition_shields_method')
-            if method not in ('soulsby_whitehouse','van_rijn','laursen','mpm','wu'):
+            if method not in ('soulsby_whitehouse','van_rijn'):
                 raise ValueError(f'Unknown deposition Shields method: {method!r}')
         elif non != 'CONTINUOUS':
             raise ValueError(f'Unknown noncohesive deposition model: {non!r}')
@@ -8081,10 +8024,10 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 raise ValueError('chemical:sediment:gessler_sigma must be finite and > 0')
 
     def _cohesive_settling_critical_velocity(self, ws):
-        """Critical deposition shear velocity for the frozen named coefficient set."""
-        variant = self.get_config('chemical:sediment:cohesive_settling_threshold_variant')
-        if variant != 'POHLMANN_PULS_KRESTENITIS':
-            raise ValueError(f'Unknown cohesive settling-threshold variant: {variant!r}')
+        """Critical deposition shear velocity from Krestenitis et al. (2007), Eq. 17.
+
+        Krestenitis et al. attribute the relation to Pohlmann & Puls (1994);
+        """
         ws = np.asarray(ws, dtype=float)
         if np.any(~np.isfinite(ws) | (ws < 0.0)):
             raise ValueError('Settling-speed magnitude must be finite and >= 0')
@@ -8136,8 +8079,6 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             theta = self.theta_cr_soulsby_whitehouse(d, rho_s=rho_s, rho_w=rho_w, nu=nu, g=9.81)
         elif method == 'van_rijn':
             theta = self.theta_cr_van_rijn(d, rho_s=rho_s, rho_w=rho_w, nu=nu, g=9.81)
-        elif method in {'laursen','mpm','wu'}:
-            theta = np.full(n, self.theta_cr_constant(method), dtype=float)
         else:
             raise ValueError(f'Unknown deposition Shields method: {method!r}')
         tau_ref = np.maximum(theta * (rho_s - rho_w) * 9.81 * d, 0.0)
@@ -8233,16 +8174,6 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         hazard = ws * alpha_d / h_b
         return np.clip(-np.expm1(-hazard * dt), 0.0, 1.0)
 
-    def deposition_probability(self, tau, ws, dt, h_b):
-        """Deprecated legacy Krone-only compatibility helper.
-
-        Production deposition uses the branch-aware dispatcher. This helper keeps
-        the historical scalar-threshold calculation available to external callers.
-        """
-        tau_cr = self._resolved_user_deposition_threshold('COHESIVE')
-        alpha = self.krone_deposition_reduction(tau, tau_cr)
-        return self._deposition_probability_from_factor(alpha, ws, dt, h_b)
-
     def _local_erodible_mass_per_area(self, idx=None):
         """
         Return the locally erodible bed mass per unit area.
@@ -8282,17 +8213,19 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         Resuspension probability for a single timestep.
 
         Two selectable models:
-        1) INSTANTANEOUS_EXCESS_SHEAR
-           Reproduces the previous purely time-independent implementation:
+        1) INSTANTANEOUS_EXCESS_SHEAR (LEGACY)
+           Reproduces the previous per-update, dt-independent implementation:
                p = max(0, tau/tau_cr - 1)
-           then clipped to [0, 1].
+           then clipped to [0, 1]. This formulation is timestep-refinement
+           inconsistent and is retained only for reproducing or comparing
+           legacy runs.
         2) TIMESTEP_DEPENDENT
            Uses timestep-dependent pickup/erosion probability:
                NONCOHESIVE:
                    lambda = ((tau/tau_cr) - 1)^n / T_pickup
                    p = 1 - exp(-lambda * dt)
                COHESIVE:
-                   E = M * max(tau - tau_cr, 0)                  [kg m-2 s-1]
+                   E = Kd * max(tau - tau_cr, 0)                 [kg m-2 s-1]
                    lambda = E / m_erodible                       [1/s]
                    p = 1 - exp(-lambda * dt)
                where:
@@ -8318,6 +8251,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         if dt is None:
             dt = self.time_step.total_seconds()
         dt = float(dt)
+        if not np.isfinite(dt) or dt < 0.0:
+            raise ValueError('TIMESTEP_DEPENDENT resuspension timestep must be finite and >= 0')
 
         branch = self._exchange_branch(idx=idx)
         if isinstance(branch, str):
@@ -8331,14 +8266,14 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         mask_coh = branch_arr == 'COHESIVE'
         if np.any(mask_coh):
-            M = np.asarray(self._local_erodibility_M(idx=idx), dtype=float)
-            if M.ndim == 0:
-                M = np.full(tau.shape, float(M), dtype=float)
+            Kd = np.asarray(self._local_erodibility_Kd(idx=idx), dtype=float)
+            if Kd.ndim == 0:
+                Kd = np.full(tau.shape, float(Kd), dtype=float)
             m_erodible = self._local_erodible_mass_per_area(idx=idx)
             m_erodible = np.asarray(m_erodible, dtype=float)
             if m_erodible.ndim == 0:
                 m_erodible = np.full(tau.shape, float(m_erodible), dtype=float)
-            erosion_flux = np.maximum(M[mask_coh], 0.0) * np.maximum(tau[mask_coh] - tau_cr_res[mask_coh], 0.0)
+            erosion_flux = np.maximum(Kd[mask_coh], 0.0) * np.maximum(tau[mask_coh] - tau_cr_res[mask_coh], 0.0)
             hazard[mask_coh] = np.where(
                 m_erodible[mask_coh] > 0.0,
                 erosion_flux / np.maximum(m_erodible[mask_coh], 1e-30),
