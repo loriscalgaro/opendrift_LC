@@ -17450,14 +17450,29 @@ class ChemicalDriftPostProcessMixin:
             'units': 'Pa', 'long_name': 'Eastward additional sea-floor shear-stress component'},
         'y_sea_floor_other_stress': {
             'units': 'Pa', 'long_name': 'Northward additional sea-floor shear-stress component'},
-        'sea_surface_wave_significant_height': {'units': 'm', 'long_name': 'Significant wave height'},
+        'sea_surface_wave_significant_height': {
+            'units': 'm', 'long_name': 'Total-sea significant wave height (wind sea + swell)'},
         'sea_surface_wave_period_at_variance_spectral_density_maximum': {
-            'units': 's', 'long_name': 'Wave period at variance spectral-density maximum'},
+            'units': 's', 'long_name': 'Total-sea wave period at variance spectral-density maximum'},
+        'sea_surface_wave_mean_period_from_variance_spectral_density_second_frequency_moment': {
+            'units': 's', 'long_name': 'Total-sea spectral mean wave period from second frequency moment'},
         'sea_surface_wave_to_direction': {
-            'units': 'degree', 'long_name': 'Wave propagation direction (to)',
+            'units': 'degree', 'long_name': 'Total-sea wave propagation direction (to)',
             'summary_mode': 'circular_mean', 'angular_period': 360.0},
         'sea_surface_wave_from_direction': {
-            'units': 'degree', 'long_name': 'Wave propagation direction (from)',
+            'units': 'degree', 'long_name': 'Total-sea wave propagation direction (from)',
+            'summary_mode': 'circular_mean', 'angular_period': 360.0},
+        'sea_surface_wind_wave_significant_height': {
+            'units': 'm', 'long_name': 'Wind-sea significant wave height'},
+        'sea_surface_wind_wave_period_at_variance_spectral_density_maximum': {
+            'units': 's', 'long_name': 'Wind-sea wave period at variance spectral-density maximum'},
+        'sea_surface_wind_wave_mean_period_from_variance_spectral_density_second_frequency_moment': {
+            'units': 's', 'long_name': 'Wind-sea spectral mean wave period from second frequency moment'},
+        'sea_surface_wind_wave_to_direction': {
+            'units': 'degree', 'long_name': 'Wind-sea wave propagation direction (to)',
+            'summary_mode': 'circular_mean', 'angular_period': 360.0},
+        'sea_surface_wind_wave_from_direction': {
+            'units': 'degree', 'long_name': 'Wind-sea wave propagation direction (from)',
             'summary_mode': 'circular_mean', 'angular_period': 360.0},
         'sea_floor_wave_stress': {'units': 'Pa', 'long_name': 'Wave-only sea-floor shear-stress amplitude'},
         'mole_concentration_of_dissolved_molecular_oxygen_in_sea_water': {
@@ -17487,6 +17502,12 @@ class ChemicalDriftPostProcessMixin:
     # kept separate from element diagnostics and environmental variables.
     _SUMMARY_MODEL_PROVENANCE_ATTRS = (
         'chemical_element_size_state',
+        'chemical_wave_stress_source',
+        'chemical_wave_spectrum_family',
+        'chemical_wave_height_variable',
+        'chemical_wave_period_variable',
+        'chemical_wave_to_direction_variable',
+        'chemical_wave_from_direction_variable',
         'chemical_exchange_branch',
         'chemical_cohesive_diameter_threshold_m',
         'chemical_resuspension_critstress_mode',
@@ -18055,7 +18076,13 @@ class ChemicalDriftPostProcessMixin:
             'SEDIMENT_RESUSPENSION_REQUIRED_VARIABLES',
             'OTHER_STRESS_REQUIRED_VARIABLES',
             'WAVE_STRESS_REQUIRED_VARIABLES',
+            'SOULSBY_TP_REQUIRED_VARIABLES',
+            'JONSWAP_MADSEN_TM02_REQUIRED_VARIABLES',
             'WAVE_DIRECTION_REQUIRED_VARIABLES',
+            'WIND_WAVE_STRESS_REQUIRED_VARIABLES',
+            'WIND_SOULSBY_TP_REQUIRED_VARIABLES',
+            'WIND_JONSWAP_MADSEN_TM02_REQUIRED_VARIABLES',
+            'WIND_WAVE_DIRECTION_REQUIRED_VARIABLES',
             'DIRECT_WAVE_STRESS_REQUIRED_VARIABLES',
             'VOLATILIZATION_REQUIRED_VARIABLES',
             'HYDROLYSIS_REQUIRED_VARIABLES',
@@ -18336,9 +18363,18 @@ class ChemicalDriftPostProcessMixin:
             'chemical:sediment:critstress_rho_s',
             'chemical:sediment:critstress_nu',
             'chemical:sediment:stress_param_mode',
+            'chemical:sediment:roughness_length',
+            'chemical:sediment:d50',
+            'chemical:sediment:nikuradse_ks',
             'chemical:sediment:include_wave_stress',
             'chemical:sediment:include_other_stress',
             'chemical:sediment:wave_stress_source',
+            'chemical:sediment:calculated_wave_formulation',
+            'chemical:sediment:wave_spectrum_family',
+            'chemical:sediment:jonswap_gamma',
+            'chemical:sediment:wave_height_convention',
+            'chemical:sediment:wave_depth_convention',
+            'chemical:sediment:wave_roughness_mode',
             'chemical:sediment:shear_stress_combination',
             'chemical:sediment:oxygen_model',
             'chemical:sediment:oxygen_demand_mode',
