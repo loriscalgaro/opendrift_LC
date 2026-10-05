@@ -208,6 +208,11 @@ class Chemical(Lagrangian3DArray):
         ('wave_friction_factor', {'dtype': np.float32, 'units': '1', 'seed': True, 'default': np.nan}),
         ('wave_z0', {'dtype': np.float32, 'units': 'm', 'seed': True, 'default': np.nan}),
         ('wave_water_depth', {'dtype': np.float32, 'units': 'm', 'seed': True, 'default': np.nan}),
+        ('wave_spectral_orbital_velocity', {'dtype': np.float32, 'units': 'm/s', 'seed': True, 'default': np.nan}),
+        ('wave_spectral_angular_frequency', {'dtype': np.float32, 'units': 's-1', 'seed': True, 'default': np.nan}),
+        ('wave_spectral_representative_period', {'dtype': np.float32, 'units': 's', 'seed': True, 'default': np.nan}),
+        ('wave_spectral_representative_excursion', {'dtype': np.float32, 'units': 'm', 'seed': True, 'default': np.nan}),
+        ('wave_madsen_x', {'dtype': np.float32, 'units': '1', 'seed': True, 'default': np.nan}),
         ('p_res', {'dtype': np.float32, 'units': '1', 'seed': True, 'default': np.nan}),
         ('p_dep', {'dtype': np.float32, 'units': '1', 'seed': True, 'default': np.nan}),
         ('tau_cr_res', {'dtype': np.float32, 'units': 'Pa', 'seed': True, 'default': np.nan}),
@@ -225,6 +230,9 @@ class Chemical(Lagrangian3DArray):
         'tau_other_x', 'tau_other_y', 'tau_other',
         'wave_orbital_velocity', 'wave_excursion', 'wave_number',
         'wave_friction_factor', 'wave_z0', 'wave_water_depth',
+        'wave_spectral_orbital_velocity', 'wave_spectral_angular_frequency',
+        'wave_spectral_representative_period',
+        'wave_spectral_representative_excursion', 'wave_madsen_x',
         'p_res', 'p_dep',
         'tau_cr_res', 'tau_cr_dep', 'deposition_stress_factor',
             )
@@ -529,11 +537,18 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             'fallback': _ENV_SIGNED_VECTOR_SENTINEL, 'important': False,},  # Pa
     }
     WAVE_STRESS_REQUIRED_VARIABLES = {
-    # Surface-wave forcing; no direct wave-stress/orbital-velocity inputs.
-    'sea_surface_wave_significant_height': {'fallback': None},
-    # A missing period is tolerated only at genuinely calm/dry locations.
-    'sea_surface_wave_period_at_variance_spectral_density_maximum': {
-        'fallback': _ENV_NONPOSITIVE_SENTINEL, 'important': False},
+        # Common forcing for all calculated-wave formulations.
+        'sea_surface_wave_significant_height': {'fallback': None},
+    }
+    SOULSBY_TP_REQUIRED_VARIABLES = {
+        # A missing peak period is tolerated only at genuinely calm/dry locations.
+        'sea_surface_wave_period_at_variance_spectral_density_maximum': {
+            'fallback': _ENV_NONPOSITIVE_SENTINEL, 'important': False},
+    }
+    JONSWAP_MADSEN_TM02_REQUIRED_VARIABLES = {
+        # Exact CF second-frequency-moment mean period; never relabelled as Tp.
+        'sea_surface_wave_mean_period_from_variance_spectral_density_second_frequency_moment': {
+            'fallback': _ENV_NONPOSITIVE_SENTINEL, 'important': False},
     }
 
     WAVE_DIRECTION_REQUIRED_VARIABLES = {
@@ -645,6 +660,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         SEDIMENT_RESUSPENSION_REQUIRED_VARIABLES,
         OTHER_STRESS_REQUIRED_VARIABLES,
         WAVE_STRESS_REQUIRED_VARIABLES,
+        SOULSBY_TP_REQUIRED_VARIABLES,
+        JONSWAP_MADSEN_TM02_REQUIRED_VARIABLES,
         WAVE_DIRECTION_REQUIRED_VARIABLES,
         DIRECT_WAVE_STRESS_REQUIRED_VARIABLES,
         VOLATILIZATION_REQUIRED_VARIABLES,
@@ -690,6 +707,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         'y_depth_averaged_sea_water_velocity': {'policy': 'CONDITIONAL', 'sentinel': _ENV_SIGNED_VECTOR_SENTINEL,
             'domain': 'SIGNED', 'zero_is_physical': True},
         'sea_surface_wave_period_at_variance_spectral_density_maximum': {
+            'policy': 'CONDITIONAL', 'sentinel': _ENV_NONPOSITIVE_SENTINEL,
+            'domain': 'GT_ZERO', 'zero_is_physical': False},
+        'sea_surface_wave_mean_period_from_variance_spectral_density_second_frequency_moment': {
             'policy': 'CONDITIONAL', 'sentinel': _ENV_NONPOSITIVE_SENTINEL,
             'domain': 'GT_ZERO', 'zero_is_physical': False},
         'sea_surface_wave_to_direction': {'policy': 'CONDITIONAL', 'sentinel': _ENV_NEGATIVE_SENTINEL,
@@ -878,6 +898,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         'sea_surface_wave_period_at_variance_spectral_density_maximum'
     ]['source_required_pre_run'] = True
     ENVIRONMENT_DATA_QUALITY_POLICIES[
+        'sea_surface_wave_mean_period_from_variance_spectral_density_second_frequency_moment'
+    ]['source_required_pre_run'] = True
+    ENVIRONMENT_DATA_QUALITY_POLICIES[
         'sea_surface_wave_to_direction'
     ]['source_required_pre_run'] = True
     ENVIRONMENT_DATA_QUALITY_POLICIES[
@@ -890,6 +913,16 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
     _BED_STRESS_ZERO_ATOL_PA = 1.0e-12
     _WAVE_HEIGHT_ZERO_ATOL_M = 1.0e-12
     _WAVE_BEARING_BOUNDARY_ATOL_DEG = 1.0e-10
+    # Fixed numerical policy for the TM02-native standard-JONSWAP/Madsen branch.
+    _JONSWAP_X_MIN = 0.02
+    _JONSWAP_X_MAX = 100.0
+    _JONSWAP_SPECTRAL_POINTS = 512
+    _JONSWAP_SIGMA_LOW = 0.07
+    _JONSWAP_SIGMA_HIGH = 0.09
+    _WAVE_SPECTRAL_BATCH_SIZE = 2048
+    _MADSEN_X_MIN = 0.2
+    _MADSEN_X_BREAK = 100.0
+    _MADSEN_X_MAX = 1.0e4
     _SED_O2_CONC_ZERO_ATOL_MMOL_M3 = 1.0e-12
     _SED_LENGTH_ZERO_ATOL_M = 1.0e-12
     _SED_O2_RATE_ZERO_ATOL_MMOL_M3_S = 1.0e-18
@@ -1211,10 +1244,21 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'enum': ['CALCULATED', 'DIRECT'], 'default': 'CALCULATED',
                 'level': CONFIG_LEVEL_BASIC,
                 'description':
-                    'CALCULATED derives wave-only bed stress from explicitly supplied significant wave height Hs, peak period, depth and roughness. '
+                    'CALCULATED derives wave-only bed stress from the selected calculated_wave_formulation and explicit wave forcing. '
                     'Supplied wave forcing is authoritative: Hs=0 is retained as a valid calm-wave state and is not replaced by a wind-derived estimate; '
                     'wave direction 0 degrees is retained as a valid geographic bearing. DIRECT uses reader-supplied sea_floor_wave_stress: a finite '
                     'non-negative wave-only stress amplitude in Pa. Sources are mutually exclusive.'},
+            'chemical:sediment:calculated_wave_formulation': {'type': 'enum',
+                'enum': ['SOULSBY_TP', 'JONSWAP_MADSEN_TM02'],
+                'default': 'SOULSBY_TP', 'level': CONFIG_LEVEL_ADVANCED,
+                'description':
+                    'Calculated-wave physics. SOULSBY_TP is the existing peak-period formulation and remains the default. '
+                    'JONSWAP_MADSEN_TM02 reconstructs a standard JONSWAP spectrum from Hs and the CF second-moment mean period Tm02, '
+                    'then applies the pure-wave Madsen bed-stress closure.'},
+            'chemical:sediment:jonswap_gamma': {'type': 'float', 'default': 3.3,
+                'min': 1.0, 'max': 7.0, 'units': '', 'level': CONFIG_LEVEL_ADVANCED,
+                'description':
+                    'JONSWAP peak-enhancement factor for JONSWAP_MADSEN_TM02. The physical implementation enforces the source-supported domain 1 <= gamma < 7.'},
             'chemical:sediment:calm_wave_wind_warning_threshold': {
                 'type': 'float', 'default': 5.0, 'min': -1.0, 'max': 100.0,
                 'units': 'm/s', 'level': CONFIG_LEVEL_ADVANCED,
@@ -1714,6 +1758,11 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
                 if source == 'CALCULATED':
                     req.update(self.WAVE_STRESS_REQUIRED_VARIABLES)
+                    formulation = self._calculated_wave_formulation()
+                    if formulation == 'SOULSBY_TP':
+                        req.update(self.SOULSBY_TP_REQUIRED_VARIABLES)
+                    else:  # JONSWAP_MADSEN_TM02
+                        req.update(self.JONSWAP_MADSEN_TM02_REQUIRED_VARIABLES)
 
                     wave_roughness = self._resolved_wave_roughness_mode()
                     if wave_roughness == 'LOG_Z0':
@@ -1754,6 +1803,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             cls.SEDIMENT_BULK_FLOW_REQUIRED_VARIABLES,
             cls.SEDIMENT_RESUSPENSION_REQUIRED_VARIABLES,
             cls.OTHER_STRESS_REQUIRED_VARIABLES, cls.WAVE_STRESS_REQUIRED_VARIABLES,
+            cls.SOULSBY_TP_REQUIRED_VARIABLES,
+            cls.JONSWAP_MADSEN_TM02_REQUIRED_VARIABLES,
             cls.WAVE_DIRECTION_REQUIRED_VARIABLES, cls.DIRECT_WAVE_STRESS_REQUIRED_VARIABLES,
             cls.SEDIMENT_OXYGEN_GEOMETRY_REQUIRED_VARIABLES,
             cls.SEDIMENT_OXYGEN_OPD_REQUIRED_VARIABLES,
@@ -6826,12 +6877,155 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             tau = np.exp(log_tau)
         return tau, fw
 
+    def _jonswap_dimensionless_shape(self, gamma, spectral_points=None):
+        """Return standard-JONSWAP x=f/fp grid, shape, I0 and Tm02*fp."""
+        gamma = float(gamma)
+        if not np.isfinite(gamma) or gamma < 1.0 or gamma >= 7.0:
+            raise ValueError(
+                'JONSWAP gamma must be finite and satisfy 1 <= gamma < 7.')
+        if spectral_points is None:
+            spectral_points = self._JONSWAP_SPECTRAL_POINTS
+        spectral_points = int(spectral_points)
+        if spectral_points < 64:
+            raise ValueError('JONSWAP spectral grid requires at least 64 points.')
+        x = np.geomspace(
+            self._JONSWAP_X_MIN, self._JONSWAP_X_MAX, spectral_points)
+        sigma = np.where(
+            x <= 1.0, self._JONSWAP_SIGMA_LOW, self._JONSWAP_SIGMA_HIGH)
+        peak = np.exp(-0.5 * ((x - 1.0) / sigma)**2)
+        log_shape = -5.0*np.log(x) - 1.25*x**-4 + peak*np.log(gamma)
+        shape = np.exp(log_shape)
+        trapz = getattr(np, 'trapezoid', np.trapz)
+        i0 = float(trapz(shape, x))
+        i2 = float(trapz((x**2)*shape, x))
+        if not np.isfinite(i0) or not np.isfinite(i2) or i0 <= 0.0 or i2 <= 0.0:
+            raise ValueError('Invalid JONSWAP spectral moments.')
+        tm02_fp = float(np.sqrt(i0/i2))
+        return x, shape, i0, tm02_fp
+
+    def _madsen_pure_wave_stress(self, u_br, omega_r, ks, rho):
+        """Return pure-wave Madsen stress amplitude, X and friction factor."""
+        u_br, omega_r, ks, rho = np.broadcast_arrays(
+            np.asarray(u_br, dtype=float), np.asarray(omega_r, dtype=float),
+            np.asarray(ks, dtype=float), np.asarray(rho, dtype=float))
+        bad = (
+            ~np.isfinite(u_br) | (u_br <= 0.0) |
+            ~np.isfinite(omega_r) | (omega_r <= 0.0) |
+            ~np.isfinite(ks) | (ks <= 0.0) |
+            ~np.isfinite(rho) | (rho <= 0.0)
+        )
+        if np.any(bad):
+            raise ValueError(
+                'Madsen pure-wave stress requires finite positive u_br, omega_r, ks and rho.')
+        X = u_br/(ks*omega_r)
+        invalid_x = (
+            ~np.isfinite(X) | (X <= self._MADSEN_X_MIN) |
+            (X >= self._MADSEN_X_MAX)
+        )
+        if np.any(invalid_x):
+            bad_x = X[invalid_x]
+            lo = float(np.nanmin(bad_x)) if bad_x.size else float('nan')
+            hi = float(np.nanmax(bad_x)) if bad_x.size else float('nan')
+            raise ValueError(
+                'JONSWAP_MADSEN_TM02 Madsen X outside published '
+                '0.2 < X < 1e4 domain for '
+                f'{int(np.count_nonzero(invalid_x))} active cells '
+                f'(range {lo:g} to {hi:g}).'
+            )
+        fw = np.where(
+            X < self._MADSEN_X_BREAK,
+            np.exp(7.02*X**(-0.078) - 8.82),
+            np.exp(5.61*X**(-0.109) - 7.30),
+        )
+        if np.any(~np.isfinite(fw) | (fw <= 0.0)):
+            raise ValueError('Invalid Madsen pure-wave friction factor.')
+        tau = 0.5*rho*fw*u_br**2
+        if np.any(~np.isfinite(tau) | (tau < 0.0)):
+            raise ValueError('Invalid JONSWAP_MADSEN_TM02 wave stress.')
+        return tau, X, fw
+
+    def _jonswap_madsen_tm02(self, hs, tm02, depth, ks, rho, gamma,
+                              spectral_points=None, batch_size=None):
+        """Calculate wave-only Madsen stress from Hs, Tm02, depth and ks."""
+        hs, tm02, depth, ks, rho = np.broadcast_arrays(
+            np.asarray(hs, dtype=float), np.asarray(tm02, dtype=float),
+            np.asarray(depth, dtype=float), np.asarray(ks, dtype=float),
+            np.asarray(rho, dtype=float))
+        for values, label in ((hs, 'Hs'), (tm02, 'Tm02'), (depth, 'water depth'),
+                              (ks, 'Nikuradse roughness ks'), (rho, 'water density')):
+            if np.any(~np.isfinite(values) | (values <= 0.0)):
+                raise ValueError(
+                    f'JONSWAP_MADSEN_TM02 requires finite {label} > 0 on active cells.')
+        x, shape, i0, tm02_fp = self._jonswap_dimensionless_shape(
+            gamma, spectral_points=spectral_points)
+        trapz = getattr(np, 'trapezoid', np.trapz)
+        original_shape = hs.shape
+        H = hs.reshape(-1)
+        T = tm02.reshape(-1)
+        D = depth.reshape(-1)
+        KS = ks.reshape(-1)
+        RHO = rho.reshape(-1)
+        n = H.size
+        result = {name: np.empty(n, dtype=float) for name in (
+            'tau_wave', 'u_br', 'omega_r', 'representative_period',
+            'representative_excursion', 'madsen_X', 'friction_factor')}
+        if batch_size is None:
+            batch_size = self._WAVE_SPECTRAL_BATCH_SIZE
+        batch_size = max(1, int(batch_size))
+        for start in range(0, n, batch_size):
+            stop = min(n, start + batch_size)
+            sl = slice(start, stop)
+            fp = tm02_fp/T[sl]
+            f = fp[:, None]*x[None, :]
+            omega = 2.0*np.pi*f
+            period = 1.0/f
+            h2 = D[sl, None]
+            k = self._wave_number(period, h2)
+            q = k*h2
+            with np.errstate(over='ignore', under='ignore', invalid='ignore', divide='ignore'):
+                log_inv_sinh = np.log(2.0) - q - np.log(-np.expm1(-2.0*q))
+                transfer2 = np.exp(2.0*(np.log(omega) + log_inv_sinh))
+            if np.any(~np.isfinite(transfer2)):
+                raise ValueError(
+                    'Non-finite spectral bed-velocity transfer in JONSWAP_MADSEN_TM02.')
+            base = shape[None, :]*transfer2
+            m0 = (H[sl]/4.0)**2
+            velocity_variance = (m0/i0)*trapz(base, x, axis=1)
+            if np.any(~np.isfinite(velocity_variance) | (velocity_variance <= 0.0)):
+                raise ValueError(
+                    'Invalid near-bed velocity variance in JONSWAP_MADSEN_TM02.')
+            u_br = np.sqrt(2.0*velocity_variance)
+            omega_num = (m0/i0)*trapz(omega*base, x, axis=1)
+            omega_r = omega_num/velocity_variance
+            if np.any(~np.isfinite(omega_r) | (omega_r <= 0.0)):
+                raise ValueError(
+                    'Invalid representative angular frequency in JONSWAP_MADSEN_TM02.')
+            tau, X, fw = self._madsen_pure_wave_stress(
+                u_br, omega_r, KS[sl], RHO[sl])
+            result['tau_wave'][sl] = tau
+            result['u_br'][sl] = u_br
+            result['omega_r'][sl] = omega_r
+            result['representative_period'][sl] = 2.0*np.pi/omega_r
+            result['representative_excursion'][sl] = u_br/omega_r
+            result['madsen_X'][sl] = X
+            result['friction_factor'][sl] = fw
+        return {key: value.reshape(original_shape) for key, value in result.items()}
+
     def _wave_stress_source(self):
         """Selected source; never fall back between DIRECT and CALCULATED."""
         source = self.get_config('chemical:sediment:wave_stress_source')
         if source not in ('CALCULATED', 'DIRECT'):
             raise ValueError(f'Unknown wave_stress_source: {source!r}')
         return source
+
+    def _calculated_wave_formulation(self):
+        """Selected CALCULATED formulation; invalid values never fall back."""
+        formulation = self.get_config(
+            'chemical:sediment:calculated_wave_formulation')
+        if formulation not in ('SOULSBY_TP', 'JONSWAP_MADSEN_TM02'):
+            raise ValueError(
+                f'Unknown calculated_wave_formulation: {formulation!r}')
+        return formulation
 
     def _wave_forcing_active(self):
         """Whether wave bed stress can participate in sediment exchange."""
@@ -6905,10 +7099,14 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         protected_names = []
         if self._wave_stress_source() == 'CALCULATED':
-            protected_names.extend((
-                'sea_surface_wave_significant_height',
-                'sea_surface_wave_period_at_variance_spectral_density_maximum',
-            ))
+            protected_names.append('sea_surface_wave_significant_height')
+            formulation = self._calculated_wave_formulation()
+            if formulation == 'SOULSBY_TP':
+                protected_names.append(
+                    'sea_surface_wave_period_at_variance_spectral_density_maximum')
+            else:  # JONSWAP_MADSEN_TM02
+                protected_names.append(
+                    'sea_surface_wave_mean_period_from_variance_spectral_density_second_frequency_moment')
 
         # Direction may be needed by SOULSBY_CLARKE for either wave-stress source.
         protected_names.extend((
@@ -6970,9 +7168,15 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                     "forcing and does not permit wind-derived Hs replacement."
                 )
 
+            formulation = self._calculated_wave_formulation()
+            period_name = (
+                'sea_surface_wave_period_at_variance_spectral_density_maximum'
+                if formulation == 'SOULSBY_TP' else
+                'sea_surface_wave_mean_period_from_variance_spectral_density_second_frequency_moment'
+            )
             names = (
                 'sea_surface_wave_significant_height',
-                'sea_surface_wave_period_at_variance_spectral_density_maximum',
+                period_name,
                 'sea_floor_depth_below_sea_level',)
         for name in names:
             if not self._has_explicit_environment_source(name):
@@ -6982,10 +7186,16 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         logger.info('Wave stress source=%s; combination=%s', source,
                     self.get_config('chemical:sediment:shear_stress_combination'))
         if source == 'CALCULATED':
-            logger.info('Wave calculation: height=%s; depth=%s; roughness=%s',
-                        self.get_config('chemical:sediment:wave_height_convention'),
-                        self.get_config('chemical:sediment:wave_depth_convention'),
-                        self._resolved_wave_roughness_mode())
+            formulation = self._calculated_wave_formulation()
+            logger.info(
+                'Wave calculation: formulation=%s; height=%s; depth=%s; roughness=%s',
+                formulation,
+                self.get_config('chemical:sediment:wave_height_convention'),
+                self.get_config('chemical:sediment:wave_depth_convention'),
+                self._resolved_wave_roughness_mode())
+            if formulation == 'JONSWAP_MADSEN_TM02':
+                logger.info('JONSWAP peak enhancement gamma=%s',
+                            self.get_config('chemical:sediment:jonswap_gamma'))
         combo = self.get_config(
             'chemical:sediment:shear_stress_combination')
 
@@ -7021,7 +7231,12 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         n = idx.size
         result = {name: np.full(n, np.nan, dtype=float) for name in
                   ('wave_orbital_velocity', 'wave_excursion', 'wave_number',
-                   'wave_friction_factor', 'wave_z0', 'wave_water_depth')}
+                   'wave_friction_factor', 'wave_z0', 'wave_water_depth',
+                   'wave_spectral_orbital_velocity',
+                   'wave_spectral_angular_frequency',
+                   'wave_spectral_representative_period',
+                   'wave_spectral_representative_excursion',
+                   'wave_madsen_x')}
         if n == 0:
             result['tau_wave'] = np.empty(0, dtype=float)
             return result
@@ -7038,18 +7253,13 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         return result
 
     def _wave_stress_from_surface(self, rho, idx=None):
-        """Derive wave stress from local Hs, Tp, depth and bed roughness.
+        """Derive wave-only stress from the selected CALCULATED formulation.
 
-        Source: Soulsby (1997), rough/smooth friction closure; linear-wave
-        transfer and equivalent-wave definitions: Soulsby (2006), TR155.
-
-        Reader capability is checked once before the run. At each timestep this
-        routine then uses the local Hs field to decide whether the more expensive
-        period/roughness/viscosity branch is needed. Only positive-height, wet
-        entries consume Tp and enter the orbital/stress calculation. Invalid Hs
-        or Tp values are rejected before they can enter those calculations.
-        Dry entries contribute zero wave stress; this does not perform particle
-        stranding or replace OceanDrift's wet/dry treatment.
+        SOULSBY_TP preserves the existing Hs+Tp equivalent-wave route.
+        JONSWAP_MADSEN_TM02 reconstructs a standard JONSWAP spectrum from
+        Hs+Tm02, transfers it to the bed, and applies the pure-wave Madsen
+        closure. Both formulations preserve the existing dry/calm short circuit
+        before consuming period or roughness.
         """
         if idx is None:
             idx = np.arange(self.num_elements_active(), dtype=np.int64)
@@ -7059,12 +7269,15 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         result = {name: np.zeros(n, dtype=float) for name in
                   ('tau_wave', 'wave_orbital_velocity', 'wave_excursion', 'wave_number')}
         result.update({name: np.full(n, np.nan, dtype=float) for name in
-                       ('wave_friction_factor', 'wave_z0', 'wave_water_depth')})
+                       ('wave_friction_factor', 'wave_z0', 'wave_water_depth',
+                        'wave_spectral_orbital_velocity',
+                        'wave_spectral_angular_frequency',
+                        'wave_spectral_representative_period',
+                        'wave_spectral_representative_excursion',
+                        'wave_madsen_x')})
         if n == 0:
             return result
 
-        # Depth and Hs are always needed to determine whether wave stress exists
-        # for the current elements at this timestep.
         depth = self._wave_water_depth(idx=idx)
         result['wave_water_depth'] = depth.copy()
         wet = depth > 0
@@ -7073,9 +7286,6 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             'sea_surface_wave_significant_height', idx=idx)
         height = self._canonicalize_numerical_zero(
             height, atol=self._WAVE_HEIGHT_ZERO_ATOL_M)
-
-        # Hs must be finite and non-negative wherever the element is wet. Invalid
-        # values are stopped here and never enter the wave calculations.
         bad_height = wet & (~np.isfinite(height) | (height < 0.0))
         if np.any(bad_height):
             raise ValueError(
@@ -7083,45 +7293,67 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 f'{int(bad_height.sum())} wet elements.'
             )
 
-        # Only wet elements with strictly positive Hs need Tp, roughness,
-        # viscosity, dispersion, orbital velocity or wave-friction calculations.
         active = wet & (height > 0.0)
-        self._data_quality_note_conditional(
-            'sea_surface_wave_period_at_variance_spectral_density_maximum',
-            idx, active)
         if not np.any(active):
             return result
 
         active_idx = idx[active]
-
-        # Tp is deliberately accessed only after active waves have been identified.
-        period = self._required_wave_environment_array(
-            'sea_surface_wave_period_at_variance_spectral_density_maximum',
-            idx=active_idx,
-        )
-        period = np.asarray(period, dtype=float)
-
-        # Invalid Tp must not enter dispersion/orbital/stress calculations.
+        formulation = self._calculated_wave_formulation()
+        if formulation == 'SOULSBY_TP':
+            period_name = (
+                'sea_surface_wave_period_at_variance_spectral_density_maximum')
+            period_label = 'peak periods'
+        else:
+            period_name = (
+                'sea_surface_wave_mean_period_from_variance_spectral_density_second_frequency_moment')
+            period_label = 'Tm02 periods'
+        self._data_quality_note_conditional(period_name, idx, active)
+        period = np.asarray(
+            self._required_wave_environment_array(period_name, idx=active_idx),
+            dtype=float)
         bad_period = ~np.isfinite(period) | (period <= 0.0)
         if np.any(bad_period):
             raise ValueError(
-                'Positive waves at wet elements require finite, positive peak periods; '
-                f'found {int(bad_period.sum())} invalid value(s).'
+                'Positive waves at wet elements require finite, positive '
+                f'{period_label}; found {int(bad_period.sum())} invalid value(s).'
             )
 
-        # The remaining inputs/calculations are needed only for active waves.
         z0 = self._wave_roughness_length_array(idx=active_idx)
-        rho = np.broadcast_to(np.asarray(rho, dtype=float), (n,))[active]
-        temp = self._env_array('sea_water_temperature', 10.0, idx=active_idx)
-        salt = self._env_array('sea_water_salinity', 34.0, idx=active_idx)
-        nu = np.asarray(seawater_dynamic_viscosity(temp, salt), dtype=float) / rho
-        u, a, k, log_u, log_a = self._wave_orbital_parameters(
-            height[active], period, depth[active])
-        tau, fw = self._soulsby_wave_stress(log_u, log_a, 30.0*z0, rho, nu)
-        for name, value in (('tau_wave', tau), ('wave_orbital_velocity', u),
-                            ('wave_excursion', a), ('wave_number', k),
-                            ('wave_friction_factor', fw), ('wave_z0', z0)):
-            result[name][active] = value
+        rho_active = np.broadcast_to(np.asarray(rho, dtype=float), (n,))[active]
+
+        if formulation == 'SOULSBY_TP':
+            temp = self._env_array('sea_water_temperature', 10.0, idx=active_idx)
+            salt = self._env_array('sea_water_salinity', 34.0, idx=active_idx)
+            nu = np.asarray(
+                seawater_dynamic_viscosity(temp, salt), dtype=float) / rho_active
+            u, a, k, log_u, log_a = self._wave_orbital_parameters(
+                height[active], period, depth[active])
+            tau, fw = self._soulsby_wave_stress(
+                log_u, log_a, 30.0*z0, rho_active, nu)
+            for name, value in (('tau_wave', tau), ('wave_orbital_velocity', u),
+                                ('wave_excursion', a), ('wave_number', k),
+                                ('wave_friction_factor', fw), ('wave_z0', z0)):
+                result[name][active] = value
+            return result
+
+        gamma = float(self.get_config('chemical:sediment:jonswap_gamma'))
+        spectral = self._jonswap_madsen_tm02(
+            height[active], period, depth[active], 30.0*z0, rho_active, gamma)
+        result['tau_wave'][active] = spectral['tau_wave']
+        result['wave_friction_factor'][active] = spectral['friction_factor']
+        result['wave_z0'][active] = z0
+        result['wave_spectral_orbital_velocity'][active] = spectral['u_br']
+        result['wave_spectral_angular_frequency'][active] = spectral['omega_r']
+        result['wave_spectral_representative_period'][active] = (
+            spectral['representative_period'])
+        result['wave_spectral_representative_excursion'][active] = (
+            spectral['representative_excursion'])
+        result['wave_madsen_x'][active] = spectral['madsen_X']
+        # These legacy diagnostics are monochromatic quantities. They are not
+        # defined by the spectral/Madsen branch and must not be fabricated.
+        result['wave_orbital_velocity'][active] = np.nan
+        result['wave_excursion'][active] = np.nan
+        result['wave_number'][active] = np.nan
         return result
 
     def _bottom_roughness_length_array(self, idx=None):
@@ -7520,7 +7752,12 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         has_wave_dir = np.zeros(n, dtype=bool)
         wave = {name: np.full(n, np.nan, dtype=float) for name in
                 ('wave_orbital_velocity', 'wave_excursion', 'wave_number',
-                 'wave_friction_factor', 'wave_z0', 'wave_water_depth')}
+                 'wave_friction_factor', 'wave_z0', 'wave_water_depth',
+                 'wave_spectral_orbital_velocity',
+                 'wave_spectral_angular_frequency',
+                 'wave_spectral_representative_period',
+                 'wave_spectral_representative_excursion',
+                 'wave_madsen_x')}
         if use_wave:
             if np.any(~np.isfinite(tau_c)):
                 raise ValueError('Current stress contains non-finite values; check current velocity forcing.')
@@ -7749,7 +7986,12 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 tau_other if tau_other is not None else np.zeros(n, dtype=float)),
             **{name: wave[name] for name in
                ('wave_orbital_velocity', 'wave_excursion', 'wave_number',
-                'wave_friction_factor', 'wave_z0', 'wave_water_depth')},
+                'wave_friction_factor', 'wave_z0', 'wave_water_depth',
+                'wave_spectral_orbital_velocity',
+                'wave_spectral_angular_frequency',
+                'wave_spectral_representative_period',
+                'wave_spectral_representative_excursion',
+                'wave_madsen_x')},
             'tau_effective': tau_eff,          # combined magnitude
             'tau_effective_x': tau_eff_x,      # combined x-component
             'tau_effective_y': tau_eff_y,      # combined y-component
@@ -8373,7 +8615,12 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         self.elements.tau_other_y[idx] = stress['tau_other_y']
         self.elements.tau_other[idx] = stress['tau_other']
         for name in ('wave_orbital_velocity', 'wave_excursion', 'wave_number',
-                     'wave_friction_factor', 'wave_z0', 'wave_water_depth'):
+                     'wave_friction_factor', 'wave_z0', 'wave_water_depth',
+                     'wave_spectral_orbital_velocity',
+                     'wave_spectral_angular_frequency',
+                     'wave_spectral_representative_period',
+                     'wave_spectral_representative_excursion',
+                     'wave_madsen_x'):
             values = np.asarray(stress[name], dtype=float)
             target = getattr(self.elements, name)
             limit = np.finfo(target.dtype).max
