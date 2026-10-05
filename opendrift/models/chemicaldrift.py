@@ -536,12 +536,14 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         'y_sea_floor_other_stress': {
             'fallback': _ENV_SIGNED_VECTOR_SENTINEL, 'important': False,},  # Pa
     }
+    # Calculated-wave forcing is split into two CF spectrum families.  The
+    # selected family is resolved once per run; Hs, period, and (when needed)
+    # direction are never mixed across TOTAL and WIND_SEA.
     WAVE_STRESS_REQUIRED_VARIABLES = {
-        # Common forcing for all calculated-wave formulations.
+        # TOTAL sea: wind sea + swell.
         'sea_surface_wave_significant_height': {'fallback': None},
     }
     SOULSBY_TP_REQUIRED_VARIABLES = {
-        # A missing peak period is tolerated only at genuinely calm/dry locations.
         'sea_surface_wave_period_at_variance_spectral_density_maximum': {
             'fallback': _ENV_NONPOSITIVE_SENTINEL, 'important': False},
     }
@@ -550,11 +552,29 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         'sea_surface_wave_mean_period_from_variance_spectral_density_second_frequency_moment': {
             'fallback': _ENV_NONPOSITIVE_SENTINEL, 'important': False},
     }
-
     WAVE_DIRECTION_REQUIRED_VARIABLES = {
         'sea_surface_wave_to_direction': {
             'fallback': _ENV_NEGATIVE_SENTINEL, 'important': False},
         'sea_surface_wave_from_direction': {
+            'fallback': _ENV_NEGATIVE_SENTINEL, 'important': False},
+    }
+
+    WIND_WAVE_STRESS_REQUIRED_VARIABLES = {
+        # WIND_SEA only: excludes swell by CF definition.
+        'sea_surface_wind_wave_significant_height': {'fallback': None},
+    }
+    WIND_SOULSBY_TP_REQUIRED_VARIABLES = {
+        'sea_surface_wind_wave_period_at_variance_spectral_density_maximum': {
+            'fallback': _ENV_NONPOSITIVE_SENTINEL, 'important': False},
+    }
+    WIND_JONSWAP_MADSEN_TM02_REQUIRED_VARIABLES = {
+        'sea_surface_wind_wave_mean_period_from_variance_spectral_density_second_frequency_moment': {
+            'fallback': _ENV_NONPOSITIVE_SENTINEL, 'important': False},
+    }
+    WIND_WAVE_DIRECTION_REQUIRED_VARIABLES = {
+        'sea_surface_wind_wave_to_direction': {
+            'fallback': _ENV_NEGATIVE_SENTINEL, 'important': False},
+        'sea_surface_wind_wave_from_direction': {
             'fallback': _ENV_NEGATIVE_SENTINEL, 'important': False},
     }
     DIRECT_WAVE_STRESS_REQUIRED_VARIABLES = {
@@ -663,6 +683,10 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         SOULSBY_TP_REQUIRED_VARIABLES,
         JONSWAP_MADSEN_TM02_REQUIRED_VARIABLES,
         WAVE_DIRECTION_REQUIRED_VARIABLES,
+        WIND_WAVE_STRESS_REQUIRED_VARIABLES,
+        WIND_SOULSBY_TP_REQUIRED_VARIABLES,
+        WIND_JONSWAP_MADSEN_TM02_REQUIRED_VARIABLES,
+        WIND_WAVE_DIRECTION_REQUIRED_VARIABLES,
         DIRECT_WAVE_STRESS_REQUIRED_VARIABLES,
         VOLATILIZATION_REQUIRED_VARIABLES,
         HYDROLYSIS_REQUIRED_VARIABLES,
@@ -715,6 +739,18 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         'sea_surface_wave_to_direction': {'policy': 'CONDITIONAL', 'sentinel': _ENV_NEGATIVE_SENTINEL,
             'domain': 'BEARING', 'zero_is_physical': True},
         'sea_surface_wave_from_direction': {'policy': 'CONDITIONAL', 'sentinel': _ENV_NEGATIVE_SENTINEL,
+            'domain': 'BEARING', 'zero_is_physical': True},
+        'sea_surface_wind_wave_period_at_variance_spectral_density_maximum': {
+            'policy': 'CONDITIONAL', 'sentinel': _ENV_NONPOSITIVE_SENTINEL,
+            'domain': 'GT_ZERO', 'zero_is_physical': False},
+        'sea_surface_wind_wave_mean_period_from_variance_spectral_density_second_frequency_moment': {
+            'policy': 'CONDITIONAL', 'sentinel': _ENV_NONPOSITIVE_SENTINEL,
+            'domain': 'GT_ZERO', 'zero_is_physical': False},
+        'sea_surface_wind_wave_to_direction': {
+            'policy': 'CONDITIONAL', 'sentinel': _ENV_NEGATIVE_SENTINEL,
+            'domain': 'BEARING', 'zero_is_physical': True},
+        'sea_surface_wind_wave_from_direction': {
+            'policy': 'CONDITIONAL', 'sentinel': _ENV_NEGATIVE_SENTINEL,
             'domain': 'BEARING', 'zero_is_physical': True},
         'x_sea_floor_other_stress': {
             'policy': 'LOCAL_REJECT', 'sentinel': _ENV_SIGNED_VECTOR_SENTINEL,
@@ -878,6 +914,10 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             'policy': 'HARD', 'domain': 'GE_ZERO', 'fallback': None,
             'zero_is_physical': True, 'mechanism': 'NONE',
             'source_required_pre_run': True, 'warn_on_fallback': True},
+        'sea_surface_wind_wave_significant_height': {
+            'policy': 'HARD', 'domain': 'GE_ZERO', 'fallback': None,
+            'zero_is_physical': True, 'mechanism': 'NONE',
+            'source_required_pre_run': True, 'warn_on_fallback': True},
     })
 
     # No source for this optional contribution means that the contribution is
@@ -905,6 +945,18 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
     ]['source_required_pre_run'] = True
     ENVIRONMENT_DATA_QUALITY_POLICIES[
         'sea_surface_wave_from_direction'
+    ]['source_required_pre_run'] = True
+    ENVIRONMENT_DATA_QUALITY_POLICIES[
+        'sea_surface_wind_wave_period_at_variance_spectral_density_maximum'
+    ]['source_required_pre_run'] = True
+    ENVIRONMENT_DATA_QUALITY_POLICIES[
+        'sea_surface_wind_wave_mean_period_from_variance_spectral_density_second_frequency_moment'
+    ]['source_required_pre_run'] = True
+    ENVIRONMENT_DATA_QUALITY_POLICIES[
+        'sea_surface_wind_wave_to_direction'
+    ]['source_required_pre_run'] = True
+    ENVIRONMENT_DATA_QUALITY_POLICIES[
+        'sea_surface_wind_wave_from_direction'
     ]['source_required_pre_run'] = True
 
     # Absolute numerical-zero tolerances for physical quantities where exact
@@ -1255,6 +1307,14 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                     'Calculated-wave physics. SOULSBY_TP is the existing peak-period formulation and remains the default. '
                     'JONSWAP_MADSEN_TM02 reconstructs a standard JONSWAP spectrum from Hs and the CF second-moment mean period Tm02, '
                     'then applies the pure-wave Madsen bed-stress closure.'},
+            'chemical:sediment:wave_spectrum_family': {'type': 'enum',
+                'enum': ['TOTAL', 'WIND_SEA'], 'default': 'TOTAL',
+                'level': CONFIG_LEVEL_BASIC,
+                'description':
+                    'CF spectrum family for CALCULATED wave forcing and for wave direction used by SOULSBY_CLARKE. '
+                    'TOTAL requires sea_surface_wave_* Hs/period/direction variables (wind sea + swell). '
+                    'WIND_SEA requires the corresponding sea_surface_wind_wave_* variables (wind sea only). '
+                    'Hs and period are resolved as one atomic family and are never cross-coupled.'},
             'chemical:sediment:jonswap_gamma': {'type': 'float', 'default': 3.3,
                 'min': 1.0, 'max': 7.0, 'units': '', 'level': CONFIG_LEVEL_ADVANCED,
                 'description':
@@ -1757,12 +1817,19 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 source = self._wave_stress_source()
 
                 if source == 'CALCULATED':
-                    req.update(self.WAVE_STRESS_REQUIRED_VARIABLES)
-                    formulation = self._calculated_wave_formulation()
-                    if formulation == 'SOULSBY_TP':
-                        req.update(self.SOULSBY_TP_REQUIRED_VARIABLES)
-                    else:  # JONSWAP_MADSEN_TM02
-                        req.update(self.JONSWAP_MADSEN_TM02_REQUIRED_VARIABLES)
+                    forcing = self._resolved_wave_forcing_names()
+                    if forcing['family'] == 'TOTAL':
+                        req.update(self.WAVE_STRESS_REQUIRED_VARIABLES)
+                        if forcing['formulation'] == 'SOULSBY_TP':
+                            req.update(self.SOULSBY_TP_REQUIRED_VARIABLES)
+                        else:  # JONSWAP_MADSEN_TM02
+                            req.update(self.JONSWAP_MADSEN_TM02_REQUIRED_VARIABLES)
+                    else:  # WIND_SEA
+                        req.update(self.WIND_WAVE_STRESS_REQUIRED_VARIABLES)
+                        if forcing['formulation'] == 'SOULSBY_TP':
+                            req.update(self.WIND_SOULSBY_TP_REQUIRED_VARIABLES)
+                        else:  # JONSWAP_MADSEN_TM02
+                            req.update(self.WIND_JONSWAP_MADSEN_TM02_REQUIRED_VARIABLES)
 
                     wave_roughness = self._resolved_wave_roughness_mode()
                     if wave_roughness == 'LOG_Z0':
@@ -1778,9 +1845,15 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             if combo == 'SOULSBY_CLARKE' and (
                     include_wave_stress or include_other_stress):
                 if include_wave_stress:
-                    # Wave direction is required for the directional wave-current
-                    # combination, but either "to" or "from" direction is sufficient.
-                    for name, spec in self.WAVE_DIRECTION_REQUIRED_VARIABLES.items():
+                    # Direction follows the same CF spectrum family as Hs/period;
+                    # either "to" or "from" direction is sufficient.
+                    forcing = self._resolved_wave_forcing_names()
+                    direction_group = (
+                        self.WAVE_DIRECTION_REQUIRED_VARIABLES
+                        if forcing['family'] == 'TOTAL'
+                        else self.WIND_WAVE_DIRECTION_REQUIRED_VARIABLES
+                    )
+                    for name, spec in direction_group.items():
                         if self._has_explicit_environment_source(name):
                             req[name] = dict(spec)
                 # A direct scalar current stress needs a current direction whenever
@@ -1805,7 +1878,12 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             cls.OTHER_STRESS_REQUIRED_VARIABLES, cls.WAVE_STRESS_REQUIRED_VARIABLES,
             cls.SOULSBY_TP_REQUIRED_VARIABLES,
             cls.JONSWAP_MADSEN_TM02_REQUIRED_VARIABLES,
-            cls.WAVE_DIRECTION_REQUIRED_VARIABLES, cls.DIRECT_WAVE_STRESS_REQUIRED_VARIABLES,
+            cls.WAVE_DIRECTION_REQUIRED_VARIABLES,
+            cls.WIND_WAVE_STRESS_REQUIRED_VARIABLES,
+            cls.WIND_SOULSBY_TP_REQUIRED_VARIABLES,
+            cls.WIND_JONSWAP_MADSEN_TM02_REQUIRED_VARIABLES,
+            cls.WIND_WAVE_DIRECTION_REQUIRED_VARIABLES,
+            cls.DIRECT_WAVE_STRESS_REQUIRED_VARIABLES,
             cls.SEDIMENT_OXYGEN_GEOMETRY_REQUIRED_VARIABLES,
             cls.SEDIMENT_OXYGEN_OPD_REQUIRED_VARIABLES,
             cls.SEDIMENT_OXYGEN_TRANSPORT_REQUIRED_VARIABLES,
@@ -3039,8 +3117,15 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         # possible so they remain model-level metadata rather than element state.
         attrs = getattr(self.result, 'attrs', None)
         if attrs is not None:
+            forcing = self._resolved_wave_forcing_names()
             attrs.update({
                 'chemical_element_size_state': 'diameter_only',
+                'chemical_wave_stress_source': self._wave_stress_source(),
+                'chemical_wave_spectrum_family': forcing['family'],
+                'chemical_wave_height_variable': forcing['height'],
+                'chemical_wave_period_variable': forcing['period'],
+                'chemical_wave_to_direction_variable': forcing['to_direction'],
+                'chemical_wave_from_direction_variable': forcing['from_direction'],
                 'chemical_exchange_branch': self._resolved_exchange_branch_config(),
                 'chemical_cohesive_diameter_threshold_m': float(self.get_config('chemical:sediment:cohesive_diameter_threshold')),
                 'chemical_resuspension_critstress_mode': self._resolved_resuspension_critstress_mode(),
@@ -4125,6 +4210,15 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             'end_model_time': None,
             'variables': variables,
             'source_relationships': {
+                'wave_spectrum_family': {
+                    'family': self._wave_spectrum_family(),
+                    'height_variable': self._resolved_wave_forcing_names()['height'],
+                    'period_variable': self._resolved_wave_forcing_names()['period'],
+                    'to_direction_variable': self._resolved_wave_forcing_names()['to_direction'],
+                    'from_direction_variable': self._resolved_wave_forcing_names()['from_direction'],
+                    'Hs_period_atomic': True,
+                    'cross_family_pairing_allowed': False,
+                },
                 'directional_other_stress_pair': {
                     'members': [
                         'x_sea_floor_other_stress',
@@ -4237,7 +4331,10 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             if np.any(candidate):
                 out[candidate] = self._canonicalize_numerical_zero(
                     out[candidate], atol=zero_atol)
-        if name in ('sea_surface_wave_to_direction', 'sea_surface_wave_from_direction'):
+        if name in (
+                'sea_surface_wave_to_direction', 'sea_surface_wave_from_direction',
+                'sea_surface_wind_wave_to_direction',
+                'sea_surface_wind_wave_from_direction'):
             missing = self._policy_missing_mask(name, out)
             finite = np.isfinite(out) & ~missing
             atol = self._WAVE_BEARING_BOUNDARY_ATOL_DEG
@@ -6676,8 +6773,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         n = self.num_elements_active() if idx is None else np.asarray(idx).size
         direction = np.full(n, np.nan, dtype=float)
         used = []
-        for name, offset in (('sea_surface_wave_to_direction', 0.0),
-                             ('sea_surface_wave_from_direction', 180.0)):
+        forcing = self._resolved_wave_forcing_names()
+        for name, offset in ((forcing['to_direction'], 0.0),
+                             (forcing['from_direction'], 180.0)):
             values = self._wave_reader_array(name, idx=idx)
             if values is None:
                 continue
@@ -7027,6 +7125,62 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 f'Unknown calculated_wave_formulation: {formulation!r}')
         return formulation
 
+    def _wave_spectrum_family(self):
+        """Selected CF surface-wave spectrum family for one run."""
+        family = self.get_config('chemical:sediment:wave_spectrum_family')
+        if family not in ('TOTAL', 'WIND_SEA'):
+            raise ValueError(f'Unknown wave_spectrum_family: {family!r}')
+        return family
+
+    def _resolved_wave_forcing_names(self):
+        """Return one internally consistent CF Hs/period/direction bundle.
+
+        TOTAL and WIND_SEA are separate spectral families.  This helper is the
+        only place where calculated-wave standard names are selected, preventing
+        accidental combinations such as total-sea Hs with a wind-sea period.
+        """
+        family = self._wave_spectrum_family()
+        formulation = self._calculated_wave_formulation()
+        if family == 'TOTAL':
+            height = 'sea_surface_wave_significant_height'
+            period = (
+                'sea_surface_wave_period_at_variance_spectral_density_maximum'
+                if formulation == 'SOULSBY_TP' else
+                'sea_surface_wave_mean_period_from_variance_spectral_density_second_frequency_moment'
+            )
+            to_direction = 'sea_surface_wave_to_direction'
+            from_direction = 'sea_surface_wave_from_direction'
+            opposite_height = 'sea_surface_wind_wave_significant_height'
+            opposite_period = (
+                'sea_surface_wind_wave_period_at_variance_spectral_density_maximum'
+                if formulation == 'SOULSBY_TP' else
+                'sea_surface_wind_wave_mean_period_from_variance_spectral_density_second_frequency_moment'
+            )
+            opposite_family = 'WIND_SEA'
+        else:
+            height = 'sea_surface_wind_wave_significant_height'
+            period = (
+                'sea_surface_wind_wave_period_at_variance_spectral_density_maximum'
+                if formulation == 'SOULSBY_TP' else
+                'sea_surface_wind_wave_mean_period_from_variance_spectral_density_second_frequency_moment'
+            )
+            to_direction = 'sea_surface_wind_wave_to_direction'
+            from_direction = 'sea_surface_wind_wave_from_direction'
+            opposite_height = 'sea_surface_wave_significant_height'
+            opposite_period = (
+                'sea_surface_wave_period_at_variance_spectral_density_maximum'
+                if formulation == 'SOULSBY_TP' else
+                'sea_surface_wave_mean_period_from_variance_spectral_density_second_frequency_moment'
+            )
+            opposite_family = 'TOTAL'
+        return {
+            'family': family, 'formulation': formulation,
+            'height': height, 'period': period,
+            'to_direction': to_direction, 'from_direction': from_direction,
+            'opposite_family': opposite_family,
+            'opposite_height': opposite_height, 'opposite_period': opposite_period,
+        }
+
     def _wave_forcing_active(self):
         """Whether wave bed stress can participate in sediment exchange."""
         return (
@@ -7049,8 +7203,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         if threshold < 0.0:
             return
 
-        height = self._required_wave_environment_array(
-            'sea_surface_wave_significant_height')
+        forcing = self._resolved_wave_forcing_names()
+        height = self._required_wave_environment_array(forcing['height'])
         height = self._canonicalize_numerical_zero(
             height, atol=self._WAVE_HEIGHT_ZERO_ATOL_M)
         x_wind = np.asarray(self._env_array('x_wind', 0.0), dtype=float)
@@ -7098,21 +7252,13 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             return result
 
         protected_names = []
+        forcing = self._resolved_wave_forcing_names()
         if self._wave_stress_source() == 'CALCULATED':
-            protected_names.append('sea_surface_wave_significant_height')
-            formulation = self._calculated_wave_formulation()
-            if formulation == 'SOULSBY_TP':
-                protected_names.append(
-                    'sea_surface_wave_period_at_variance_spectral_density_maximum')
-            else:  # JONSWAP_MADSEN_TM02
-                protected_names.append(
-                    'sea_surface_wave_mean_period_from_variance_spectral_density_second_frequency_moment')
+            protected_names.extend((forcing['height'], forcing['period']))
 
-        # Direction may be needed by SOULSBY_CLARKE for either wave-stress source.
-        protected_names.extend((
-            'sea_surface_wave_to_direction',
-            'sea_surface_wave_from_direction',
-        ))
+        # Direction follows the selected spectrum family and may be needed by
+        # SOULSBY_CLARKE for either CALCULATED or DIRECT wave stress.
+        protected_names.extend((forcing['to_direction'], forcing['from_direction']))
 
         protected = {}
         for name in protected_names:
@@ -7136,7 +7282,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         if (
             self._wave_stress_source() == 'CALCULATED'
-            and 'sea_surface_wave_significant_height' in protected
+            and forcing['height'] in protected
         ):
             self._warn_calm_wave_with_wind()
 
@@ -7168,16 +7314,32 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                     "forcing and does not permit wind-derived Hs replacement."
                 )
 
-            formulation = self._calculated_wave_formulation()
-            period_name = (
-                'sea_surface_wave_period_at_variance_spectral_density_maximum'
-                if formulation == 'SOULSBY_TP' else
-                'sea_surface_wave_mean_period_from_variance_spectral_density_second_frequency_moment'
-            )
-            names = (
-                'sea_surface_wave_significant_height',
-                period_name,
-                'sea_floor_depth_below_sea_level',)
+            forcing = self._resolved_wave_forcing_names()
+            names = (forcing['height'], forcing['period'],
+                     'sea_floor_depth_below_sea_level')
+
+            has_height = self._has_explicit_environment_source(forcing['height'])
+            has_period = self._has_explicit_environment_source(forcing['period'])
+            if not (has_height and has_period):
+                has_opposite_height = self._has_explicit_environment_source(
+                    forcing['opposite_height'])
+                has_opposite_period = self._has_explicit_environment_source(
+                    forcing['opposite_period'])
+                if ((has_height and not has_period and has_opposite_period) or
+                        (has_period and not has_height and has_opposite_height)):
+                    raise ValueError(
+                        'Refusing cross-family calculated wave forcing: Hs and '
+                        'period must belong to the same CF spectrum family '
+                        '(TOTAL with TOTAL, WIND_SEA with WIND_SEA). Selected '
+                        f"family={forcing['family']}; required pair is "
+                        f"{forcing['height']} + {forcing['period']}.")
+                if (not has_height and not has_period and
+                        has_opposite_height and has_opposite_period):
+                    raise ValueError(
+                        f"wave_spectrum_family={forcing['family']} is selected, "
+                        f"but only a complete {forcing['opposite_family']} Hs/period "
+                        'pair is available. Select the matching spectrum family '
+                        'instead of relabelling or cross-coupling variables.')
         for name in names:
             if not self._has_explicit_environment_source(name):
                 raise ValueError(
@@ -7187,9 +7349,11 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                     self.get_config('chemical:sediment:shear_stress_combination'))
         if source == 'CALCULATED':
             formulation = self._calculated_wave_formulation()
+            forcing = self._resolved_wave_forcing_names()
             logger.info(
-                'Wave calculation: formulation=%s; height=%s; depth=%s; roughness=%s',
-                formulation,
+                'Wave calculation: family=%s; formulation=%s; Hs=%s; period=%s; '
+                'height_convention=%s; depth=%s; roughness=%s',
+                forcing['family'], formulation, forcing['height'], forcing['period'],
                 self.get_config('chemical:sediment:wave_height_convention'),
                 self.get_config('chemical:sediment:wave_depth_convention'),
                 self._resolved_wave_roughness_mode())
@@ -7200,15 +7364,15 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             'chemical:sediment:shear_stress_combination')
 
         if combo == 'SOULSBY_CLARKE':
-            has_to = self._has_explicit_environment_source(
-                'sea_surface_wave_to_direction')
-            has_from = self._has_explicit_environment_source(
-                'sea_surface_wave_from_direction')
+            forcing = self._resolved_wave_forcing_names()
+            has_to = self._has_explicit_environment_source(forcing['to_direction'])
+            has_from = self._has_explicit_environment_source(forcing['from_direction'])
             if not (has_to or has_from):
                 raise ValueError(
-                    'SOULSBY_CLARKE requires a reader supplying either '
-                    'sea_surface_wave_to_direction or '
-                    'sea_surface_wave_from_direction.')
+                    'SOULSBY_CLARKE requires wave direction from the same CF '
+                    f"spectrum family as the selected forcing ({forcing['family']}): "
+                    f"supply either {forcing['to_direction']} or "
+                    f"{forcing['from_direction']}.")
 
     def _wave_stress(self, rho, idx=None):
         """Return one wave-stress source and its available diagnostics.
@@ -7282,8 +7446,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         result['wave_water_depth'] = depth.copy()
         wet = depth > 0
 
-        height = self._required_wave_environment_array(
-            'sea_surface_wave_significant_height', idx=idx)
+        forcing = self._resolved_wave_forcing_names()
+        height = self._required_wave_environment_array(forcing['height'], idx=idx)
         height = self._canonicalize_numerical_zero(
             height, atol=self._WAVE_HEIGHT_ZERO_ATOL_M)
         bad_height = wet & (~np.isfinite(height) | (height < 0.0))
@@ -7298,14 +7462,11 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             return result
 
         active_idx = idx[active]
-        formulation = self._calculated_wave_formulation()
+        formulation = forcing['formulation']
+        period_name = forcing['period']
         if formulation == 'SOULSBY_TP':
-            period_name = (
-                'sea_surface_wave_period_at_variance_spectral_density_maximum')
             period_label = 'peak periods'
         else:
-            period_name = (
-                'sea_surface_wave_mean_period_from_variance_spectral_density_second_frequency_moment')
             period_label = 'Tm02 periods'
         self._data_quality_note_conditional(period_name, idx, active)
         period = np.asarray(
@@ -7829,10 +7990,11 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
                 missing_direction = both & (~has_wave_dir | ~has_current)
                 if np.any(missing_direction):
+                    forcing = self._resolved_wave_forcing_names()
                     self._data_quality_note_conditional(
-                        'sea_surface_wave_to_direction', idx, missing_direction)
+                        forcing['to_direction'], idx, missing_direction)
                     self._data_quality_note_conditional(
-                        'sea_surface_wave_from_direction', idx, missing_direction)
+                        forcing['from_direction'], idx, missing_direction)
                     self._data_quality_note_virtual(
                         'soulsby_clarke_direction', 'hard_missing',
                         int(np.count_nonzero(missing_direction)))
