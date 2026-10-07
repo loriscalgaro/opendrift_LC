@@ -965,16 +965,30 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
     _BED_STRESS_ZERO_ATOL_PA = 1.0e-12
     _WAVE_HEIGHT_ZERO_ATOL_M = 1.0e-12
     _WAVE_BEARING_BOUNDARY_ATOL_DEG = 1.0e-10
-    # Fixed numerical policy for the TM02-native standard-JONSWAP/Madsen branch.
+    # Fixed numerical policy for the TM02-native standard-JONSWAP branch.
     _JONSWAP_X_MIN = 0.02
     _JONSWAP_X_MAX = 100.0
     _JONSWAP_SPECTRAL_POINTS = 512
     _JONSWAP_SIGMA_LOW = 0.07
     _JONSWAP_SIGMA_HIGH = 0.09
     _WAVE_SPECTRAL_BATCH_SIZE = 2048
-    _MADSEN_X_MIN = 0.2
-    _MADSEN_X_BREAK = 100.0
-    _MADSEN_X_MAX = 1.0e4
+    # Tanaka & Thu (1994) full-range wave friction factor (waves alone).
+    # The smooth-turbulent law (their Eq. 17) is stated effective for
+    # 1e5 <= Ra <= 1e7.  Below 1e5 the term is dropped (the flow is laminar
+    # below Ra = 2.5e5 by the paper's own criterion; the term contributes at
+    # most ~0.09 % of f_w at Ra = 1e5).  Above 1e7 the run is stopped wherever
+    # the smooth term still contributes more than this relative fraction.
+    _TT_SMOOTH_RA_MIN = 1.0e5
+    _TT_SMOOTH_RA_MAX = 1.0e7
+    _TT_SMOOTH_CONTRIBUTION_RTOL = 1.0e-6
+    # The rough-turbulent law (their Eq. 10) has no stated range.  It is used
+    # only for a_r/k_s >= 0.2, the lowest a/k covered by rough oscillatory-flow
+    # friction formulas (Dixen et al., 2008, 0.2 < a/k < 4; Myrhaug et al.,
+    # 2024, recommended for a/k > 0.2).  Below it, the term is dropped where,
+    # evaluated at the a/k = 0.2 edge, it contributes no more than the same
+    # relative fraction of f_w; otherwise the run is stopped.
+    _TT_ROUGH_A_KS_MIN = 0.2
+    _TT_ROUGH_CONTRIBUTION_RTOL = 1.0e-6
     _SED_O2_CONC_ZERO_ATOL_MMOL_M3 = 1.0e-12
     _SED_LENGTH_ZERO_ATOL_M = 1.0e-12
     _SED_O2_RATE_ZERO_ATOL_MMOL_M3_S = 1.0e-18
@@ -1306,7 +1320,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'description':
                     'Calculated-wave physics. SOULSBY_TP is the existing peak-period formulation and remains the default. '
                     'JONSWAP_MADSEN_TM02 reconstructs a standard JONSWAP spectrum from Hs and the CF second-moment mean period Tm02, '
-                    'then applies the pure-wave Madsen bed-stress closure.'},
+                    'forms the Madsen (1994) representative near-bed wave (u_br, omega_r), and applies the Tanaka & Thu (1994) '
+                    'full-range (laminar, smooth, transitional, rough) wave friction factor; it requires sea-water temperature and '
+                    'salinity for the kinematic viscosity.'},
             'chemical:sediment:wave_spectrum_family': {'type': 'enum',
                 'enum': ['TOTAL', 'WIND_SEA'], 'default': 'TOTAL',
                 'level': CONFIG_LEVEL_BASIC,
@@ -6993,7 +7009,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         peak = np.exp(-0.5 * ((x - 1.0) / sigma)**2)
         log_shape = -5.0*np.log(x) - 1.25*x**-4 + peak*np.log(gamma)
         shape = np.exp(log_shape)
-        trapz = getattr(np, 'trapezoid', np.trapz)
+        trapz = getattr(np, 'trapezoid', None) or np.trapz
         i0 = float(trapz(shape, x))
         i2 = float(trapz((x**2)*shape, x))
         if not np.isfinite(i0) or not np.isfinite(i2) or i0 <= 0.0 or i2 <= 0.0:
@@ -7001,72 +7017,148 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         tm02_fp = float(np.sqrt(i0/i2))
         return x, shape, i0, tm02_fp
 
-    def _madsen_pure_wave_stress(self, u_br, omega_r, ks, rho):
-        """Return pure-wave Madsen stress amplitude, X and friction factor."""
-        u_br, omega_r, ks, rho = np.broadcast_arrays(
+    def _tanaka_thu_wave_stress(self, u_br, omega_r, ks, rho, nu):
+        """Return wave-only stress, X, friction factor and Ra (Tanaka & Thu, 1994).
+
+        Full-range friction factor for waves alone (Tanaka and Thu, 1994,
+        Eqs. 4, 10, 17, 35, 37-39 with zero current):
+
+            Ra    = u_br a_r / nu,  a_r = u_br / omega_r
+            zeta  = a_r / z0 = 30 a_r / ks
+            f_L   = 2 Ra**-0.5
+            f_S   = exp(-7.94 + 7.35 Ra**-0.0748)
+            f_R   = exp(-7.53 + 8.07 zeta**-0.100)
+            f1    = exp(-0.0513 (Ra / 2.5e5)**4.65)
+            f2    = exp(-0.0101 (Ra / R1)**2.06),  R1 = 0.501 zeta**1.15
+            f_w   = f2 [f1 f_L + (1 - f1) f_S] + (1 - f2) f_R
+
+        Each weighted term is evaluated in log space, so terms whose weight is
+        zero or negligible cannot overflow.  Neither fit is used outside its
+        range: the smooth-turbulent law (stated for 1e5 <= Ra <= 1e7) is
+        dropped for Ra < 1e5 and stops the run where Ra > 1e7 and it
+        contributes more than _TT_SMOOTH_CONTRIBUTION_RTOL of f_w; the
+        rough-turbulent law is used
+        only for a_r/k_s >= _TT_ROUGH_A_KS_MIN, and below that it is dropped
+        if its contribution, evaluated at the a_r/k_s edge, does not exceed
+        _TT_ROUGH_CONTRIBUTION_RTOL of f_w, and otherwise stops the run.
+        X = u_br / (ks omega_r) is returned as a descriptive diagnostic only.
+        """
+        u_br, omega_r, ks, rho, nu = np.broadcast_arrays(
             np.asarray(u_br, dtype=float), np.asarray(omega_r, dtype=float),
-            np.asarray(ks, dtype=float), np.asarray(rho, dtype=float))
+            np.asarray(ks, dtype=float), np.asarray(rho, dtype=float),
+            np.asarray(nu, dtype=float))
         bad = (
             ~np.isfinite(u_br) | (u_br <= 0.0) |
             ~np.isfinite(omega_r) | (omega_r <= 0.0) |
             ~np.isfinite(ks) | (ks <= 0.0) |
-            ~np.isfinite(rho) | (rho <= 0.0)
+            ~np.isfinite(rho) | (rho <= 0.0) |
+            ~np.isfinite(nu) | (nu <= 0.0)
         )
         if np.any(bad):
             raise ValueError(
-                'Madsen pure-wave stress requires finite positive u_br, omega_r, ks and rho.')
-        X = u_br/(ks*omega_r)
-        invalid_x = (
-            ~np.isfinite(X) | (X <= self._MADSEN_X_MIN) |
-            (X >= self._MADSEN_X_MAX)
-        )
-        if np.any(invalid_x):
-            bad_x = X[invalid_x]
-            lo = float(np.nanmin(bad_x)) if bad_x.size else float('nan')
-            hi = float(np.nanmax(bad_x)) if bad_x.size else float('nan')
+                'Tanaka-Thu wave friction requires finite positive u_br, omega_r, ks, rho and nu.')
+        log_u = np.log(u_br)
+        log_a = log_u - np.log(omega_r)
+        log_ra = log_u + log_a - np.log(nu)
+        log_zeta = log_a - np.log(ks / 30.0)
+        with np.errstate(over='ignore', under='ignore', divide='ignore', invalid='ignore'):
+            e1 = 0.0513 * np.exp(4.65 * (log_ra - np.log(2.5e5)))
+            log_r1 = np.log(0.501) + 1.15 * log_zeta
+            e2 = 0.0101 * np.exp(2.06 * (log_ra - log_r1))
+            log_f1 = -e1
+            log_1mf1 = np.log(-np.expm1(-e1))
+            log_f2 = -e2
+            log_1mf2 = np.log(-np.expm1(-e2))
+            log_fl = np.log(2.0) - 0.5 * log_ra
+            smooth_valid = log_ra >= np.log(self._TT_SMOOTH_RA_MIN)
+            # Evaluated only for Ra >= 1e5; the edge value below is discarded.
+            log_fs = -7.94 + 7.35 * np.exp(
+                -0.0748 * np.where(smooth_valid, log_ra, np.log(self._TT_SMOOTH_RA_MIN)))
+            log_a_ks = log_a - np.log(ks)
+            rough_valid = log_a_ks >= np.log(self._TT_ROUGH_A_KS_MIN)
+            # The rough fit is evaluated only inside its range; outside it is
+            # evaluated at the a_r/k_s = 0.2 edge, solely to test its weight.
+            log_zeta_eval = np.where(
+                rough_valid, log_zeta, np.log(30.0 * self._TT_ROUGH_A_KS_MIN))
+            log_fr = -7.53 + 8.07 * np.exp(-0.100 * log_zeta_eval)
+            log_lam = log_f2 + log_f1 + log_fl
+            log_smo = np.where(smooth_valid, log_f2 + log_1mf1 + log_fs, -np.inf)
+            log_rough = log_1mf2 + log_fr
+            log_lam, log_smo, log_rough = (
+                np.where(np.isnan(t), -np.inf, t) for t in (log_lam, log_smo, log_rough))
+            log_fw_ls = np.logaddexp(log_lam, log_smo)
+            rough_fraction_edge = np.exp(log_rough - log_fw_ls)
+        rough_uncovered = (~rough_valid) & (
+            rough_fraction_edge > self._TT_ROUGH_CONTRIBUTION_RTOL)
+        if np.any(rough_uncovered):
+            a_ks_bad = np.exp(log_a_ks[rough_uncovered])
             raise ValueError(
-                'JONSWAP_MADSEN_TM02 Madsen X outside published '
-                '0.2 < X < 1e4 domain for '
-                f'{int(np.count_nonzero(invalid_x))} active cells '
-                f'(range {lo:g} to {hi:g}).'
-            )
-        fw = np.where(
-            X < self._MADSEN_X_BREAK,
-            np.exp(7.02*X**(-0.078) - 8.82),
-            np.exp(5.61*X**(-0.109) - 7.30),
-        )
-        if np.any(~np.isfinite(fw) | (fw <= 0.0)):
-            raise ValueError('Invalid Madsen pure-wave friction factor.')
-        tau = 0.5*rho*fw*u_br**2
-        if np.any(~np.isfinite(tau) | (tau < 0.0)):
+                'JONSWAP_MADSEN_TM02: the Tanaka-Thu rough-turbulent friction law is used '
+                'only for a_r/k_s >= 0.2 but would carry weight at a_r/k_s down to '
+                f'{float(np.min(a_ks_bad)):.3g} for {int(np.count_nonzero(rough_uncovered))} '
+                'active cells (rough flow with sub-roughness excursion; no validated law).')
+        with np.errstate(over='ignore', under='ignore', divide='ignore', invalid='ignore'):
+            log_rough = np.where(rough_valid, log_rough, -np.inf)
+            log_fw = np.logaddexp(log_fw_ls, log_rough)
+            smooth_fraction = np.exp(log_smo - log_fw)
+        if np.any(~np.isfinite(log_fw)):
+            raise ValueError('Invalid Tanaka-Thu wave friction factor.')
+        beyond = (log_ra > np.log(self._TT_SMOOTH_RA_MAX)) & (
+            smooth_fraction > self._TT_SMOOTH_CONTRIBUTION_RTOL)
+        if np.any(beyond):
+            ra_bad = np.exp(log_ra[beyond])
+            raise ValueError(
+                'JONSWAP_MADSEN_TM02: the Tanaka-Thu smooth-turbulent friction law is '
+                'stated for 1e5 <= Ra <= 1e7 but would carry weight at Ra up to '
+                f'{float(np.max(ra_bad)):.3g} for {int(np.count_nonzero(beyond))} active cells.')
+        log_tau = np.log(0.5) + np.log(rho) + log_fw + 2.0 * log_u
+        if np.any(~np.isfinite(log_tau) | (log_tau > np.log(np.finfo(float).max))):
             raise ValueError('Invalid JONSWAP_MADSEN_TM02 wave stress.')
-        return tau, X, fw
+        fw = np.full(log_fw.shape, np.nan, dtype=float)
+        representable = log_fw <= np.log(np.finfo(float).max)
+        with np.errstate(under='ignore', over='ignore'):
+            fw[representable] = np.exp(log_fw[representable])
+            tau = np.exp(log_tau)
+            ra = np.exp(log_ra)
+        X = u_br/(ks*omega_r)
+        return tau, X, fw, ra
 
-    def _jonswap_madsen_tm02(self, hs, tm02, depth, ks, rho, gamma,
+    def _jonswap_madsen_tm02(self, hs, tm02, depth, ks, rho, nu, gamma,
                               spectral_points=None, batch_size=None):
-        """Calculate wave-only Madsen stress from Hs, Tm02, depth and ks."""
-        hs, tm02, depth, ks, rho = np.broadcast_arrays(
+        """Wave-only stress from Hs, Tm02, depth, ks and nu.
+
+        Standard-JONSWAP reconstruction and bed transfer give the Madsen (1994)
+        representative near-bed wave (u_br, omega_r); the stress uses the
+        Tanaka & Thu (1994) full-range friction factor.  A near-bed velocity
+        variance that underflows to exactly zero (no representable near-bed
+        wave motion) returns tau_wave = 0 with NaN spectral diagnostics.
+        """
+        hs, tm02, depth, ks, rho, nu = np.broadcast_arrays(
             np.asarray(hs, dtype=float), np.asarray(tm02, dtype=float),
             np.asarray(depth, dtype=float), np.asarray(ks, dtype=float),
-            np.asarray(rho, dtype=float))
+            np.asarray(rho, dtype=float), np.asarray(nu, dtype=float))
         for values, label in ((hs, 'Hs'), (tm02, 'Tm02'), (depth, 'water depth'),
-                              (ks, 'Nikuradse roughness ks'), (rho, 'water density')):
+                              (ks, 'Nikuradse roughness ks'), (rho, 'water density'),
+                              (nu, 'kinematic viscosity')):
             if np.any(~np.isfinite(values) | (values <= 0.0)):
                 raise ValueError(
                     f'JONSWAP_MADSEN_TM02 requires finite {label} > 0 on active cells.')
         x, shape, i0, tm02_fp = self._jonswap_dimensionless_shape(
             gamma, spectral_points=spectral_points)
-        trapz = getattr(np, 'trapezoid', np.trapz)
+        trapz = getattr(np, 'trapezoid', None) or np.trapz
         original_shape = hs.shape
         H = hs.reshape(-1)
         T = tm02.reshape(-1)
         D = depth.reshape(-1)
         KS = ks.reshape(-1)
         RHO = rho.reshape(-1)
+        NU = nu.reshape(-1)
         n = H.size
-        result = {name: np.empty(n, dtype=float) for name in (
-            'tau_wave', 'u_br', 'omega_r', 'representative_period',
-            'representative_excursion', 'madsen_X', 'friction_factor')}
+        result = {name: np.full(n, np.nan, dtype=float) for name in (
+            'u_br', 'omega_r', 'representative_period',
+            'representative_excursion', 'madsen_X', 'friction_factor',
+            'wave_reynolds_number')}
+        result['tau_wave'] = np.zeros(n, dtype=float)
         if batch_size is None:
             batch_size = self._WAVE_SPECTRAL_BATCH_SIZE
         batch_size = max(1, int(batch_size))
@@ -7089,24 +7181,33 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             base = shape[None, :]*transfer2
             m0 = (H[sl]/4.0)**2
             velocity_variance = (m0/i0)*trapz(base, x, axis=1)
-            if np.any(~np.isfinite(velocity_variance) | (velocity_variance <= 0.0)):
+            if np.any(~np.isfinite(velocity_variance) | (velocity_variance < 0.0)):
                 raise ValueError(
                     'Invalid near-bed velocity variance in JONSWAP_MADSEN_TM02.')
-            u_br = np.sqrt(2.0*velocity_variance)
-            omega_num = (m0/i0)*trapz(omega*base, x, axis=1)
-            omega_r = omega_num/velocity_variance
+            # Exact zero is reached only by floating-point underflow of a
+            # vanishing near-bed motion: tau_wave stays exactly zero and the
+            # spectral diagnostics stay NaN.
+            moving = velocity_variance > 0.0
+            if not np.any(moving):
+                continue
+            idx = np.arange(start, stop)[moving]
+            variance = velocity_variance[moving]
+            u_br = np.sqrt(2.0*variance)
+            omega_num = (m0[moving]/i0)*trapz(omega[moving]*base[moving], x, axis=1)
+            omega_r = omega_num/variance
             if np.any(~np.isfinite(omega_r) | (omega_r <= 0.0)):
                 raise ValueError(
                     'Invalid representative angular frequency in JONSWAP_MADSEN_TM02.')
-            tau, X, fw = self._madsen_pure_wave_stress(
-                u_br, omega_r, KS[sl], RHO[sl])
-            result['tau_wave'][sl] = tau
-            result['u_br'][sl] = u_br
-            result['omega_r'][sl] = omega_r
-            result['representative_period'][sl] = 2.0*np.pi/omega_r
-            result['representative_excursion'][sl] = u_br/omega_r
-            result['madsen_X'][sl] = X
-            result['friction_factor'][sl] = fw
+            tau, X, fw, ra = self._tanaka_thu_wave_stress(
+                u_br, omega_r, KS[idx], RHO[idx], NU[idx])
+            result['tau_wave'][idx] = tau
+            result['u_br'][idx] = u_br
+            result['omega_r'][idx] = omega_r
+            result['representative_period'][idx] = 2.0*np.pi/omega_r
+            result['representative_excursion'][idx] = u_br/omega_r
+            result['madsen_X'][idx] = X
+            result['friction_factor'][idx] = fw
+            result['wave_reynolds_number'][idx] = ra
         return {key: value.reshape(original_shape) for key, value in result.items()}
 
     def _wave_stress_source(self):
@@ -7421,8 +7522,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         SOULSBY_TP preserves the existing Hs+Tp equivalent-wave route.
         JONSWAP_MADSEN_TM02 reconstructs a standard JONSWAP spectrum from
-        Hs+Tm02, transfers it to the bed, and applies the pure-wave Madsen
-        closure. Both formulations preserve the existing dry/calm short circuit
+        Hs+Tm02, transfers it to the bed, forms the Madsen (1994)
+        representative wave and applies the Tanaka & Thu (1994) full-range
+        friction factor. Both formulations preserve the existing dry/calm short circuit
         before consuming period or roughness.
         """
         if idx is None:
@@ -7481,12 +7583,13 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         z0 = self._wave_roughness_length_array(idx=active_idx)
         rho_active = np.broadcast_to(np.asarray(rho, dtype=float), (n,))[active]
+        # Kinematic viscosity, used by both calculated formulations.
+        temp = self._env_array('sea_water_temperature', 10.0, idx=active_idx)
+        salt = self._env_array('sea_water_salinity', 34.0, idx=active_idx)
+        nu = np.asarray(
+            seawater_dynamic_viscosity(temp, salt), dtype=float) / rho_active
 
         if formulation == 'SOULSBY_TP':
-            temp = self._env_array('sea_water_temperature', 10.0, idx=active_idx)
-            salt = self._env_array('sea_water_salinity', 34.0, idx=active_idx)
-            nu = np.asarray(
-                seawater_dynamic_viscosity(temp, salt), dtype=float) / rho_active
             u, a, k, log_u, log_a = self._wave_orbital_parameters(
                 height[active], period, depth[active])
             tau, fw = self._soulsby_wave_stress(
@@ -7499,7 +7602,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         gamma = float(self.get_config('chemical:sediment:jonswap_gamma'))
         spectral = self._jonswap_madsen_tm02(
-            height[active], period, depth[active], 30.0*z0, rho_active, gamma)
+            height[active], period, depth[active], 30.0*z0, rho_active, nu, gamma)
         result['tau_wave'][active] = spectral['tau_wave']
         result['wave_friction_factor'][active] = spectral['friction_factor']
         result['wave_z0'][active] = z0
@@ -7511,7 +7614,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             spectral['representative_excursion'])
         result['wave_madsen_x'][active] = spectral['madsen_X']
         # These legacy diagnostics are monochromatic quantities. They are not
-        # defined by the spectral/Madsen branch and must not be fabricated.
+        # defined by the spectral branch and must not be fabricated.
         result['wave_orbital_velocity'][active] = np.nan
         result['wave_excursion'][active] = np.nan
         result['wave_number'][active] = np.nan
