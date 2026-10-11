@@ -25099,7 +25099,7 @@ class ChemicalDriftPostProcessMixin:
         if bool(self._lazy_scalar_value(invalid_added)):
             raise AssertionError("Masking created NaNs where final_mask is True")
 
-        Final_sum.attrs.update(common_attrs)
+        Final_sum.attrs = dict(common_attrs)
         if sim_description is not None:
             Final_sum.attrs["sim_description"] = str(sim_description)
         Final_sum.attrs["mask_source"] = mask_source_value
