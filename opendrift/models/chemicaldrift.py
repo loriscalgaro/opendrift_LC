@@ -8739,6 +8739,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                    m_erodible ~= rho_s * (1-porosity) * mixing_depth * effective_fraction
         """
         tau = np.asarray(tau, dtype=float)
+        if np.any(~np.isfinite(tau) | (tau < 0.0)):
+            raise ValueError('Effective bed stress must be finite and >= 0')
 
         if tau_cr_res is None:
             tau_cr_res = self.get_resuspension_critstress()
