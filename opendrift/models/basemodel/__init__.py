@@ -1815,6 +1815,9 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         logger.debug('Removed %i elements.' % (np.sum(indices)))
         if hasattr(self, 'environment'):
             self.environment = self.environment[~indices]
+            if hasattr(self, 'env') and hasattr(
+                    self.env, 'filter_last_environment_provenance'):
+                self.env.filter_last_environment_provenance(~indices)
             logger.debug('Removed %i values from environment.' %
                          (np.sum(indices)))
         if hasattr(self, 'environment_profiles') and \
@@ -1829,6 +1832,33 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             #if self.num_elements_active() == 0:
             #    raise ValueError('No more active elements.')  # End simulation
 
+    def _refresh_canonical_final_checkpoint_environment(self):
+        """Opt-in physical snapshot at self.time; never updates or advances particles.
+
+        The original final coastline phase has already run once. This helper
+        acquires full final-time fields, applies the original seafloor rule once,
+        and refreshes the saved diagnostics at any boundary-modified position
+        or depth. It does not mutate physics, chemical inventory or RNG.
+        """
+        if self.num_elements_active() == 0:
+            return
+        def fetch():
+            self.environment, self.environment_profiles, missing = \
+                self.env.get_environment(
+                    list(self.required_variables), self.time,
+                    self.elements.lon, self.elements.lat, self.elements.z,
+                    self.required_profiles, self.profiles_depth,
+                    element_ID=self.elements.ID)
+            self.calculate_missing_environment_variables()
+            self.report_missing_variables(missing)
+        fetch()
+        before = (self.elements.lon.copy(), self.elements.lat.copy(), self.elements.z.copy())
+        self.interact_with_seafloor()
+        if (not np.array_equal(before[0], self.elements.lon) or
+                not np.array_equal(before[1], self.elements.lat) or
+                not np.array_equal(before[2], self.elements.z)):
+            fetch()
+
     @require_mode(mode=Mode.Run, post_next_mode=True)
     def run(self,
             time_step=None,
@@ -1840,7 +1870,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             export_variables=None,
             export_buffer_length=100,
             stop_on_error=False,
-            intermediate_simulation=False):
+            intermediate_simulation=False,
+            canonical_final_checkpoint=False):
         """Start a trajectory simulation, after initial configuration.
 
         Performs the main loop:
@@ -1877,6 +1908,9 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             intermediate_simulation: if set to True, coastline_interaction is skipped
                 on final time step, to be performed after a new simulation is started
                 from the saved state.
+            canonical_final_checkpoint: opt-in testing-only, resample environment at
+                final time after transport and seafloor boundary handling before
+                the final output record, without repeating transport or chemistry.
         """
 
         # Exporting software and hardware specification, for possible debugging
@@ -2246,16 +2280,17 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                 logger.debug('===================================' * 2)
 
                 # Display element locations to terminal
-                for n in ['lat', 'lon', 'z']:
-                    d = getattr(self.elements, n)
-                    dmin = d.min();
-                    dmax = d.max()
-                    n = n.replace('lat', 'latitude').replace('lon', 'longitude')
-                    if dmin == dmax:
-                        logger.debug(f'\t\t{n} = {dmin}')
-                    else:
-                        logger.debug(f'\t\t{dmin} <- {n} -> {dmax}')
-                logger.debug('---------------------------------')
+                if logger.isEnabledFor(logging.DEBUG):
+                    for n in ['lat', 'lon', 'z']:
+                        d = getattr(self.elements, n)
+                        dmin = d.min();
+                        dmax = d.max()
+                        n = n.replace('lat', 'latitude').replace('lon', 'longitude')
+                        if dmin == dmax:
+                            logger.debug(f'\t\t{n} = {dmin}')
+                        else:
+                            logger.debug(f'\t\t{dmin} <- {n} -> {dmax}')
+                    logger.debug('---------------------------------')
 
                 ###############################################
                 # Get environment data for all active elements
@@ -2332,7 +2367,15 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         self.timer_start('cleaning up')
         logger.debug('Cleaning up')
 
-        self.interact_with_coastline(final=True, intermediate_simulation=intermediate_simulation)
+        # A canonical final checkpoint must complete the native coastline phase
+        # even at a split boundary.  The checkpoint is already post-transport;
+        # deferring this phase produces land-side endpoints or delayed stranding.
+        # Normal output and noncanonical intermediate runs preserve native policy.
+        self.interact_with_coastline(
+            final=True,
+            intermediate_simulation=(intermediate_simulation and not canonical_final_checkpoint))
+        if canonical_final_checkpoint:
+            self._refresh_canonical_final_checkpoint_environment()
         self.timer_end('cleaning up')
         self.timer_end('total time')
         self.state_to_buffer(final=True)  # Append final status to buffer
