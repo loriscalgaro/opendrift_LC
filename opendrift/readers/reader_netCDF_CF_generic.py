@@ -43,6 +43,22 @@ class Reader(StructuredReader):
         :param proj4: PROJ.4 string describing projection of data.
         :type proj4: string, optional
 
+        :param bottom_water_sampling: Opt-in water-side boundary sampling for
+               3-D environmental point requests. Requires bathymetry on the
+               same grid and compatible metre-based vertical coordinates.
+               Defaults to False to preserve the behavior of other models.
+        :type bottom_water_sampling: bool, optional
+
+    Read-only forcing contract:
+        The input NetCDF/xarray Dataset is assumed immutable after Reader
+        initialization. A bounded one-frame cache is used only for categorical
+        `wetdry_state` sampling. Normal time variation is supported: changing
+        the selected source-time frame replaces the cached frame. Applications
+        must not alter the Dataset contents in place while using this reader;
+        if forcing data are replaced or edited, create a new Reader instance.
+        No runtime cache-invalidation machinery is provided or required for
+        ordinary read-only forcing workflows.
+
     Example:
 
     .. code::
@@ -73,7 +89,14 @@ class Reader(StructuredReader):
     """
 
     def __init__(self, filename=None, zarr_storage_options=None, name=None, proj4=None,
-                 standard_name_mapping={}, ensemble_member=None):
+                 standard_name_mapping={}, ensemble_member=None,
+                 bottom_water_sampling=False):
+
+        if not isinstance(bottom_water_sampling, (bool, np.bool_)):
+            raise TypeError('bottom_water_sampling must be boolean')
+        self.bottom_water_sampling = bool(bottom_water_sampling)
+        self._cf_wetdry_frame_cache = None
+
 
         #if isinstance(filename, xr.Dataset):
         #    self.Dataset = filename
@@ -375,6 +398,27 @@ class Reader(StructuredReader):
         if len(skipvars) > 0:
             logger.debug('Skipped variables without standard_name: %s' % skipvars)
 
+        # Optional categorical wet/dry channel. Recognize a native variable
+        # explicitly named wetdry_state, or an existing user mapping to that
+        # standard environmental key. No inference from a static land mask.
+        if ('wetdry_state' not in self.variable_mapping and
+                'wetdry_state' in self.Dataset.data_vars):
+            self.variable_mapping['wetdry_state'] = 'wetdry_state'
+        if 'wetdry_state' in self.variable_mapping:
+            state_var = self.Dataset[self.variable_mapping['wetdry_state']]
+            spatial = {self.dimensions.get('x'), self.dimensions.get('y')}
+            allowed = spatial | {self.dimensions.get('time')}
+            if (None in spatial or not spatial.issubset(set(state_var.dims)) or
+                    any(d not in allowed for d in state_var.dims) or
+                    state_var.dtype.kind not in 'iufb'):
+                raise ValueError('wetdry_state requires a numeric 2-D CF x/y field, optionally time-dependent')
+            if not hasattr(self, 'x') or not hasattr(self, 'y'):
+                raise ValueError('wetdry_state requires a rectilinear CF x/y grid for categorical nearest-cell sampling')
+            for axis in (np.asarray(self.x, dtype=float), np.asarray(self.y, dtype=float)):
+                if (axis.ndim != 1 or axis.size < 2 or not np.isfinite(axis).all() or
+                        not (np.all(np.diff(axis)>0) or np.all(np.diff(axis)<0))):
+                    raise ValueError('wetdry_state requires strictly monotone rectilinear x/y axes')
+
         self.variables = list(self.variable_mapping.keys())
 
         for vn, va in self.variable_mapping.items():
@@ -401,8 +445,617 @@ class Reader(StructuredReader):
                 else:
                     raise ValueError(f'{warning}, and also several time dimensions used by detected variables: {variable_time_dimensions}')
 
+        # An explicit opt-in; no existing CF reader changes behavior by default.
+        if self.bottom_water_sampling:
+            if 'sea_floor_depth_below_sea_level' not in self.variable_mapping:
+                raise ValueError('bottom_water_sampling requires CF bathymetry')
+            if not hasattr(self, 'z') or 'z' not in self.dimensions:
+                raise ValueError('bottom_water_sampling requires a native 1-D depth axis')
+            zz = np.asarray(self.z, dtype=float)
+            if (zz.ndim != 1 or not len(zz) or np.any(~np.isfinite(zz))
+                    or np.any(zz > 0) or np.any(np.diff(zz) == 0)
+                    or not (np.all(np.diff(zz) < 0) or np.all(np.diff(zz) > 0))):
+                raise ValueError('Unqualified CF native sampling depths')
+            depth_var = self.Dataset[self.dimensions['z']]
+            # Explicit opt-in is qualified ONLY for measured physical-depth
+            # sampling points. Never mistake sigma/hybrid/formula coordinates,
+            # or an undocumented depth datum/unit, for metre-valued z samples.
+            if (depth_var.attrs.get('standard_name') != 'depth' or
+                    'formula_terms' in depth_var.attrs or
+                    depth_var.attrs.get('positive') not in ('up', 'down')):
+                raise ValueError('bottom_water_sampling requires a certified physical-depth axis (not sigma/hybrid)')
+            if depth_var.attrs.get('units') not in ('m', 'meter', 'meters', 'metre', 'metres'):
+                raise ValueError('bottom_water_sampling requires explicit depth units in metres')
+            bathy_var = self.Dataset[self.variable_mapping['sea_floor_depth_below_sea_level']]
+            if bathy_var.attrs.get('units', 'm') not in ('m', 'meter', 'meters', 'metre', 'metres'):
+                raise ValueError('bottom_water_sampling requires bathymetry in metres')
+            self._bottom_water_eta_variable = next(
+                (n for n in ('sea_surface_height',
+                             'water_surface_height_above_reference_datum')
+                 if n in self.variable_mapping), None)
+            if self._bottom_water_eta_variable is not None:
+                eta_var = self.Dataset[self.variable_mapping[self._bottom_water_eta_variable]]
+                if eta_var.attrs.get('units', 'm') not in ('m', 'meter', 'meters', 'metre', 'metres'):
+                    raise ValueError('bottom_water_sampling requires sea level in metres')
+            else:
+                logger.warning('bottom_water_sampling: no sea-surface-height '
+                               'field; treating supplied bathymetry as current water depth')
+
         # Run constructor of parent Reader class
         super().__init__()
+
+    @staticmethod
+    def _cf_bracket_indices(coords, point):
+        """Conservative interpolation stencil in one regular-grid dimension."""
+        coords = np.asarray(coords, dtype=float)
+        if coords.ndim != 1 or len(coords) == 0 or not np.isfinite(point):
+            return ()
+        ascending = coords[0] < coords[-1]
+        use = coords if ascending else -coords
+        v = point if ascending else -point
+        i = int(np.searchsorted(use, v, side='left'))
+        # Reader blocks round native coordinates to float32.
+        spacing = np.min(np.abs(np.diff(use))) if len(use) > 1 else 1.0
+        tol = max(1.e-7, min(.01*spacing, 3.e-7*max(1.0, abs(v))))
+        if i < len(use) and np.isclose(v, use[i], atol=tol, rtol=0):
+            return (i,)
+        if i > 0 and np.isclose(v, use[i - 1], atol=tol, rtol=0):
+            return (i - 1,)
+        if not 0 < i < len(use):
+            return ()
+        return (i - 1, i)
+
+    @staticmethod
+    def _cf_batched_brackets(coords, points):
+        """Conservative native stencil equivalents for an array of query points.
+
+        Replicates _cf_bracket_indices' left-search, per-axis absolute
+        coordinate tolerance, and exact-coordinate precedence. No invalid
+        query can become admissible merely through index clipping.
+        """
+        coords = np.asarray(coords, dtype=float)
+        points = np.atleast_1d(np.asarray(points, dtype=float))
+        count = len(points)
+        lower = np.zeros(count, dtype=np.intp)
+        upper = np.zeros(count, dtype=np.intp)
+        ok = np.isfinite(points)
+        if coords.ndim != 1 or not len(coords) or not np.all(np.isfinite(coords)):
+            return lower, upper, np.zeros(count, dtype=bool)
+        ascending = coords[0] < coords[-1]
+        values = coords if ascending else -coords
+        p = points if ascending else -points
+        indices = np.searchsorted(values, p, side='left')
+        spacing = np.min(np.abs(np.diff(values))) if len(values) > 1 else 1.0
+        atol = np.maximum(1.e-7, np.minimum(.01*spacing,
+                                           3.e-7*np.maximum(1.0, np.abs(p))))
+        at_right = indices < len(values)
+        safe_right = np.clip(indices, 0, len(values)-1)
+        match_right = at_right & (np.abs(p-values[safe_right]) <= atol)
+        at_left = indices > 0
+        safe_left = np.clip(indices-1, 0, len(values)-1)
+        match_left = (~match_right) & at_left & (np.abs(p-values[safe_left]) <= atol)
+        interior = (~match_right) & (~match_left) & (indices > 0) & at_right
+        lower[:] = np.where(match_right, safe_right, safe_left)
+        upper[:] = np.where(interior, safe_right, lower)
+        ok &= match_right | match_left | interior
+        return lower, upper, ok
+
+    def _cf_native_source_validity(self, source_time, x, y, depths, names,
+                                  profile_names=()):
+        """Batch native raw-mask checks without interpolation/downfill.
+
+        Shape and source-time admission match the unoptimized opt-in reader.
+        Reuse horizontal/vertical stencil indices across all fields; test all
+        stencil corners including native source masks and nonfinite entries.
+        """
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+        depths = np.asarray(depths, dtype=float)
+        all_names = sorted(set(names) | set(profile_names))
+        if not all_names:
+            return {}, {}
+        raw_x, raw_y, raw_z = x, y, depths
+        if profile_names:
+            raw_x = np.concatenate((x, x[:1], x[:1]))
+            raw_y = np.concatenate((y, y[:1], y[:1]))
+            raw_z = np.concatenate((depths, [np.max(self.z), np.min(self.z)]))
+        raw = self.get_variables(all_names, source_time, raw_x, raw_y, raw_z)
+        rz = np.atleast_1d(np.asarray(raw['z'], dtype=float))
+        rx = np.asarray(raw['x'])
+        ry = np.asarray(raw['y'])
+        xlo, xhi, xok = self._cf_batched_brackets(rx, x)
+        ylo, yhi, yok = self._cf_batched_brackets(ry, y)
+        zlo, zhi, zok = self._cf_batched_brackets(rz, depths)
+        stencil_ok = xok & yok & zok
+        point_valid = {}
+        profile_valid = {}
+        for name in all_names:
+            arr = raw[name]
+            if isinstance(arr, list):
+                raise ValueError('Unqualified ensemble native mask in bottom-water sampling')
+            arr = np.ma.asarray(arr)
+            if arr.ndim == 2 and len(rz) == 1:
+                arr = arr[np.newaxis, :, :]
+            if arr.ndim != 3:
+                raise ValueError('Unqualified CF native 3-D sample shape for ' + name)
+            validity = np.isfinite(np.ma.filled(arr, np.nan)) & ~np.ma.getmaskarray(arr)
+            good = stencil_ok.copy()
+            # Exactly the same native 2 x 2 x 2 corner conjunction as
+            # validity[np.ix_(iz, iy, ix)].all() per point, without Python
+            # per-particle loops or repeated bracket searches.
+            for kz in (zlo, zhi):
+                for jy in (ylo, yhi):
+                    for ix in (xlo, xhi):
+                        good &= validity[kz, jy, ix]
+            point_valid[name] = good
+            # Native profiles retain source-level masks at every z; no
+            # synthetic values or interpolation across invalid corners.
+            pg = np.broadcast_to(stencil_ok, (len(rz),len(x))).copy()
+            for jy in (ylo, yhi):
+                for ix in (xlo, xhi):
+                    pg &= validity[:, jy, ix]
+            profile_valid[name] = (rz, pg)
+        return point_valid, profile_valid
+
+    def prepare(self, *args, **kwargs):
+        self._cf_fast_blocks = []
+        self._cf_geometry_blocks_v5 = []
+        return super().prepare(*args, **kwargs)
+
+    def _cf_geometry_v5(self, source_time, x, y, names):
+        """Reuse source-record *grid blocks* for 2-D bathymetry and eta.
+
+        The original OpenDrift ReaderBlock still performs the interpolation
+        and native invalid-data handling.  No per-particle interpolation is
+        memoized.  An out-of-coverage, large, mixed-dimensional or unsupported
+        request falls back to the V3C parent method; the native source-time
+        and mask policies are not changed.
+        """
+        from opendrift.readers.interpolation.structured import ReaderBlock
+        key = (source_time, tuple(names))
+        if (not len(x) or not np.isfinite(x).all() or
+                not np.isfinite(y).all() or self.global_coverage()):
+            raise ValueError('CF_FAST_UNSUPPORTED_GEOMETRY_REQUEST')
+        snapshots = getattr(self, '_cf_geometry_blocks_v5', [])
+        snapshot = None
+        for entry in snapshots:
+            if entry['key'] == key and entry['block'].covers_positions(x, y):
+                snapshot = entry
+                break
+        if snapshot is None:
+            # Keep the original reader's subset and mask admission unchanged.
+            raw = self.get_variables(names, source_time, x, y,
+                                     np.zeros(len(x), dtype=float))
+            xx = np.asarray(raw['x']); yy = np.asarray(raw['y'])
+            if (xx.ndim != 1 or yy.ndim != 1 or
+                    len(xx) < 2 or len(yy) < 2 or
+                    not np.isfinite(xx).all() or not np.isfinite(yy).all()):
+                raise ValueError('CF_FAST_UNSUPPORTED_GEOMETRY_GRID')
+            size = xx.nbytes + yy.nbytes
+            for name in names:
+                value = raw[name]
+                if isinstance(value, list):
+                    raise ValueError('CF_FAST_UNSUPPORTED_GEOMETRY_ENSEMBLE')
+                array = np.ma.asarray(value)
+                if array.ndim != 2 or array.shape != (len(yy), len(xx)):
+                    raise ValueError('CF_FAST_UNSUPPORTED_GEOMETRY_SHAPE')
+                size += array.nbytes + np.ma.getmaskarray(array).nbytes
+            # Do not cache oversized snapshots.  Retain the parent behavior
+            # even in this case via the ephemeral original ReaderBlock.
+            block = ReaderBlock(dict(raw), interpolation_horizontal=self.interpolation,
+                                wrap_x=False)
+            snapshot = {'key':key,'block':block,'bytes':size}
+            if size <= 16*1024*1024:
+                snapshots = [q for q in snapshots if q['key'] != key]
+                snapshots.append(snapshot)
+                while (len(snapshots) > 2 or
+                       sum(q['bytes'] for q in snapshots) > 16*1024*1024):
+                    snapshots.pop(0)
+                self._cf_geometry_blocks_v5 = snapshots
+        values, _ = snapshot['block'].interpolate(x, y, np.zeros(len(x)),
+                                                   names, None, None)
+        return values
+
+    def _cf_fast_sample_valid_3d(self, source_time, x, y, depths, names):
+        """Vectorized direct native interpolation for explicitly admitted CF 3-D
+        fields without profiles. Only original source-valid stencils are sampled.
+        The opt-in-only caller retains per-timestamp local bottom-depth geometry.
+
+        No second source read for validity, and no waterward NaN synthesis.
+        An unsupported shape or interpolation method takes the original path.
+        """
+        from scipy.ndimage import map_coordinates
+        from scipy.interpolate import interp1d
+        key = (source_time, tuple(names))
+        blocks = getattr(self, '_cf_fast_blocks', [])
+        snapshot = None
+        for cached in blocks:
+            if (cached['key'] == key and
+                    x.min() >= cached['rx'].min() and x.max() <= cached['rx'].max() and
+                    y.min() >= cached['ry'].min() and y.max() <= cached['ry'].max() and
+                    depths.min() >= cached['rz'].min() and depths.max() <= cached['rz'].max()):
+                snapshot = cached
+                break
+        if snapshot is None:
+            raw = self.get_variables(names, source_time, x, y, depths)
+            rx = np.asarray(raw['x'])
+            ry = np.asarray(raw['y'])
+            rz = np.atleast_1d(np.asarray(raw['z'], dtype=float))
+            if (len(rz) < 2 or len(rz) >= 120 or len(rx) < 2 or len(ry) < 2 or
+                    not np.all(np.isfinite(rx)) or not np.all(np.isfinite(ry)) or
+                    not np.all(np.isfinite(rz)) or self.global_coverage()):
+                raise ValueError('CF_FAST_UNSUPPORTED_GRID')
+            fields = {}
+            size = rx.nbytes + ry.nbytes + rz.nbytes
+            for name in names:
+                arr = raw[name]
+                if isinstance(arr, list):
+                    raise ValueError('CF_FAST_UNSUPPORTED_ENSEMBLE')
+                arr = np.ma.asarray(arr)
+                if arr.ndim != 3 or arr.shape != (len(rz), len(ry), len(rx)):
+                    raise ValueError('CF_FAST_UNSUPPORTED_SHAPE')
+                finite = np.isfinite(np.ma.filled(arr, np.nan)) & ~np.ma.getmaskarray(arr)
+                # ReaderBlock first fills missing native samples downward,
+                # then expands holes horizontally if needed for requested
+                # positions. Precomputing the same expansions once over the
+                # bounded source block preserves wet-neighbour sampling for
+                # moving near-coastal points; source validity remains raw.
+                from opendrift.readers.interpolation.interpolators import (
+                    fill_NaN_towards_seafloor, expand_numpy_array)
+                data = np.array(np.ma.filled(arr, np.nan), copy=True)
+                fill_NaN_towards_seafloor(data)
+                for k in range(data.shape[0]):
+                    # Valid native point stencils need at most their directly
+                    # adjacent masked neighbour filled for float-rounding.
+                    if np.isfinite(data[k]).any() and not np.isfinite(data[k]).all():
+                        expand_numpy_array(data[k])
+                data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0)
+                fields[name] = (data, finite)
+                size += data.nbytes + finite.nbytes
+            snapshot = {'key':key, 'rx':rx,'ry':ry,'rz':rz,'fields':fields,'bytes':size}
+            # Only store bounded immutable raw-source snapshots. Never cache
+            # interpolated particle values, geometry or temporal composites.
+            if size <= 64*1024*1024:
+                blocks = [b for b in blocks if b['key'] != key]
+                blocks.append(snapshot)
+                while len(blocks) > 2 or sum(b['bytes'] for b in blocks) > 64*1024*1024:
+                    blocks.pop(0)
+                self._cf_fast_blocks = blocks
+        rx, ry, rz = snapshot['rx'], snapshot['ry'], snapshot['rz']
+        if (len(rz) < 2 or len(rz) >= 120 or len(rx) < 2 or len(ry) < 2 or
+                not np.all(np.isfinite(rx)) or not np.all(np.isfinite(ry)) or
+                not np.all(np.isfinite(rz)) or self.global_coverage()):
+            raise ValueError('CF_FAST_UNSUPPORTED_GRID')
+        n = len(x)
+        xlo, xhi, xok = self._cf_batched_brackets(rx, x)
+        ylo, yhi, yok = self._cf_batched_brackets(ry, y)
+        zlo, zhi, zok = self._cf_batched_brackets(rz, depths)
+        stencil_ok = xok & yok & zok
+        # These are exactly the coordinates used by Linear2DInterpolator.
+        xi = (x - rx[0]) / (rx[-1] - rx[0]) * (len(rx)-1)
+        yi = (y - ry[0]) / (ry[-1] - ry[0]) * (len(ry)-1)
+        # Linear1DInterpolator truncates z to the native sampling range and
+        # interpolates the corresponding *index*, supporting descending z.
+        clipped_z = np.clip(depths, rz.min(), rz.max())
+        if rz[0] < rz[-1]:
+            zfi = interp1d(rz, np.arange(len(rz)))(clipped_z)
+        else:
+            zfi = interp1d(rz[::-1], np.arange(len(rz))[::-1])(clipped_z)
+        below = np.minimum(np.floor(zfi).astype(np.intp) + 1, len(rz)-1)
+        above = np.clip(np.floor(zfi).astype(np.intp), 0, len(rz)-1)
+        wa = 1 - (zfi - above)
+        output = {}
+        for name in names:
+            data, finite = snapshot['fields'][name]
+            good = stencil_ok.copy()
+            for kz in (zlo, zhi):
+                for jy in (ylo, yhi):
+                    for ix in (xlo, xhi):
+                        good &= finite[kz, jy, ix]
+            # Keep NaNs away from valid stencils; their invalidity is preserved
+            # by `good`, so no originally invalid 3-D source becomes admissible.
+            # Interpolating only the two native layers needed by each particle
+            # avoids constructing 3-D horizontal profiles for every particle.
+            aa = map_coordinates(data, [above, yi, xi], order=1,
+                                 mode='constant', cval=np.nan, prefilter=False)
+            bb = map_coordinates(data, [below, yi, xi], order=1,
+                                 mode='constant', cval=np.nan, prefilter=False)
+            # Match Linear2DInterpolator's second attempt for points
+            # infinitesimally outside the native grid due to rounding:
+            # its source-time fill uses nearest-edge mode, not zeroing.
+            ma = ~np.isfinite(aa)
+            mb = ~np.isfinite(bb)
+            if ma.any():
+                aa[ma] = map_coordinates(data, [above[ma], yi[ma], xi[ma]],
+                                         order=1, mode='nearest', prefilter=False)
+            if mb.any():
+                bb[mb] = map_coordinates(data, [below[mb], yi[mb], xi[mb]],
+                                         order=1, mode='nearest', prefilter=False)
+            interp = aa * wa + bb * (1 - wa)
+            output[name] = np.ma.masked_where(~good, np.ma.masked_invalid(interp))
+        return output
+
+    @staticmethod
+    def _cf_wetdry_nearest_indices(axis, positions):
+        """Nearest native grid cells; do not interpolate categorical flags."""
+        axis = np.asarray(axis, dtype=float)
+        positions = np.asarray(positions, dtype=float)
+        ascending = axis[0] < axis[-1]
+        ordered = axis if ascending else axis[::-1]
+        right = np.searchsorted(ordered, positions, side='left')
+        hi = np.clip(right, 0, len(ordered) - 1)
+        lo = np.clip(right - 1, 0, len(ordered) - 1)
+        picked = np.where(np.abs(positions - ordered[lo]) <=
+                          np.abs(ordered[hi] - positions), lo, hi)
+        if not ascending:
+            picked = len(axis) - 1 - picked
+        return picked, (np.isfinite(positions) &
+                        (positions >= ordered[0]) &
+                        (positions <= ordered[-1]))
+
+    def _cf_wetdry_categorical(self, time, reader_x, reader_y):
+        """Read the preceding *source* frame at nearest native grid cells.
+
+        The categorical 1/0/-1 values must never be interpolated in space or
+        time.  Invalid/missing source cells remain masked, for the normal
+        OpenDrift environment fallback/provenance mechanism to handle.
+        The underlying forcing Dataset must remain immutable for this Reader's
+        lifetime. The single-frame cache changes with source time, not when
+        external code mutates an xarray Dataset in place.
+        """
+        x = np.atleast_1d(np.asarray(reader_x, dtype=float))
+        y = np.atleast_1d(np.asarray(reader_y, dtype=float))
+        if x.ndim != 1 or y.shape != x.shape:
+            raise ValueError('wetdry_state point coordinates must be aligned 1-D arrays')
+        source = self.Dataset[self.variable_mapping['wetdry_state']]
+        tdim = self.dimensions.get('time')
+        source_index = None
+        source_time = None
+        if tdim in source.dims:
+            _nearest, before, _after, _ni, before_i, _ai = self.nearest_time(time)
+            if before is None or before_i is None:
+                raise ValueError('wetdry_state has no preceding CF source time')
+            source_index = int(before_i)
+            if (source_index < 0 or source_index >= len(self.times) or
+                    self.times[source_index] != before):
+                raise ValueError('wetdry_state source time/index mismatch')
+            source_time = before
+            source = source.isel({tdim: source_index})
+        elif time is not None:
+            source_time = 'STATIC'
+        # The general CF reader's own projection stage supplies reader_x/y.
+        # Reject unsupported curvilinear/cyclic coordinate transforms rather
+        # than silently selecting a nearby but physically unrelated cell.
+        if not hasattr(self, 'x') or not hasattr(self, 'y'):
+            raise ValueError('wetdry_state lacks rectilinear native coordinates')
+        ix, xin = self._cf_wetdry_nearest_indices(self.x, x)
+        iy, yin = self._cf_wetdry_nearest_indices(self.y, y)
+        in_domain = xin & yin
+        # Benchmark-qualified single-frame cache: forcing must be immutable
+        # after reader initialization; no in-place xarray Dataset mutation.
+        # Only the categorical field is cached, not particle samples or normal
+        # V5 interpolator data. Cap at 32 MiB; larger frames use xarray.
+        ydim, xdim = self.dimensions['y'], self.dimensions['x']
+        if set(source.dims) != {ydim, xdim} or len(source.dims) != 2:
+            raise ValueError('wetdry_state must be a 2-D categorical field')
+        cache_key = (id(self.Dataset), self.variable_mapping['wetdry_state'],
+                     source_index, tuple(source.shape), tuple(source.dims))
+        existing = getattr(self, '_cf_wetdry_frame_cache', None)
+        if existing is not None and existing[0] == cache_key:
+            frame = existing[1]
+        else:
+            frame_bytes = int(source.size) * int(np.dtype(source.dtype).itemsize)
+            if frame_bytes <= 32 * 1024 * 1024:
+                frame = np.asarray(source.transpose(ydim, xdim).values)
+                if frame.shape != (len(self.y), len(self.x)):
+                    raise ValueError('wetdry_state native frame shape mismatch')
+                self._cf_wetdry_frame_cache = (cache_key, frame)
+            else:
+                frame = None
+                self._cf_wetdry_frame_cache = None
+        if frame is not None:
+            values = np.asarray(frame[iy, ix], dtype=float)
+        else:
+            selected = source.isel({
+                xdim: xr.DataArray(ix, dims=('_wetdry_point',)),
+                ydim: xr.DataArray(iy, dims=('_wetdry_point',))})
+            values = np.asarray(selected.values, dtype=float)
+        if values.shape != x.shape:
+            raise ValueError('wetdry_state unexpected source shape')
+        invalid = ~in_domain | ~np.isfinite(values)
+        for attr in ('_FillValue', 'missing_value'):
+            fill = source.attrs.get(attr, source.encoding.get(attr))
+            if fill is not None:
+                invalid |= values == fill
+        # Bad categorical codes are missing/UNKNOWN, not fractional states.
+        invalid |= ~np.isin(values, (-1., 0., 1.))
+        self.last_wetdry_state_source = {
+            'requested_time': str(time),
+            'source_time': str(source_time),
+            'source_index': source_index,
+            'interpolation': 'preceding_source_frame_nearest_native_cell',
+            'valid_count': int(np.count_nonzero(~invalid))}
+        return np.ma.array(values, mask=invalid)
+
+    def _get_variables_interpolated_(self, variables, profiles, profiles_depth,
+                                     time, reader_x, reader_y, z):
+        names = [variables] if isinstance(variables, str) else list(variables)
+        if 'wetdry_state' not in names:
+            return self._cf_original_v5_interpolated(
+                variables, profiles, profiles_depth, time, reader_x, reader_y, z)
+        profile_names = ([] if profiles is None else
+                         ([profiles] if isinstance(profiles, str) else list(profiles)))
+        if 'wetdry_state' in profile_names:
+            raise ValueError('wetdry_state cannot be requested as a vertical profile')
+        other_names = [name for name in names if name != 'wetdry_state']
+        if other_names:
+            values, profile = self._cf_original_v5_interpolated(
+                other_names, profiles, profiles_depth, time, reader_x, reader_y, z)
+        elif profile_names:
+            _unused, profile = self._cf_original_v5_interpolated(
+                profile_names, profiles, profiles_depth, time, reader_x, reader_y, z)
+            values = {}
+        else:
+            values, profile = {}, None
+        values['wetdry_state'] = self._cf_wetdry_categorical(time, reader_x, reader_y)
+        return values, profile
+
+    def _cf_original_v5_interpolated(self, variables, profiles, profiles_depth,
+                                     time, reader_x, reader_y, z):
+        """Reader-local opt-in water-side sampling without altering particle z.
+
+        Native CF z coordinates identify sampling depths, NOT cell bottoms.
+        Below the deepest physically wet sample, use that original sample
+        (never interpolate with a below-bed native sample). Resolve H and
+        the source-level constraint separately at each temporal bracket.
+        No change is made to generic CF behavior unless explicitly enabled.
+        """
+        parent = super()._get_variables_interpolated_
+        if not self.bottom_water_sampling:
+            return parent(variables, profiles, profiles_depth,
+                          time, reader_x, reader_y, z)
+        names = [variables] if isinstance(variables, str) else list(variables)
+        profile_names = [] if profiles is None else (
+            [profiles] if isinstance(profiles, str) else list(profiles))
+        depth_dim = self.dimensions['z']
+        if not any(depth_dim in self.Dataset[self.variable_mapping[n]].dims
+                   for n in names + profile_names):
+            return parent(variables, profiles, profiles_depth,
+                          time, reader_x, reader_y, z)
+        requested_z = np.asarray(z, dtype=float)
+        n = len(np.atleast_1d(reader_x))
+        if requested_z.ndim != 1 or requested_z.size not in (1, n):
+            raise ValueError('Invalid generic CF point-depth shape')
+        requested_z = np.broadcast_to(requested_z, (n,))
+        _nearest, before, after, *_ = self.nearest_time(time)
+        if before is None:
+            raise ValueError('No CF time before requested time')
+        times = [before]
+        if after is not None and before < time < after:
+            times.append(after)
+        snapshots = []
+        for source_time in times:
+            geometry_fields = ['sea_floor_depth_below_sea_level']
+            if self._bottom_water_eta_variable:
+                geometry_fields.append(self._bottom_water_eta_variable)
+            geometry_fast = (profiles is None and
+                             self.interpolation == 'linearNDFast' and
+                             self.convolve is None and
+                             all(self.dimensions['z'] not in
+                                 self.Dataset[self.variable_mapping[nm]].dims
+                                 for nm in geometry_fields))
+            if geometry_fast:
+                try:
+                    geometry = self._cf_geometry_v5(
+                        source_time, np.asarray(reader_x, dtype=float),
+                        np.asarray(reader_y, dtype=float), geometry_fields)
+                except ValueError as exc:
+                    if not str(exc).startswith('CF_FAST_UNSUPPORTED_'):
+                        raise
+                    geometry_fast = False
+            if not geometry_fast:
+                geometry, _ = parent(geometry_fields, None, None,
+                                     source_time, reader_x, reader_y,
+                                     np.zeros(n, dtype=float))
+            h = np.ma.asarray(geometry['sea_floor_depth_below_sea_level'], dtype=float)
+            eta = (np.ma.asarray(geometry[self._bottom_water_eta_variable], dtype=float)
+                   if self._bottom_water_eta_variable else np.ma.zeros(n))
+            H = np.ma.masked_invalid(h + eta)
+            wet = (~np.ma.getmaskarray(H)) & np.isfinite(np.ma.filled(H, np.nan)) & (H > 0)
+            native_z = np.asarray(self.z, dtype=float)
+            # Only native sampling points above the instantaneous bed can be used.
+            eligible = (native_z.reshape(-1, 1) <= 0) & (
+                native_z.reshape(-1, 1) >= -np.ma.filled(H, np.nan).reshape(1, -1))
+            has_wet_sample = np.any(eligible, axis=0)
+            deepest = np.min(np.where(eligible, native_z[:, None], np.inf), axis=0)
+            valid = wet & has_wet_sample & np.isfinite(requested_z) & (requested_z <= 0)
+            # Effective source-sampling depth is strictly local to this reader;
+            # never mutate original z or pre-clamp it for any other reader.
+            local_z = np.maximum(requested_z, np.where(valid, deepest, 0.0))
+            # StructuredReader caches time blocks by variable, not by z range.
+            # Expire ONLY opt-in 3-D blocks that cannot bracket the required
+            # local sampling depths; otherwise a shallower previous request
+            # could silently change the result of a later deeper request.
+            needed = local_z[valid]
+            if needed.size:
+                for cache in (self.var_block_before, self.var_block_after):
+                    for key, block in list(cache.items()):
+                        bz = getattr(block, 'z', None)
+                        if bz is None:
+                            continue
+                        bz = np.asarray(bz, dtype=float)
+                        if (bz.ndim == 1 and bz.size > 0 and
+                                (needed.min() < bz.min() or needed.max() > bz.max())):
+                            cache.pop(key, None)
+            # Keep the original parent path for profiles, mixed 2-D/3-D
+            # variables, nondefault interpolators and convolved grids.
+            fast_admitted = (profiles is None and self.interpolation == 'linearNDFast'
+                             and self.convolve is None
+                             and all(depth_dim in self.Dataset[self.variable_mapping[nm]].dims
+                                     for nm in names))
+            if fast_admitted:
+                try:
+                    sampled = self._cf_fast_sample_valid_3d(
+                        source_time, np.asarray(reader_x, dtype=float),
+                        np.asarray(reader_y, dtype=float), local_z, names)
+                    prof = None
+                except ValueError as exc:
+                    if not str(exc).startswith('CF_FAST_UNSUPPORTED_'):
+                        raise
+                    fast_admitted = False
+            if not fast_admitted:
+                sampled, prof = parent(names, profile_names if profiles is not None else None,
+                                       profiles_depth, source_time,
+                                       reader_x, reader_y, local_z)
+                raw_names = [nm for nm in names + profile_names
+                             if depth_dim in self.Dataset[self.variable_mapping[nm]].dims]
+                source_validity, source_profiles = self._cf_native_source_validity(
+                    source_time, reader_x, reader_y, local_z, raw_names,
+                    profile_names=[nm for nm in profile_names if nm in raw_names])
+                for name in names:
+                    if depth_dim in self.Dataset[self.variable_mapping[name]].dims:
+                        sampled[name] = np.ma.masked_where(
+                            ~valid | ~source_validity[name],
+                            np.ma.masked_invalid(np.ma.asarray(sampled[name])))
+            else:
+                for name in names:
+                    sampled[name] = np.ma.masked_where(
+                        ~valid, np.ma.masked_invalid(np.ma.asarray(sampled[name])))
+            if prof is not None:
+                profile_depths = np.asarray(prof['z'], dtype=float)
+                for name in profile_names:
+                    if depth_dim in self.Dataset[self.variable_mapping[name]].dims:
+                        p = np.ma.asarray(prof[name])
+                        if p.ndim == 2 and p.shape[1] == n:
+                            bad = (~valid[None, :] |
+                                   (profile_depths[:, None] < -np.ma.filled(H, np.nan)[None, :]))
+                            source_z, source_mask = source_profiles[name]
+                            for kk, zval in enumerate(profile_depths):
+                                match = np.flatnonzero(np.isclose(source_z, zval, atol=1.e-7))
+                                if not len(match):
+                                    bad[kk, :] = True
+                                else:
+                                    bad[kk, :] |= ~source_mask[int(match[0]), :]
+                            prof[name] = np.ma.masked_where(bad, np.ma.masked_invalid(p))
+            snapshots.append((sampled, prof))
+        if len(snapshots) == 1:
+            return snapshots[0]
+        alpha = (time - before).total_seconds() / (after - before).total_seconds()
+        p0, pr0 = snapshots[0]
+        p1, pr1 = snapshots[1]
+        values = {name: np.ma.masked_invalid(
+            (1 - alpha) * np.ma.asarray(p0[name]) +
+            alpha * np.ma.asarray(p1[name])) for name in names}
+        if profiles is None:
+            return values, None
+        if pr0 is None or pr1 is None or not np.array_equal(pr0['z'], pr1['z']):
+            raise ValueError('Incompatible CF native temporal profile levels')
+        output_profiles = {'z': np.asarray(pr0['z']).copy()}
+        for name in profile_names:
+            output_profiles[name] = np.ma.masked_invalid(
+                (1 - alpha) * np.ma.asarray(pr0[name]) +
+                alpha * np.ma.asarray(pr1[name]))
+        return values, output_profiles
 
     def get_variables(self, requested_variables, time=None,
                       x=None, y=None, z=None,
