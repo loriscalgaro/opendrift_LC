@@ -940,7 +940,7 @@ class Reader(UnstructuredReader):
                     invalid_depth, np.ma.asarray(variables[var]))
                 if (self._wetdry_config is not None and
                         var in ('x_sea_water_velocity', 'y_sea_water_velocity')):
-                    # R13: the optional categorical dry-current override is
+                    # The optional categorical dry-current override is
                     # strictly restricted to native horizontal currents.
                     # Noncurrent fields retain the exact legacy native sample
                     # and its geometry/missing masks, without categorical
@@ -1089,7 +1089,7 @@ class Reader(UnstructuredReader):
                                                            original_values)
         return environment, profile_data
 
-    def _r13_exact_snapshot(self, variables, profiles, profiles_depth,
+    def _native_wetdry_exact_time_snapshot(self, variables, profiles, profiles_depth,
                             time, reader_x, reader_y, z):
         env, profile = self._get_variables_interpolated_native_snapshot(
             variables, profiles, profiles_depth, time, reader_x, reader_y, z)
@@ -1109,7 +1109,7 @@ class Reader(UnstructuredReader):
             values = np.ma.masked_invalid(np.ma.asarray(env[v]))
             valid = (~np.ma.getmaskarray(values)) & np.isfinite(np.ma.getdata(values))
             if values.shape != state.shape:
-                raise ValueError('R13 exact-time state/current shape mismatch')
+                raise ValueError('Native exact-time state/current shape mismatch')
             is_bary = self._horizontal_interpolation == 'barycentric'
             # Nearest mode is unchanged. In opt-in barycentric mode only, the
             # UNKNOWN current was already replaced by operational zero in the
@@ -1142,14 +1142,14 @@ class Reader(UnstructuredReader):
         has_dynamic = any(self._variable_has_time_dimension(v)
                           for v in names + profile_names)
         if not has_dynamic or not self.has_time:
-            return self._r13_exact_snapshot(
+            return self._native_wetdry_exact_time_snapshot(
                 variables, profiles, profiles_depth, time, reader_x, reader_y, z)
         nearest, before, after, nearest_i, before_i, after_i = self.nearest_time(time)
         if before is None or after is None or before == after or time == before:
-            return self._r13_exact_snapshot(
+            return self._native_wetdry_exact_time_snapshot(
                 variables, profiles, profiles_depth, time, reader_x, reader_y, z)
         if time == after:
-            return self._r13_exact_snapshot(
+            return self._native_wetdry_exact_time_snapshot(
                 variables, profiles, profiles_depth, time, reader_x, reader_y, z)
         alpha = (time - before).total_seconds() / (after - before).total_seconds()
         if not 0.0 < alpha < 1.0:
@@ -1159,7 +1159,7 @@ class Reader(UnstructuredReader):
         e1,p1 = self._get_variables_interpolated_native_snapshot(
             variables, profiles, profiles_depth, after, reader_x, reader_y, z)
         result = {}
-        r13_states = None
+        native_wetdry_bracket_states = None
         current_fields = {'x_sea_water_velocity', 'y_sea_water_velocity'} & (set(names) | set(profile_names))
         if self._wetdry_config is not None and current_fields:
             if self._horizontal_interpolation == 'barycentric':
@@ -1170,7 +1170,7 @@ class Reader(UnstructuredReader):
                 nodes = self._nearest_node_(np.atleast_1d(reader_x), np.atleast_1d(reader_y))
                 state0 = self._optional_wet_state(before_i, nodes)
                 state1 = self._optional_wet_state(after_i, nodes)
-            r13_states = (state0, state1)
+            native_wetdry_bracket_states = (state0, state1)
         self._last_dry_current_provenance = {}
         for v in names:
             if not self._variable_has_time_dimension(v):
@@ -1178,13 +1178,13 @@ class Reader(UnstructuredReader):
                 continue
             left = np.ma.masked_invalid(np.ma.asarray(e0[v]))
             right = np.ma.masked_invalid(np.ma.asarray(e1[v]))
-            if v not in current_fields or r13_states is None:
+            if v not in current_fields or native_wetdry_bracket_states is None:
                 result[v] = np.ma.masked_invalid((1.0-alpha)*left + alpha*right)
                 continue
-            st0, st1 = r13_states
+            st0, st1 = native_wetdry_bracket_states
             st0, st1 = np.asarray(st0),np.asarray(st1)
             if left.shape != st0.shape or right.shape != st1.shape:
-                raise ValueError('R13 source-status/current shape mismatch')
+                raise ValueError('Native source-status/current shape mismatch')
             valid0 = (~np.ma.getmaskarray(left)) & np.isfinite(np.ma.getdata(left))
             valid1 = (~np.ma.getmaskarray(right)) & np.isfinite(np.ma.getdata(right))
             # Only the opted-in barycentric D19 policy maps UNKNOWN to an
@@ -1248,12 +1248,12 @@ class Reader(UnstructuredReader):
             profile0=np.ma.masked_invalid(np.ma.asarray(p0[v])[ii0,:])
             profile1=np.ma.masked_invalid(np.ma.asarray(p1[v])[ii1,:])
             linear_profile=(1-alpha)*profile0 + alpha*profile1
-            if r13_states is None or v not in current_fields:
+            if native_wetdry_bracket_states is None or v not in current_fields:
                 out[v]=np.ma.masked_invalid(linear_profile)
                 continue
-            st0, st1=r13_states
+            st0, st1=native_wetdry_bracket_states
             if profile0.shape[1] != len(st0) or profile1.shape[1] != len(st1):
-                raise ValueError('R13 native current profile/node dimension mismatch')
+                raise ValueError('Native current profile/node dimension mismatch')
             is_bary = self._horizontal_interpolation == 'barycentric'
             eff0=np.where(st0<0,0,st0) if is_bary else st0
             eff1=np.where(st1<0,0,st1) if is_bary else st1
