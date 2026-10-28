@@ -496,7 +496,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         'f_OC_sed': {'fallback': _ENV_NEGATIVE_SENTINEL},                                        # gOC/g
     }
     DIRECT_CURRENT_STRESS_REQUIRED_VARIABLES = {
-        # Optional preferred hydro-model current bed stress
+        # Explicit DIRECT hydro-model current bed stress
         'sea_floor_current_stress': {'fallback': -1.0, 'important': False},    # Pa
         # Finite negative fallback is used as physically invalid sentinel and is therefore rejected explicitly by
         # _direct_current_stress_array() at runtime
@@ -1280,7 +1280,16 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             'chemical:sediment:stress_param_mode': {'type': 'enum',
                 'enum': ['LOG_Z0', 'MANNING', 'CHEZY', 'WHITE_COLEBROOK', 'GRAIN_D50'],
                 'default': 'LOG_Z0', 'level': CONFIG_LEVEL_ESSENTIAL,
-                'description': 'Bed-stress parameterization. Use direct hydro-model bed stress if available; otherwise use the selected fallback mode.'},
+                'description': 'Calculated-current bed-stress parameterization. Used only when chemical:sediment:current_stress_source=CALCULATED.'},
+            'chemical:sediment:current_stress_source': {'type': 'enum',
+                'enum': ['CALCULATED', 'DIRECT'], 'default': 'CALCULATED',
+                'level': CONFIG_LEVEL_BASIC,
+                'description':
+                    'CALCULATED derives current-only bed stress using stress_param_mode, '
+                    'even if a reader also advertises sea_floor_current_stress. '
+                    'DIRECT requires a reader supplying sea_floor_current_stress; '
+                    'an absent source or invalid local value is an error, with no '
+                    'automatic switch to CALCULATED.'},
             'chemical:sediment:roughness_length': {'type': 'float', 'default': -1.0,
                 'min': -1.0, 'max': 10, 'units': 'm', 'level': CONFIG_LEVEL_ADVANCED,
                 'description': 'Uniform fallback bottom roughness length z0 [m]. Used only when sea_floor_roughness_length is not supplied by a reader, or to replace invalid reader values. Must be > 0 when used.'},
@@ -2049,10 +2058,11 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             if bool(self.get_config('chemical:transformations:Hydrolysis')):
                 req.update(self.HYDROLYSIS_REQUIRED_VARIABLES)
         # Permeability-driven O2 dispersion needs current shear even when
-        # deposition and resuspension are both disabled. Request only current
-        # stress inputs here; wave/other stress remains unrelated to this path.
+        # deposition and resuspension are both disabled. Request only the
+        # EXPLICITLY selected current-stress source; presence of a reader's
+        # sea_floor_current_stress field cannot override CALCULATED mode.
         if oxygen_dispersion_active:
-            if bool(getattr(self, '_direct_current_stress_reader_available', False)):
+            if self._current_stress_source() == 'DIRECT':
                 req.update(self.DIRECT_CURRENT_STRESS_REQUIRED_VARIABLES)
             else:
                 if stress_mode in ('LOG_Z0', 'GRAIN_D50'):
@@ -2069,12 +2079,12 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         if sediment_exchange_enabled:
             req.update(self.SEDIMENT_EXCHANGE_REQUIRED_VARIABLES)
 
-            # Direct current bed stress is an optional preferred source.  Its
-            # reader availability is resolved once in prepare_run(); only then is
-            # it promoted into the runtime required-variable subset.  If no reader
-            # supplies it, compute_bottom_shear_stress() uses the selected
-            # calculated-current parameterization instead.
-            if bool(getattr(self, '_direct_current_stress_reader_available', False)):
+            # Current stress is an explicit configuration choice. Only DIRECT
+            # requests sea_floor_current_stress; CALCULATED never loads it as
+            # current-stress forcing, even if a reader advertises that field.
+            # Missing DIRECT reader capability is rejected before this registry
+            # is constructed by _resolve_current_stress_source().
+            if self._current_stress_source() == 'DIRECT':
                 req.update(self.DIRECT_CURRENT_STRESS_REQUIRED_VARIABLES)
 
             if stress_mode in ('LOG_Z0', 'GRAIN_D50'):
@@ -3409,6 +3419,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             forcing = self._resolved_wave_forcing_names()
             attrs.update({
                 'chemical_element_size_state': 'diameter_only',
+                'chemical_current_stress_source': self._current_stress_source(),
                 'chemical_wave_stress_source': self._wave_stress_source(),
                 'chemical_wave_spectrum_family': forcing['family'],
                 'chemical_wave_height_variable': forcing['height'],
@@ -3434,8 +3445,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         ``required_variables`` before entering ``OceanDrift.run()`` if they are
         to be stored in the trajectory NetCDF as well as used by the physics.
 
-        Reader-dependent source choices include the optional direct current
-        bed stress and the optional directional other-stress pair. Keeping source
+        Reader-dependent checks include explicit DIRECT current-bed-stress
+        availability and the optional directional other-stress pair. Keeping source
         resolution here makes the pre-run and ``prepare_run()`` paths identical
         and idempotent.
         """
@@ -3452,8 +3463,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         ``BaseModel.run()`` creates ``self.result`` from the then-current
         ``required_variables`` before it calls ``prepare_run()``. Resolving the
-        optional direct-current-stress source here ensures that a reader-supplied
-        ``sea_floor_current_stress`` field is included in that output schema.
+        explicitly selected DIRECT current-stress source here ensures that
+        ``sea_floor_current_stress`` is loaded only for DIRECT mode.
         """
         canonical_checkpoint = bool(kwargs.pop('canonical_final_checkpoint', False))
         self._resolve_reader_dependent_requirements()
@@ -8345,40 +8356,50 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             raise ValueError('Hydraulic-radius fallback contains non-finite water depth.')
         return np.maximum(radius, 1e-12)
 
+    def _current_stress_source(self):
+        """Return explicitly selected current-stress source (no AUTO mode)."""
+        source = self.get_config('chemical:sediment:current_stress_source')
+        if source not in ('CALCULATED', 'DIRECT'):
+            raise ValueError(f'Unknown current_stress_source: {source!r}')
+        return source
+
     def _resolve_current_stress_source(self):
-        """Resolve the optional direct-current-stress source once per run.
+        """Freeze the explicit current-stress source and check DIRECT capability.
 
-        Reader capability belongs to prepare_run(), not to the timestep physics.
-        If an attached reader advertises ``sea_floor_current_stress``, DIRECT is
-        selected for the run.  Otherwise the configured current-stress
-        parameterization is used.  Invalid/missing local DIRECT values never
-        trigger a fallback; they are rejected explicitly at runtime.
+        A reader advertising sea_floor_current_stress never switches a
+        CALCULATED run to DIRECT. Explicit DIRECT always requires an attached
+        reader, even if no current-stress process is active; an absent source
+        is a configuration error. Local invalid/missing DIRECT values still
+        raise during physics and never fall back to CALCULATED.
         """
-        sediment_exchange_enabled = bool(
-            self.get_config('chemical:sediment:enable_deposition') or
-            self.get_config('chemical:sediment:enable_resuspension')
-        )
-        current_stress_needed = bool(
-            sediment_exchange_enabled or self._oxygen_permeability_dispersion_active()
-        )
-        has_direct = bool(
-            current_stress_needed and
-            self._has_reader_variable('sea_floor_current_stress')
-        )
-        self._direct_current_stress_reader_available = has_direct
-        self._current_stress_source = 'DIRECT' if has_direct else 'CALCULATED'
+        source = self._current_stress_source()
+        has_reader = self._has_reader_variable('sea_floor_current_stress')
+        if source == 'DIRECT' and not has_reader:
+            raise ValueError(
+                "chemical:sediment:current_stress_source='DIRECT' requires "
+                "an attached reader supplying sea_floor_current_stress. "
+                "No reader advertises that variable; choose CALCULATED or "
+                "attach the required direct-stress reader.")
 
+        # This flag is consumed only by the existing direct-stress accessor.
+        # It denotes explicit, preflight-validated DIRECT selection, not
+        # automatic reader preference.
+        self._direct_current_stress_reader_available = source == 'DIRECT'
+        self._resolved_current_stress_source = source
+        current_stress_needed = bool(
+            self.get_config('chemical:sediment:enable_deposition') or
+            self.get_config('chemical:sediment:enable_resuspension') or
+            self._oxygen_permeability_dispersion_active()
+        )
         if current_stress_needed:
-            if has_direct:
-                logger.info(
-                    'Current bed-stress source=DIRECT (reader-supplied '
-                    'sea_floor_current_stress).')
+            if source == 'DIRECT':
+                logger.info('Current bed-stress source=DIRECT (reader-supplied '
+                            'sea_floor_current_stress).')
             else:
-                logger.info(
-                    'Current bed-stress source=CALCULATED (mode=%s); no reader '
-                    'supplies sea_floor_current_stress.',
-                    self.get_config('chemical:sediment:stress_param_mode'))
-        return self._current_stress_source
+                logger.info('Current bed-stress source=CALCULATED (mode=%s); '
+                            'reader-supplied direct stress is ignored.',
+                            self.get_config('chemical:sediment:stress_param_mode'))
+        return source
 
     def _resolve_other_stress_source(self):
         """Resolve the optional directional other-stress source as one pair.
@@ -8440,8 +8461,12 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         reject missing, non-finite or negative stresses before they enter the
         physics.  Zero is a valid stress magnitude.
         """
-        if not bool(getattr(self, '_direct_current_stress_reader_available', False)):
+        if self._current_stress_source() == 'CALCULATED':
             return None
+        if not bool(getattr(self, '_direct_current_stress_reader_available', False)):
+            raise RuntimeError(
+                'DIRECT current stress must pass reader-availability preflight '
+                'before use; call _resolve_current_stress_source() in run().')
 
         name = 'sea_floor_current_stress'
         raw = getattr(self.environment, name, None)
@@ -9462,14 +9487,14 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
     def compute_bottom_shear_stress(self, idx=None, current_only=False):
         """
-        Compute bed shear stress.
-          1) use direct hydro-model current bed stress if available: sea_floor_current_stress
-          2) otherwise:
+        Compute bed shear stress using chemical:sediment:current_stress_source.
+          DIRECT: use reader-supplied sea_floor_current_stress, strictly required.
+          CALCULATED: ignore that variable even if advertised by a reader;
              - LOG_Z0 / GRAIN_D50 use bottom-layer velocity
                (x/y_bottom_sea_water_velocity) at z_ref = 0.5 * bottom_layer_thickness
              - MANNING / CHEZY / WHITE_COLEBROOK use depth-averaged velocity
                (x/y_depth_averaged_sea_water_velocity) with hydraulic_radius
-               (or sea depth as fallback approximation)
+               (or sea depth as fallback approximation).
 
         Wave stress uses the selected CALCULATED (default) or DIRECT source.
         When current_only=True, wave and other stresses are excluded. This path
@@ -9568,9 +9593,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         z0_default = None
 
-        # Preferred path: direct hydro-model current bed stress, but only when
-        # its reader was resolved as available once in prepare_run().  Runtime
-        # logic validates local values only and never re-checks reader capability.
+        # The explicitly selected DIRECT path uses source values validated
+        # as available at preflight. CALCULATED always returns None here, even
+        # when sea_floor_current_stress is advertised by an attached reader.
         tau_c = self._direct_current_stress_array(idx=idx)
 
         if tau_c is not None:
@@ -9643,7 +9668,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 if u_b is None or v_b is None:
                     raise ValueError(
                         f"{Param_mode} requires x_bottom_sea_water_velocity and "
-                        f"y_bottom_sea_water_velocity when sea_floor_current_stress is unavailable.")
+                        f"y_bottom_sea_water_velocity with current_stress_source=CALCULATED.")
 
                 u_b = np.asarray(u_b, dtype=float)
                 v_b = np.asarray(v_b, dtype=float)
@@ -9687,7 +9712,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 if u_da is None or v_da is None:
                     raise ValueError(
                         f"{Param_mode} requires x_depth_averaged_sea_water_velocity and "
-                        f"y_depth_averaged_sea_water_velocity when sea_floor_current_stress is unavailable.")
+                        f"y_depth_averaged_sea_water_velocity with current_stress_source=CALCULATED.")
 
                 u_da = np.asarray(u_da, dtype=float)
                 v_da = np.asarray(v_da, dtype=float)
