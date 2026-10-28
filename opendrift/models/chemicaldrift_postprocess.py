@@ -640,7 +640,7 @@ class ChemicalDriftPostProcessMixin:
            Use this for structured curvilinear grids defined in projected coordinates,
            especially when cell centers are known but a simple 1D x/y axis does not exist.
 
-        5) Triangular unstructured mesh (best for FVCOM/SHYFEM-like triangular grids)
+        5) Triangular unstructured mesh (native triangular face/node grids)
            Use `face_node_connectivity` plus either:
              - `node_lon` and `node_lat`, or
              - `node_x` and `node_y` (then `density_proj` is required).

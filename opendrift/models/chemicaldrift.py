@@ -1693,12 +1693,12 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 != 'NONE'
         )
 
-    # ADR-CD-SED-001: model-owned physical sampling domains. This registry is
-    # deliberately independent of reader identity, SHYFEM layer numbers and
+    # CD-SED-001: model-owned physical sampling domains. This registry is
+    # deliberately independent of reader identity, native layer indices and
     # the OpenDrift ``profiles`` request hint. A single sediment active layer
     # owns spatially 2-D properties; genuine porewater sediment 3-D modelling
     # would require a separately declared sediment vertical coordinate.
-    _ADR_SEABED_2D = frozenset((
+    _SEABED_2D_VARIABLES = frozenset((
         'pH_sediment', 'f_OC_sed', 'foc_sed',
         'active_sediment_layer_thickness',
         'interaction_sediment_layer_thickness',
@@ -1714,12 +1714,12 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         'sea_floor_roughness_length', 'sea_floor_d50',
         'sea_floor_erodibility_M', 'sea_floor_resuspension_critstress',
     ))
-    _ADR_BOTTOM_WATER_DRIVERS = frozenset((
+    _SEDIMENT_BOTTOM_WATER_DRIVERS = frozenset((
         'sea_water_temperature', 'sea_water_salinity',
         'sea_water_ph_reported_on_total_scale',
         'mole_concentration_of_dissolved_molecular_oxygen_in_sea_water',
     ))
-    _ADR_VERTICAL_NAMES = frozenset((
+    _SEABED_SOURCE_VERTICAL_DIMS = frozenset((
         'z', 'depth', 'lev', 'level', 'levels', 'sigma', 's_rho',
         's_w', 'nlevels', 'nz', 'layer', 'layers', 'depthu', 'depthv',
     ))
@@ -1727,17 +1727,17 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
     @classmethod
     def chemicaldrift_sampling_domain(cls, name, *, sediment_process=False):
         """Physical meaning belongs to ChemicalDrift, not the attached reader."""
-        if name in cls._ADR_SEABED_2D:
+        if name in cls._SEABED_2D_VARIABLES:
             return 'SEABED_2D'
-        if sediment_process and name in cls._ADR_BOTTOM_WATER_DRIVERS:
+        if sediment_process and name in cls._SEDIMENT_BOTTOM_WATER_DRIVERS:
             return 'BOTTOM_WATER_3D'
         return 'WATER_COLUMN_3D'
 
     @classmethod
-    def _adr_source_dimension(cls, reader, name):
+    def _seabed_source_dimension(cls, reader, name):
         """Read per-variable dimensions from generic xarray/netCDF metadata.
 
-        No SHYFEM reader class, vertical-index convention or interpolation
+        No reader class, vertical-index convention or interpolation
         implementation is hard-coded here. Uninspectable sources fail closed.
         Single-level water-column variables remain water-column variables.
         """
@@ -1763,7 +1763,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         field = variables[native]
         dims = tuple(getattr(field, 'dims',
                       getattr(field, 'dimensions', ())))
-        vertical = set(cls._ADR_VERTICAL_NAMES)
+        vertical = set(cls._SEABED_SOURCE_VERTICAL_DIMS)
         axes = getattr(reader, 'dimensions', None) or {}
         if isinstance(axes, dict) and isinstance(axes.get('z'), str):
             vertical.add(axes['z'].lower())
@@ -1790,36 +1790,36 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             return 'UNKNOWN', f'{native}: no declared source dimensions'
         return '2D', f'{native}: horizontal/time dimensions {dims}'
 
-    def _adr_reader_signature(self):
+    def _seabed_reader_signature(self):
         mgr = self.env
         return tuple(sorted(
             (v, rname, id(mgr.readers.get(rname)))
-            for v in self._ADR_SEABED_2D
+            for v in self._SEABED_2D_VARIABLES
             for rname in mgr.priority_list.get(v, ())))
 
-    def _adr_validate_seabed_sources(self):
+    def _validate_seabed_sources(self):
         """Validate each attached sediment source before physics and on change."""
         report = {}
-        for name in sorted(self._ADR_SEABED_2D & self.required_variables.keys()):
+        for name in sorted(self._SEABED_2D_VARIABLES & self.required_variables.keys()):
             for reader_name in self.env.priority_list.get(name, ()):
                 reader = self.env.readers.get(reader_name)
                 if reader is None:
-                    raise RuntimeError(f'ADR_CD_SED_001 reader {reader_name} missing')
-                kind, explanation = self._adr_source_dimension(reader, name)
+                    raise RuntimeError(f'CD_SED_001 reader {reader_name} missing')
+                kind, explanation = self._seabed_source_dimension(reader, name)
                 if kind not in ('2D', '2D_CONSTANT', '2D_ARRAY', '2D_DECLARED'):
-                    raise ValueError(f'ADR_CD_SED_001 SEABED_2D rejects '
+                    raise ValueError(f'CD_SED_001 SEABED_2D rejects '
                         f'{name} from {reader_name}: {kind}, {explanation}')
                 report[(name, reader_name)] = explanation
-        self._adr_seabed_signature = self._adr_reader_signature()
-        self._adr_seabed_admission = report
+        self._seabed_source_signature = self._seabed_reader_signature()
+        self._seabed_source_admission = report
         return report
 
-    def _adr_ensure_seabed_sources_current(self):
-        if getattr(self, '_adr_seabed_signature', None) != self._adr_reader_signature():
-            return self._adr_validate_seabed_sources()
-        return self._adr_seabed_admission
+    def _ensure_seabed_sources_current(self):
+        if getattr(self, '_seabed_source_signature', None) != self._seabed_reader_signature():
+            return self._validate_seabed_sources()
+        return self._seabed_source_admission
 
-    def _adr_get_environment_isolated(self, names, z):
+    def _sample_environment_isolated(self, names, z):
         """Source-time model-level sampling, with untouched manager provenance.
 
         This is an independent lookup; it never writes `elements.z` or overwrites
@@ -1829,7 +1829,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         n = int(self.num_elements_active())
         z = np.asarray(z, dtype=float)
         if z.shape != (n,) or np.any(~np.isfinite(z)):
-            raise ValueError('ADR_CD_SED_001 invalid semantic sample positions')
+            raise ValueError('CD_SED_001 invalid semantic sample positions')
         keys = ('last_environment_provenance',
                 'last_environment_profile_provenance',
                 'last_environment_provenance_sources',
@@ -1850,7 +1850,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 value = np.ma.asarray(env[name], dtype=float).filled(np.nan)
                 codes = provenance.get(name)
                 if value.shape != (n,) or codes is None or np.shape(codes) != (n,):
-                    raise RuntimeError(f'ADR_CD_SED_001 {name} missing sample/provenance')
+                    raise RuntimeError(f'CD_SED_001 {name} missing sample/provenance')
                 codes = np.asarray(codes, dtype=np.uint8)
                 # Missing reader data cannot be converted into invented physical
                 # sediment or bottom-water values. The existing policy-level
@@ -1872,23 +1872,23 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 setattr(mgr, key, val)
             mgr.last_environment_provenance_time = original_time
 
-    def _adr_refresh_semantic_environment(self):
+    def _refresh_sediment_sampling_environment(self):
         """Build separate per-step seabed and bottom-water sample caches."""
-        self._adr_ensure_seabed_sources_current()
+        self._ensure_seabed_sources_current()
         n = int(self.num_elements_active())
         # No permanent result cache: new positions and times re-sample sources.
-        self._adr_seabed_values = {}
-        self._adr_seabed_provenance = {}
-        self._adr_bottom_water_values = {}
-        self._adr_bottom_water_provenance = {}
+        self._seabed_environment_values = {}
+        self._seabed_environment_provenance = {}
+        self._sediment_bottom_water_values = {}
+        self._sediment_bottom_water_provenance = {}
         if not n:
             return
-        seabed = sorted(v for v in self._ADR_SEABED_2D
+        seabed = sorted(v for v in self._SEABED_2D_VARIABLES
                         if v in self.required_variables and
                         self._has_reader_variable(v))
         if seabed:
-            (self._adr_seabed_values,
-             self._adr_seabed_provenance) = self._adr_get_environment_isolated(
+            (self._seabed_environment_values,
+             self._seabed_environment_provenance) = self._sample_environment_isolated(
                 seabed, np.asarray(self.elements.z, dtype=float).copy())
         # Sediment states only: a bottom-water sample must never replace the
         # ordinary water-column environment for other chemical species.
@@ -1897,7 +1897,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             if hasattr(self, attr)]
         if not sedids or not np.any(np.isin(self.elements.specie, sedids)):
             return
-        drivers = sorted(v for v in self._ADR_BOTTOM_WATER_DRIVERS
+        drivers = sorted(v for v in self._SEDIMENT_BOTTOM_WATER_DRIVERS
                          if v in self.required_variables and
                          self._has_reader_variable(v))
         if not drivers:
@@ -1907,38 +1907,38 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         bathy = np.asarray(self._env_array(
             'sea_floor_depth_below_sea_level'), dtype=float)
         if bathy.shape != (n,) or np.any(~np.isfinite(bathy)):
-            raise RuntimeError('ADR_CD_SED_001 unverified seabed depth')
+            raise RuntimeError('CD_SED_001 unverified seabed depth')
         # Epsilon is strictly inside the wet water column and never crosses
         # into the sediment; it is not an arbitrary source-layer index.
         dz = np.minimum(1.e-5, depth * 0.1)
-        # Native SHYFEM z is referenced to the instantaneous sea surface.
-        # The physically wet bed is therefore at -(bathymetry + eta) = -depth.
-        # Never change elements.z; this coordinate is for this request only.
+        # ChemicalDrift requests depths relative to the instantaneous sea
+        # surface: the wet bed is at -(bathymetry + eta) = -depth. Each reader
+        # handles its own native vertical coordinates. Do not move elements.z.
         zbottom = -depth + dz
         if np.any(zbottom <= -depth):
             zbottom = np.nextafter(-depth, np.inf)
         if np.any(zbottom >= 0.0):
-            raise ValueError('ADR_CD_SED_001 bottom position is outside wet column')
-        bottom, bottom_provenance = self._adr_get_environment_isolated(
+            raise ValueError('CD_SED_001 bottom position is outside wet column')
+        bottom, bottom_provenance = self._sample_environment_isolated(
             drivers, zbottom)
         sediment_mask = np.isin(self.elements.specie, sedids)
         for name, values in bottom.items():
             if np.any(~np.isfinite(values[sediment_mask])):
-                raise RuntimeError(f'ADR_CD_SED_001 {name} invalid bottom-water '
+                raise RuntimeError(f'CD_SED_001 {name} invalid bottom-water '
                                    'reader value for sediment particles')
-        self._adr_bottom_water_values = bottom
-        self._adr_bottom_water_provenance = bottom_provenance
+        self._sediment_bottom_water_values = bottom
+        self._sediment_bottom_water_provenance = bottom_provenance
 
-    def _adr_sediment_driver_array(self, name, fallback=None, idx=None):
+    def _sediment_bottom_water_array(self, name, fallback=None, idx=None):
         """Use a separate bottom-water sample only for sediment chemistry."""
         if self.chemicaldrift_sampling_domain(name, sediment_process=True) != 'BOTTOM_WATER_3D':
             raise ValueError(f'{name} is not a bottom-water driver')
-        cache = getattr(self, '_adr_bottom_water_values', {})
+        cache = getattr(self, '_sediment_bottom_water_values', {})
         if name in cache:
             a = cache[name]
             return a if idx is None else a[np.asarray(idx, dtype=np.int64).ravel()]
         if self._has_reader_variable(name):
-            raise RuntimeError(f'ADR_CD_SED_001 missing qualified bottom-water sample: {name}')
+            raise RuntimeError(f'CD_SED_001 missing qualified bottom-water sample: {name}')
         # Explicitly absent reader: preserve the historic model config fallback.
         return self._env_array(name, fallback, idx=idx)
 
@@ -3550,7 +3550,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 # Reporting must never hide the model's primary result/error.
                 logger.warning('Could not finalize environment data-quality report: %s', exc)
 
-    def _t1251_qualify_final_buffer_geometry(self):
+    def _qualify_final_checkpoint_geometry(self):
         """Re-read source-valid current-time geometry for final output only.
 
         The final BaseModel buffer can run after RK velocity-only sampling has
@@ -3603,7 +3603,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             getattr(self.environment, name)[:] = accepted[name]
 
     def state_to_buffer(self, final=False):
-        """Keep saved TWL sediment state co-located with the sampled seabed.
+        """Keep saved sediment state co-located with the instantaneous seabed.
 
         OpenDrift normally serializes the present frame before ChemicalDrift's
         chemical update. In a deepening tidal column, the last-update bed
@@ -3617,7 +3617,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 self.num_elements_active() > 0 and
                 getattr(self, 'environment', None) is not None):
             if final:
-                self._t1251_qualify_final_buffer_geometry()
+                self._qualify_final_checkpoint_geometry()
             self._anchor_sediment_to_instantaneous_bed()
         # Capture the live, *unrounded* mass budget at the same pre-update
         # instant as the trajectory frame.  It is NOT reconstructed from
@@ -3762,7 +3762,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         return h.hexdigest()
 
     def _append_numpy_random_checkpoint(self, ds):
-        """Write the global NumPy RandomState only for a canonical TWL snapshot.
+        """Write the global NumPy RandomState only for a canonical checkpoint.
 
         Single-model, single-process continuity contract; no changes to the
         chemical random mechanism or element identity.  Does not certify other
@@ -4136,9 +4136,10 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                     return '3D', f'{native}: explicit native sigma interpolation ({dim})'
                 return 'UNKNOWN', f'{native}: native sigma interpolation not attested'
             return 'UNKNOWN', f'{native}: 3D dimension {dim} without supported native vertical interpolation'
-        # Scoped SHYFEM A5 bridge: its native netCDF4 Dataset uses lowercase
-        # `dataset`, rather than the xarray `Dataset` exposed by CF readers.
-        # Inspect the actual mapped native variable, not the global reader.z.
+        # Native netCDF4-backed readers may expose lowercase `dataset` rather
+        # than xarray `Dataset`. The explicit native layer-bottom metadata
+        # identifies this supported path. Inspect the mapped variable's
+        # dimensions, not the reader-wide z coordinate.
         native_ds = getattr(reader, 'dataset', None)
         if (native_ds is not None and hasattr(native_ds, 'variables')
                 and isinstance(mapping, dict)
@@ -4240,12 +4241,12 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("Transfer rates:\n%s", self.transfer_rates)
 
-        # T9.2.1.4: validate dimensionality separately for DOC and SPM
+        # Validate dimensionality separately for DOC and SPM
         # before any simulation chemistry/transport takes place.
         self._validate_doc_spm_reader_dimensions()
-        self._adr_validate_seabed_sources()
+        self._validate_seabed_sources()
 
-        # T9.2: A CF reader caches a z-subset on first sampling. For reader-
+        # A CF reader may cache a z-subset on first sampling. For reader-
         # supplied 3D SPM/DOC, the default verticalbuffer=1 can preserve an
         # incomplete cached column after an element changes depth. Fetch the
         # complete fixed-z profile for these specific reader instances.
@@ -4735,33 +4736,33 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             ds_for_seed, trajectory_time_index, keep_properties)
         self._validate_restart_model_state(restart_state)
 
-        # F4 bounded repair: retain genuine saved previous sea-level samples.
+        # Preserve authentic preceding sea-surface elevation across restart.
         # The first resumed step starts at an existing checkpoint, not a new
         # simulation origin.  Reuse the preceding saved output frame, never a
-        # guessed eta=0 or a substituted SHYFEM sample.  Missing history is
-        # a hard error for TWL restart, not permission to invent a value.
+        # guessed eta=0 or an unverified resampled value. Missing history is
+        # a restart error, not permission to invent a value.
         restart_previous_eta = None
         if keep_properties and self.get_config('drift:water_column_stretching'):
             if ('sea_surface_height' not in ds_for_seed or
                     'age_seconds' not in ds_for_seed):
-                raise ValueError('TWL restart requires saved eta and particle ages')
+                raise ValueError('Water-column-stretching restart requires saved sea-surface elevation and particle ages')
             total_frames = int(ds_for_seed.sizes.get('time', 0))
             tindex = (trajectory_time_index if trajectory_time_index >= 0
                       else total_frames + trajectory_time_index)
             if not 1 <= tindex < total_frames:
-                raise ValueError('TWL restart requires preceding authentic output frame')
+                raise ValueError('Water-column-stretching restart requires an authentic preceding output frame')
             active = np.asarray(ds_for_seed['age_seconds'].isel(time=tindex).values) >= 0
             restart_previous_eta = np.ma.asarray(
                 ds_for_seed['sea_surface_height'].isel(time=tindex-1).values,
                 dtype=float).filled(np.nan)[active].copy()
             if (not restart_previous_eta.size or
                     np.any(~np.isfinite(restart_previous_eta))):
-                raise ValueError('TWL restart previous-eta samples missing or invalid')
+                raise ValueError('Restart previous sea-surface elevation samples are missing or invalid')
 
         # Saved sediment-carrier diameter is persistent Lagrangian state.
         # This flag applies only while OpenDrift copies an existing checkpoint;
         # all genuine new seeding keeps the original bed-d50 sentinel policy.
-        self._t1251_restoring_saved_carriers = bool(keep_properties)
+        self._restoring_checkpoint_carriers = bool(keep_properties)
         try:
             super(ChemicalDrift, self).seed_from_dataset(
                 ds_for_seed,
@@ -4770,7 +4771,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 keep_properties=keep_properties,
                 **kwargs)
         finally:
-            self._t1251_restoring_saved_carriers = False
+            self._restoring_checkpoint_carriers = False
 
         self._restore_restart_model_state(restart_state)
         # Source-qualified wet-column restart must retain the original
@@ -4817,8 +4818,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             self._checkpoint_initial_mass_ug = stranded_carry['initial']
         if restart_previous_eta is not None:
             if restart_previous_eta.size != self.num_elements_scheduled():
-                raise ValueError('Saved TWL eta size differs from restarted particles')
-            self._t1251_restart_previous_eta = restart_previous_eta
+                raise ValueError('Saved sea-surface elevation count differs from restarted particles')
+            self._restart_previous_sea_surface_height = restart_previous_eta
         # Restore only after the parent has completed native active-only
         # seeding.  This preserves the genuine next stochastic event stream;
         # renumbering the active elements remains OpenDrift's intended policy.
@@ -4829,22 +4830,22 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 np.random.set_state(rng_checkpoint)
 
     def update_previous_state(self):
-        """Preserve real previous eta for exactly the first resumed F4 step."""
+        """Preserve authentic preceding sea-surface elevation for the first resumed step."""
         super(ChemicalDrift, self).update_previous_state()
-        saved_eta = getattr(self, '_t1251_restart_previous_eta', None)
+        saved_eta = getattr(self, '_restart_previous_sea_surface_height', None)
         if saved_eta is None:
             return
         previous = getattr(self, 'environment_previous', None)
         if previous is None or 'sea_surface_height' not in previous:
-            raise RuntimeError('TWL restart previous-environment buffer missing')
+            raise RuntimeError('Restart previous-environment buffer is missing')
         saved_eta = np.asarray(saved_eta, dtype=float)
         if (saved_eta.size != self.num_elements_active() or
                 np.any(~np.isfinite(saved_eta))):
-            raise ValueError('TWL restart eta history invalid or misaligned')
+            raise ValueError('Restart sea-surface elevation history is invalid or misaligned')
         self.environment_previous = previous.copy(deep=True)
         self.environment_previous['sea_surface_height'].values[:] = saved_eta
-        self._t1251_restart_first_step = True
-        self._t1251_restart_previous_eta = None
+        self._restart_first_step_with_saved_elevation = True
+        self._restart_previous_sea_surface_height = None
 
     def seed_from_file(self, filename, trajectory_time_index=-1, time=None,
                        keep_properties=True, **kwargs):
@@ -5089,7 +5090,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         if sediment_idx:
             mask_sed = np.isin(init_specie, list(sediment_idx))
-            if getattr(self, '_t1251_restoring_saved_carriers', False):
+            if getattr(self, '_restoring_checkpoint_carriers', False):
                 if diam_arr is None:
                     raise ValueError('Checkpoint missing persisted sediment diameter')
                 saved = np.asarray(diam_arr[mask_sed], dtype=float)
@@ -6029,8 +6030,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         env = getattr(self, 'environment', None)
         val = getattr(env, name, None) if env is not None else None
-        if name in self._ADR_SEABED_2D:
-            mapped = getattr(self, '_adr_seabed_values', {})
+        if name in self._SEABED_2D_VARIABLES:
+            mapped = getattr(self, '_seabed_environment_values', {})
             if name in mapped:
                 val = mapped[name]
 
@@ -6075,9 +6076,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         Callers that require physical data can set the strict flags, which
         reject missing provenance or OpenDrift fallback-used cells.
         Non-finite, negative bathymetry and nonpositive H are rejected; dry
-        cells are not silently converted to wet ones. Later TWL-13 work must
-        define the full wet/dry behavior. No global process uses this helper
-        until it is independently integrated in later TWL subtasks.
+        cells are not silently converted to wet ones. Complete wet/dry
+        transitions are outside this geometry helper and require a separate
+        scientifically qualified policy.
         """
         if depth_convention not in ('MEAN_SEA_LEVEL', 'INSTANTANEOUS'):
             raise ValueError(
@@ -6141,14 +6142,14 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         OpenDrift updates environment_previous immediately before update().
         Its first simulation update has no preceding sampled time, so the
         first step MUST NOT be interpreted as a change from eta=0.  This
-        accessor does not move particles: actual stretching is T4.2.
+        accessor does not move particles; water-column stretching is separate.
         """
         if not self.get_config('drift:water_column_stretching'):
             return None
         # Even if an uninitialized buffer contains numerical zeros, there is
         # no physically sampled previous sea level on the first update.
         if (int(getattr(self, 'steps_calculation', 0)) == 0 and not
-                getattr(self, '_t1251_restart_first_step', False)):
+                getattr(self, '_restart_first_step_with_saved_elevation', False)):
             return None
 
         previous = getattr(self, 'environment_previous', None)
@@ -6176,11 +6177,11 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
     def water_column_stretching(self):
         """Stretch eligible suspended particles using exact instantaneous depths.
 
-        The previous and current surface elevations are sampled via the pinned
+        The previous and current surface elevations are sampled through the
         OpenDrift previous-environment lifecycle.  Bathymetry is sampled ONCE
         at the current element position, so bathymetry-gradient changes alone
-        cannot generate spurious stretching.  Sediment anchoring is a distinct
-        T5.1 change; no sediment particle is moved by this T4.2 method.
+        cannot generate spurious stretching.  Sediment anchoring is handled separately; this method
+        does not move sediment-bound particles.
 
         Fail closed if vertical advection could also contain an uncorrected
         surface-elevation displacement.  A complete coupled physical validation
@@ -6233,7 +6234,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         self.elements.z[suspended] = updated
 
     def _refresh_poststretch_native_doc_spm(self, previous_z):
-        """Refresh native 3D DOC/SPM after TWL stretching moves particle z.
+        """Refresh native 3D DOC/SPM after water-column stretching changes particle depth.
 
         Call the Environment manager (never a specific reader) so the normal
         reader priority and fallback decisions remain authoritative. The
@@ -6375,10 +6376,10 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 fields.append(name)
             # 2D remains an exact no-change field.
         if not fields:
-            self._t1241_last_scalar_source_classification = dimensional_provenance
+            self._last_scalar_source_classification = dimensional_provenance
             return 0
 
-        # D18: never pre-veto by nominal reader.z levels/midpoints. Dispatch
+        # Do not reject a source solely by nominal reader.z levels/midpoints. Dispatch
         # original particle coordinates to each native reader; it resolves
         # water-side boundary sampling and reports missing/valid provenance.
         # Atomic refresh below still rejects missing/nonfinite/fallback values.
@@ -6434,7 +6435,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             getattr(self.environment, name)[:] = values
             snapshots['last_environment_provenance'][name] = codes
         manager.last_environment_provenance = snapshots['last_environment_provenance']
-        self._t1241_last_scalar_source_classification = dimensional_provenance
+        self._last_scalar_source_classification = dimensional_provenance
         return len(updates) * int(np.count_nonzero(changed))
 
     def _anchor_sediment_to_instantaneous_bed(self):
@@ -6478,8 +6479,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         return int(idx.size)
 
     @staticmethod
-    def _twl_seabed_eligibility(z, H, *, role, interaction_thickness=None):
-        """One TWL seabed boundary, with role-specific physical eligibility.
+    def _water_column_seabed_eligibility(z, H, *, role, interaction_thickness=None):
+        """Use one instantaneous seabed boundary with role-specific eligibility.
 
         z: native particle depth (positive upward, sea level zero).
         H: source-qualified instantaneous wet depth h + eta (positive).
@@ -6497,12 +6498,12 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         H = np.asarray(H, dtype=float)
         if z.shape != H.shape or np.any(~np.isfinite(z)) or \
                 np.any(~np.isfinite(H) | (H <= 0.0)):
-            raise ValueError('Invalid TWL seabed-boundary inputs')
+            raise ValueError('Invalid instantaneous seabed-boundary inputs')
         with np.errstate(over='ignore', invalid='ignore'):
             H32 = np.asarray(np.abs(H), dtype=np.float32)
             tol = 0.5 * np.asarray(np.spacing(H32), dtype=float)
         if np.any(~np.isfinite(tol) | (tol <= 0.0)):
-            raise ValueError('TWL seabed precision cannot be resolved')
+            raise ValueError('Seabed-boundary floating-point precision cannot be resolved')
         distance_above_bed = z + H
         if role == 'suspended':
             return distance_above_bed >= -tol
@@ -6511,11 +6512,11 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         if role == 'deposition':
             layer = np.asarray(interaction_thickness, dtype=float)
             if layer.shape != H.shape or np.any(~np.isfinite(layer) | (layer <= 0.0)):
-                raise ValueError('Invalid TWL near-bed interaction layer')
+                raise ValueError('Invalid near-bed interaction layer')
             return (distance_above_bed >= -tol) & (distance_above_bed <= layer)
-        raise ValueError('Unknown TWL seabed-boundary role')
+        raise ValueError('Unknown instantaneous seabed-boundary role')
 
-    def _validate_twl_wet_column_bounds(self):
+    def _validate_active_water_column_bounds(self):
         """Fail closed on invalid wet-column positions without changing particles.
 
         This geometric pre/postcondition applies only to opt-in transient
@@ -6532,27 +6533,27 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         species = np.asarray(self.elements.specie, dtype=int)
         moving = np.asarray(self.elements.moving)
         if z.shape != (n,) or species.shape != (n,) or moving.shape != (n,):
-            raise ValueError('TWL particle arrays must align with active elements')
+            raise ValueError('Water-column particle arrays must align with active elements')
         H = np.asarray(self._instantaneous_water_depth(
             require_physical_bathymetry=True,
             require_surface_height=True), dtype=float)
         if H.shape != (n,) or np.any(~np.isfinite(H) | (H <= 0)):
-            raise ValueError('Dry or invalid TWL column for active particle')
+            raise ValueError('Dry or invalid instantaneous water column for active particle')
         if np.any(~np.isfinite(z)):
-            raise ValueError('Nonfinite TWL particle position')
+            raise ValueError('Nonfinite water-column particle position')
         # Upper sea-surface allowance is a separate pre-existing policy;
-        # only the seabed rule is unified across the three TWL consumers.
+        # only the seabed rule is shared by the three physical process callers.
         surface_tol = 1e-6 * np.maximum(H, 1.0)
         codes = [getattr(self, name) for name in
                  ('num_srev', 'num_ssrev', 'num_sirrev', 'num_sburied')
                  if hasattr(self, name)]
         sediment = np.isin(species, codes)
         suspended = ~sediment
-        if (not np.all(self._twl_seabed_eligibility(
+        if (not np.all(self._water_column_seabed_eligibility(
                 z[suspended], H[suspended], role='suspended'))) or \
                 np.any(z[suspended] > surface_tol[suspended]):
             raise ValueError('Suspended particle outside current wet column')
-        if (not np.all(self._twl_seabed_eligibility(
+        if (not np.all(self._water_column_seabed_eligibility(
                 z[sediment], H[sediment], role='anchored'))) or \
                 np.any(moving[sediment] != 0):
             raise ValueError('Sediment particle not anchored to current bed')
@@ -6602,7 +6603,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
     def _effective_mld_for_generated_profile(self, mld, idx=None):
         """Cap internally synthesized SPM/DOC MLD by strict instantaneous H.
 
-        Retain the legacy profile exactly with TWL stretching disabled.
+        Retain the original profile when water-column stretching is disabled.
         Reader-supplied vertical concentration profiles bypass this helper.
         """
         if not self.get_config('drift:water_column_stretching'):
@@ -6872,8 +6873,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
     def _sediment_exchange_water_depth(self, idx):
         """Co-located instantaneous water depth for dissolved/sediment exchange.
 
-        Preserve fallback-compatible legacy sampling if TWL stretching is disabled.
-        In TWL mode, never treat fallback-derived depth or eta as physical data.
+        Preserve fallback-compatible sampling if water-column stretching is disabled.
+        With water-column stretching, never treat fallback depth or elevation as physical data.
         Sediment layer thickness below the bed is not capped by water depth.
         """
         idx = np.asarray(idx, dtype=np.int64).ravel()
@@ -7089,8 +7090,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
                 # Sediment reversible -> LMM : per-element f_OC
                 if idx_SED.size:
-                    T = self._adr_sediment_driver_array('sea_water_temperature', 10.0, idx=idx_SED)
-                    S = self._adr_sediment_driver_array('sea_water_salinity', 34.0, idx=idx_SED)
+                    T = self._sediment_bottom_water_array('sea_water_temperature', 10.0, idx=idx_SED)
+                    S = self._sediment_bottom_water_array('sea_water_salinity', 34.0, idx=idx_SED)
                     foc_sed = _element_foc(idx_SED, fOC_sed_cfg)
 
                     Kd_sed = np.maximum(KOC_sed * foc_sed, eps)
@@ -7113,8 +7114,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                     )
 
                 if idx_SSREV.size:
-                    T = self._adr_sediment_driver_array('sea_water_temperature', 10.0, idx=idx_SSREV)
-                    S = self._adr_sediment_driver_array('sea_water_salinity', 34.0, idx=idx_SSREV)
+                    T = self._sediment_bottom_water_array('sea_water_temperature', 10.0, idx=idx_SSREV)
+                    S = self._sediment_bottom_water_array('sea_water_salinity', 34.0, idx=idx_SSREV)
                     self.elements.transfer_rates1D[idx_SSREV, self.num_srev] = (
                         self.k64_0 /
                         self.tempcorr("Arrhenius", DH_KOC_Sed, T, KOWTref) /
@@ -7200,8 +7201,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
                 # Sediment reversible -> LMM : per-element f_OC
                 if idx_SED.size:
-                    T = self._adr_sediment_driver_array('sea_water_temperature', 10.0, idx=idx_SED)
-                    S = self._adr_sediment_driver_array('sea_water_salinity', 34.0, idx=idx_SED)
+                    T = self._sediment_bottom_water_array('sea_water_temperature', 10.0, idx=idx_SED)
+                    S = self._sediment_bottom_water_array('sea_water_salinity', 34.0, idx=idx_SED)
                     pH = self._env_array('pH_sediment', 6.9, idx=idx_SED)
                     foc_sed = _element_foc(idx_SED, fOC_sed_cfg)
 
@@ -7229,8 +7230,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                     )
 
                 if idx_SSREV.size:
-                    T = self._adr_sediment_driver_array('sea_water_temperature', 10.0, idx=idx_SSREV)
-                    S = self._adr_sediment_driver_array('sea_water_salinity', 34.0, idx=idx_SSREV)
+                    T = self._sediment_bottom_water_array('sea_water_temperature', 10.0, idx=idx_SSREV)
+                    S = self._sediment_bottom_water_array('sea_water_salinity', 34.0, idx=idx_SSREV)
                     self.elements.transfer_rates1D[idx_SSREV, self.num_srev] = (
                         self.k64_0 /
                         self.tempcorr("Arrhenius", DH_KOC_Sed, T, KOWTref) /
@@ -7575,7 +7576,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         if idx_all is None or idx_all.size == 0:
             return
 
-        # T7.1: In transient-depth mode every new sediment-bound species must
+        # With dynamic water depth, every new sediment-bound species must
         # reach z=-H immediately, not only LMM/LMMcation -> reversible sediment.
         # This covers particulate -> bed and buried/slow/irreversible destinations
         # when present in the configured transition graph. Do not alter legacy.
@@ -7588,7 +7589,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 idx = idx_all[entered_bed]
                 depth = np.asarray(self._sediment_exchange_water_depth(idx), dtype=float)
                 if depth.shape != (idx.size,) or np.any(~np.isfinite(depth) | (depth <= 0.0)):
-                    raise ValueError('T7.1 invalid instantaneous sediment sorption depth')
+                    raise ValueError('Invalid instantaneous sediment sorption depth')
                 self.elements.z[idx] = -depth
                 self.elements.moving[idx] = 0
             return
@@ -7664,7 +7665,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         if idx_all is None or idx_all.size == 0:
             return
 
-        # T7.1: All bed -> suspended transitions use one verified H-bounded
+        # All bed -> suspended transitions use one source-qualified depth-bounded
         # release coordinate. Includes particulate daughters of slow/irreversible
         # bed pools where such a transition is explicitly configured; this does
         # not change the transition rates or activate buried sediment species.
@@ -7677,18 +7678,18 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 idx = idx_all[left_bed]
                 depth = np.asarray(self._sediment_exchange_water_depth(idx), dtype=float)
                 if depth.shape != (idx.size,) or np.any(~np.isfinite(depth) | (depth <= 0.0)):
-                    raise ValueError('T7.1 invalid instantaneous sediment release depth')
+                    raise ValueError('Invalid instantaneous sediment release depth')
                 release_depth = float(self.get_config('chemical:sediment:desorption_depth'))
                 release_std = float(self.get_config('chemical:sediment:desorption_depth_uncert'))
                 if not np.isfinite(release_depth) or release_depth < 0.0 or \
                    not np.isfinite(release_std) or release_std < 0.0:
-                    raise ValueError('T7.1 invalid sediment release depth or uncertainty')
+                    raise ValueError('Invalid sediment release depth or uncertainty')
                 z_new = -depth + np.minimum(release_depth, depth)
                 if release_std > 0.0:
                     z_new = z_new + np.random.normal(0.0, release_std, idx.size)
                 z_new = np.minimum(0.0, np.maximum(-depth, z_new))
                 if np.any(~np.isfinite(z_new)):
-                    raise ValueError('T7.1 nonfinite sediment release position')
+                    raise ValueError('Nonfinite sediment release position')
                 self.elements.z[idx] = z_new
                 self.elements.moving[idx] = 1
             return
@@ -9560,7 +9561,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         S = self._env_array('sea_water_salinity', 34.0, idx=idx)
         rho = self.sea_water_density(T=T, S=S)
 
-        # TWL stress geometry uses verified, instantaneous H=h+eta.
+        # Dynamic water-column stress geometry uses source-qualified H=h+eta.
         # Legacy opt-out retains the original bathymetry-only depth cap.
         if self.get_config('drift:water_column_stretching'):
             depth = np.asarray(self._instantaneous_water_depth(
@@ -10776,12 +10777,12 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         h_b_susp = np.minimum(h_b_nominal, depth_susp)
         if self.get_config('drift:water_column_stretching'):
             if np.any(~np.isfinite(h_b_susp) | (h_b_susp <= 0.0)):
-                raise ValueError('Nonpositive or invalid TWL deposition interaction thickness')
+                raise ValueError('Nonpositive or invalid deposition interaction thickness')
         else:
             h_b_susp = np.maximum(h_b_susp, 1e-12)
 
         if self.get_config('drift:water_column_stretching'):
-            near_bed_local = self._twl_seabed_eligibility(
+            near_bed_local = self._water_column_seabed_eligibility(
                 z_susp, depth_susp, role='deposition',
                 interaction_thickness=h_b_susp,
             )
@@ -10940,7 +10941,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         if self.get_config('drift:water_column_stretching'):
             H_bed = self._sediment_exchange_water_depth(idx_bed)
             Zmin_bed = -H_bed
-            on_bed_local = self._twl_seabed_eligibility(
+            on_bed_local = self._water_column_seabed_eligibility(
                 z_bed, H_bed, role='anchored',
             )
         else:
@@ -11396,7 +11397,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         Values must be finite and non-negative.
         Conversion to g/m3 for the biodegradation O2-rate calculation is deliberately left to the degradation coupling.
         """
-        oxygen = self._adr_sediment_driver_array(
+        oxygen = self._sediment_bottom_water_array(
             'mole_concentration_of_dissolved_molecular_oxygen_in_sea_water',
             225.0, idx=idx,)
         oxygen = self._canonicalize_numerical_zero(
@@ -13945,7 +13946,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 S_deg = idx_S.size > 0
 
                 if S_deg:
-                    TS = self._adr_sediment_driver_array('sea_water_temperature', 10.0, idx=idx_S)
+                    TS = self._sediment_bottom_water_array('sea_water_temperature', 10.0, idx=idx_S)
 
                     k_S_fin = k_S_tot * self.tempcorr("Arrhenius", DH_kSt, TS, Tref_kSt)
                     k_S_fin = np.maximum(k_S_fin, 0.0)
@@ -14135,7 +14136,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                         # Mixed Layer depth (m)
                         MLDepth = self._env_array('ocean_mixed_layer_thickness', 50.0, idx=idx_W)
                         # Effective photic mixing thickness is bounded by the current
-                        # physically wet water column, as for the approved T9.1
+                        # physically wet water column, as for source-qualified
                         # generated DOC/SPM profiles. Real reader 3D values remain
                         # unmodified; only mixed-layer classification is capped.
                         MLDepth = self._effective_mld_for_generated_profile(MLDepth, idx=idx_W)
@@ -14280,7 +14281,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
                 # Sediment degradation
                 if S_deg:
-                    TS = self._adr_sediment_driver_array('sea_water_temperature', 10.0, idx=idx_S)
+                    TS = self._sediment_bottom_water_array('sea_water_temperature', 10.0, idx=idx_S)
                     sediment_arrhenius_factor = None
                     # if np.any(TS==0):
                     #     TS[TS==0]=np.median(TS)
@@ -14830,7 +14831,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                     raise RuntimeError(f'Missing postmix current reader {reader_key}')
                 kind, why = self._classify_doc_spm_reader(reader, name)
                 kinds.append(kind)
-                # D18: physical wet-side sampling is the reader's job;
+                # Physical water-side sampling is the reader's responsibility;
                 # nominal z coordinate extrema are not generic validity gates.
                 if kind == '3D':
                     pass
@@ -14996,7 +14997,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         `previous` is attempted first; if the returned position and the exact
         previous position are not verified WET, strand only those particles.
         Never infer DRY from missing data or resurrect stranded particles.
-        All changes are scoped to this experimental model (no OpenDrift edits).
+        Handling is local to this model; no base-model changes are required.
         """
         n = int(self.num_elements_active())
         if not n:
@@ -15218,7 +15219,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         # Guard reader mutations even if a caller bypasses normal registration.
         self._ensure_doc_spm_reader_dimensions_current()
-        self._adr_ensure_seabed_sources_current()
+        self._ensure_seabed_sources_current()
 
         # Apply exactly once, before depth-dependent chemistry and bed exchange.
         native_profiles = (getattr(self, 'SPM_vertical_levels_given', False) or
@@ -15228,10 +15229,10 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                       else None)
         self.water_column_stretching()
         self._anchor_sediment_to_instantaneous_bed()
-        self._validate_twl_wet_column_bounds()
+        self._validate_active_water_column_bounds()
         self._refresh_poststretch_native_scalar_environment(previous_z)
         self._refresh_poststretch_native_doc_spm(previous_z)
-        self._adr_refresh_semantic_environment()
+        self._refresh_sediment_sampling_environment()
 
         # Workaround due to conversion of datatype
         self.elements.specie = self.elements.specie.astype(np.int32)
@@ -15327,8 +15328,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             return  # All elements stranded; none may undergo wet-only geometry.
         self._refresh_postadvection_geometry_at_new_position(
             lon_before_advection, lat_before_advection)
-        # F4 bounded correction: original OpenDrift's configured contact
-        # action was only applied before, not after, horizontal transport.
+        # OpenDrift normally applies the configured seafloor contact action
+        # before horizontal transport, not after movement to a new location.
         # Reapply its existing *lift_to_seafloor* semantics solely when the
         # actual new reader-sampled column is intersected.  Other actions and
         # missing/wet-dry conditions retain their original fail-closed policy.
@@ -15337,7 +15338,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             self.interact_with_seafloor()
         # Final output-position invariant after any transport call.
         self._anchor_sediment_to_instantaneous_bed()
-        self._validate_twl_wet_column_bounds()
+        self._validate_active_water_column_bounds()
 
         # Update transfer rates after last time step
         if self.time == (self.expected_end_time - self.time_step) or \
@@ -15349,8 +15350,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
     # POSTPROCESSING
     ###########################################################################
 
-# Experimental integration compatibility: the common categorical wet/dry
-# environment field is registered, not silently dropped from the postprocessor.
+# The shared categorical wet/dry environment field is registered, not silently dropped from the postprocessor.
 # It is NOT a continuous physical quantity; no scientific interpretation of
 # aggregated categorical means is authorized by this registration.
 ChemicalDrift._ENVIRONMENT_SUMMARY_METADATA = dict(
