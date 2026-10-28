@@ -485,31 +485,10 @@ class Reader(StructuredReader):
         super().__init__()
 
     @staticmethod
-    def _cf_bracket_indices(coords, point):
-        """Conservative interpolation stencil in one regular-grid dimension."""
-        coords = np.asarray(coords, dtype=float)
-        if coords.ndim != 1 or len(coords) == 0 or not np.isfinite(point):
-            return ()
-        ascending = coords[0] < coords[-1]
-        use = coords if ascending else -coords
-        v = point if ascending else -point
-        i = int(np.searchsorted(use, v, side='left'))
-        # Reader blocks round native coordinates to float32.
-        spacing = np.min(np.abs(np.diff(use))) if len(use) > 1 else 1.0
-        tol = max(1.e-7, min(.01*spacing, 3.e-7*max(1.0, abs(v))))
-        if i < len(use) and np.isclose(v, use[i], atol=tol, rtol=0):
-            return (i,)
-        if i > 0 and np.isclose(v, use[i - 1], atol=tol, rtol=0):
-            return (i - 1,)
-        if not 0 < i < len(use):
-            return ()
-        return (i - 1, i)
-
-    @staticmethod
     def _cf_batched_brackets(coords, points):
         """Conservative native stencil equivalents for an array of query points.
 
-        Replicates _cf_bracket_indices' left-search, per-axis absolute
+        Preserves the original left-search, per-axis absolute
         coordinate tolerance, and exact-coordinate precedence. No invalid
         query can become admissible merely through index clipping.
         """
@@ -599,16 +578,16 @@ class Reader(StructuredReader):
 
     def prepare(self, *args, **kwargs):
         self._cf_fast_blocks = []
-        self._cf_geometry_blocks_v5 = []
+        self._cf_geometry_block_cache = []
         return super().prepare(*args, **kwargs)
 
-    def _cf_geometry_v5(self, source_time, x, y, names):
+    def _cf_source_geometry_at_time(self, source_time, x, y, names):
         """Reuse source-record *grid blocks* for 2-D bathymetry and eta.
 
         The original OpenDrift ReaderBlock still performs the interpolation
         and native invalid-data handling.  No per-particle interpolation is
         memoized.  An out-of-coverage, large, mixed-dimensional or unsupported
-        request falls back to the V3C parent method; the native source-time
+        request falls back to the inherited StructuredReader method; the native source-time
         and mask policies are not changed.
         """
         from opendrift.readers.interpolation.structured import ReaderBlock
@@ -616,7 +595,7 @@ class Reader(StructuredReader):
         if (not len(x) or not np.isfinite(x).all() or
                 not np.isfinite(y).all() or self.global_coverage()):
             raise ValueError('CF_FAST_UNSUPPORTED_GEOMETRY_REQUEST')
-        snapshots = getattr(self, '_cf_geometry_blocks_v5', [])
+        snapshots = getattr(self, '_cf_geometry_block_cache', [])
         snapshot = None
         for entry in snapshots:
             if entry['key'] == key and entry['block'].covers_positions(x, y):
@@ -651,7 +630,7 @@ class Reader(StructuredReader):
                 while (len(snapshots) > 2 or
                        sum(q['bytes'] for q in snapshots) > 16*1024*1024):
                     snapshots.pop(0)
-                self._cf_geometry_blocks_v5 = snapshots
+                self._cf_geometry_block_cache = snapshots
         values, _ = snapshot['block'].interpolate(x, y, np.zeros(len(x)),
                                                    names, None, None)
         return values
@@ -834,7 +813,7 @@ class Reader(StructuredReader):
         # Benchmark-qualified single-frame cache: forcing must be immutable
         # after reader initialization; no in-place xarray Dataset mutation.
         # Only the categorical field is cached, not particle samples or normal
-        # V5 interpolator data. Cap at 32 MiB; larger frames use xarray.
+        # structured interpolator data. Cap at 32 MiB; larger frames use xarray.
         ydim, xdim = self.dimensions['y'], self.dimensions['x']
         if set(source.dims) != {ydim, xdim} or len(source.dims) != 2:
             raise ValueError('wetdry_state must be a 2-D categorical field')
@@ -881,7 +860,7 @@ class Reader(StructuredReader):
                                      time, reader_x, reader_y, z):
         names = [variables] if isinstance(variables, str) else list(variables)
         if 'wetdry_state' not in names:
-            return self._cf_original_v5_interpolated(
+            return self._cf_interpolate_source_valid_bottom_water(
                 variables, profiles, profiles_depth, time, reader_x, reader_y, z)
         profile_names = ([] if profiles is None else
                          ([profiles] if isinstance(profiles, str) else list(profiles)))
@@ -889,10 +868,10 @@ class Reader(StructuredReader):
             raise ValueError('wetdry_state cannot be requested as a vertical profile')
         other_names = [name for name in names if name != 'wetdry_state']
         if other_names:
-            values, profile = self._cf_original_v5_interpolated(
+            values, profile = self._cf_interpolate_source_valid_bottom_water(
                 other_names, profiles, profiles_depth, time, reader_x, reader_y, z)
         elif profile_names:
-            _unused, profile = self._cf_original_v5_interpolated(
+            _unused, profile = self._cf_interpolate_source_valid_bottom_water(
                 profile_names, profiles, profiles_depth, time, reader_x, reader_y, z)
             values = {}
         else:
@@ -900,7 +879,7 @@ class Reader(StructuredReader):
         values['wetdry_state'] = self._cf_wetdry_categorical(time, reader_x, reader_y)
         return values, profile
 
-    def _cf_original_v5_interpolated(self, variables, profiles, profiles_depth,
+    def _cf_interpolate_source_valid_bottom_water(self, variables, profiles, profiles_depth,
                                      time, reader_x, reader_y, z):
         """Reader-local opt-in water-side sampling without altering particle z.
 
@@ -946,7 +925,7 @@ class Reader(StructuredReader):
                                  for nm in geometry_fields))
             if geometry_fast:
                 try:
-                    geometry = self._cf_geometry_v5(
+                    geometry = self._cf_source_geometry_at_time(
                         source_time, np.asarray(reader_x, dtype=float),
                         np.asarray(reader_y, dtype=float), geometry_fields)
                 except ValueError as exc:
@@ -1153,23 +1132,8 @@ class Reader(StructuredReader):
             if self.ensemble_dimension is not None and self.ensemble_dimension in var.dims:
                 ensemble_dim = 0  # hardcoded, may not work for MEPS
             if split is False:
-                if True:  # new dynamic way
-                    subset = {vdim:dimindices[dim] for dim,vdim in self.dimensions.items() if vdim in var.dims}
-                    variables[par] = var.isel(subset)
-                #else:  # old hardcoded way, to be removed
-                #    if var.ndim == 2:
-                #        variables[par] = var[indy, indx]
-                #    elif var.ndim == 3:
-                #        variables[par] = var[indxTime, indy, indx]
-                #    elif var.ndim == 4:
-                #        variables[par] = var[indxTime, indz, indy, indx]
-                #    elif var.ndim == 5:  # Ensemble data
-                #        variables[par] = var[indxTime, indz, indrealization, indy, indx]
-                #        ensemble_dim = 0  # Hardcoded ensemble dimension for now
-                #    else:
-                #        raise Exception('Wrong dimension of variable: ' +
-                #                        self.variable_mapping[par])
-            # The below should also be updated to dynamic subsetting
+                subset = {vdim:dimindices[dim] for dim,vdim in self.dimensions.items() if vdim in var.dims}
+                variables[par] = var.isel(subset)
             else:  # We need to read left and right parts separately
                 d_left = dimindices.copy()
                 d_right = dimindices.copy()
@@ -1182,26 +1146,6 @@ class Reader(StructuredReader):
                 left = var.isel(subset_left)
                 right = var.isel(subset_right)
 
-                #if var.ndim == 2:
-                #    left = var[indy, indx_left]
-                #    right = var[indy, indx_right]
-                #    variables[par] = xr.Variable.concat([left, right], dim=self.dimensions['x'])
-                #elif var.ndim == 3:
-                #    left = var[indxTime, indy, indx_left]
-                #    right = var[indxTime, indy, indx_right]
-                #    variables[par] = xr.Variable.concat([left, right], dim=self.dimensions['x'])
-                #elif var.ndim == 4:
-                #    left = var[indxTime, indz, indy, indx_left]
-                #    right = var[indxTime, indz, indy, indx_right]
-                #    variables[par] = xr.Variable.concat([left, right], dim=self.dimensions['x'])
-                #elif var.ndim == 5:  # Ensemble data
-                #    left = var[indxTime, indz, indrealization,
-                #               indy, indx_left]
-                #    right = var[indxTime, indz, indrealization,
-                #                indy, indx_right]
-                #    variables[par] = xr.Variable.concat([left, right], dim=self.dimensions['x'])
-
-                #variables[par] = xr.Variable.concat([left, right], dim=self.dimensions['x'])
                 variables[par] = xr.Variable.concat([right, left], dim=self.dimensions['x'])
                 variables[par] = np.ma.masked_invalid(variables[par])
 
