@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 import pandas as pd
 import xarray as xr
 from opendrift.readers.basereader.structured import StructuredReader
+from opendrift.readers.basereader import standard_names
 from opendrift.readers import open_dataset_opendrift, datetime_from_variable, \
                               add_standard_name_for_surface_grib_variables
 
@@ -445,7 +446,8 @@ class Reader(StructuredReader):
                 else:
                     raise ValueError(f'{warning}, and also several time dimensions used by detected variables: {variable_time_dimensions}')
 
-        # An explicit opt-in; no existing CF reader changes behavior by default.
+        # Only water-side boundary sampling requires an explicit option. Eligible
+        # ordinary CF interpolation can use the same verified numerical fast path.
         if self.bottom_water_sampling:
             if 'sea_floor_depth_below_sea_level' not in self.variable_mapping:
                 raise ValueError('bottom_water_sampling requires CF bathymetry')
@@ -635,16 +637,40 @@ class Reader(StructuredReader):
                                                    names, None, None)
         return values
 
-    def _cf_fast_sample_valid_3d(self, source_time, x, y, depths, names):
-        """Vectorized direct native interpolation for explicitly admitted CF 3-D
-        fields without profiles. Only original source-valid stencils are sampled.
-        The opt-in-only caller retains per-timestamp local bottom-depth geometry.
+    def _cf_fast_3d_eligible(self, names, profiles):
+        """Shared structural admission for both ordinary and water-side CF paths.
 
-        No second source read for validity, and no waterward NaN synthesis.
-        An unsupported shape or interpolation method takes the original path.
+        Source-block validity/range checks occur inside the fast sampler, after
+        retrieving the actual native arrays. Unsupported inputs use the parent.
+        """
+        depth_dim = self.dimensions.get('z')
+        return bool(names and profiles is None and depth_dim is not None
+                    and self.interpolation == 'linearNDFast'
+                    and self.convolve is None
+                    and not self.global_coverage()
+                    and not (self.proj.crs.is_geographic and self.xmin > 0)
+                    and all(depth_dim in self.Dataset[self.variable_mapping[nm]].dims
+                            for nm in names))
+
+    def _cf_fast_sample_valid_3d(self, source_time, x, y, depths, names,
+                                  *, require_complete=False):
+        """Vectorized 3-D native interpolation for qualified linear CF fields.
+
+        Physical-range violations always reject fast admission. Ordinary CF
+        sampling additionally requires a completely valid raw block so the
+        inherited missing-data expansion behavior remains unchanged. Water-side
+        sampling retains its intentional strict native-stencil masking.
         """
         from scipy.ndimage import map_coordinates
         from scipy.interpolate import interp1d
+        x = np.atleast_1d(np.asarray(x, dtype=float))
+        y = np.atleast_1d(np.asarray(y, dtype=float))
+        depths = np.asarray(depths, dtype=float)
+        if (x.ndim != 1 or y.shape != x.shape or
+                depths.ndim != 1 or depths.shape != x.shape or
+                not np.isfinite(x).all() or not np.isfinite(y).all() or
+                not np.isfinite(depths).all()):
+            raise ValueError('CF_FAST_UNSUPPORTED_COORDINATES')
         key = (source_time, tuple(names))
         blocks = getattr(self, '_cf_fast_blocks', [])
         snapshot = None
@@ -662,7 +688,11 @@ class Reader(StructuredReader):
             rz = np.atleast_1d(np.asarray(raw['z'], dtype=float))
             if (len(rz) < 2 or len(rz) >= 120 or len(rx) < 2 or len(ry) < 2 or
                     not np.all(np.isfinite(rx)) or not np.all(np.isfinite(ry)) or
-                    not np.all(np.isfinite(rz)) or self.global_coverage()):
+                    not np.all(np.isfinite(rz)) or self.global_coverage() or
+                    not (np.all(np.diff(rz) > 0) or np.all(np.diff(rz) < 0)) or
+                    not np.all(np.diff(rx) > 0) or not np.all(np.diff(ry) > 0) or
+                    not np.allclose(np.diff(rx), np.diff(rx)[0], rtol=1.e-6, atol=0) or
+                    not np.allclose(np.diff(ry), np.diff(ry)[0], rtol=1.e-6, atol=0)):
                 raise ValueError('CF_FAST_UNSUPPORTED_GRID')
             fields = {}
             size = rx.nbytes + ry.nbytes + rz.nbytes
@@ -671,9 +701,26 @@ class Reader(StructuredReader):
                 if isinstance(arr, list):
                     raise ValueError('CF_FAST_UNSUPPORTED_ENSEMBLE')
                 arr = np.ma.asarray(arr)
+                if arr.dtype.kind not in 'iuf':
+                    raise ValueError('CF_FAST_UNSUPPORTED_DTYPE')
+                if arr.dtype.kind in 'iu':
+                    arr = np.ma.asarray(arr, dtype=float)
                 if arr.ndim != 3 or arr.shape != (len(rz), len(ry), len(rx)):
                     raise ValueError('CF_FAST_UNSUPPORTED_SHAPE')
                 finite = np.isfinite(np.ma.filled(arr, np.nan)) & ~np.ma.getmaskarray(arr)
+                # ReaderBlock checks registered physical bounds before filling
+                # or interpolating. Out-of-range finite native samples must
+                # therefore fall back to that same original processing path.
+                limits = standard_names.get(name, {})
+                valid_data = np.ma.getdata(arr)[finite]
+                if (('valid_min' in limits and np.any(valid_data < limits['valid_min'])) or
+                        ('valid_max' in limits and np.any(valid_data > limits['valid_max']))):
+                    raise ValueError('CF_FAST_UNSUPPORTED_RANGE')
+                # The inherited ordinary-CF path fills native missing values.
+                # Do not change that behavior by applying water-side masking to
+                # an unqualified block in ordinary sampling mode.
+                if require_complete and not np.all(finite):
+                    raise ValueError('CF_FAST_UNSUPPORTED_MISSING')
                 # ReaderBlock first fills missing native samples downward,
                 # then expands holes horizontally if needed for requested
                 # positions. Precomputing the same expansions once over the
@@ -701,6 +748,9 @@ class Reader(StructuredReader):
                     blocks.pop(0)
                 self._cf_fast_blocks = blocks
         rx, ry, rz = snapshot['rx'], snapshot['ry'], snapshot['rz']
+        if require_complete and any(not finite.all()
+                                    for _data, finite in snapshot['fields'].values()):
+            raise ValueError('CF_FAST_UNSUPPORTED_MISSING')
         if (len(rz) < 2 or len(rz) >= 120 or len(rx) < 2 or len(ry) < 2 or
                 not np.all(np.isfinite(rx)) or not np.all(np.isfinite(ry)) or
                 not np.all(np.isfinite(rz)) or self.global_coverage()):
@@ -710,6 +760,8 @@ class Reader(StructuredReader):
         ylo, yhi, yok = self._cf_batched_brackets(ry, y)
         zlo, zhi, zok = self._cf_batched_brackets(rz, depths)
         stencil_ok = xok & yok & zok
+        if require_complete and not np.all(stencil_ok):
+            raise ValueError('CF_FAST_UNSUPPORTED_STENCIL')
         # These are exactly the coordinates used by Linear2DInterpolator.
         xi = (x - rx[0]) / (rx[-1] - rx[0]) * (len(rx)-1)
         yi = (y - ry[0]) / (ry[-1] - ry[0]) * (len(ry)-1)
@@ -887,13 +939,42 @@ class Reader(StructuredReader):
         Below the deepest physically wet sample, use that original sample
         (never interpolate with a below-bed native sample). Resolve H and
         the source-level constraint separately at each temporal bracket.
-        No change is made to generic CF behavior unless explicitly enabled.
+        Water-side boundary semantics are opt-in. Ordinary 3-D sampling may
+        use the shared fast interpolator only when qualified for parent parity.
         """
         parent = super()._get_variables_interpolated_
-        if not self.bottom_water_sampling:
-            return parent(variables, profiles, profiles_depth,
-                          time, reader_x, reader_y, z)
         names = [variables] if isinstance(variables, str) else list(variables)
+        if not self.bottom_water_sampling:
+            if not self._cf_fast_3d_eligible(names, profiles):
+                return parent(variables, profiles, profiles_depth,
+                              time, reader_x, reader_y, z)
+            # Preserve parent time interpolation and fall back for either
+            # unsupported native source frame (including masks and ranges).
+            _nearest, before, after, *_ = self.nearest_time(time)
+            if before is None or self.always_valid:
+                return parent(variables, profiles, profiles_depth,
+                              time, reader_x, reader_y, z)
+            times = [before]
+            if after is not None and before < time <= after:
+                times.append(after)
+            values_by_time = []
+            for source_time in times:
+                try:
+                    values_by_time.append(self._cf_fast_sample_valid_3d(
+                        source_time, np.asarray(reader_x, dtype=float),
+                        np.asarray(reader_y, dtype=float), np.asarray(z, dtype=float),
+                        names, require_complete=True))
+                except ValueError as exc:
+                    if not str(exc).startswith('CF_FAST_UNSUPPORTED_'):
+                        raise
+                    return parent(variables, profiles, profiles_depth,
+                                  time, reader_x, reader_y, z)
+            if len(values_by_time) == 1:
+                return values_by_time[0], None
+            alpha = (time - before).total_seconds() / (after - before).total_seconds()
+            return ({name: np.ma.masked_invalid(
+                (1-alpha)*np.ma.asarray(values_by_time[0][name]) +
+                alpha*np.ma.asarray(values_by_time[1][name])) for name in names}, None)
         profile_names = [] if profiles is None else (
             [profiles] if isinstance(profiles, str) else list(profiles))
         depth_dim = self.dimensions['z']
@@ -968,10 +1049,7 @@ class Reader(StructuredReader):
                             cache.pop(key, None)
             # Keep the original parent path for profiles, mixed 2-D/3-D
             # variables, nondefault interpolators and convolved grids.
-            fast_admitted = (profiles is None and self.interpolation == 'linearNDFast'
-                             and self.convolve is None
-                             and all(depth_dim in self.Dataset[self.variable_mapping[nm]].dims
-                                     for nm in names))
+            fast_admitted = self._cf_fast_3d_eligible(names, profiles)
             if fast_admitted:
                 try:
                     sampled = self._cf_fast_sample_valid_3d(
