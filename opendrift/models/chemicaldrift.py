@@ -1310,7 +1310,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'description': 'Nikuradse roughness for WHITE_COLEBROOK mode, used with depth-averaged velocity and hydraulic radius/depth.'},
             'chemical:sediment:d50': {'type': 'float', 'default': 2.0e-4,
                 'min': 1e-8, 'max': 1, 'units': 'm', 'level': CONFIG_LEVEL_ADVANCED,
-                'description': 'Median bed grain size used as the fallback for mapped sea_floor_d50, GRAIN_D50 roughness, wave roughness, and acquisition of a new sediment carrier. It is not a persistent element property; elements.diameter is the authoritative Lagrangian carrier size.'},
+                'description': 'Median bed grain size used as the fallback for mapped sea_floor_d50, GRAIN_D50 roughness, wave roughness, and acquisition of a new sediment carrier.'},
             'chemical:sediment:cd_min': {'type': 'float', 'default': 0.0,
                 'min': 0, 'max': 1, 'units': '', 'level': CONFIG_LEVEL_ADVANCED,
                 'description': 'Lower bound for drag coefficient.'},
@@ -2099,7 +2099,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             # WHITE_COLEBROOK uses configured nikuradse_ks for z0 internally, so no
             # sea_floor_roughness_length reader is needed unless wave stress needs
             # reader z0 through another mode.
-            # Bed d50 remains an environmental/bed property in every exchange
+            # Bed median grain size is an environmental input in every exchange
             # mode. It is needed for local sediment-carrier acquisition and may also
             # be needed by GRAIN_D50 roughness. USER threshold mode never suppresses it.
             req.update(self.SEDIMENT_GRAIN_D50_REQUIRED_VARIABLES)
@@ -3417,6 +3417,10 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         attrs = getattr(self.result, 'attrs', None)
         if attrs is not None:
             forcing = self._resolved_wave_forcing_names()
+            migration = getattr(self, '_legacy_restart_migration_provenance', None)
+            if migration is not None:
+                attrs['chemical_restart_migration'] = json.dumps(
+                    migration, sort_keys=True)
             attrs.update({
                 'chemical_element_size_state': 'diameter_only',
                 'chemical_current_stress_source': self._current_stress_source(),
@@ -3470,6 +3474,16 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         self._resolve_reader_dependent_requirements()
         self._initialize_data_quality_report()
         run_status = 'FAILED'
+        # Canonical stretching runs retain the exact native state through
+        # both uninterrupted and restarted execution. Preserve all fields
+        # at float64 in the live seed buffer before the OpenDrift activation.
+        if self.get_config('drift:water_column_stretching'):
+            scheduled = getattr(self, 'elements_scheduled', None)
+            if scheduled is not None:
+                for _name in self._CHECKPOINT_MASS_FIELDS:
+                    if hasattr(scheduled, _name):
+                        setattr(scheduled, _name, np.asarray(
+                            getattr(scheduled, _name), dtype=np.float64).copy())
         try:
             result = super(ChemicalDrift, self).run(*args, **kwargs)
             # The in-memory OpenDrift result still carries Python dtype CLASS
@@ -3878,7 +3892,16 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                                      dtype=np.float64)[active]
                           for n in self._STRANDED_RESTART_FIELDS]
                 measured = sum(float(np.nansum(v)) for v in values)
-                expected = float(dataset.mass_ledger_exact_remaining_ug.isel(time=idx).values)
+                # The ledger 'remaining' column is only live undegraded mass.
+                # A live particle also retains cumulative degraded and
+                # volatilized chemical inventory. Compare like-for-like totals.
+                ledger_fields = ('mass_ledger_exact_remaining_ug',
+                                 'mass_ledger_exact_degraded_ug',
+                                 'mass_ledger_exact_volatilized_ug')
+                if not all(k in dataset for k in ledger_fields):
+                    raise ValueError('Incomplete exact mass ledger for stranded check')
+                expected = sum(float(dataset[k].isel(time=idx).values)
+                               for k in ledger_fields)
                 precision = 8 * np.finfo(np.float32).eps * sum(
                     float(np.nansum(np.abs(v))) for v in values)
                 if not np.isfinite(expected) or abs(expected - measured) > precision:
@@ -3930,7 +3953,14 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             raise ValueError('Stranded restart SHA-256 integrity mismatch')
         if 'mass_ledger_exact_remaining_ug' not in dataset:
             raise ValueError('Stranded checkpoint missing mass ledger verification')
-        expected = float(dataset.mass_ledger_exact_remaining_ug.isel(time=idx).values)
+        ledger_fields = ('mass_ledger_exact_remaining_ug',
+                         'mass_ledger_exact_degraded_ug',
+                         'mass_ledger_exact_volatilized_ug')
+        if not all(k in dataset for k in ledger_fields):
+            raise ValueError('Stranded checkpoint incomplete mass ledger')
+        # Original baseline covers every chemical sink, not remaining mass alone.
+        expected = sum(float(dataset[k].isel(time=idx).values)
+                       for k in ledger_fields)
         if not np.isfinite(expected) or abs(expected-initial) > 1e-5:
             raise ValueError('Stranded checkpoint and exact ledger disagree')
         return {'fields': fields, 'initial': initial}
@@ -4472,6 +4502,229 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             out.append(str(item))
         return out
 
+    def _prepare_legacy_restart(self, ds, keep_properties):
+        """Validate historical ChemicalDrift provenance; return dataset and mapping.
+
+        This migration supports authenticated ChemicalDrift V1.0 chemical
+        semantics, not arbitrary historical schemas. Missing scientific
+        state is an incompatibility, not permission to invent it.
+        """
+        if not keep_properties:
+            if 'name_species' in ds:
+                names = self._restart_dataset_string_list(ds['name_species'])
+                if names != list(self.name_species):
+                    logger.warning(
+                        'ChemicalDrift V1.0 species detected; keep_properties=False '
+                        'releases new particles under the current species model. '
+                        'This is NOT a restart or a species-state migration.')
+            return ds, None
+
+        if 'specie' not in ds:
+            return ds, None  # Parent handles ordinary/nonchemical datasets.
+        if 'diameter' not in ds:
+            raise ValueError(
+                'INCOMPATIBLE_LEGACY_RESTART: required per-element state '
+                'variable diameter is missing. Restore the original saved '
+                'diameter values; a metadata attribute or fabricated default '
+                'cannot replace particle data. If those values are unavailable, '
+                'keep_properties=True is incompatible. keep_properties=False '
+                'starts a NEW simulation, not an exact restart.')
+
+        source_names = (self._restart_dataset_string_list(ds['name_species'])
+                        if 'name_species' in ds else None)
+        current_names = list(self.name_species)
+        legacy_marked = ('chemical_element_size_state' not in ds.attrs)
+        if source_names == current_names and not legacy_marked:
+            return ds, None  # Preserve the modern checkpoint contract.
+
+        def incompatible(reason):
+            # Keep the first-line reason stable for callers, but tell the user
+            # which *original* NetCDF metadata is needed to assess a repaired
+            # V1.0 file. State values must never be invented as metadata.
+            raise ValueError(
+                'INCOMPATIBLE_LEGACY_RESTART: ' + reason +
+                '\nManual repair requirements (use verified original-run values, '
+                'not inferred defaults):'
+                '\n  - NetCDF variable name_species: ordered historical species names '
+                '(including the original meaning of slowly reversible sediment).'
+                '\n  - NetCDF scalar variable nspecies: the length of name_species.'
+                '\n  - NetCDF global attribute config_chemical:transfer_setup: '
+                "'organics' or 'metals', matching the restart configuration; "
+                'the original organics sediment-to-slow transfer must verify '
+                'burial semantics.'
+                '\n  - Optional source num_* scalar index variables, if present: '
+                'zero-based positions in name_species, not new-model indices.'
+                '\n  - NetCDF variables transfer_rates and ntransformations: '
+                'original finite nonnegative [nspecies, nspecies] matrices '
+                '(respectively historical rates and realized transition counts).'
+                '\nRequired authentic particle state (not repairable by adding '
+                'metadata attributes): specie, diameter, density, mass, '
+                'mass_degraded, mass_degraded_water, mass_degraded_sediment, '
+                'mass_volatilized, age_seconds and status. Also preserve '
+                'process breakdowns when historical degraded mass is nonzero; '
+                'per-element f_OC when organics dynamic partitioning is on; '
+                'critstress_factor when heterogeneous critical stress is on.'
+                '\nMissing historical inactive-mass carry or canonical exact '
+                'mass/coordinate/RNG/sea-level sidecars cannot be recreated '
+                'from metadata. A file remains incompatible if its original '
+                'physics or required state cannot be authenticated.'
+                '\nAlternative: keep_properties=False starts a NEW simulation; '
+                'it is not an exact historical continuation.')
+
+        if source_names is None:
+            incompatible('source name_species is missing; saved specie indices '
+                         'cannot be interpreted safely.')
+        if len(source_names) != len(set(source_names)):
+            incompatible('source name_species contains duplicates.')
+        if any(name not in current_names and name != 'Sediment slowly reversible'
+               for name in source_names):
+            incompatible('unrecognized source species: ' + repr(source_names))
+        if 'nspecies' not in ds or int(np.asarray(ds['nspecies']).item()) != len(source_names):
+            incompatible('nspecies is missing or inconsistent with name_species.')
+
+        config_key = 'config_chemical:transfer_setup'
+        setup = ds.attrs.get(config_key)
+        current_setup = self.get_config('chemical:transfer_setup')
+        if not isinstance(setup, str) or setup not in ('organics', 'metals'):
+            incompatible('source chemical transfer setup is missing or unsupported '
+                         '(required attribute: ' + config_key + ').')
+        if setup != current_setup:
+            incompatible(f'source transfer setup {setup!r} differs from '
+                         f'configured {current_setup!r}.')
+
+        old_burial = (setup == 'organics' and
+                      'Sediment slowly reversible' in source_names and
+                      'Sediment buried' not in source_names)
+        if setup == 'organics' and not old_burial and source_names != current_names:
+            incompatible('organics burial compartment cannot be identified '
+                         'unambiguously from the old species schema.')
+        if setup == 'metals' and 'Sediment buried' in source_names:
+            incompatible('unexpected buried compartment in V1.0 metals schema.')
+        # Validate original num_* indices before replacing them with the new
+        # species indexing. A corrupted old index must not be silently ignored.
+        source_index_names = {
+            'num_lmm':'LMM', 'num_lmmcation':'LMMcation',
+            'num_lmmanion':'LMManion', 'num_col':'Colloid',
+            'num_humcol':'Humic colloid', 'num_polymer':'Polymer',
+            'num_prev':'Particle reversible',
+            'num_psrev':'Particle slowly reversible',
+            'num_pirrev':'Particle irreversible',
+            'num_srev':'Sediment reversible',
+            'num_ssrev':'Sediment slowly reversible',
+            'num_sirrev':'Sediment irreversible',
+        }
+        for field, species_name in source_index_names.items():
+            if field not in ds:
+                continue
+            raw = np.asarray(ds[field].values)
+            if (raw.size != 1 or species_name not in source_names
+                    or int(raw.item()) != source_names.index(species_name)):
+                incompatible(f'corrupt or ambiguous historical index {field}.')
+
+        mapping = {}
+        for i, name in enumerate(source_names):
+            destination = ('Sediment buried' if old_burial and
+                           name == 'Sediment slowly reversible' else name)
+            if destination not in current_names:
+                incompatible(f'current chemical setup lacks required {destination!r}.')
+            mapping[i] = current_names.index(destination)
+        if len(set(mapping.values())) != len(mapping):
+            incompatible('ambiguous many-to-one species mapping.')
+
+        # A V1.0 trajectory is not necessarily an authenticated chemical
+        # checkpoint. Require full transition matrices and explicit historical
+        # counters; never manufacture missing historical transitions.
+        for name in ('transfer_rates', 'ntransformations', 'diameter', 'density',
+                     'mass', 'mass_degraded', 'mass_degraded_water',
+                     'mass_degraded_sediment', 'mass_volatilized', 'age_seconds',
+                     'status'):
+            if name not in ds:
+                incompatible(f'required source state {name!r} is missing.')
+        old_rates = np.asarray(ds['transfer_rates'].values)
+        old_counts = np.asarray(ds['ntransformations'].values)
+        n = len(source_names)
+        if (old_rates.shape != (n, n) or old_counts.shape != (n, n)
+                or not np.all(np.isfinite(old_rates)) or np.any(old_rates < 0)
+                or not np.all(np.isfinite(old_counts)) or np.any(old_counts < 0)):
+            incompatible('historical transition matrices are missing, invalid, '
+                         'or cannot be verified against the species schema.')
+        if old_burial:
+            src_sed = source_names.index('Sediment reversible') if 'Sediment reversible' in source_names else None
+            src_buried = source_names.index('Sediment slowly reversible')
+            if src_sed is None or old_rates[src_sed, src_buried] <= 0:
+                incompatible('old slowly reversible sediment cannot be verified '
+                             'as the organics burial compartment from source rates.')
+
+        if 'critstress_factor' not in ds and self.get_config(
+                'chemical:sediment:use_critstress_heterogeneity'):
+            incompatible('critstress_factor is missing with heterogeneous '
+                         'critical-stress physics enabled.')
+        if 'f_OC' not in ds and (self.get_config('chemical:dynamic_partitioning')
+                                 and setup == 'organics'):
+            incompatible('per-element f_OC is missing while organics '
+                         'dynamic partitioning is enabled.')
+        # Historical process-resolved sinks cannot be recovered from a total.
+        # If historical total degraded mass is nonzero, require its breakdown.
+        absent = [name for name in Chemical.SINGLE_DEGRADATION_VARIABLE_NAMES
+                  if name not in ds]
+        if absent and np.any(np.asarray(ds['mass_degraded'].values) != 0):
+            incompatible('historical degraded mass is nonzero but process '
+                         'breakdown is unavailable: ' + ', '.join(absent))
+        # A legacy file cannot provide authenticated float64/RNG/eta sidecars.
+        if self.get_config('drift:water_column_stretching'):
+            incompatible('canonical exact-stretching restart requires authentic '
+                         'mass, coordinate, RNG, and sea-level checkpoint sidecars '
+                         'which the V1.0 migration cannot reconstruct.')
+        # Historical inactive mass must never disappear from conservation.
+        status = np.asarray(ds['status'].values)
+        if np.any(~np.isfinite(status)) or np.any(status != 0):
+            incompatible('historical deactivated/unknown elements are present '
+                         'without an authenticated inert-mass carry ledger.')
+
+        # Absent new properties may only default when their controlling physics
+        # is disabled. Optional instantaneous diagnostics are not historical
+        # mass and are recalculated by the model when enabled.
+        migrated = ds.copy(deep=True)
+        if 'critstress_factor' not in ds:
+            migrated['critstress_factor'] = ds['mass'] * 0 + 1.0
+        if 'f_OC' not in ds:
+            migrated['f_OC'] = ds['mass'] * 0 + 0.01
+        for name in absent:
+            if name in self.ElementType.variables:
+                migrated[name] = ds['mass'] * 0
+        remapped = np.asarray(ds['specie'].values)
+        if np.any(~np.isfinite(remapped)) or np.any(remapped < 0) or np.any(remapped >= n):
+            incompatible('element species indices are invalid for source schema.')
+        mapped = np.array([mapping[int(i)] for i in remapped.flat], dtype=np.int32).reshape(remapped.shape)
+        migrated['specie'] = (ds['specie'].dims, mapped)
+
+        new_counts = np.zeros((len(current_names), len(current_names)), dtype=np.int64)
+        for i in range(n):
+            for j in range(n):
+                new_counts[mapping[i], mapping[j]] = int(old_counts[i, j])
+        migrated_state = {'source_names': source_names,
+                          'mapping': mapping, 'counts': new_counts,
+                          'setup': setup}
+        self._legacy_restart_migration_provenance = {
+            'source_species': source_names,
+            'target_species': current_names,
+            'source_to_target_indices': {str(k): int(v)
+                                         for k, v in mapping.items()},
+            'source_transfer_setup': setup,
+            'historical_organics_burial_remapped': bool(old_burial),
+            'historical_rates_not_restored': True,
+            'exact_historical_continuation': False,
+        }
+        logger.warning(
+            'ChemicalDrift V1.0 migration: species indices remapped %s; '
+            'organics Sediment slowly reversible used as burial=%s. '
+            'Current chemical transfer rates apply after migration; this is '
+            'not bit-exact historical-physics continuation. Missing inactive '
+            'history/RNG/instantaneous diagnostics cannot be reconstructed. '
+            'New safe-default fields: %s.', mapping, old_burial,
+            sorted(set(migrated.data_vars) - set(ds.data_vars)))
+        return migrated, migrated_state
+
     def _capture_restart_model_state(self, ds, trajectory_time_index, keep_properties):
         """Capture run-level ChemicalDrift state before parent reseeding.
 
@@ -4538,7 +4791,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 logger.warning(
                     'Restart requested from non-final time index %s. '
                     'ntransformations is stored only as final run-level metadata, '
-                    'so it will not be restored for this branch restart.',
+                    'so it will not be restored at the selected restart point.',
                     trajectory_time_index)
 
         if ('transfer_rates' in state
@@ -4655,48 +4908,28 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
     def seed_from_dataset(self, ds, trajectory_time_index=-1, time=None,
                           keep_properties=True, **kwargs):
-        """Restart/reseed with one-way migration to the diameter-only schema.
+        """Restart only with verified species semantics and element state.
 
-        Legacy element ``d50`` is accepted only as migration input. If ``diameter``
-        is absent, legacy positive d50 is copied to diameter. If both exist,
-        diameter is authoritative. The legacy variable is dropped before the
-        parent OpenDrift restoration so dual persistent state is never recreated.
+        Unsupported V1.0 configurations fail explicitly; restart requires
+        authentic per-element values and an unambiguous species schema.
         """
         self._prepare_restart_lifecycle()
 
-        ds_for_seed = ds
-        # A full trajectory output may contain deactivated records. They are
-        # retained on disk, but may not enter the active canonical seed state.
-        if ('checkpoint_exact_active_only' in ds.attrs and
-                int(ds.attrs['checkpoint_exact_active_only']) == 1):
-            total_frames = int(ds.sizes.get('time', 0))
+        ds_for_seed, legacy_state = self._prepare_legacy_restart(
+            ds, keep_properties)
+        # Canonical active-only checkpoints retain only currently active state.
+        if ('checkpoint_exact_active_only' in ds_for_seed.attrs and
+                int(ds_for_seed.attrs['checkpoint_exact_active_only']) == 1):
+            total_frames = int(ds_for_seed.sizes.get('time', 0))
             tindex = (trajectory_time_index if trajectory_time_index >= 0
                       else total_frames + trajectory_time_index)
             if tindex != total_frames - 1:
                 raise ValueError('Canonical active-only checkpoint is terminal-only')
-            age = np.asarray(ds['age_seconds'].isel(time=tindex).values)
+            age = np.asarray(ds_for_seed['age_seconds'].isel(time=tindex).values)
             active = np.isfinite(age) & (age >= 0)
             if not np.any(active) or np.all(active):
                 raise ValueError('Invalid canonical active-only trajectory layout')
-            ds_for_seed = ds.isel(trajectory=np.flatnonzero(active)).copy(deep=True)
-        variables = getattr(ds_for_seed, 'variables', {})
-        if 'd50' in variables:
-            try:
-                ds_for_seed = ds_for_seed.copy()
-                if 'diameter' not in variables:
-                    ds_for_seed['diameter'] = ds_for_seed['d50'].copy()
-                    logger.warning(
-                        'Migrating legacy restart element d50 to diameter; '
-                        'persistent element d50 is removed in the current schema.')
-                else:
-                    logger.warning(
-                        'Legacy restart contains both diameter and d50; diameter is '
-                        'authoritative and legacy d50 is dropped.')
-                ds_for_seed = ds_for_seed.drop_vars('d50')
-            except Exception as exc:
-                raise ValueError(
-                    'Could not migrate legacy restart d50 to diameter-only state: '
-                    f'{exc}') from exc
+            ds_for_seed = ds_for_seed.isel(trajectory=np.flatnonzero(active)).copy(deep=True)
 
         # Preserve the *actual* final double-precision Lagrangian position
         # through the canonical restart.  OpenDrift stores trajectory lon/lat
@@ -4734,6 +4967,15 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         restart_state = self._capture_restart_model_state(
             ds_for_seed, trajectory_time_index, keep_properties)
+        if legacy_state is not None:
+            # Historical rates document the source mapping but the intended
+            # migration adopts the new model's explicitly configured physics.
+            # Do not overwrite the current transition tensor with old rates.
+            restart_state['name_species'] = list(self.name_species)
+            restart_state['nspecies'] = np.asarray(self.nspecies)
+            restart_state['transfer_rates'] = np.asarray(self.transfer_rates).copy()
+            restart_state['ntransformations'] = legacy_state['counts']
+            restart_state['num_indices'] = {}  # Mapping already verified above.
         self._validate_restart_model_state(restart_state)
 
         # Preserve authentic preceding sea-surface elevation across restart.
@@ -4761,7 +5003,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         # Saved sediment-carrier diameter is persistent Lagrangian state.
         # This flag applies only while OpenDrift copies an existing checkpoint;
-        # all genuine new seeding keeps the original bed-d50 sentinel policy.
+        # new seeding resolves sediment size using local bed-grain inputs.
         self._restoring_checkpoint_carriers = bool(keep_properties)
         try:
             super(ChemicalDrift, self).seed_from_dataset(
@@ -5037,14 +5279,6 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 logger.debug("%9s %3s %-24s", int(counts[i]), i, sp_name)
 
         # Diameter assignment: single authoritative Lagrangian size state.
-        # Fresh-state carrier semantics override stale d50-style inputs.
-        legacy_d50_seed = kwargs.pop('d50', None)
-        if legacy_d50_seed is not None:
-            logger.warning(
-                "Ignoring fresh-seed 'd50': persistent element d50 was removed; "
-                "use diameter for explicit particle carriers or bed sea_floor_d50/"
-                "chemical:sediment:d50 for sediment carrier acquisition.")
-
         diam_in = kwargs.get('diameter', None)
         diam_arr = _as_per_element_array(diam_in, num_elements, 'diameter')
         dia_part = float(self.get_config('chemical:particle_diameter'))
@@ -8112,8 +8346,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
     def _element_exchange_diameter(self, idx=None):
         """Return authoritative positive element diameter for grain-size physics.
 
-        A transported element never falls back to the receiving-bed d50. Invalid or
-        unresolved carrier size is therefore an explicit model-state error.
+        A transported element must retain its own diameter; local seabed grain
+        size cannot replace missing carrier state.
         """
         if idx is None:
             out = np.asarray(self.elements.diameter, dtype=float)
@@ -13778,6 +14012,41 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         return Solar0 / AveSolar
 
+    @staticmethod
+    def _realized_mass_transfer(stored_mass, requested_sink):
+        """Credit only mass actually removed from the representable particle state.
+
+        This changes no kinetic rate: ``requested_sink`` is still computed by
+        the original physical process. The returned sink is instead the exact
+        difference between the stored before/after values, using float64
+        accounting even if the live field is float32. No global dtype change.
+        """
+        before_raw = np.asarray(stored_mass)
+        if before_raw.dtype not in (np.dtype('float32'), np.dtype('float64')):
+            raise ValueError('Chemical mass storage must be float32 or float64')
+        before = np.asarray(before_raw, dtype=np.float64)
+        requested = np.asarray(requested_sink, dtype=np.float64)
+        if requested.shape != before.shape:
+            raise ValueError('Chemical mass transfer has inconsistent shape')
+        if (np.any(~np.isfinite(before)) or np.any(before < 0) or
+                np.any(~np.isfinite(requested)) or np.any(requested < 0)):
+            raise ValueError('Chemical mass transfer has nonfinite or negative input')
+        proposed_after = np.maximum(before - np.minimum(requested, before), 0.0)
+        stored_after = np.asarray(proposed_after, dtype=before_raw.dtype)
+        realized = before - np.asarray(stored_after, dtype=np.float64)
+        if np.any(realized < 0):
+            raise ValueError('Chemical mass transfer unexpectedly increased mass')
+        return stored_after, realized
+
+    def _ensure_cumulative_sink_precision(self, names):
+        """Keep only credited ChemicalDrift sinks float64 (not OpenDrift state)."""
+        for name in names:
+            if not hasattr(self.elements, name):
+                continue
+            current = np.asarray(getattr(self.elements, name))
+            if current.dtype == np.dtype('float32'):
+                setattr(self.elements, name, current.astype(np.float64).copy())
+
     def assert_degradation_balance(self, degraded_now, W, S, check_single_mech=False):
         """Common consistency checks for both degradation modes (cumulative-only).
         Checks:
@@ -13972,12 +14241,15 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                         )  # avoid degrading more mass than present
 
                 if W_deg or S_deg:
+                    updated_mass, degraded_now = self._realized_mass_transfer(
+                        self.elements.mass, degraded_now)
+                    self._ensure_cumulative_sink_precision(
+                        ('mass_degraded','mass_degraded_water','mass_degraded_sediment'))
                     self.elements.mass_degraded_water[W] += degraded_now[W]
                     self.elements.mass_degraded_sediment[S] += degraded_now[S]
 
                     self.elements.mass_degraded += degraded_now
-                    self.elements.mass -= degraded_now
-                    self.elements.mass = np.maximum(self.elements.mass, 0.0)
+                    self.elements.mass[:] = updated_mass
 
                     self.deactivate_elements(
                         self.elements.mass <
@@ -14410,6 +14682,15 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                     k_S_fin = 0
                     k_S_fin_sum = 0
 
+                # The physical rate was evaluated above. Subcategory sinks
+                # and cumulative totals must use the increment actually
+                # removed from the representable remaining-mass field.
+                if (k_S_fin_sum > 0) or (k_W_fin_sum > 0):
+                    updated_mass, degraded_now = self._realized_mass_transfer(
+                        self.elements.mass, degraded_now)
+                    self._ensure_cumulative_sink_precision(
+                        self._CHECKPOINT_MASS_FIELDS[1:])
+
                 # Save single-mechanism masses
                 if bool(self.get_config('chemical:transformations:Save_single_degr_mass')):
                     k_W_photo_fraction = 0
@@ -14496,9 +14777,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                     if S_deg:
                         self.elements.mass_degraded_sediment[S] += degraded_now[S]
 
-                    # Update mass and clamp to 0
-                    self.elements.mass -= degraded_now
-                    self.elements.mass = np.maximum(self.elements.mass, 0.0)
+                    # Store exactly the after-mass used in realized sink accounting.
+                    self.elements.mass[:] = updated_mass
 
                     self.deactivate_elements(
                         self.elements.mass <
@@ -14673,10 +14953,13 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         volatilized_now_local = np.minimum(mass_local,
             mass_local * (1.0 - np.exp(-K_volatilization * dt)))
 
-        # Update cumulative volatilized mass and remaining mass
+        # Preserve the original physical transfer rate, but credit the
+        # cumulative sink with the actual stored before/after mass difference.
+        updated_mass, volatilized_now_local = self._realized_mass_transfer(
+            self.elements.mass[idx], volatilized_now_local)
+        self._ensure_cumulative_sink_precision(('mass_volatilized',))
         self.elements.mass_volatilized[idx] += volatilized_now_local
-        self.elements.mass[idx] -= volatilized_now_local
-        self.elements.mass[idx] = np.maximum(self.elements.mass[idx], 0.0)
+        self.elements.mass[idx] = updated_mass
 
         self.deactivate_elements(self.elements.mass <
             (self.elements.mass + self.elements.mass_degraded + self.elements.mass_volatilized) / 500.0,
