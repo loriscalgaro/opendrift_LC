@@ -4505,8 +4505,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
     def _prepare_legacy_restart(self, ds, keep_properties):
         """Validate historical ChemicalDrift provenance; return dataset and mapping.
 
-        This migration supports authenticated ChemicalDrift V1.0 chemical
-        semantics, not arbitrary historical schemas. Missing scientific
+        This is a narrow migration for authenticated ChemicalDrift V1.0 chemical
+        semantics, not a general schema/version translator. Missing scientific
         state is an incompatibility, not permission to invent it.
         """
         if not keep_properties:
@@ -4524,11 +4524,12 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         if 'diameter' not in ds:
             raise ValueError(
                 'INCOMPATIBLE_LEGACY_RESTART: required per-element state '
-                'variable diameter is missing. Restore the original saved '
-                'diameter values; a metadata attribute or fabricated default '
-                'cannot replace particle data. If those values are unavailable, '
-                'keep_properties=True is incompatible. keep_properties=False '
-                'starts a NEW simulation, not an exact restart.')
+                'variable diameter is missing. Required *element data*: the '
+                'original diameter variable with its saved per-particle values, '
+                'not a global metadata attribute or a fabricated default. '
+                'If the original values are unavailable, keep_properties=True '
+                'is incompatible. keep_properties=False starts a NEW simulation, '
+                'not an exact restart.')
 
         source_names = (self._restart_dataset_string_list(ds['name_species'])
                         if 'name_species' in ds else None)
@@ -4540,7 +4541,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         def incompatible(reason):
             # Keep the first-line reason stable for callers, but tell the user
             # which *original* NetCDF metadata is needed to assess a repaired
-            # V1.0 file. State values must never be invented as metadata.
+            # ChemicalDrift V1.0 file. State values must never be invented as metadata.
             raise ValueError(
                 'INCOMPATIBLE_LEGACY_RESTART: ' + reason +
                 '\nManual repair requirements (use verified original-run values, '
@@ -4562,7 +4563,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'mass_degraded, mass_degraded_water, mass_degraded_sediment, '
                 'mass_volatilized, age_seconds and status. Also preserve '
                 'process breakdowns when historical degraded mass is nonzero; '
-                'per-element f_OC when organics dynamic partitioning is on; '
+                'per-element f_OC, or authentic matching V1.0 fOC_SPM/fOC_sed '
+                'configuration for homogeneous organics partitioning; '
                 'critstress_factor when heterogeneous critical stress is on.'
                 '\nMissing historical inactive-mass carry or canonical exact '
                 'mass/coordinate/RNG/sea-level sidecars cannot be recreated '
@@ -4599,7 +4601,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             incompatible('organics burial compartment cannot be identified '
                          'unambiguously from the old species schema.')
         if setup == 'metals' and 'Sediment buried' in source_names:
-            incompatible('unexpected buried compartment in V1.0 metals schema.')
+            incompatible('unexpected buried compartment in ChemicalDrift V1.0 metals schema.')
         # Validate original num_* indices before replacing them with the new
         # species indexing. A corrupted old index must not be silently ignored.
         source_index_names = {
@@ -4631,7 +4633,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         if len(set(mapping.values())) != len(mapping):
             incompatible('ambiguous many-to-one species mapping.')
 
-        # A V1.0 trajectory is not necessarily an authenticated chemical
+        # A ChemicalDrift V1.0 trajectory is not necessarily an authenticated chemical
         # checkpoint. Require full transition matrices and explicit historical
         # counters; never manufacture missing historical transitions.
         for name in ('transfer_rates', 'ntransformations', 'diameter', 'density',
@@ -4659,10 +4661,42 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'chemical:sediment:use_critstress_heterogeneity'):
             incompatible('critstress_factor is missing with heterogeneous '
                          'critical-stress physics enabled.')
-        if 'f_OC' not in ds and (self.get_config('chemical:dynamic_partitioning')
-                                 and setup == 'organics'):
-            incompatible('per-element f_OC is missing while organics '
-                         'dynamic partitioning is enabled.')
+        # V1.0 organics stored homogeneous fOC as run configuration, not as an
+        # element field. Reconstruct only when both authenticated fractions are
+        # the same; no sediment/SPM map is needed for this homogeneous contract.
+        legacy_uniform_foc = None
+        if ('f_OC' not in ds and setup == 'organics' and
+                self.get_config('chemical:dynamic_partitioning')):
+            spm_key = 'config_chemical:transformations:fOC_SPM'
+            sed_key = 'config_chemical:transformations:fOC_sed'
+            try:
+                spm_foc = float(ds.attrs[spm_key])
+                sed_foc = float(ds.attrs[sed_key])
+            except (KeyError, ValueError, TypeError, OverflowError):
+                incompatible('V1.0 homogeneous f_OC cannot be reconstructed: '
+                             'original fOC_SPM and fOC_sed configuration '
+                             'attributes must both be present and numeric.')
+            if (not np.isfinite(spm_foc) or not np.isfinite(sed_foc)
+                    or not (0.0 < spm_foc <= 1.0)
+                    or not (0.0 < sed_foc <= 1.0)):
+                incompatible('V1.0 homogeneous f_OC attributes must be finite '
+                             'physical fractions in (0, 1].')
+            if not np.isclose(spm_foc, sed_foc, rtol=0.0, atol=1e-12):
+                incompatible('V1.0 fOC_SPM and fOC_sed differ; one uniform '
+                             'element f_OC cannot preserve the source physics.')
+            # The current model uses these config constants at subsequent phase changes when
+            # no spatial map is supplied. Require matching current settings
+            # rather than silently changing a caller's configured chemistry.
+            for key, source_value in (
+                    ('chemical:transformations:fOC_SPM', spm_foc),
+                    ('chemical:transformations:fOC_sed', sed_foc)):
+                current_value = float(self.get_config(key))
+                if not np.isclose(current_value, source_value,
+                                  rtol=0.0, atol=1e-12):
+                    incompatible('Configured ' + key + ' differs from authentic ChemicalDrift V1.0 '
+                                 'configuration; set it to the original '
+                                 'source value to continue without maps.')
+            legacy_uniform_foc = spm_foc
         # Historical process-resolved sinks cannot be recovered from a total.
         # If historical total degraded mass is nonzero, require its breakdown.
         absent = [name for name in Chemical.SINGLE_DEGRADATION_VARIABLE_NAMES
@@ -4674,7 +4708,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         if self.get_config('drift:water_column_stretching'):
             incompatible('canonical exact-stretching restart requires authentic '
                          'mass, coordinate, RNG, and sea-level checkpoint sidecars '
-                         'which the V1.0 migration cannot reconstruct.')
+                         'which the ChemicalDrift V1.0 migration cannot reconstruct.')
         # Historical inactive mass must never disappear from conservation.
         status = np.asarray(ds['status'].values)
         if np.any(~np.isfinite(status)) or np.any(status != 0):
@@ -4688,7 +4722,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         if 'critstress_factor' not in ds:
             migrated['critstress_factor'] = ds['mass'] * 0 + 1.0
         if 'f_OC' not in ds:
-            migrated['f_OC'] = ds['mass'] * 0 + 0.01
+            migrated['f_OC'] = (ds['mass'] * 0 + legacy_uniform_foc
+                                if legacy_uniform_foc is not None
+                                else ds['mass'] * 0 + 0.01)
         for name in absent:
             if name in self.ElementType.variables:
                 migrated[name] = ds['mass'] * 0
@@ -4713,6 +4749,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             'source_transfer_setup': setup,
             'historical_organics_burial_remapped': bool(old_burial),
             'historical_rates_not_restored': True,
+            'legacy_uniform_f_OC_from_source_config': legacy_uniform_foc,
+            'legacy_f_OC_needs_maps': False if legacy_uniform_foc is not None else None,
             'exact_historical_continuation': False,
         }
         logger.warning(
@@ -4791,7 +4829,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 logger.warning(
                     'Restart requested from non-final time index %s. '
                     'ntransformations is stored only as final run-level metadata, '
-                    'so it will not be restored at the selected restart point.',
+                    'so it will not be restored for this branch restart.',
                     trajectory_time_index)
 
         if ('transfer_rates' in state
@@ -15455,7 +15493,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 if new_values.shape != (len(idx),) or codes is None or np.shape(codes) != (len(idx),):
                     raise RuntimeError(f'Invalid geometry sampling shape/provenance {name}')
                 codes = np.asarray(codes, dtype=np.uint8)
-                if np.any(bad | ~np.isfinite(new_values) | (codes != mgr.PROVENANCE_READER)):
+                if np.any(bad | ~np.isfinite(new_values) | (~np.isin(codes, (mgr.PROVENANCE_READER, mgr.PROVENANCE_CONSTANT)))):
                     raise RuntimeError(f'Post-advection {name} invalid or fallback-derived')
                 if name == 'sea_floor_depth_below_sea_level' and np.any(new_values < 0.):
                     raise RuntimeError('Negative post-advection bathymetry')
