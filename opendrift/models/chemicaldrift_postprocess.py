@@ -24105,6 +24105,57 @@ class ChemicalDriftPostProcessMixin:
             )
         return ref
 
+    @staticmethod
+    def _cell_areas_on_common_rect_footprint(src_lat, src_lon, dst_lat, dst_lon, R=6371000.0):
+        """Independent spherical intersection areas of source cells with destination extent.
+
+        Both grids must have finite, strictly monotonic 1-D latitude/longitude
+        centers, and must use one non-wrapping longitude frame.  Fail closed
+        on unsupported geometry rather than approving a potentially false
+        conservation result.  xESMF weights are NOT consulted by this check.
+        """
+        import numpy as np
+        import xarray as xr
+
+        def edges(vals, axis):
+            c = np.asarray(vals, dtype=np.float64)
+            if c.ndim != 1 or c.size < 2 or not np.isfinite(c).all():
+                raise ValueError(f"Cannot validate common-footprint mass: invalid {axis} centers")
+            delta = np.diff(c)
+            if not (np.all(delta > 0) or np.all(delta < 0)):
+                raise ValueError(f"Cannot validate common-footprint mass: nonmonotonic {axis}")
+            out = np.empty(c.size + 1, dtype=np.float64)
+            out[1:-1] = (c[:-1] + c[1:]) * 0.5
+            out[0] = c[0] - (out[1] - c[0])
+            out[-1] = c[-1] + (c[-1] - out[-2])
+            if axis == "latitude" and (out.min() < -90 or out.max() > 90):
+                raise ValueError("Cannot validate common-footprint mass: latitude beyond poles")
+            if axis == "longitude" and abs(out[-1] - out[0]) > 360:
+                raise ValueError("Cannot validate common-footprint mass: longitude extent >360")
+            return out
+
+        s_lat = edges(src_lat, "latitude")
+        s_lon = edges(src_lon, "longitude")
+        d_lat = edges(dst_lat, "latitude")
+        d_lon = edges(dst_lon, "longitude")
+
+        # Keep physical area independent of xESMF's source/destination weights.
+        # Different longitude conventions (e.g. 0..360 vs -180..180)
+        # need explicit coordinate normalization before any remapping.
+        south = np.maximum(np.minimum(s_lat[:-1], s_lat[1:]), d_lat.min())
+        north = np.minimum(np.maximum(s_lat[:-1], s_lat[1:]), d_lat.max())
+        lat_factor = np.where(north > south,
+                              np.sin(np.deg2rad(north)) - np.sin(np.deg2rad(south)), 0.0)
+        west = np.maximum(np.minimum(s_lon[:-1], s_lon[1:]), d_lon.min())
+        east = np.minimum(np.maximum(s_lon[:-1], s_lon[1:]), d_lon.max())
+        lon_factor = np.deg2rad(np.maximum(0.0, east - west))
+        areas = (R ** 2) * lat_factor[:, None] * lon_factor[None, :]
+        if not np.isfinite(areas).all() or not np.any(areas > 0):
+            raise ValueError("Cannot validate common-footprint mass: no unambiguous grid overlap")
+        return xr.DataArray(areas, dims=("latitude", "longitude"),
+                            coords={"latitude": np.asarray(src_lat),
+                                    "longitude": np.asarray(src_lon)})
+
     def _cell_areas_from_1d(self, lat, lon, lat_name="latitude", lon_name="longitude", R=6371000.0):
         """
         Compute spherical cell areas from 1D lat/lon centers.
@@ -24864,9 +24915,19 @@ class ChemicalDriftPostProcessMixin:
                     lat_name="latitude", lon_name="longitude",
                 ).astype(payload_dtype)
                 spatial_dims = [d for d in areal_mass_src.dims if d in ("depth", "latitude", "longitude")]
-                m_in = (areal_mass_src * A_src).sum(dim=spatial_dims, skipna=True, dtype=np.float64)
+                # A different destination footprint cannot conserve the mass
+                # outside its coverage.  Compare only the actual common-domain
+                # mass, using independent spherical cell intersections, not
+                # xESMF weights or a relaxed numerical tolerance.
+                A_common = self._cell_areas_on_common_rect_footprint(
+                    da["latitude"].values, da["longitude"].values,
+                    lat_can, lon_can,
+                ).astype(payload_dtype)
+                m_in_common = (areal_mass_src * A_common).sum(
+                    dim=spatial_dims, skipna=True, dtype=np.float64,
+                )
                 m_out = (areal_mass_out * A_dst).sum(dim=spatial_dims, skipna=True, dtype=np.float64)
-                xr.testing.assert_allclose(m_out, m_in, rtol=1e-6, atol=1e-12)
+                xr.testing.assert_allclose(m_out, m_in_common, rtol=1e-6, atol=1e-12)
 
                 thickness_for_payload = thickness_out.astype(payload_dtype)
                 conc_out = (areal_mass_out / thickness_for_payload.where(thickness_for_payload > 0)).where(
