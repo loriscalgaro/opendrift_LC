@@ -1192,21 +1192,25 @@ class Reader(StructuredReader):
 
             ensemble_dim = None
             dimindices = {'x': indx, 'y': indy, 'time': indxTime, 'z': indz}
-            dimorder = list(var.dims)
-            xnum = dimorder.index(self.dimensions['x'])
-            ynum = dimorder.index(self.dimensions['y'])
-            if xnum < ynum:
-                # We must have y before x, since returning numpy arrays and not Xarrays
-                logger.debug(f'Swapping order of x-y dimensions for {par}')
-                dimorder[xnum] = self.dimensions['y']
-                dimorder[ynum] = self.dimensions['x']
-                var = var.permute_dims(*dimorder)
-
             # Remove any unknown dimensions
             for dim in var.dims:
                 if dim not in self.dimensions.values() and dim != self.ensemble_dimension:
                     logger.debug(f'Removing unknown dimension: {dim}')
                     var = var.squeeze(dim=dim)
+            # DataArray labels are lost when converted to numpy below. Put all
+            # recognized dimensions in native ReaderBlock order first, not just
+            # the horizontal pair. Scalar time selection then leaves an
+            # optional ensemble first, followed by z, y and x.
+            canonical = (self.dimensions.get('time'), self.ensemble_dimension,
+                         self.dimensions.get('z'), self.dimensions['y'],
+                         self.dimensions['x'])
+            dimorder = tuple(dim for dim in canonical
+                             if isinstance(dim, str) and dim in var.dims)
+            if len(dimorder) != var.ndim:
+                raise ValueError(f'Unexpected CF dimensions for {par}: {var.dims}')
+            if var.dims != dimorder:
+                logger.debug(f'Normalizing CF dimension order for {par}: {var.dims} -> {dimorder}')
+                var = var.transpose(*dimorder)
             if self.ensemble_dimension is not None and self.ensemble_dimension in var.dims:
                 ensemble_dim = 0  # hardcoded, may not work for MEPS
             if split is False:
