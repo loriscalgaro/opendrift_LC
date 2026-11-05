@@ -91,7 +91,9 @@ class SeaLice(OceanDrift):
         'land_binary_mask': {'fallback': None},
         'sea_floor_depth_below_sea_level': {'fallback': 50},
         'surface_net_downward_radiative_flux':{'fallback': 0},
-        'ocean_vertical_diffusivity': {'fallback': 0.01},
+        'ocean_vertical_diffusivity': {'fallback': 0.01, 'profiles': True},
+        'ocean_mixed_layer_thickness': {
+            'fallback': 50, 'skip_if': ['drift:vertical_mixing', 'is', False]},
         'sea_water_temperature': {'fallback': 10},
         'sea_water_salinity': {'fallback': 34}
     }
