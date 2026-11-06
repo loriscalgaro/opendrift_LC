@@ -1159,6 +1159,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             'chemical:transformations:aggregation_rate': {'type': 'float', 'default': 0,
                 'min': 0, 'max': 1, 'units': 's-1',
                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Aggregation rate of DOM in marine water'},
+            'chemical:transformations:doc_input_unit': {'type': 'enum','enum': ['mmol_C_kg', 'mol_C_m3'],
+                'default': 'mmol_C_kg', 'level': CONFIG_LEVEL_ADVANCED,
+                'description': 'Units of environment.doc. DOC is internally converted to mmol C/kg before use in partitioning and photolysis.'},
             # Degradation in water column
             'chemical:transformations:t12_W_tot': {'type': 'float', 'default': 224.08,       # Naphthalene
                 'min': 1, 'max': None, 'units': 'hours',
@@ -6920,6 +6923,14 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                use the reader-provided vertical structure directly
         """
         conc_doc = self._env_array('doc', 0.0, idx=idx)
+        conc_doc = self._env_array('doc', 0.0, idx=idx)
+
+        unit = self.get_config('chemical:transformations:doc_input_unit')
+        if unit == 'mol_C_m3':
+            conc_doc = conc_doc * (1000.0 / 1025.0)
+        elif unit != 'mmol_C_kg':
+            raise ValueError(f'Unsupported DOC input unit: {unit}')
+
         if not self.DOC_vertical_levels_given:
             z = self._z_array(idx)
             mld = self._env_array('ocean_mixed_layer_thickness', 50.0, idx=idx)
@@ -7516,7 +7527,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 concSPM = self._spm_g_m3(idx_LMM) * 1e-6
                 self.elements.transfer_rates1D[idx_LMM, self.num_prev] = self.k_ads * concSPM
 
-                concDOM = self._doc_mmolkg(idx_LMM) * 12e-3 / 1.025 / 0.526 * 1e-3
+                rho_w = 1025.0  # kg/m3 or local density
+                concDOM = self._doc_mmolkg(idx_LMM) * 12e-3 * rho_w / 0.526 * 1e-3
                 self.elements.transfer_rates1D[idx_LMM, self.num_humcol] = self.k_ads * concDOM
 
                 if hasattr(self, 'num_srev'):
