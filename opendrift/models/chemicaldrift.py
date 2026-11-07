@@ -43,6 +43,8 @@ class Chemical(Lagrangian3DArray):
         ('critstress_factor', {'dtype': np.float32, 'units': '', 'default': 1.0}),
         ('f_OC', {'dtype': np.float32, 'units': '', 'default': 0.01}),
         ('specie', {'dtype': np.int32, 'units': '', 'default': 0}),
+        # Particle masses and cumulative chemical sinks are stored in ug; diagnostic rates have separate
+        # units.
         ('mass', {'dtype': np.float32, 'units': 'ug', 'seed': True, 'default': 1e3}),
         ('mass_degraded', {'dtype': np.float32, 'units': 'ug', 'seed': True, 'default': 0}),
         ('mass_degraded_water', {'dtype': np.float32, 'units': 'ug', 'seed': True, 'default': 0}),
@@ -2937,6 +2939,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             # Values from Simonsen et al (2019a)
             slow_coeff_ads = self.get_config('chemical:transformations:slow_coeff_ads')
             slow_coeff_des = self.get_config('chemical:transformations:slow_coeff_des')
+            # Reference SPM is kg/m3 here (50e-3 kg/m3 = 50 g/m3).
             concSPM     = 50.e-3                                                # available SPM (kg/m3)
             sed_L       = self.get_config('chemical:sediment:mixing_depth')     # sediment mixing depth (m)
             sed_dens    = self.get_config('chemical:sediment:density')          # default particle density (kg/m3)
@@ -2945,6 +2948,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             sed_H       = self.get_config('chemical:sediment:layer_thickness')  # thickness of seabed interaction layer (m)
             sed_burial  = self.get_config('chemical:sediment:burial_rate')      # sediment burial rate (m/y)
             sed_leaking_rate = self.get_config( 'chemical:sediment:buried_leaking_rate')
+            # Org2C is kg C/kg DOM (dimensionless); this converts kg C/m3 to kg DOM/m3.
             concDOM   = 1.e-3 / Org2C    # concentration of available dissolved organic matter (kg/m3)
                                          # rough initial estimate for coastal waters, doi: 10.1002/lom3.10118
             #concDOM   = 50.e-3          # HIGHER VALUE FOR TESTING!!!!!!!!!!!!
@@ -2954,6 +2958,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
                 KOC_sed = self.get_config("chemical:transformations:KOC_sed")
                 if KOC_sed < 0:
+                    # Empirical prefactor 2.62 has units L/kg_OC; Kow is dimensionless.
                     KOC_sed = 2.62 * KOW ** 0.82     # (L/kgOC), Park and Clough, 2014
                     #KOC_Sed    = 1.26 * kOW**0.81   # (L/KgOC), Ragas et al., 2019
 
@@ -2961,6 +2966,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
                 KOC_DOM = self.get_config("chemical:transformations:KOC_DOM")
                 if KOC_DOM < 0:
+                    # Empirical prefactor 2.88 has units L/kg_OC; result is KOC_DOM [L/kg_OC].
                     KOC_DOM = 2.88 * KOW ** 0.67  # (L/kgOC), Park and Clough, 2014
             else:
                 # Sediment KOC components (L/kgOC)
@@ -2987,6 +2993,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 # Kd_DOM = KOC_DOM * Org2C,
                 KOC_DOM_n = self.get_config("chemical:transformations:KOC_DOM")
                 if KOC_DOM_n < 0:
+                    # Empirical 0.08 is a unit-bearing fit factor; Kow is dimensionless and Org2C is kg
+                    # C/kg DOM.
                     KOC_DOM_n = (0.08 * KOW) / Org2C   # from DOC to DOM, Burkhard L.P. (2000) https://doi.org/10.1021/es001269l
                     # KOC_DOM_n   = 2.88 * KOW**0.67   # (L/KgOC), Park and Clough, 2014
 
@@ -3017,8 +3025,11 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             #KOM_DOM = KOC_DOM * Org2C #  L/KgOC * KgOC/KgOM = L/KgOM
 
             # to be calculated separately for sed, SPM, dom (different KOC, pH, fOC)
+            # fOC_sed is kg organic C/kg dry sediment; Kd_sed is L/kg dry sediment.
             self.Kd_sed = Kd_sed = KOC_sed * fOC_sed    # L/KgOC * KgOC/KG = L/Kg
+            # fOC_SPM is kg C/kg SPM; Kd_SPM is L/kg SPM.
             self.Kd_SPM = Kd_SPM = KOC_SPM * fOC_SPM    # L/KgOC * KgOC/KG = L/Kg
+            # Org2C is kg C/kg DOM; Kd_DOM is L/kg DOM.
             self.Kd_DOM = Kd_DOM = KOC_DOM * Org2C      # L/KgOC * KgOC/KgOM * 1KgOM/Kg = L/Kg (=KOM_DOM)
             # TODO Use setconfig() to store these?
 
@@ -3034,8 +3045,10 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
             # Base adsorption/desorption rates and background corrections
             # From Karickhoff and Morris 1985
+            # 33.3 is in L/(kg sorbent h); dividing by 3600 gives L/(kg sorbent s).
             k_ads = 33.3 / (60*60) # L/(Kg*s) = 33 L/(kgOM*h)
 
+            # k_des [s^-1] = k_ads [L/(kg s)] / Kd [L/kg]; carrier masses must match.
             k_des_sed = k_ads / Kd_sed # 1/s
             k_des_SPM = k_ads / Kd_SPM # 1/s
             k_des_DOM = k_ads / Kd_DOM # 1/s
@@ -3045,7 +3058,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             TcorrDOM = self.tempcorr("Arrhenius",DH_KOC_DOM,25,KOWTref)
             Scorr    = self.salinitycorr(Setchenow,KOWTref,35)
 
+            # Convert kg/m3 to kg/L by multiplying 1e-3, matching k_ads in L/(kg s).
             concSPM = concSPM * 1e-3 # (Kg/L)
+            # Convert kg DOM/m3 to kg DOM/L before applying k_ads [L/(kg DOM s)].
             concDOM = concDOM * 1e-3 # (Kg/L)
 
             self.k_ads = k_ads
@@ -3061,6 +3076,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
             # Fill transfer matrix (background at Tref, Sref)
             #   Dissolved  <->  Humic colloid
+            # k12 [s^-1] = k_ads [L/(kg DOM s)] * C_DOM [kg DOM/L].
             self.transfer_rates[self.num_lmm,self.num_humcol] = k_ads * concDOM             # k12
             self.transfer_rates[self.num_humcol,self.num_lmm] = k_des_DOM / TcorrDOM / Scorr# k21
 
@@ -3069,6 +3085,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             self.transfer_rates[self.num_prev,self.num_lmm] = k_des_SPM / TcorrSed / Scorr  # k31
 
             #   Dissolved  <->  Sediment reversible
+            # Convert k_ads from L/(kg s) to m3/(kg s) with 1e-3 m3/L; sediment volume correction yields
+            # s^-1.
             self.transfer_rates[self.num_lmm,self.num_srev] = \
                 (k_ads *1e-3) * sed_L * sed_dens * (1.-sed_poro) * sed_phi / sed_H          # k14 # *1e-3, from L to m3, so k14 is 1/s
             self.transfer_rates[self.num_srev,self.num_lmm] = \
@@ -3092,6 +3110,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             # Burial/leaking using dedicated sediment buried species
             # (m/y) / m / (s/y) = 1/s
             if hasattr(self, 'num_sburied'):
+                # Sediment burial [m/year] / active depth [m] / 31556926 [s/year] => s^-1.
                 burial_rate = sed_burial / sed_L / 31556926.0
                 self.transfer_rates[self.num_srev, self.num_sburied] = burial_rate             # k47
                 self.transfer_rates[self.num_ssrev, self.num_sburied] = burial_rate            # k57
@@ -3127,6 +3146,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             Kd         = self.get_config('chemical:transformations:Kd')          # (m3/Kg)
             Dc         = self.get_config('chemical:transformations:Dc')          # (1/s)
             slow_coeff = self.get_config('chemical:transformations:slow_coeff')
+            # Metal Kd is m3/kg: use C_SPM in kg/m3, not kg/L.
             concSPM    = 1.e-3   # concentration of available suspended particulate matter (kg/m3)
             sed_L = self.get_config('chemical:sediment:mixing_depth')            # sediment mixing depth (m)
             sed_dens =  self.get_config('chemical:sediment:density')             # default particle density (kg/m3)
@@ -3136,6 +3156,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             sed_H =  self.get_config('chemical:sediment:layer_thickness')         # thickness of seabed interaction layer (m)
 
             #self.k_ads = Dc * Kd * 1e3 # L/(Kg*s)
+            # Metal Dc [s^-1], Kd [m3/kg], C_SPM [kg/m3] => rate [s^-1].
             self.transfer_rates[self.num_lmm,self.num_prev] = Dc * Kd * concSPM
             self.transfer_rates[self.num_prev,self.num_lmm] = Dc
             self.transfer_rates[self.num_lmm,self.num_srev] = \
@@ -3280,6 +3301,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
             Dc         = self.get_config('chemical:transformations:Dc')
 
+            # Empirical factors multiplying Dc are dimensionless; literal transfer rates and Dc are in
+            # s^-1.
             self.salinity_intervals = [0,1,10,20]
 
             # Resize transfer rates array
@@ -4217,6 +4240,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                        if reader is not None and hasattr(reader, 'Dataset') else ()))
         return tuple(records)
 
+    # 2D/3D preflight does not check concentration units; validate source units separately.
     def _validate_doc_spm_reader_dimensions(self):
         """Preflight-only dimension contract; never infer unknown 3D or mix 2D/3D."""
         details = {}
@@ -6279,6 +6303,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             return None
         return self._env_array(name, fallback=None, idx=idx)
 
+    # Environment values are consumed in the declared native unit; this helper does not convert units.
     def _env_array(self, name, fallback=None, idx=None):
         """Return an environment variable as a float array.
         1) Read:
@@ -6329,6 +6354,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         return self._decode_policy_missing(name, out)
 
+    # Instantaneous water depth [m] = bathymetry [m] + sea-surface elevation [m].
     def _instantaneous_water_depth(
             self, idx=None, *, depth_convention='MEAN_SEA_LEVEL',
             require_physical_bathymetry=False,
@@ -6449,6 +6475,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             raise ValueError('Nonfinite previous/current sea-surface elevation')
         return prev.copy(), current.copy()
 
+    # Multiply signed particle depth [m] by dimensionless water-depth ratio H_new/H_old.
     def water_column_stretching(self):
         """Stretch eligible suspended particles using exact instantaneous depths.
 
@@ -6856,6 +6883,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         idx = np.asarray(idx, dtype=np.int64).ravel()
         return np.asarray(self.elements.z[idx], dtype=float)
 
+    # Profile exponential is dimensionless; never change input concentration units.
     def _apply_halfdepth_profile(self, values, z, mld, half_depth):
         """
         Apply an exponential half-depth profile below the mixed layer.
@@ -6904,6 +6932,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         3) Otherwise:
                use the reader-provided vertical structure directly
         """
+        # REQUIRED reader/fallback unit: g SPM/m3 seawater; no normalization occurs here.
         conc_spm = self._env_array('spm', 1.0, idx=idx)
         if not self.SPM_vertical_levels_given:
             z = self._z_array(idx)
@@ -6925,6 +6954,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         conc_doc = self._env_array('doc', 0.0, idx=idx)
         conc_doc = self._env_array('doc', 0.0, idx=idx)
 
+        # DOC reader units follow doc_input_unit (mmol C/kg seawater or mol C/m3); output is mmol C/kg
+        # seawater.
         unit = self.get_config('chemical:transformations:doc_input_unit')
         if unit == 'mol_C_m3':
             # mol C/m3 * 1000 mmol/mol / rho(T,S) [kg seawater/m3]
@@ -6993,6 +7024,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 Tref:   reference temperature [K]
             """
         if mode == 'Arrhenius':
+            # Arrhenius uses absolute K; Q10 uses a temperature difference divided by 10 deg C.
             R = 8.3145 # J/(mol*K)
             T_K = T_C + 273.15
             Tref_K = Tref_C + 273.15
@@ -7022,6 +7054,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         MWsalt = 68.35 # average mass of sea water salt (g/mol) Schwarzenbach Gschwend Imboden Environmental Organic Chemistry
         Dens_sw = self.sea_water_density(T=Temperature, S=Salinity)*1e-3 # (Kg/L)
 
+        # Salinity is approximated as g salt/kg water; rho converts to mol/L for dimensionless Setschenow
+        # exponent.
         ConcSalt = (Salinity/MWsalt)*Dens_sw
         corr = 10**(Setschenow*ConcSalt)
         return corr
@@ -7031,6 +7065,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
     ###########################################################################
 
     ### Partitioning coefficients
+    # pH and pKa are dimensionless logarithms; returned species fractions are dimensionless.
     def speciation_fractions(self, diss, pH, pKa_acid, pKa_base):
         """
         Return speciation fractions as (phi_neutral, phi_anion, phi_cation).
@@ -7156,6 +7191,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             pKa_base=pKa_base,
         )
 
+    # All KOC components must share L/kg_OC before speciation weighting.
     def koc_updated(self, KOC_neutral, KOC_anion, KOC_cation, pH, diss, pKa_acid, pKa_base):
         """Return pH-updated KOC = sum_i(KOC_i * phi_i).."""
         phi_neu, phi_an, phi_cat = self.speciation_fractions(diss, pH, pKa_acid, pKa_base)
@@ -7271,6 +7307,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             k14_corr = np.zeros_like(Sed_L_eff, dtype=np.float32)
             if Sed_L_0 > 0 and Sed_H_0 > 0:
                 valid = (Sed_L_eff > 0) & (H_rate_eff > 0)
+                # Geometry correction is dimensionless; multiplies the precomputed s^-1 transition rate.
                 k14_corr[valid] = (
                     (Sed_L_eff[valid] / H_rate_eff[valid]) /
                     (Sed_L_0 / Sed_H_0)
@@ -7288,6 +7325,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             burial_corr = np.zeros_like(Sed_L_eff, dtype=np.float32)
             if Sed_L_0 > 0:
                 valid = Sed_L_eff > 0
+                # Burial correction is ratio of two sediment thicknesses [m/m]; rate remains s^-1.
                 burial_corr[valid] = Sed_L_0 / Sed_L_eff[valid]
 
             return burial_corr
@@ -7336,6 +7374,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             # Needed below for KOC/Kd
             Org2C = 0.526
             KOW = 10 ** self.get_config('chemical:transformations:LogKOW')
+            # The numerical eps floor inherits the units of the KOC/Kd value being bounded; it is not
+            # unitless.
             eps = 1e-30
 
             # --- DOM / particle / sediment KOC definitions ---
@@ -7532,6 +7572,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             # Adsorption-side rates remain unchanged in this formulation
             idx_LMM = np.flatnonzero(specie == self.num_lmm)
             if idx_LMM.size:
+                # Organic adsorption requires kg SPM/L: g/m3 * 1e-6 = kg/L.
                 concSPM = self._spm_g_m3(idx_LMM) * 1e-6
                 self.elements.transfer_rates1D[idx_LMM, self.num_prev] = self.k_ads * concSPM
 
@@ -7543,6 +7584,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 if (rho_w.shape != idx_LMM.shape or
                         np.any(~np.isfinite(rho_w) | (rho_w <= 0.0))):
                     raise ValueError('DOC adsorption requires positive finite local seawater density [kg/m3]')
+                # 12e-3 [g C/mmol C] / 0.526 [g C/g DOM] * 1e-3 [kg/g] completes the conversion.
                 concDOM = (self._doc_mmolkg(idx_LMM) * 12e-3 *
                            (rho_w * 1e-3) / 0.526 * 1e-3)
                 self.elements.transfer_rates1D[idx_LMM, self.num_humcol] = self.k_ads * concDOM
@@ -7558,6 +7600,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         elif transfer_setup == 'metals':
             idx_LMM = np.flatnonzero(specie == self.num_lmm)
             if idx_LMM.size:
+                # Metal adsorption requires kg SPM/m3: g/m3 * 1e-3 = kg/m3.
                 concSPM = self._spm_g_m3(idx_LMM) * 1e-3
 
                 Kd0 = self.get_config('chemical:transformations:Kd')
@@ -7575,6 +7618,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 else:
                     Kd = np.full(idx_LMM.size, Kd0, dtype=np.float32)
 
+                # Metal Kd [m3/kg] x C_SPM [kg/m3] is dimensionless; Dc supplies s^-1.
                 self.elements.transfer_rates1D[idx_LMM, self.num_prev] = Dc * Kd * concSPM
 
                 if hasattr(self, 'num_srev'):
@@ -8141,6 +8185,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             #   P(no transition in dt)       = exp(-k_tot * dt)
             #   P(at least one transition)   = 1 - exp(-k_tot * dt)
             # Use -expm1(-x) instead of 1 - exp(-x) for numerical stability.
+            # Transition hazard k_total [s^-1] times timestep [s] forms dimensionless exponential argument.
             p_any = -np.expm1(-k_tot_active * dt)
 
             # First Monte Carlo draw:
@@ -8330,6 +8375,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         my_w = seawater_dynamic_viscosity(T0, S0)
 
         # Terminal velocity for low Reynolds numbers / Stokes settling:
+        # Stokes velocity [m/s]; negative values indicate sinking for particle density > water.
         W = (1.0 / my_w) * (1.0 / 18.0) * g * partsize**2 * dr
         # Write only selected elements. All others remain zero.
         self.elements.terminal_velocity[idx] = W
@@ -8962,6 +9008,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         return depth
 
+    # Dispersion variable omega^2*h/g is dimensionless; returned wave number k is m^-1.
     def _wave_number(self, period, depth):
         """Solve omega**2=g*k*tanh(k*h) for positive period/depth arrays.
 
@@ -9024,6 +9071,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         q = k * depth
         # log(1/sinh(q)) without overflow for large q or cancellation for small q.
         log_transfer = np.log(2.0) - q - np.log(-np.expm1(-2.0*q))
+        # Orbital speed u is m/s and excursion a is m; numerical logarithms use these SI reference units.
         log_u = np.log(np.pi) + np.log(height) - np.log(scale) - np.log(period) + log_transfer
         log_a = log_u + np.log(period) - np.log(2.0*np.pi)
         with np.errstate(under='ignore'):
@@ -9055,6 +9103,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                           np.log(2.0) - 0.5*log_re,
                           np.log(0.0521) - 0.187*log_re)
         log_fw = np.maximum(log_fr, log_fs)
+        # Wave friction factor is dimensionless; rho*u^2 has pressure units Pa.
         log_tau = np.log(0.5) + np.log(rho) + log_fw + 2.0*log_u
         if np.any(~np.isfinite(log_tau) | (log_tau > np.log(np.finfo(float).max))):
             raise ValueError('Calculated wave stress exceeds the numerical range.')
@@ -9091,6 +9140,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         tm02_fp = float(np.sqrt(i0/i2))
         return x, shape, i0, tm02_fp
 
+    # Ra, zeta and X are dimensionless, while omega is s^-1 and roughness ks is m.
     def _tanaka_thu_wave_stress(self, u_br, omega_r, ks, rho, nu):
         """Return wave-only stress, X, friction factor and Ra (Tanaka & Thu, 1994).
 
@@ -9197,6 +9247,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         X = u_br/(ks*omega_r)
         return tau, X, fw, ra
 
+    # Hs [m], Tm02 [s], spectrum variance m0 [m2], u_br [m/s], tau [Pa].
     def _jonswap_madsen_tm02(self, hs, tm02, depth, ks, rho, nu, gamma,
                               spectral_points=None, batch_size=None):
         """Wave-only stress from Hs, Tm02, depth, ks and nu.
@@ -9753,6 +9804,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             raise ValueError(f'Unknown wave_roughness_mode: {mode!r}')
         return mode
 
+    # Bed roughness z0, grain d50 and Nikuradse ks are all lengths [m].
     def _wave_roughness_length_array(self, idx=None):
         """Positive z0 [m] for wave friction; ks=30*z0, or ks=2.5*d50.
 
@@ -9903,6 +9955,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             if current_only:
                 zeros = np.zeros(n, dtype=float)
                 nan = np.full(n, np.nan, dtype=float)
+                # Friction velocity u_star [m/s] = sqrt(tau_current [Pa] / rho [kg/m3]).
                 ustar_current = np.sqrt(
                     np.maximum(tau_c, 0.0) / np.maximum(rho, eps)
                 )
@@ -9995,6 +10048,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
                 z0_default = z0.copy()
 
+                # z_ref/z0 is dimensionless; Cd dimensionless; rho*Cd*U^2 gives Pa.
                 z_ref_eff = np.maximum(z_ref, 1.01 * z0)
                 ratio = np.maximum(z_ref_eff / z0, 1.0 + 1e-6)
                 Cd = (kappa / np.log(ratio)) ** 2
@@ -10040,13 +10094,16 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 z0 = np.full(n, np.nan, dtype=float)
 
                 if Param_mode == 'MANNING':
+                    # Manning n [s/m^(1/3)], hydraulic radius Rh [m]; Cd is dimensionless.
                     Cd = g * (n_cfg ** 2) / np.maximum(Rh, eps) ** (1.0 / 3.0)
 
                 elif Param_mode == 'CHEZY':
+                    # Chezy C must be in m^0.5/s (SI); resulting Cd is dimensionless.
                     Cd = np.full(n, g / max(C_cfg, eps) ** 2, dtype=float)
 
                 elif Param_mode == 'WHITE_COLEBROOK':
                     ks = max(ks_cfg, eps)
+                    # White-Colebrook empirical 18 has SI Chezy units m^0.5/s; 12*Rh/ks is dimensionless.
                     Chezy = 18.0 * np.log10(np.maximum(12.0 * Rh / ks, 1.000001))
                     Cd = g / (Chezy ** 2)
                     z0 = np.full(n, ks / 30.0, dtype=float)
@@ -10378,6 +10435,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         branch = np.where(diameter >= threshold, 'NONCOHESIVE', 'COHESIVE')
         return branch if np.asarray(branch).ndim > 0 else str(branch)
 
+    # d50_mm is MILLIMETERS for classification only; convert to meters for hydrodynamic formulas.
     def classify_sediment(self, d50_mm: float) -> str:
         """
         Classify sediment from median grain size d50 [mm].
@@ -10397,6 +10455,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         else:
             return 'gravel'
 
+    # This routine requires grain diameter d_m [m], not sediment classification d50_mm [mm].
     def dimensionless_grain_size(self, d_m, rho_s=2650.0, rho_w=1000.0, nu=1.004e-6, g=9.81):
         """
         Compute dimensionless grain size D*.
@@ -10463,6 +10522,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         theta[m5] = 0.055
         return theta
 
+    # Owen rho_d [kg dry sediment/m3 bulk sediment]; empirical a units Pa*(m3/kg)^b, b dimensionless.
     def tau_ce_owen(self, rho_d, a, b):
         """
         Compute cohesive critical erosion stress [Pa] using an Owen-type dry-density relation.
@@ -10550,6 +10610,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             tau_cr = np.asarray(tau_cr, dtype=float) * np.maximum(eta, 1e-12)
         return np.asarray(tau_cr, dtype=float)
 
+    # Deposition reduction depends on dimensionless ratio tau[Pa]/tau_cr_dep[Pa].
     def krone_deposition_reduction(self, tau, tau_cr_dep):
         """
         Krone-type deposition reduction factor.
@@ -10610,6 +10671,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             if not np.isfinite(sigma) or sigma <= 0.0:
                 raise ValueError('chemical:sediment:gessler_sigma must be finite and > 0')
 
+    # Fit uses ws numerical value in m/s (log10(ws/(1 m/s))); returns u_star_cr [m/s].
     def _cohesive_settling_critical_velocity(self, ws):
         """Critical deposition shear velocity from Krestenitis et al. (2007), Eq. 17.
 
@@ -10673,6 +10735,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             raise ValueError('Calculated noncohesive deposition reference stress must be finite and > 0')
         return tau_ref
 
+    # Gaussian argument (tau_ref[Pa]/tau[Pa]-1)/sigma[-] is dimensionless; output is a probability factor.
     def _gessler_deposition_factor(self, tau, tau_ref, sigma):
         tau = np.asarray(tau, dtype=float)
         tau_ref = np.asarray(tau_ref, dtype=float)
@@ -10758,9 +10821,11 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             raise ValueError('Interaction-layer thickness must be finite and > 0')
         if not np.isfinite(dt) or dt < 0.0:
             raise ValueError('Deposition timestep must be finite and >= 0')
+        # ws[m/s]*alpha[-]/h_b[m] => hazard[s^-1]; hazard*dt[s] dimensionless.
         hazard = ws * alpha_d / h_b
         return np.clip(-np.expm1(-hazard * dt), 0.0, 1.0)
 
+    # rho_s[kg/m3]*active depth[m]*solid fraction[-] gives bed mass per area[kg/m2].
     def _local_erodible_mass_per_area(self, idx=None):
         """
         Return the locally erodible bed mass per unit area.
@@ -10829,6 +10894,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         prob_model = self.get_config('chemical:sediment:resuspension_probability_model')
 
         # time-independent formulation
+        # Legacy instantaneous probability is per update and intentionally has no dt; do not treat as rate.
         if prob_model == 'INSTANTANEOUS_EXCESS_SHEAR':
             p_res = self.linear_excess_shear_factor(tau, tau_cr_res)
             return np.clip(p_res, 0.0, 1.0)
@@ -10862,6 +10928,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             m_erodible = np.asarray(m_erodible, dtype=float)
             if m_erodible.ndim == 0:
                 m_erodible = np.full(tau.shape, float(m_erodible), dtype=float)
+            # Erosion Kd [kg/(m2 s Pa)] is NOT partition Kd [L/kg or m3/kg]; E/M_A gives s^-1.
             erosion_flux = np.maximum(Kd[mask_coh], 0.0) * np.maximum(tau[mask_coh] - tau_cr_res[mask_coh], 0.0)
             hazard[mask_coh] = np.where(
                 m_erodible[mask_coh] > 0.0,
@@ -10877,6 +10944,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             T_pickup = max(T_pickup, 1e-12)
             expo = max(expo, 1e-12)
 
+            # Noncohesive excess-shear term is dimensionless; dividing by T_pickup[s] gives s^-1.
             excess = np.maximum(tau[mask_non] / np.maximum(tau_cr_res[mask_non], 1e-30) - 1.0, 0.0)
             hazard[mask_non] = (excess ** expo) / T_pickup                   # 1/s
 
@@ -11104,6 +11172,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         stress_dep = self.compute_bottom_shear_stress(idx=idx_dep)
         tau_dep = stress_dep['tau_effective']
 
+        # Terminal velocity is signed [m/s]; ws is non-negative downward settling magnitude [m/s].
         ws_dep = np.maximum(
             -np.asarray(self.elements.terminal_velocity[idx_dep], dtype=float),
             0.0,
@@ -11690,6 +11759,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             )
         return out
 
+    # Sediment oxygen boundary C_bottom [mmol O2/m3 water], unlike bulk water kinetics in g O2/m3.
     def _bottom_water_oxygen_for_sediment(self, idx):
         """
         Return bottom-water dissolved O2 for sediment calculations [mmol/m3].
@@ -11777,6 +11847,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         out[~valid] = fallback
         return out
 
+    # Boudreau porosity correction is dimensionless; both diffusivities are m2/s.
     def _local_sediment_oxygen_transport(self, idx, porosity=None):
         """Return molecular/effective sediment O2 transport coefficients.
 
@@ -11869,6 +11940,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         permeable = permeability > threshold
         if np.any(permeable):
             kappa = 0.40
+            # Dispersion alpha has units s/m; alpha*kappa*u_star is dimensionless.
             exponent = alpha_si * kappa * ustar[permeable]
             if np.any(~np.isfinite(exponent)) or np.any(exponent > 700.0):
                 raise ValueError('Porewater-dispersion exponent is non-finite or too large.')
@@ -11892,6 +11964,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             idx, porosity=porosity
         )['effective']
 
+    # Bioirrigation alpha0 is s^-1; depth-decay scale lambda_i is m.
     def _local_sediment_bioirrigation_inputs(self, idx):
         """Return local RADI-style bioirrigation alpha0 [s-1] and depth scale [m]."""
         idx = np.asarray(idx, dtype=np.int64).ravel()
@@ -11972,6 +12045,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             raise ValueError('Bioirrigation solver produced non-finite concentrations.')
         return out
 
+    # Reaction R is per BULK sediment volume [mmol O2/(m3 bulk s)]; phi converts porewater terms to bulk
+    # basis.
     @classmethod
     def _solve_bioirrigated_oxygen_profiles(
             cls, C_bottom, H_active, porosity, D_s, alpha0, depth_scale,
@@ -12280,6 +12355,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             'total_oxygen_uptake': surface_flux + irrigation_flux,
         }
 
+    # Depth integration [mmol/m3]*[m] divided by H[m] preserves mmol/m3.
     @staticmethod
     def _mean_parabolic_sediment_oxygen(C_surface, H_active, L_oxygen):
         """
@@ -12357,6 +12433,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         # Protect against tiny floating-point excursions outside physical bounds.
         return np.clip(out, 0.0, C_surface)
 
+    # Monod O2 weight is dimensionless; C and K_half must share mmol O2/m3 units.
     @staticmethod
     def _mean_parabolic_sediment_monod_weight(
             C_surface, H_active, L_oxygen, half_sat_mmol_m3):
@@ -12419,6 +12496,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         return np.clip(out, 0.0, 1.0)
 
+    # Zero-order penetration L[m] and oxygen uptake F[mmol O2/(m2 s)].
     @staticmethod
     def _zero_order_dbl_surface_depth(C_bottom, porosity, D_s, R_oxygen, k_bl):
         """
@@ -12675,6 +12753,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             idx,
             gt=0.0,
         )
+        # DBL k_bl=D0[m2/s]/delta[m] => m/s; k_bl*DeltaC[mmol/m3] => mmol/(m2 s).
         k_bl = D0 / dbl
 
         demand_mode = self.get_config('chemical:sediment:oxygen_demand_mode')
@@ -13046,6 +13125,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         return np.clip(out, 0.0, 1.0)
 
+    # Each oxygen-consumption R is per bulk sediment volume; R*reactive thickness is mmol/(m2 s).
     def _sediment_oxygen_two_layer_dbl(self, idx, return_diagnostics=False):
         """
         TWO_LAYER_DBL: two zero-order sediment reactivities plus a DBL.
@@ -13288,6 +13368,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             self.get_config('chemical:transformations:HalfSatO_s'),
             gt=0.0,
         )
+        # 31.9988e-3 is g O2/mmol O2; divide g O2/m3 to obtain mmol O2/m3.
         half_sat_mmol = half_sat_g / 31.9988e-3
         weight = self._active_sediment_biodegradation_weight(
             base_oxygen, diagnostics, half_sat_g
@@ -13376,6 +13457,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 le=1.0,
             )
         # g m-3 / (g mmol-1) -> mmol m-3.
+        # Maintain same g O2/m3 -> mmol O2/m3 conversion in all oxygen-limitation paths.
         K = half_sat_g / 31.9988e-3
         model = self.get_config('chemical:sediment:oxygen_model')
 
@@ -13502,6 +13584,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 self.get_config('chemical:transformations:sediment_aerobic_rate_multiplier'),
                 ge=0.0,
             )
+            # Sediment aerobic k and reference water k are h^-1; relative multiplier is dimensionless.
             return k_water * multiplier
         if mode == 'DIRECT':
             return self._validate_scalar_param(
@@ -13514,6 +13597,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             f'{mode!r}'
         )
 
+    # Water biodegradation O2 terms use g O2/m3; sediment oxygen PDE uses mmol O2/m3.
     def calc_DO_biodegradation_rate(
             self,
             HalfSatO_w,
@@ -13675,6 +13759,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         self._biodegradation_rate_debug_key = key
 
+    # Dec_Accl_bio has units 1/deg C; exponent Dec_Accl_bio*DeltaT is dimensionless.
     def calc_TCorr(self, T_Max_bio, T_Opt_bio, T_Adp_bio, Max_Accl_bio, Dec_Accl_bio, Q10_bio, TW):
         """
         Correction for the effects of water temperature on biodegradation
@@ -13720,6 +13805,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             VT = ((T_Max_bio + Acclimation) - T) / (
                 (T_Max_bio + Acclimation) - (T_Opt_bio + Acclimation))
 
+            # AQUATOX temperature fit uses numerical temperature DIFFERENCES in deg C; 2, 40, 400 are fit
+            # constants in that convention.
             WT = lnQ10 * ((T_Max_bio + Acclimation) - (T_Opt_bio + Acclimation))
             YT = lnQ10 * ((T_Max_bio + Acclimation) - (T_Opt_bio + Acclimation) + 2.0)
             XT = ((WT ** 2) * (1.0 + np.sqrt(1.0 + 40.0 / YT)) ** 2) / 400.0
@@ -13809,6 +13896,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 # Slice chunk
                 pH_chunk = pH_water[i:end]
                 # Compute k_hy_Ac and k_hy_Base
+                # pH-based 10**(-pH) and 10**(pH-14) are numerical [H+] and [OH-] in mol/L (1 M reference,
+                # pKw=14).
                 k_hy_Ac = k_Acid * 10**(-pH_chunk)
                 k_hy_Base = k_Base * 10**(pH_chunk - 14)
                 # Compute final k_W_hydro values
@@ -13854,6 +13943,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 # Slice chunk
                 pH_chunk = pH_sed[i:end]
                 # Compute k_hy_Ac and k_hy_Base
+                # Sediment pH rate uses implicit 1 mol/L standard state and pKw=14; output h^-1.
                 k_hy_Ac = k_Acid * 10**(-pH_chunk)
                 k_hy_Base = k_Base * 10**(pH_chunk - 14)
                 # Compute final k_S_hydro values
@@ -13944,8 +14034,11 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             # DOC [mmol C/kg] * 0.012 [g C/mmol] * rho [kg/m3]
             # / 0.526 [g C/g DOM] => g DOM/m3.
             ConcDOM = concDOC_chunk * 12e-3 * rho_w[i:end] / 0.526
+            # Phyto [mmol C/m3]*1e-6 [mol C/L per mmol C/m3]*12.01 [g C/mol]/C2PHYC [g C/g biomass]*1000
+            # [L/m3] -> g biomass/m3.
             ConcPHYTO = (((Conc_Phyto_chunk * 1e-6) * 12.01) / C2PHYC) * 1000.0  # g biomass / m3
 
+            # Extinction coefficients are m2/g of their respective constituent; alpha is m^-1.
             Extinct = (WaterExt + (ExtCoeffDOM * ConcDOM) + (ExtCoeffSPM * concSPM_chunk)
                     + (ExtCoeffPHY * ConcPHYTO))
             Extinct = np.maximum(Extinct, 0.0)
@@ -13998,6 +14091,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         unit = self.get_config('chemical:transformations:solar_input_unit')
         if unit == 'W_m2':
+            # 0.4843 has units (W/m2)/(Ly/day); conversion is NOT division by dimensionless factor.
             return solar / 0.4843
         elif unit == 'Ly_day':
             return solar
@@ -14036,6 +14130,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         if (rho_w.shape != np.asarray(concDOC).shape or
                 np.any(~np.isfinite(rho_w) | (rho_w <= 0.0))):
             raise ValueError('Photolysis requires positive finite local density [kg/m3]')
+        # Same DOC [mmol C/kg] -> DOM [g/m3] conversion as screening, using local rho [kg/m3].
         ConcDOM = concDOC * 12e-3 * rho_w / 0.526  # g DOM/m3
         # SPM as g / m3
         concSPM = self._spm_g_m3(idx)
@@ -14043,6 +14138,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         Conc_Phyto_water = self._env_array(
             'mole_concentration_of_phytoplankton_expressed_as_carbon_in_sea_water',
             0.0, idx=idx)
+        # This is phytoplankton carbon mmol/m3 -> phytoplankton biomass g/m3; C2PHYC is g C/g biomass.
         ConcPHYTO = (((Conc_Phyto_water * 1e-6) * 12.01) / C2PHYC) * 1000.0  # g biomass / m3
 
         Alpha = (WaterExt + (ExtCoeffDOM * ConcDOM) + (ExtCoeffSPM * concSPM) + (ExtCoeffPHY * ConcPHYTO))
@@ -14093,6 +14189,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         # particles below the mixed layer are treated as "hypolimnion"
         below_ml = Depth > MLDepth
         # hypolimnion -> Solar0 = Solar * exp(-Alpha * MaxZMix)
+        # alpha[m^-1]*mixed-layer-depth[m] is dimensionless; both solar terms must use Ly/day.
         if np.any(below_ml):
             Solar0[below_ml] = Solar_ly_day[below_ml] * np.exp(
                 -Alpha[below_ml] * MLDepth[below_ml])
@@ -14198,6 +14295,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         Convert h^-1 to s^-1 before division. A positive denominator must not
         be raised to a numerical floor: that loses mass from slow mechanisms.
         """
+        # Convert the mechanism rate h^-1 -> s^-1 before taking the dimensionless mechanism share.
         rate, total = np.broadcast_arrays(
             np.asarray(mechanism_per_hour, dtype=float) / 3600.0,
             np.asarray(total_per_second, dtype=float))
@@ -14451,6 +14549,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                         Q10_bio = self.get_config('chemical:transformations:Q10_bio')
                         pH_min_bio = self.get_config('chemical:transformations:pH_min_bio')
                         pH_max_bio = self.get_config('chemical:transformations:pH_max_bio')
+                        # 31.9988e-3 g/mmol converts environmental mmol O2/m3 to g O2/m3.
                         Ox_water = (
                             self._env_array(
                                 'mole_concentration_of_dissolved_molecular_oxygen_in_sea_water',
@@ -14584,6 +14683,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                             concDOC, concSPM, Conc_Phyto_water, Depth, MLDepth,
                             rho_water_kg_m3=rho_photo,
                         )
+                        # Photolysis k_Photo has units h^-1; light, screening and temperature factors are
+                        # dimensionless.
                         k_W_photo = k_Photo * photo_light_factor
                         k_W_photo = k_W_photo * photo_screening_factor
                         if water_arrhenius_factor is None:
@@ -14630,6 +14731,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                     else:
                         k_W_hydro = np.zeros_like(TW)
 
+                    # All mechanism rates here are h^-1 until division by 3600; mass loss is ug times
+                    # unitless survival fraction.
                     k_W_fin = (k_W_bio + k_W_hydro + k_W_photo) / (60 * 60)  # 1/h -> 1/s
                     k_W_fin_sum = np.sum(k_W_fin)
 
@@ -14986,6 +15089,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         DH_Slb = self.get_config('chemical:transformations:DeltaH_Solub')
 
         H0 = self.get_config('chemical:transformations:Henry')  # atm m3/mol
+        # Configured Henry uses Tref_Henry [deg C], not the solubility reference temperature.
         Tref_H0 = self.get_config('chemical:transformations:Tref_Henry')
 
         R = 8.206e-05  # (atm m3)/(mol K)
@@ -14993,6 +15097,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         if H0 < 0:
             if Vp > 0 and Slb > 0:
                 logger.debug("Henry constant calculated from Vp and Slb")
+                # Vp[Pa]/Solub[g/m3]*MW[g/mol] is Pa m3/mol; /101325 Pa/atm gives atm m3/mol.
                 Henry = (
                     (Vp * self.tempcorr("Arrhenius", DH_Vp, T, Tref_Vp)) /
                     (Slb * self.tempcorr("Arrhenius", DH_Slb, T, Tref_Slb))
@@ -15020,23 +15125,28 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         # Water-side mass transfer coefficient
         # Schwarzenbach et al., 2016 Eq. (19-20)
+        # Wind fit expects U10 in m/s and returns water-side velocity in cm/s; coefficients carry units.
         MTCw = (((9e-4) + (7.2e-6 * wind ** 3)) * (MolWtCO2 / MolWt) ** 0.25) * Undiss_n
 
         # Air-side mass transfer coefficient
         # Schwarzenbach et al., 2016 Eq. (19-17)(19-18)(19-19)
         Sca_H2O = 0.62
+        # Air-side empirical wind fit expects U10 in m/s and returns cm/s; coefficients are dimensional.
         MTCaH2O = (0.1+ wind * (6.1 + 0.63 * wind) ** 0.5
             / (13.3 * (Sca_H2O ** 0.5) + (6.1e-4 + (6.3e-5) * wind) ** -0.5 - 5.0
             + 1.25 * np.log(Sca_H2O)))
         MTCa = MTCaH2O * (MolWtH2O / MolWt) ** (1.0 / 3.0)
 
         # Overall volatilization mass transfer coefficient
+        # Henry/(R*T) is dimensionless; empirical 0.01143 is per PSU of salinity.
         HenryLaw = Henry * (1.0 + 0.01143 * S) / (R * (T + 273.15))
         HenryLaw = np.maximum(HenryLaw, 1e-30)
 
+        # Water-side and air-side mass transfer speeds are both cm/s; H_dimless has no unit.
         MTCvol = 1.0 / (1.0 / np.maximum(MTCw, 1e-30) +
             1.0 / np.maximum(MTCa * HenryLaw, 1e-30))  # cm/s
 
+        # Multiply 0.01 m/cm to convert MTCvol cm/s to m/s; divide by water thickness m => s^-1.
         K_volatilization = 0.01 * MTCvol / Thick  # 1/s
 
         dt = self.time_step.total_seconds()
