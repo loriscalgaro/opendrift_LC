@@ -1086,17 +1086,17 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'min': 0, 'max': 100, 'units': 'PSU',
                 'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Parameter controlling salinity dependency of Kd for metals'},
             'chemical:transformations:Dc': {'type': 'float', 'default': 1.16e-5,                 # Simonsen 2019
-                'min': 0, 'max': 1e6, 'units': '',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Desorption rate of metals from particles'},
+                'min': 0, 'max': 1e6, 'units': 's-1',
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'First-order metal desorption rate [s-1]; metal adsorption uses Dc * Kd [m3/kg] * carrier concentration [kg/m3].'},
             'chemical:transformations:slow_coeff': {'type': 'float', 'default': 0,     # 1.2e-7, # Simonsen 2019
-                'min': 0, 'max': 1e6, 'units': '',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Adsorption coefficient to slowly reversible fractions (metals)'},
+                'min': 0, 'max': 1e6, 'units': 's-1',
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'First-order transfer rate [s-1] from reversible to slowly reversible particle and sediment fractions in the metals scheme.'},
             'chemical:transformations:slow_coeff_des': {'type': 'float', 'default': 0, # 2.77e-7 1/s (up to 1.11e-6 1/s) # doi.org/10.1021/es960300+ Cornelissen et al. (1997) # doi.org/10.1897/06-104R.1 Birdwell et al. (2007)
-                'min': 0, 'max': 1e6, 'units': '',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Desorption coefficient from slowly reversible fractions (organics)'},
+                'min': 0, 'max': 1e6, 'units': 's-1',
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'First-order desorption rate [s-1] from slowly reversible organic particle and sediment fractions.'},
             'chemical:transformations:slow_coeff_ads': {'type': 'float', 'default': 0, # 1.88e-7 1/s (up to 7.43e-6 1/s) (40% of chem in slow fraction) # doi:10.1016/j.chemosphere.2005.02.092 Dunnivant et al. (2005)
-                'min': 0, 'max': 1e6, 'units': '',
-                'level': CONFIG_LEVEL_ADVANCED, 'description': 'Adsorption coefficient to slowly reversible fractions (organics)'},
+                'min': 0, 'max': 1e6, 'units': 's-1',
+                'level': CONFIG_LEVEL_ADVANCED, 'description': 'First-order adsorption rate [s-1] into slowly reversible organic particle and sediment fractions.'},
             'chemical:transformations:volatilization': {'type': 'bool', 'default': False,
                 'description': 'Chemical is evaporated.',
                 'level': CONFIG_LEVEL_BASIC},
@@ -1193,7 +1193,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Molecular weight'},
             'chemical:transformations:Henry': {'type': 'float', 'default': -1,
                 'min': None, 'max': None, 'units': 'atm m3 mol-1',
-                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Henry constant (uses Tref_Slb as Tref)'},
+                'level': CONFIG_LEVEL_ESSENTIAL, 'description': 'Henry air-water constant [atm m3/mol]; configured value uses Tref_Henry for temperature correction, while a derived value uses Tref_Vpress and Tref_Solub separately.'},
             'chemical:transformations:DeltaH_Henry': {'type': 'float','default': 47000.,    # 8–93 kJ mol https://doi.org/10.1016/S0045-6535(00)00505-1
                 'min': 0., 'max': 100000.,'units': 'J/mol', 'level': CONFIG_LEVEL_ESSENTIAL,
                 'description': 'Enthalpy of air-water volatilization used for temperature correction of Henry constant' },
@@ -1463,14 +1463,14 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'min': 1e-8, 'max': 1e-3, 'units': 'm2/s', 'level': CONFIG_LEVEL_ADVANCED,
                 'description': 'Kinematic viscosity used in diameter-based critical stress calculation.'},
             'chemical:sediment:critstress_owen_rho_d': {'type': 'float', 'default': -1.0,
-                'min': -1.0, 'max': 1e6, 'units': '', 'level': CONFIG_LEVEL_ADVANCED,
-                'description': 'Dry bulk density for cohesive Owen-type critical stress.'},
+                'min': -1.0, 'max': 1e6, 'units': 'kg/m3', 'level': CONFIG_LEVEL_ADVANCED,
+                'description': 'Dry bulk sediment density rho_d [kg dry sediment/m3 bulk sediment] used in the cohesive Owen stress relation tau_ce = a * rho_d**b.'},
             'chemical:sediment:critstress_owen_a': {'type': 'float', 'default': -1.0,
                 'min': -1.0, 'max': 1e6, 'units': '', 'level': CONFIG_LEVEL_ADVANCED,
-                'description': 'Coefficient a in tau_ce = a * rho_d^b for cohesive sediments.'},
+                'description': 'Empirical coefficient a in tau_ce [Pa] = a * rho_d**b; units of a are Pa*(m3/kg)**b and depend on the configured exponent b (rho_d in kg/m3).'},
             'chemical:sediment:critstress_owen_b': {'type': 'float', 'default': -1.0,
-                'min': -1.0, 'max': 10.0, 'units': '', 'level': CONFIG_LEVEL_ADVANCED,
-                'description': 'Exponent b in tau_ce = a * rho_d^b for cohesive sediments.'},
+                'min': -1.0, 'max': 10.0, 'units': '1', 'level': CONFIG_LEVEL_ADVANCED,
+                'description': 'Dimensionless exponent b in the cohesive Owen stress relation tau_ce = a * rho_d**b.'},
             # Single process degradation
             #  main implementation from AQUATOX https://www.epa.gov/sites/default/files/2014-03/documents/technical-documentation-3-1.pdf
             'chemical:transformations:Save_single_degr_mass': {'type': 'bool', 'default': False,
@@ -1525,8 +1525,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                  'min': 0.1, 'max': None, 'units': 'C',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': 'Maximum acclimation allowed for biodegratation'},
             'chemical:transformations:Dec_Accl_bio': {'type': 'float', 'default': 0.5,            # Default from AQUATOX
-                 'min': 0.1, 'max': None, 'units': '',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Coefficient for decreasing acclimation as temperature approaches T_Adp_bio'},
+                 'min': 0.1, 'max': None, 'units': '1/degC',
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Biodegradation acclimation coefficient [1/degC]; Dec_Accl_bio * abs(T - T_Adp_bio) is a dimensionless exponent with T in degC.'},
             'chemical:transformations:Q10_bio': {'type': 'float', 'default': 2,                   # Default from AQUATOX
                  'min': 0, 'max': None, 'units': '',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': 'Slope or rate of change per 10°C temperature change for biodegradation'},
@@ -1662,8 +1662,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                  'min': 0, 'max': None, 'units': '1/(m*g/m3)',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': 'Extinction coefficient of light in the water with depht due to blue-gree phytoplankton'},
             'chemical:transformations:C2PHYC': {'type': 'float', 'default': 0.44,          # Default from https://doi.org/10.1007/BF00006636
-                 'min': 0, 'max': None, 'units': 'g_Caron/g_Biomass',
-                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Phytoplankton carbon content'},
+                 'min': 0, 'max': None, 'units': 'g_Carbon/g_Biomass',
+                 'level': CONFIG_LEVEL_ADVANCED, 'description': 'Phytoplankton carbon mass fraction [g carbon/g phytoplankton biomass] used to convert carbon concentration into biomass concentration.'},
             'chemical:transformations:AveSolar': {'type': 'float', 'default': 500,         # Default from AQUATOX
                  'min': 0, 'max': None, 'units': 'Ly/day',
                  'level': CONFIG_LEVEL_ADVANCED, 'description': 'Average light intensity for late spring or early summer, corresponding to time when photolytic half-life is often measured'},
