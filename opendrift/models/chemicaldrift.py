@@ -6927,7 +6927,15 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         unit = self.get_config('chemical:transformations:doc_input_unit')
         if unit == 'mol_C_m3':
-            conc_doc = conc_doc * (1000.0 / 1025.0)
+            # mol C/m3 * 1000 mmol/mol / rho(T,S) [kg seawater/m3]
+            # => mmol C/kg seawater, using density for the selected elements.
+            T = self._env_array('sea_water_temperature', 10.0, idx=idx)
+            S = self._env_array('sea_water_salinity', 34.0, idx=idx)
+            rho_w = np.asarray(self.sea_water_density(T=T, S=S), dtype=float)
+            if (rho_w.shape != np.asarray(conc_doc).shape or
+                    np.any(~np.isfinite(rho_w) | (rho_w <= 0.0))):
+                raise ValueError('DOC mol_C_m3 conversion requires positive finite local density [kg/m3]')
+            conc_doc = conc_doc * (1000.0 / rho_w)
         elif unit != 'mmol_C_kg':
             raise ValueError(f'Unsupported DOC input unit: {unit}')
 
@@ -7527,8 +7535,16 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 concSPM = self._spm_g_m3(idx_LMM) * 1e-6
                 self.elements.transfer_rates1D[idx_LMM, self.num_prev] = self.k_ads * concSPM
 
-                rho_w = 1025.0  # kg/m3 or local density
-                concDOM = self._doc_mmolkg(idx_LMM) * 12e-3 * rho_w / 0.526 * 1e-3
+                # DOC [mmol C/kg seawater] -> DOM [kg DOM/L seawater].
+                # rho(T,S) [kg seawater/m3] -> kg/L via 1e-3 m3/L.
+                T = self._env_array('sea_water_temperature', 10.0, idx=idx_LMM)
+                S = self._env_array('sea_water_salinity', 34.0, idx=idx_LMM)
+                rho_w = np.asarray(self.sea_water_density(T=T, S=S), dtype=float)
+                if (rho_w.shape != idx_LMM.shape or
+                        np.any(~np.isfinite(rho_w) | (rho_w <= 0.0))):
+                    raise ValueError('DOC adsorption requires positive finite local seawater density [kg/m3]')
+                concDOM = (self._doc_mmolkg(idx_LMM) * 12e-3 *
+                           (rho_w * 1e-3) / 0.526 * 1e-3)
                 self.elements.transfer_rates1D[idx_LMM, self.num_humcol] = self.k_ads * concDOM
 
                 if hasattr(self, 'num_srev'):
@@ -13850,7 +13866,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
     #Photolysis
     def calc_ScreeningFactor(self, RadDistr, RadDistr0_ml, RadDistr0_bml,
                            WaterExt, ExtCoeffDOM, ExtCoeffSPM, ExtCoeffPHY,
-                           C2PHYC, concDOC, concSPM, Conc_Phyto_water, Depth, MLDepth):
+                           C2PHYC, concDOC, concSPM, Conc_Phyto_water, Depth, MLDepth,
+                           rho_water_kg_m3=None):
         """
         Screening factor for photolysis attenuation within the local water column.
             ScreeningFactor =
@@ -13899,11 +13916,22 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         if RadDistr <= 0:
             raise ValueError("RadDistr must be > 0")
 
+        # When called by the simulation, rho_water_kg_m3 is the already
+        # selected per-element T/S density. Standalone calls use all active
+        # elements and must supply matching-length concentration arrays.
+        if rho_water_kg_m3 is None:
+            T = self._env_array('sea_water_temperature', 10.0)
+            S = self._env_array('sea_water_salinity', 34.0)
+            rho_water_kg_m3 = self.sea_water_density(T=T, S=S)
+        rho_w = np.asarray(rho_water_kg_m3, dtype=float)
+        if (rho_w.shape != Depth.shape or
+                np.any(~np.isfinite(rho_w) | (rho_w <= 0.0))):
+            raise ValueError('Screening requires positive finite density [kg/m3] for each element')
+
         N = len(Depth)
         ScreeningFactor = np.ones_like(Depth, dtype=float)
         chunk_size = int(1e5)
         eps = 1e-30
-        rho_w = 1025.0  # kg/m3 or local density
 
         for i in range(0, N, chunk_size):
             end = min(i + chunk_size, N)
@@ -13913,7 +13941,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             concDOC_chunk = np.asarray(concDOC[i:end], dtype=float)
             concSPM_chunk = np.asarray(concSPM[i:end], dtype=float)
             Conc_Phyto_chunk = np.asarray(Conc_Phyto_water[i:end], dtype=float)
-            ConcDOM = concDOC_chunk * 12e-3 * rho_w / 0.526 # g DOM / m3
+            # DOC [mmol C/kg] * 0.012 [g C/mmol] * rho [kg/m3]
+            # / 0.526 [g C/g DOM] => g DOM/m3.
+            ConcDOM = concDOC_chunk * 12e-3 * rho_w[i:end] / 0.526
             ConcPHYTO = (((Conc_Phyto_chunk * 1e-6) * 12.01) / C2PHYC) * 1000.0  # g biomass / m3
 
             Extinct = (WaterExt + (ExtCoeffDOM * ConcDOM) + (ExtCoeffSPM * concSPM_chunk)
@@ -13974,7 +14004,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         else:
             raise ValueError(f"Unknown solar_input_unit: {unit!r}")
 
-    def _photolysis_alpha(self, idx=None):
+    def _photolysis_alpha(self, idx=None, rho_water_kg_m3=None):
         """
         Dynamic bulk light-extinction coefficient for photolysis. [1/m]
 
@@ -13996,10 +14026,17 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         ExtCoeffPHY = self.get_config('chemical:transformations:ExtCoeffPHY')
         C2PHYC = self.get_config('chemical:transformations:C2PHYC')
 
-        # DOC input is mmol C / kg
+        # DOC is mmol C/kg seawater; rho(T,S) is kg seawater/m3.
         concDOC = self._doc_mmolkg(idx)
-        rho_w = 1025.0  # kg/m3 or local density
-        ConcDOM = concDOC * 12e-3 * rho_w / 0.526 # g DOM / m3
+        if rho_water_kg_m3 is None:
+            T = self._env_array('sea_water_temperature', 10.0, idx=idx)
+            S = self._env_array('sea_water_salinity', 34.0, idx=idx)
+            rho_water_kg_m3 = self.sea_water_density(T=T, S=S)
+        rho_w = np.asarray(rho_water_kg_m3, dtype=float)
+        if (rho_w.shape != np.asarray(concDOC).shape or
+                np.any(~np.isfinite(rho_w) | (rho_w <= 0.0))):
+            raise ValueError('Photolysis requires positive finite local density [kg/m3]')
+        ConcDOM = concDOC * 12e-3 * rho_w / 0.526  # g DOM/m3
         # SPM as g / m3
         concSPM = self._spm_g_m3(idx)
         # Phytoplankton input is mmol C / m3
@@ -14449,7 +14486,11 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                         AveSolar = self.get_config('chemical:transformations:AveSolar')
                         Solar_radiation = self._env_array('solar_irradiance', 241.0, idx=idx_W)
                         Solar_ly_day = self._solar_to_ly_day(Solar_radiation)
-                        Alpha = self._photolysis_alpha(idx_W)
+                        # Reuse one per-element T/S density vector for both
+                        # photolysis optical paths, to keep their DOC basis equal.
+                        S_photo = self._env_array('sea_water_salinity', 34.0, idx=idx_W)
+                        rho_photo = np.asarray(self.sea_water_density(T=TW, S=S_photo), dtype=float)
+                        Alpha = self._photolysis_alpha(idx_W, rho_water_kg_m3=rho_photo)
                         # Concentration of phytoplankton in the water column (mmol_C/m3)
                         Conc_Phyto_water = self._env_array('mole_concentration_of_phytoplankton_expressed_as_carbon_in_sea_water',
                             0.0, idx=idx_W)
@@ -14541,6 +14582,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                             RadDistr, RadDistr0_ml, RadDistr0_bml, WaterExt,
                             ExtCoeffDOM, ExtCoeffSPM, ExtCoeffPHY, C2PHYC,
                             concDOC, concSPM, Conc_Phyto_water, Depth, MLDepth,
+                            rho_water_kg_m3=rho_photo,
                         )
                         k_W_photo = k_Photo * photo_light_factor
                         k_W_photo = k_W_photo * photo_screening_factor
