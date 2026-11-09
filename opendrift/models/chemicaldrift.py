@@ -239,6 +239,8 @@ class Chemical(Lagrangian3DArray):
         'tau_cr_res', 'tau_cr_dep', 'deposition_stress_factor',
             )
 
+    LEGACY_BED_INTERACTION_VARIABLE_NAMES = ('speed', 'p_res', 'p_dep')
+
     # Optional sediment-oxygen diagnostics. Only the subset required by the
     # selected oxygen model is added to the element type when requested.
     SEDIMENT_OXYGEN_DIAGNOSTIC_DEFINITIONS = {
@@ -383,6 +385,7 @@ class Chemical(Lagrangian3DArray):
         degradation_biodegradation=False,
         degradation_hydrolysis=False,
         save_bed_interaction=False,
+        legacy_bed_interaction=False,
         save_sediment_oxygen_diagnostics=False,
         sediment_oxygen_model='FIXED_FRACTION',
         sediment_oxygen_demand_mode='VOLUMETRIC_RATE',
@@ -405,7 +408,12 @@ class Chemical(Lagrangian3DArray):
                 degradation_hydrolysis,
             ))
         if save_bed_interaction:
-            variables.extend(cls.BED_INTERACTION_VARIABLES)
+            if legacy_bed_interaction:
+                names = cls.LEGACY_BED_INTERACTION_VARIABLE_NAMES
+                variables.extend((name, dict(spec)) for name, spec in cls.BED_INTERACTION_VARIABLES
+                    if name in names)
+            else:
+                variables.extend(cls.BED_INTERACTION_VARIABLES)
         if save_sediment_oxygen_diagnostics:
             variables.extend(cls.sediment_oxygen_diagnostic_variables(
                 sediment_oxygen_model,
@@ -444,6 +452,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         save_single_degr_mass=False,
         save_degradation_diagnostics=False,
         save_bed_interaction=False,
+        legacy_bed_interaction=False,
         save_sediment_oxygen_diagnostics=False,
     )
 
@@ -1399,11 +1408,14 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             'chemical:sediment:noncohesive_excess_shear_exponent': {'type': 'float', 'default': 1.0,
                 'min': 0.1, 'max': 10.0, 'units': '', 'level': CONFIG_LEVEL_ADVANCED,
                 'description': 'Exponent for noncohesive excess-shear pickup probability.'},
+            'chemical:sediment:resuspension_critvel': {'type': 'float',
+                'default': 0.01, 'min': 0.0, 'max': 1.0, 'units': 'm/s', 'level': CONFIG_LEVEL_ADVANCED,
+                'description': 'Current speed threshold for binary LEGACY sediment resuspension.'},
             'chemical:sediment:resuspension_probability_model': {'type': 'enum',
-                'enum': ['INSTANTANEOUS_EXCESS_SHEAR', 'TIMESTEP_DEPENDENT'],
+                'enum': ['LEGACY', 'INSTANTANEOUS_EXCESS_SHEAR', 'TIMESTEP_DEPENDENT'],
                 'default': 'TIMESTEP_DEPENDENT',
                 'level': CONFIG_LEVEL_ADVANCED,
-                'description': 'Resuspension probability model. INSTANTANEOUS_EXCESS_SHEAR is a LEGACY per-update, dt-independent formulation that is timestep-refinement inconsistent and is retained only for reproducing or comparing legacy runs. TIMESTEP_DEPENDENT is the default and recommended timestep-dependent pickup/erosion probability model.'},
+                'description': 'Shared deposition/resuspension selector. LEGACY uses certain deposition in the interaction layer and a binary current-speed resuspension threshold (no bed stress). The other two options retain the existing stress-based deposition and resuspension.'},
             'chemical:sediment:exchange_scheme': {'type': 'enum',
                 'enum': ['EXCESS_SHEAR_PROBABILITY'],'default': 'EXCESS_SHEAR_PROBABILITY',
                 'level': CONFIG_LEVEL_ESSENTIAL,
@@ -1994,6 +2006,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             self.get_config('chemical:sediment:enable_resuspension')
         )
         sediment_exchange_enabled = do_dep or do_res
+        legacy_exchange = self._legacy_sediment_exchange()
         include_wave_stress = bool(
             self.get_config('chemical:sediment:include_wave_stress')
         )
@@ -2083,6 +2096,11 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             req.update(self.VOLATILIZATION_REQUIRED_VARIABLES)
         if sediment_exchange_enabled:
             req.update(self.SEDIMENT_EXCHANGE_REQUIRED_VARIABLES)
+            # Bed grain size can be used for sediment-carrier acquisition even
+            # when critical stress/roughness is not being calculated.
+            req.update(self.SEDIMENT_GRAIN_D50_REQUIRED_VARIABLES)
+            if legacy_exchange:
+                return req
 
             # Current stress is an explicit configuration choice. Only DIRECT
             # requests sea_floor_current_stress; CALCULATED never loads it as
@@ -2571,6 +2589,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         save_o2 = bool(
             self.get_config('chemical:sediment:save_oxygen_diagnostics')
         )
+        legacy_bed = save_bed and self._legacy_sediment_exchange()
 
         degradation_photo = bool(
             self.get_config('chemical:transformations:Photodegradation')
@@ -2622,7 +2641,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         # Only configuration changes that alter the concrete element schema
         # participate in this key. For example, oxygen_demand_mode does not
         # change the schema for FIXED_FRACTION, PRESCRIBED_OPD, or TWO_LAYER_DBL.
-        key = (save_single, degradation_schema_key, save_bed, o2_schema_key)
+        key = (save_single, degradation_schema_key, save_bed, legacy_bed, o2_schema_key)
 
         required_names = []
         if save_single:
@@ -2630,7 +2649,10 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         if save_deg_diag:
             required_names.extend(degradation_names)
         if save_bed:
-            required_names.extend(Chemical.BED_INTERACTION_VARIABLE_NAMES)
+            required_names.extend(
+                Chemical.LEGACY_BED_INTERACTION_VARIABLE_NAMES if legacy_bed
+                else Chemical.BED_INTERACTION_VARIABLE_NAMES
+            )
         if save_o2:
             required_names.extend(o2_names)
 
@@ -2654,6 +2676,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 degradation_biodegradation=degradation_bio,
                 degradation_hydrolysis=degradation_hydro,
                 save_bed_interaction=save_bed,
+                legacy_bed_interaction=legacy_bed,
                 save_sediment_oxygen_diagnostics=save_o2,
                 sediment_oxygen_model=oxygen_model,
                 sediment_oxygen_demand_mode=oxygen_demand_mode,
@@ -3457,6 +3480,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'chemical_wave_to_direction_variable': forcing['to_direction'],
                 'chemical_wave_from_direction_variable': forcing['from_direction'],
                 'chemical_exchange_branch': self._resolved_exchange_branch_config(),
+                'chemical_resuspension_probability_model': self.get_config(
+                    'chemical:sediment:resuspension_probability_model'),
                 'chemical_cohesive_diameter_threshold_m': float(self.get_config('chemical:sediment:cohesive_diameter_threshold')),
                 'chemical_resuspension_critstress_mode': self._resolved_resuspension_critstress_mode(),
                 'chemical_deposition_model_cohesive': self.get_config('chemical:sediment:deposition_model_cohesive'),
@@ -3498,6 +3523,14 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         """
         canonical_checkpoint = bool(kwargs.pop('canonical_final_checkpoint', False))
         self._resolve_reader_dependent_requirements()
+        if self._legacy_sediment_exchange():
+            export = kwargs.get('export_variables')
+            if export is None:
+                export = (list(self.ElementType.variables) +
+                          list(self.required_variables))
+            kwargs['export_variables'] = [
+                name for name in export if name != 'critstress_factor'
+            ]
         self._initialize_data_quality_report()
         run_status = 'FAILED'
         # Canonical stretching runs retain the exact native state through
@@ -4320,7 +4353,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 raise ValueError('3D SPM/DOC reader z levels must be finite')
             value.verticalbuffer = max(int(value.verticalbuffer), int(levels.size) + 1)
 
-        if (self.get_config('chemical:sediment:include_wave_stress') and
+        if (not self._legacy_sediment_exchange() and
+                self.get_config('chemical:sediment:include_wave_stress') and
                 (self.get_config('chemical:sediment:enable_deposition') or
                  self.get_config('chemical:sediment:enable_resuspension'))):
             self._validate_wave_stress_source()
@@ -4684,8 +4718,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 incompatible('old slowly reversible sediment cannot be verified '
                              'as the organics burial compartment from source rates.')
 
-        if 'critstress_factor' not in ds and self.get_config(
-                'chemical:sediment:use_critstress_heterogeneity'):
+        if ('critstress_factor' not in ds and not self._legacy_sediment_exchange()
+                and self.get_config('chemical:sediment:use_critstress_heterogeneity')):
             incompatible('critstress_factor is missing with heterogeneous '
                          'critical-stress physics enabled.')
         # V1.0 organics stored homogeneous fOC as run configuration, not as an
@@ -5248,7 +5282,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             specie_arr = np.asarray(specie_arr, dtype=int).ravel()
             crit_default = np.ones(specie_arr.size, dtype=float)
 
-            if self.get_config('chemical:sediment:use_critstress_heterogeneity'):
+            if (not self._legacy_sediment_exchange() and
+                    self.get_config('chemical:sediment:use_critstress_heterogeneity')):
                 name_to_idx = {name: i for i, name in enumerate(self.name_species)}
                 sediment_like_names = {
                     "Sediment reversible",
@@ -5437,6 +5472,12 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
 
         else:
             kwargs["f_OC"] = foc_default
+
+        # Internal critical-stress factor has no role in LEGACY exchange.
+        if self._legacy_sediment_exchange():
+            kwargs['critstress_factor'] = np.ones(num_elements, dtype=float)
+            super(ChemicalDrift, self).seed_elements(*args, **kwargs)
+            return
 
         # critstress_factor assignment (respect explicit per-element values)
         crit_in = kwargs.get("critstress_factor", None)
@@ -7720,7 +7761,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         if idx.size == 0:
             return
 
-        if self.get_config('chemical:sediment:use_critstress_heterogeneity'):
+        if (not self._legacy_sediment_exchange() and
+                self.get_config('chemical:sediment:use_critstress_heterogeneity')):
             self.elements.critstress_factor[idx] = self._sample_critstress_factor(idx.size)
         else:
             self.elements.critstress_factor[idx] = 1.0
@@ -8720,8 +8762,14 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         raise during physics and never fall back to CALCULATED.
         """
         source = self._current_stress_source()
+        current_stress_needed = bool(
+            ((not self._legacy_sediment_exchange()) and
+             (self.get_config('chemical:sediment:enable_deposition') or
+              self.get_config('chemical:sediment:enable_resuspension'))) or
+            self._oxygen_permeability_dispersion_active()
+        )
         has_reader = self._has_reader_variable('sea_floor_current_stress')
-        if source == 'DIRECT' and not has_reader:
+        if source == 'DIRECT' and current_stress_needed and not has_reader:
             raise ValueError(
                 "chemical:sediment:current_stress_source='DIRECT' requires "
                 "an attached reader supplying sea_floor_current_stress. "
@@ -8731,13 +8779,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         # This flag is consumed only by the existing direct-stress accessor.
         # It denotes explicit, preflight-validated DIRECT selection, not
         # automatic reader preference.
-        self._direct_current_stress_reader_available = source == 'DIRECT'
+        self._direct_current_stress_reader_available = (
+            source == 'DIRECT' and current_stress_needed and has_reader)
         self._resolved_current_stress_source = source
-        current_stress_needed = bool(
-            self.get_config('chemical:sediment:enable_deposition') or
-            self.get_config('chemical:sediment:enable_resuspension') or
-            self._oxygen_permeability_dispersion_active()
-        )
         if current_stress_needed:
             if source == 'DIRECT':
                 logger.info('Current bed-stress source=DIRECT (reader-supplied '
@@ -8762,7 +8806,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             self.get_config('chemical:sediment:enable_resuspension')
         )
         needed = bool(
-            sediment_exchange_enabled and
+            sediment_exchange_enabled and not self._legacy_sediment_exchange() and
             self.get_config('chemical:sediment:include_other_stress')
         )
         x_name = 'x_sea_floor_other_stress'
@@ -10409,6 +10453,11 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
     # Helpers for resuspension thresholds and probabilities
     ###########################################################################
 
+    def _legacy_sediment_exchange(self):
+        """One selector governs both deposition and resuspension physics."""
+        return (self.get_config('chemical:sediment:resuspension_probability_model')
+                == 'LEGACY')
+
     def _resolved_exchange_branch_config(self):
         """Return the canonical configured exchange branch."""
         return self.get_config('chemical:sediment:exchange_branch')
@@ -10645,7 +10694,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         return value
 
     def _validate_deposition_configuration(self):
-        if not self.get_config('chemical:sediment:enable_deposition'):
+        if (self._legacy_sediment_exchange() or
+                not self.get_config('chemical:sediment:enable_deposition')):
             return
         threshold = float(self.get_config('chemical:sediment:cohesive_diameter_threshold'))
         if not np.isfinite(threshold) or threshold <= 0.0:
@@ -10983,7 +11033,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
     def _save_bed_interaction(self):
         return (
             bool(self.get_config('chemical:sediment:save_bed_interaction'))
-            and hasattr(self.elements, 'tau_effective')
+            and hasattr(self.elements, 'p_dep')
         )
 
     def _reset_bed_interaction_variables(self):
@@ -11169,37 +11219,32 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         Zmin_dep = Zmin_susp[near_bed_local]
         h_b_dep = h_b_susp[near_bed_local]
 
-        stress_dep = self.compute_bottom_shear_stress(idx=idx_dep)
-        tau_dep = stress_dep['tau_effective']
+        if self._legacy_sediment_exchange():
+            # Certain deposition for every eligible particle, no stress/settling
+            # dependency and no stochastic draw.
+            hit_dep_local = np.ones(idx_dep.size, dtype=bool)
+            if self._save_bed_interaction():
+                self.elements.p_dep[idx_dep] = 1.0
+        else:
+            stress_dep = self.compute_bottom_shear_stress(idx=idx_dep)
+            tau_dep = stress_dep['tau_effective']
 
-        # Terminal velocity is signed [m/s]; ws is non-negative downward settling magnitude [m/s].
-        ws_dep = np.maximum(
-            -np.asarray(self.elements.terminal_velocity[idx_dep], dtype=float),
-            0.0,
-        )
-
-        deposition_stress_factor, tau_cr_dep = self._deposition_stress_factor(
-            idx=idx_dep,
-            tau=tau_dep,
-            ws=ws_dep,
-            rho_w=np.asarray(stress_dep['rho'], dtype=float),
-        )
-        p_dep = self._deposition_probability_from_factor(
-            alpha_d=deposition_stress_factor,
-            ws=ws_dep,
-            dt=dt,
-            h_b=h_b_dep,
-        )
-
-        self._store_bed_interaction(
-            idx_dep,
-            stress_dep,
-            p_dep=p_dep,
-            tau_cr_dep=tau_cr_dep,
-            deposition_stress_factor=deposition_stress_factor,
-        )
-
-        hit_dep_local = np.random.random(idx_dep.size) < p_dep
+            # Terminal velocity is signed [m/s]; ws is non-negative downward settling magnitude [m/s].
+            ws_dep = np.maximum(
+                -np.asarray(self.elements.terminal_velocity[idx_dep], dtype=float), 0.0,
+            )
+            deposition_stress_factor, tau_cr_dep = self._deposition_stress_factor(
+                idx=idx_dep, tau=tau_dep, ws=ws_dep,
+                rho_w=np.asarray(stress_dep['rho'], dtype=float),
+            )
+            p_dep = self._deposition_probability_from_factor(
+                alpha_d=deposition_stress_factor, ws=ws_dep, dt=dt, h_b=h_b_dep,
+            )
+            self._store_bed_interaction(
+                idx_dep, stress_dep, p_dep=p_dep, tau_cr_dep=tau_cr_dep,
+                deposition_stress_factor=deposition_stress_factor,
+            )
+            hit_dep_local = np.random.random(idx_dep.size) < p_dep
 
         if not np.any(hit_dep_local):
             logger.debug('No particle elements hit deposition probability, deposition was skipped')
@@ -11219,9 +11264,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         new_z[:] = Zhit
         new_moving[:] = 0
 
-        use_heterogeneity = self.get_config(
-            'chemical:sediment:use_critstress_heterogeneity'
-        )
+        use_heterogeneity = (not self._legacy_sediment_exchange() and
+                             self.get_config(
+                                 'chemical:sediment:use_critstress_heterogeneity'))
 
         if has_rev:
             loc = specie0[ii] == self.num_prev
@@ -11325,26 +11370,30 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         idx_res = idx_bed[on_bed_local]
         Zmin_res = Zmin_bed[on_bed_local]
 
-        stress_res = self.compute_bottom_shear_stress(idx=idx_res)
-        tau_res = stress_res['tau_effective']
-        tau_cr_res = self.get_resuspension_critstress(idx=idx_res)
-
-        p_res = self.resuspension_probability(
-            tau=tau_res,
-            tau_cr_res=tau_cr_res,
-            dt=dt,
-            idx=idx_res,
-        )
-
-        # Optional debug storage.
-        self._store_bed_interaction(
-            idx_res,
-            stress_res,
-            p_res=p_res,
-            tau_cr_res=tau_cr_res,
-        )
-
-        hit_res_local = np.random.random(idx_res.size) < p_res
+        if self._legacy_sediment_exchange():
+            # ChemicalDrift V1.0 water-column current-speed comparison, including equality.
+            u = self._env_array('x_sea_water_velocity', idx=idx_res)
+            v = self._env_array('y_sea_water_velocity', idx=idx_res)
+            speed = np.hypot(u, v)
+            if not np.all(np.isfinite(speed)):
+                raise ValueError('LEGACY resuspension requires finite current velocities')
+            critvel = float(np.float32(self.get_config(
+                'chemical:sediment:resuspension_critvel')))
+            hit_res_local = speed >= critvel
+            if self._save_bed_interaction():
+                self.elements.speed[idx_res] = speed
+                self.elements.p_res[idx_res] = hit_res_local.astype(float)
+        else:
+            stress_res = self.compute_bottom_shear_stress(idx=idx_res)
+            tau_res = stress_res['tau_effective']
+            tau_cr_res = self.get_resuspension_critstress(idx=idx_res)
+            p_res = self.resuspension_probability(
+                tau=tau_res, tau_cr_res=tau_cr_res, dt=dt, idx=idx_res,
+            )
+            self._store_bed_interaction(
+                idx_res, stress_res, p_res=p_res, tau_cr_res=tau_cr_res,
+            )
+            hit_res_local = np.random.random(idx_res.size) < p_res
 
         if not np.any(hit_res_local):
             return self._empty_bed_update()
