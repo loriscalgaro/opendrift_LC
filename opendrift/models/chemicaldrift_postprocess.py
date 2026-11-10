@@ -7409,7 +7409,7 @@ class ChemicalDriftPostProcessMixin:
                         if time_avg_conc:
                             _set_time_mean_attrs(pname)
 
-                _normalize_unstructured_cf_coordinate_metadata(nc)
+                    _normalize_unstructured_cf_coordinate_metadata(nc)
                 logger.info('Wrote to %s', filename)
                 return
 
@@ -15886,21 +15886,15 @@ class ChemicalDriftPostProcessMixin:
     @classmethod
     def _prepare_create_images_dataarray(cls, Conc_Dataset, variable_name,
                                          time_start, time_end):
-        """Return a normalized plotting DataArray without mutating caller-owned state."""
+        """Select one field and its native plotting geometry without modifying input."""
         import numpy as np
         import pandas as pd
 
         if Conc_Dataset is None:
             raise ValueError("Conc_Dataset must be provided when load_img_from_folder=False")
         obj = Conc_Dataset
-
         dims = set(getattr(obj, 'dims', ()))
         rename_map = {}
-        if 'longitude' not in dims or 'latitude' not in dims:
-            if {'lon', 'lat'}.issubset(dims):
-                rename_map.update({'lon': 'longitude', 'lat': 'latitude'})
-            elif {'x', 'y'}.issubset(dims):
-                rename_map.update({'x': 'longitude', 'y': 'latitude'})
         if 'depth' not in dims and 'z' in dims:
             rename_map['z'] = 'depth'
         if 'time' not in dims and 'avg_time' in dims:
@@ -15908,11 +15902,8 @@ class ChemicalDriftPostProcessMixin:
         if rename_map:
             obj = obj.rename(rename_map)
 
-        dims = set(getattr(obj, 'dims', ()))
-        if not {'longitude', 'latitude'}.issubset(dims):
-            raise ValueError("Unknown spatial coordinates; expected longitude/latitude, lon/lat, or x/y dimensions")
-
         if hasattr(obj, 'data_vars'):
+            # Preserve the historical precedence of standard concentration variables.
             if 'concentration_avg_water' in obj.data_vars:
                 da = obj['concentration_avg_water']
             elif 'concentration_avg_sediments' in obj.data_vars:
@@ -15928,48 +15919,105 @@ class ChemicalDriftPostProcessMixin:
                     f"variable_name={variable_name!r} does not match DataArray name {getattr(da, 'name', None)!r}"
                 )
 
-        # Normalize time semantics before any .time access.
+        spatial_dims = None
+        geometry = {'kind': None}
+        dims = set(da.dims)
+        if 'face' in dims:
+            # A UGRID face value cannot be drawn from its centroid alone: require
+            # the existing topology and node positions in the input Dataset.
+            def _get(name):
+                if name in obj:
+                    return obj[name]
+                raise ValueError(f"Unstructured plotting requires {name!r} in Conc_Dataset")
+            conn_var = _get('face_node_connectivity')
+            conn = cls._normalize_triangle_connectivity(
+                conn_var.values, conn_var, 'face_node_connectivity')
+            if 'node_lon' in obj and 'node_lat' in obj:
+                lon = np.asarray(obj['node_lon'].values, dtype=np.float64)
+                lat = np.asarray(obj['node_lat'].values, dtype=np.float64)
+            else:
+                raise ValueError('Unstructured plotting requires node_lon and node_lat')
+            if conn.shape[0] != da.sizes['face']:
+                raise ValueError('Face connectivity count differs from concentration face size')
+            if lon.ndim != 1 or lat.shape != lon.shape or np.any(conn >= lon.size):
+                raise ValueError('Invalid unstructured node coordinates/connectivity')
+            geometry.update(kind='unstructured', spatial_dims=('face',),
+                            connectivity=conn, node_lon=lon, node_lat=lat)
+            spatial_dims = ('face',)
+        elif {'latitude', 'longitude'}.issubset(dims):
+            spatial_dims = ('latitude', 'longitude')
+            geometry.update(kind='rectilinear', spatial_dims=spatial_dims)
+        elif {'lat', 'lon'}.issubset(dims):
+            da = da.rename({'lat': 'latitude', 'lon': 'longitude'})
+            spatial_dims = ('latitude', 'longitude')
+            geometry.update(kind='rectilinear', spatial_dims=spatial_dims)
+        elif {'y', 'x'}.issubset(dims):
+            # Density writer always stores geographic lon(y,x), lat(y,x),
+            # including when binning is done in projected x/y coordinates.
+            if 'lon' in obj and 'lat' in obj and set(obj['lon'].dims) == {'y', 'x'} and set(obj['lat'].dims) == {'y', 'x'}:
+                lon2d = np.asarray(obj['lon'].transpose('y', 'x').values, dtype=np.float64)
+                lat2d = np.asarray(obj['lat'].transpose('y', 'x').values, dtype=np.float64)
+                if lon2d.shape != (da.sizes['y'], da.sizes['x']) or lat2d.shape != lon2d.shape:
+                    raise ValueError('Curvilinear lon/lat shapes differ from concentration dimensions')
+                geometry.update(kind='structured2d', spatial_dims=('y', 'x'),
+                                lon=lon2d, lat=lat2d)
+                if 'lon_bounds' in obj and 'lat_bounds' in obj:
+                    geometry['lon_bounds'] = np.asarray(obj['lon_bounds'].transpose('y', 'x', ...).values)
+                    geometry['lat_bounds'] = np.asarray(obj['lat_bounds'].transpose('y', 'x', ...).values)
+                spatial_dims = ('y', 'x')
+            elif 'x' in obj.coords and 'y' in obj.coords:
+                # Backward compatibility with historically accepted 1-D x/y inputs.
+                # No projected x/y is silently labelled as geographic when CRS
+                # metadata explicitly identifies a non-geographic grid.
+                x = np.asarray(obj['x'].values, dtype=float)
+                y = np.asarray(obj['y'].values, dtype=float)
+                if (x.ndim != 1 or y.ndim != 1 or not np.all(np.isfinite(x))
+                        or not np.all(np.isfinite(y)) or np.any(np.abs(x) > 180)
+                        or np.any(np.abs(y) > 90)):
+                    raise ValueError('Projected x/y plotting requires geographic lon(y,x), lat(y,x)')
+                da = da.rename({'x': 'longitude', 'y': 'latitude'})
+                spatial_dims = ('latitude', 'longitude')
+                geometry.update(kind='rectilinear', spatial_dims=spatial_dims)
+            else:
+                raise ValueError('Structured x/y plotting requires lon(y,x), lat(y,x) coordinates')
+        else:
+            raise ValueError('Unknown spatial coordinates: expected lon/lat, x/y, or face topology')
+
+        # Normalize time before selecting frames. These are the original semantics.
         if 'time' not in da.dims:
             if 'year' in da.dims:
                 years = np.asarray(da['year'].values)
                 try:
                     year_time = pd.to_datetime([f"{int(v)}-01-01" for v in years]).to_numpy()
                 except Exception as exc:
-                    raise ValueError("Could not convert year coordinate to timestamps") from exc
+                    raise ValueError('Could not convert year coordinate to timestamps') from exc
                 da = da.assign_coords(year=('year', year_time)).rename({'year': 'time'})
             elif 'season' in da.dims:
                 if time_start is None:
-                    raise ValueError("time_start must be specified when a season dimension is converted to time")
+                    raise ValueError('time_start must be specified when a season dimension is converted to time')
                 base_year = pd.to_datetime(time_start).year
                 season_day = {'DJF': '12-21', 'MAM': '03-21', 'JJA': '06-21', 'SON': '09-23'}
                 seasons = [str(v) for v in np.asarray(da['season'].values)]
                 unknown = [v for v in seasons if v not in season_day]
                 if unknown:
-                    raise ValueError(f"Unknown season labels: {unknown}")
+                    raise ValueError(f'Unknown season labels: {unknown}')
                 season_time = pd.to_datetime([f"{base_year}-{season_day[v]}" for v in seasons]).to_numpy()
                 da = da.assign_coords(season=('season', season_time)).rename({'season': 'time'})
             else:
-                allowed = {'latitude', 'longitude', 'depth'}
-                extra = set(da.dims) - allowed
+                extra = set(da.dims) - set(spatial_dims) - {'depth'}
                 if extra:
-                    raise ValueError(f"Dimensions other than latitude/longitude/depth are present: {sorted(extra)}")
+                    raise ValueError(f'Unexpected dimensions without time: {sorted(extra)}')
                 if time_start is None:
-                    raise ValueError("Conc_DataArray.time is missing; time_start must be specified")
+                    raise ValueError('Conc_DataArray.time is missing; time_start must be specified')
                 da = da.expand_dims(time=[pd.to_datetime(time_start).to_datetime64()])
 
-        allowed = {'latitude', 'longitude', 'time', 'depth'}
+        allowed = set(spatial_dims) | {'time', 'depth'}
         extra = set(da.dims) - allowed
         if extra:
-            raise ValueError(f"Dimensions other than {sorted(allowed)} are present: {sorted(extra)}")
-        if 'time' not in da.dims:
-            raise ValueError("Could not normalize a time dimension")
-
+            raise ValueError(f'Unexpected dimensions for plotting: {sorted(extra)}; select or aggregate them first')
         source_times = np.asarray(da['time'].values)
         if source_times.size == 0:
-            raise ValueError("Conc_DataArray contains no time values")
-        source_tstart = source_times[0]
-        source_tend = source_times[-1]
-
+            raise ValueError('Conc_DataArray contains no time values')
         mask = np.ones(source_times.size, dtype=bool)
         if time_start is not None:
             mask &= source_times >= pd.to_datetime(time_start).to_datetime64()
@@ -15978,17 +16026,17 @@ class ChemicalDriftPostProcessMixin:
         indexes = np.flatnonzero(mask)
         if indexes.size == 0:
             raise ValueError(
-                f"Conc_DataArray.time {source_tstart} - {source_tend} is out of time_start/end interval"
-            )
+                f'Conc_DataArray.time {source_times[0]} - {source_times[-1]} is out of time_start/end interval')
         if indexes.size == 1 or np.all(np.diff(indexes) == 1):
             da = da.isel(time=slice(int(indexes[0]), int(indexes[-1]) + 1))
         else:
             da = da.isel(time=indexes)
-
-        return da, {'source_tstart': source_tstart, 'source_tend': source_tend}
+        geometry.update(source_tstart=source_times[0], source_tend=source_times[-1])
+        return da, geometry
 
     @staticmethod
-    def _select_create_images_frame(dataarray, timestep, selected_depth):
+    def _select_create_images_frame(dataarray, timestep, selected_depth,
+                                    spatial_dims=('latitude', 'longitude')):
         import numpy as np
         import pandas as pd
 
@@ -15998,30 +16046,108 @@ class ChemicalDriftPostProcessMixin:
         depth_unit = None
         if 'depth' in frame.dims:
             if selected_depth is None:
-                raise ValueError("selected_depth must be specified when a depth dimension is present")
+                raise ValueError('selected_depth must be specified when a depth dimension is present')
             depth_values = np.asarray(frame['depth'].values)
             try:
                 matches = np.flatnonzero(np.isclose(depth_values.astype(float), float(selected_depth)))
             except (TypeError, ValueError) as exc:
-                raise ValueError("depth coordinate and selected_depth must be numeric") from exc
+                raise ValueError('depth coordinate and selected_depth must be numeric') from exc
             if matches.size == 0:
-                raise ValueError(f"selected_depth {selected_depth} not found in available depths {depth_values}")
+                raise ValueError(f'selected_depth {selected_depth} not found in available depths {depth_values}')
             if matches.size > 1:
-                raise ValueError(f"selected_depth {selected_depth} ambiguously matches multiple depth positions")
+                raise ValueError(f'selected_depth {selected_depth} ambiguously matches multiple depth positions')
             pos = int(matches[0])
             depth_value = frame['depth'].isel(depth=pos).item()
             attrs = dict(getattr(frame['depth'], 'attrs', {}) or {})
             depth_unit = attrs.get('units', attrs.get('unit'))
             frame = frame.isel(depth=pos, drop=True)
-
-        frame = frame.squeeze(drop=True)
-        if frame.ndim != 2 or set(frame.dims) != {'latitude', 'longitude'}:
-            raise ValueError(
-                "Each create_images frame must reduce to exactly 2-D latitude/longitude data; "
-                f"got dims={frame.dims}"
-            )
-        frame = frame.transpose('latitude', 'longitude')
+        # Never squeeze spatial axes: a one-face unstructured grid is valid.
+        frame = frame.squeeze(dim=[d for d in frame.dims if d not in spatial_dims], drop=True)
+        if frame.ndim != len(spatial_dims) or set(frame.dims) != set(spatial_dims):
+            raise ValueError(f'Each frame must contain spatial dimensions {spatial_dims}; got {frame.dims}')
+        frame = frame.transpose(*spatial_dims)
         return frame, frame_time, depth_value, depth_unit
+
+    @classmethod
+    def _draw_create_images_spatial_frame(cls, ax, frame, geometry,
+                                          selected_colormap, colormap_norm,
+                                          plot_vmin, plot_vmax, levels_colormap, shading):
+        """Draw values in geographic axes, using native face/cell boundaries."""
+        import numpy as np
+        from matplotlib.collections import PolyCollection
+        from matplotlib.colors import BoundaryNorm
+
+        kind = geometry['kind']
+        if kind == 'rectilinear' and shading in (None, 'flat', 'auto'):
+            # Keep the original xarray rendering path for old callers/images.
+            return frame.plot.pcolormesh(
+                x='longitude', y='latitude', cmap=selected_colormap,
+                norm=colormap_norm, vmin=plot_vmin, vmax=plot_vmax,
+                levels=levels_colormap, shading=shading,
+                add_colorbar=False, zorder=0, ax=ax)
+        if kind == 'rectilinear':
+            return ax.pcolormesh(
+                frame.coords['longitude'].to_numpy(), frame.coords['latitude'].to_numpy(),
+                frame.to_numpy(), cmap=selected_colormap, norm=colormap_norm,
+                vmin=plot_vmin, vmax=plot_vmax, shading=shading, zorder=0)
+
+        if colormap_norm is None and levels_colormap is not None:
+            # Match the existing discrete-level intent without altering colorbar layout.
+            levels = np.asarray(levels_colormap, dtype=float)
+            if levels.ndim != 1 or levels.size < 2 or np.any(np.diff(levels) <= 0):
+                raise ValueError('levels_colormap must be a strictly increasing sequence')
+            cmap = __import__('matplotlib.pyplot', fromlist=['get_cmap']).get_cmap(selected_colormap)
+            colormap_norm = BoundaryNorm(levels, ncolors=cmap.N)
+            plot_vmin = plot_vmax = None
+
+        if kind == 'structured2d':
+            lon = geometry['lon']; lat = geometry['lat']
+            z = frame.to_numpy()
+            use_centers = shading in ('nearest', 'gouraud')
+            if use_centers:
+                xplot, yplot = lon, lat
+                plot_shading = shading
+            else:
+                # Prefer exact writer-provided cell corners when they are available.
+                xplot = yplot = None
+                if 'lon_bounds' in geometry and 'lat_bounds' in geometry:
+                    xb = np.asarray(geometry['lon_bounds'], dtype=float)
+                    yb = np.asarray(geometry['lat_bounds'], dtype=float)
+                    if xb.shape == z.shape + (4,) and yb.shape == xb.shape:
+                        try:
+                            xplot = cls._corners4_to_nodes(xb.transpose(1, 0, 2)).T
+                            yplot = cls._corners4_to_nodes(yb.transpose(1, 0, 2)).T
+                        except ValueError:
+                            xplot = yplot = None
+                if xplot is None:
+                    xplot = cls._centers2d_to_nodes(lon)
+                    yplot = cls._centers2d_to_nodes(lat)
+                plot_shading = 'flat'
+            return ax.pcolormesh(
+                xplot, yplot, z, cmap=selected_colormap, norm=colormap_norm,
+                vmin=plot_vmin, vmax=plot_vmax, shading=plot_shading, zorder=0)
+
+        if kind == 'unstructured':
+            conn = geometry['connectivity']
+            xy = np.column_stack((geometry['node_lon'], geometry['node_lat']))
+            vertices = xy[conn]
+            values = np.asarray(frame.values, dtype=float)
+            valid = np.isfinite(vertices).all(axis=(1, 2))
+            valid &= np.abs((vertices[:, 1, 0] - vertices[:, 0, 0]) *
+                            (vertices[:, 2, 1] - vertices[:, 0, 1]) -
+                            (vertices[:, 2, 0] - vertices[:, 0, 0]) *
+                            (vertices[:, 1, 1] - vertices[:, 0, 1])) > 0
+            values = np.ma.masked_invalid(values)
+            values.mask = np.ma.getmaskarray(values) | ~valid
+            collection = PolyCollection(vertices[valid], closed=True, linewidth=0,
+                                        edgecolors='none', cmap=selected_colormap,
+                                        norm=colormap_norm, zorder=0)
+            collection.set_array(values[valid])
+            if colormap_norm is None:
+                collection.set_clim(plot_vmin, plot_vmax)
+            ax.add_collection(collection)
+            return collection
+        raise ValueError(f'Unsupported create_images spatial kind: {kind!r}')
 
     @staticmethod
     def _normalize_image_frame_uint8_rgb(image):
@@ -16451,7 +16577,7 @@ class ChemicalDriftPostProcessMixin:
         # ---- Render from data ----
         if not load_img_from_folder and Conc_Dataset is not None:
             start = dt.now()
-            da, _time_info = self._prepare_create_images_dataarray(
+            da, geometry = self._prepare_create_images_dataarray(
                 Conc_Dataset, variable_name, time_start, time_end
             )
             display = self._resolve_create_images_display_metadata(da, unit_measure, colorbar_title)
@@ -16495,7 +16621,7 @@ class ChemicalDriftPostProcessMixin:
                 if timestep in list_index_print:
                     print(f"creating image n° {timestep + 1} out of {figures_number}")
                 frame, frame_time, depth_value, depth_unit = self._select_create_images_frame(
-                    da, timestep, selected_depth
+                    da, timestep, selected_depth, geometry['spatial_dims']
                 )
                 fig = ax = cax = cbar = ax2 = None
                 try:
@@ -16509,21 +16635,10 @@ class ChemicalDriftPostProcessMixin:
 
                     plot_vmin = None if colormap_norm is not None else vmin
                     plot_vmax = None if colormap_norm is not None else vmax
-                    if shading in (None, 'flat', 'auto'):
-                        ax2 = frame.plot.pcolormesh(
-                            x='longitude', y='latitude', cmap=selected_colormap,
-                            norm=colormap_norm, vmin=plot_vmin, vmax=plot_vmax,
-                            levels=levels_colormap, shading=shading,
-                            add_colorbar=False, zorder=0,
-                        )
-                    else:
-                        X = frame.coords['longitude'].to_numpy()
-                        Y = frame.coords['latitude'].to_numpy()
-                        Z = frame.to_numpy()
-                        ax2 = plt.pcolormesh(
-                            X, Y, Z, cmap=selected_colormap, norm=colormap_norm,
-                            vmin=plot_vmin, vmax=plot_vmax, shading=shading, zorder=0,
-                        )
+                    ax2 = self._draw_create_images_spatial_frame(
+                        ax, frame, geometry, selected_colormap, colormap_norm,
+                        plot_vmin, plot_vmax, levels_colormap, shading,
+                    )
 
                     ax.set_xlim(long_min, long_max)
                     ax.set_ylim(lat_min, lat_max)
