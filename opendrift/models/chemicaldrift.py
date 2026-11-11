@@ -111,10 +111,8 @@ class Chemical(Lagrangian3DArray):
     DEGRADATION_DIAGNOSTIC_SHARED_WATER = ('degr_arrhenius_factor_water',)
     DEGRADATION_DIAGNOSTIC_SHARED_SEDIMENT = ('degr_arrhenius_factor_sediment',)
     DEGRADATION_DIAGNOSTIC_PHOTOLYSIS = (
-        'photo_extinction_coefficient',
-        'photo_light_factor',
-        'photo_screening_factor',
-        'k_photo_water',
+        'photo_extinction_coefficient', 'photo_light_factor',
+        'photo_screening_factor', 'k_photo_water',
     )
     DEGRADATION_DIAGNOSTIC_HYDROLYSIS_WATER = (
         'k_hydro_water_pretemp', 'k_hydro_water',
@@ -123,10 +121,8 @@ class Chemical(Lagrangian3DArray):
         'k_hydro_sediment_pretemp', 'k_hydro_sediment',
     )
     DEGRADATION_DIAGNOSTIC_BIODEGRADATION_WATER = (
-        'bio_oxygen_weight_water',
-        'k_bio_water_oxygen',
-        'bio_pH_factor_water',
-        'bio_temperature_factor_water',
+        'bio_oxygen_weight_water', 'k_bio_water_oxygen',
+        'bio_pH_factor_water', 'bio_temperature_factor_water',
         'k_bio_water',
     )
 
