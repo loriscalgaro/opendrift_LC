@@ -1405,7 +1405,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'min': 0.1, 'max': 10.0, 'units': '', 'level': CONFIG_LEVEL_ADVANCED,
                 'description': 'Exponent for noncohesive excess-shear pickup probability.'},
             'chemical:sediment:resuspension_critvel': {'type': 'float',
-                'default': 0.01, 'min': 0.0, 'max': 1.0, 'units': 'm/s', 'level': CONFIG_LEVEL_ADVANCED,
+                'default': 0.15, 'min': 0.0, 'max': 2.0, 'units': 'm/s', 'level': CONFIG_LEVEL_ADVANCED,
                 'description': 'Current speed threshold for binary LEGACY sediment resuspension.'},
             'chemical:sediment:resuspension_probability_model': {'type': 'enum',
                 'enum': ['LEGACY', 'INSTANTANEOUS_EXCESS_SHEAR', 'TIMESTEP_DEPENDENT'],
