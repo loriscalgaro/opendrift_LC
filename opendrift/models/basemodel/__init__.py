@@ -78,17 +78,18 @@ from roaring_landmask import RoaringLandmask
 Mode = Enum('Mode', ['Config', 'Ready', 'Run', 'Result'])
 rl = roaring_landmask.RoaringLandmask.new()
 
-def coastline_crossing(lon1, lat1, lon2, lat2, step_degrees, land_side=True):
+def coastline_crossing(lon1, lat1, lon2, lat2, step_degrees, land_side=True, mask_provider=None):
     """Return the coastline crossing points between positions in water (lon1,lat1) and positions on land (lon2, lat2).
 
-    This function uses the RoaringLandmask to find the coastline crossing points,
-    but can be generalised to any landmask later.
+    This function uses the RoaringLandmask by default to find the coastline crossing points. An optional mask_provider
+    can sample the model-selected land_binary_mask at intermediate points.
 
     Args:
         lon1, lat1: Coordinates of first point
         lon2, lat2: Coordinates of second point
-        precision: Precision for coastline approximation, in degrees
-        land_side: If True, return the last position in water and first position on land.
+        step_degrees: Angular sampling interval for coastline approximation.
+        land_side: True returns first sampled land point; False returns last water point.
+        mask_provider: Optional callable (lon, lat) -> binary land mask (0 water, 1 land).
 
     Returns:
         lon, lat
@@ -105,6 +106,75 @@ def coastline_crossing(lon1, lat1, lon2, lat2, step_degrees, land_side=True):
     else:
         lon_c = lon1
         lat_c = lat1
+    if mask_provider is not None:
+        # Keep each particle's original np.linspace samples exactly; only
+        # combine landmask-reader queries, in bounded batches.
+        max_batch_points = 100000
+        batch = []
+        batch_points = 0
+
+        def apply_samples(records, samples):
+            expected = sum(len(x) for _, x, _ in records)
+            if samples.size != expected:
+                raise ValueError('Supplied landmask returned incomplete coastline samples')
+            offset = 0
+            for particle, x, y in records:
+                sampled = samples[offset:offset + len(x)]
+                offset += len(x)
+                if np.ma.is_masked(sampled):
+                    raise ValueError('Supplied landmask returned incomplete coastline samples')
+                mask = np.asarray(sampled).ravel()
+                if not np.all(np.isfinite(mask)) or not np.all(np.isin(mask, (0, 1))):
+                    raise ValueError('Supplied landmask must return finite binary samples (0/1)')
+                land = np.flatnonzero(mask == 1)
+                if land.size == 0:
+                    raise ValueError('No land crossing found in the supplied landmask')
+                index = int(land[0])
+                if not land_side:
+                    index = max(0, index - 1)
+                lon_c[particle], lat_c[particle] = x[index], y[index]
+
+        def flush_batch():
+            nonlocal batch_points
+            if not batch:
+                return
+            xx = np.concatenate([x for _, x, _ in batch])
+            yy = np.concatenate([y for _, _, y in batch])
+            sampled = np.ma.asarray(mask_provider(xx, yy)).ravel()
+            apply_samples(batch, sampled)
+            batch.clear()
+            batch_points = 0
+
+        for i, (x0, y0, x1, y1) in enumerate(zip(lon1, lat1, lon2, lat2)):
+            dx = np.abs(x1 - x0)
+            dy = np.abs(y1 - y0)
+            if dx == 0 and dy == 0:
+                continue
+            if dx > 180 and x0 < 0:  # Keep original opt-in dateline handling.
+                x1 = x1 - 360
+                dx = np.abs(x1 - x0)
+            n_samples = max(2, int(np.ceil(max(dx, dy) / step_degrees)) + 1)
+            x = np.linspace(x0, x1, n_samples)
+            y = np.linspace(y0, y1, n_samples)
+            if n_samples > max_batch_points:
+                # A single long track must not create an oversized reader query.
+                flush_batch()
+                parts = []
+                for start in range(0, n_samples, max_batch_points):
+                    stop = min(start + max_batch_points, n_samples)
+                    part = np.ma.asarray(mask_provider(x[start:stop], y[start:stop])).ravel()
+                    if part.size != stop - start:
+                        raise ValueError('Supplied landmask returned incomplete coastline samples')
+                    parts.append(part)
+                apply_samples([(i, x, y)], np.ma.concatenate(parts))
+            else:
+                if batch_points + n_samples > max_batch_points:
+                    flush_batch()
+                batch.append((i, x, y))
+                batch_points += n_samples
+        flush_batch()
+        return lon_c, lat_c
+
     for i, (lon1, lat1, lon2, lat2) in enumerate(zip(lon1, lat1, lon2, lat2)):
         x_degree_diff = np.abs(lon2 - lon1)
         y_degree_diff = np.abs(lat2 - lat1)
@@ -401,6 +471,12 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                 'description': 'The precision of the particle position approximation to the coastline.',
                 'level': CONFIG_LEVEL_BASIC
             },
+            'general:coastline_crossing_use_supplied_landmask': {
+                'type': 'bool', 'default': False,
+                'level': CONFIG_LEVEL_ADVANCED,
+                'description': 'Use the configured land_binary_mask reader for coastline '
+                    'crossing localization instead of RoaringLandmask. Default is unchanged.'
+            },
             'general:time_step_minutes': {
                 'type': 'float',
                 'min': .01,
@@ -684,6 +760,16 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
 
         coastline_approximation_precision = self.get_config('general:coastline_approximation_precision')
 
+        # Use the already selected land_binary_mask provider. An absent
+        # reader defaults to the RoaringLandmask crossing behavior.
+        mask_provider = None
+        if (self.get_config('general:coastline_crossing_use_supplied_landmask')
+                and self.env.priority_list.get('land_binary_mask')):
+            def mask_provider(lon, lat):
+                sampled, _, _ = self.env.get_environment(
+                    ['land_binary_mask'], self.time, lon, lat, np.zeros_like(lon))
+                return sampled.land_binary_mask
+
         if final is True:  # Get land_binary_mask for final location
             en, en_prof, missing = \
                 self.env.get_environment(['land_binary_mask'],
@@ -716,7 +802,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                 self.elements.lon[on_land],
                 self.elements.lat[on_land],
                 coastline_approximation_precision,
-                land_side=True
+                land_side=True,
+                mask_provider=mask_provider
             )
 
             self.environment.land_binary_mask[on_land] = 0
@@ -744,7 +831,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                         self.elements.lon[on_land],
                         self.elements.lat[on_land],
                         coastline_approximation_precision,
-                        land_side=False
+                        land_side=False,
+                        mask_provider=mask_provider
                     )
                 self.environment.land_binary_mask[on_land] = 0
 
