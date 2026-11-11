@@ -1452,7 +1452,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'description': 'Shields/mobility relation used to derive noncohesive Gessler reference stress from element diameter.'},
             'chemical:sediment:resuspension_critstress': {'type': 'float', 'default': 0.5,
                 'min': 0, 'max': 1e6, 'units': 'Pa', 'level': CONFIG_LEVEL_ESSENTIAL,
-                'description': 'Critical shear stress for resuspension/erosion. If a mapped sea_floor_resuspension_critstress reader is supplied, that mapped value is preferred locally; otherwise this configured value or the diameter-based calculation is used.'},
+                'description': 'Critical shear stress for resuspension/erosion. Valid mapped sea_floor_resuspension_critstress values override this threshold only when use_mapped_resuspension_critstress is enabled.'},
             'chemical:sediment:resuspension_critustar': {'type': 'float', 'default': -1.0,
                 'min': -1.0, 'max': 100.0, 'units': 'm/s', 'level': CONFIG_LEVEL_ADVANCED,
                 'description': 'Critical shear velocity for resuspension. If >= 0, override resuspension_critstress using tau_cr = rho * ustar^2. If < 0, use resuspension_critstress directly.'},
@@ -1460,6 +1460,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'enum': ['USER', 'FROM_DIAMETER'], 'default': 'USER',
                 'level': CONFIG_LEVEL_BASIC,
                 'description': 'Use prescribed resuspension stress or calculate it from authoritative element diameter.'},
+            'chemical:sediment:use_mapped_resuspension_critstress': {'type': 'bool',
+                'default': False, 'level': CONFIG_LEVEL_ADVANCED,
+                'description': 'Allow valid sea_floor_resuspension_critstress map values to override the selected resuspension critical-stress calculation.'},
             'chemical:sediment:resuspension_critstress_method': {'type': 'enum',
                 'enum': ['soulsby_whitehouse', 'van_rijn'],
                 'default': 'soulsby_whitehouse', 'level': CONFIG_LEVEL_ADVANCED,
@@ -10640,15 +10643,16 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         else:
             raise ValueError(f'Unknown resuspension_critstress_mode: {mode!r}')
 
-        tau_cr_map = self._local_resuspension_critstress_map(idx=idx)
-        if tau_cr_map is not None:
-            mapped = np.asarray(tau_cr_map, dtype=float)
-            if mapped.ndim == 0:
-                mapped = np.full(n, float(mapped), dtype=float)
-            elif mapped.size != n:
-                raise ValueError('Local resuspension critical-stress map has wrong size')
-            valid = np.isfinite(mapped) & (mapped > 0.0)
-            tau_cr = np.where(valid, mapped, tau_cr)
+        if self.get_config('chemical:sediment:use_mapped_resuspension_critstress'):
+            tau_cr_map = self._local_resuspension_critstress_map(idx=idx)
+            if tau_cr_map is not None:
+                mapped = np.asarray(tau_cr_map, dtype=float)
+                if mapped.ndim == 0:
+                    mapped = np.full(n, float(mapped), dtype=float)
+                elif mapped.size != n:
+                    raise ValueError('Local resuspension critical-stress map has wrong size')
+                valid = np.isfinite(mapped) & (mapped > 0.0)
+                tau_cr = np.where(valid, mapped, tau_cr)
 
         if self.get_config('chemical:sediment:use_critstress_heterogeneity'):
             eta = np.asarray(self.elements.critstress_factor if idx is None else self.elements.critstress_factor[idx], dtype=float)
