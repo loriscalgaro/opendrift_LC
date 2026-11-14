@@ -2721,7 +2721,8 @@ class ChemicalDriftPostProcessMixin:
                              min_wet_fraction=0.0,
                              conservative_backend='auto',
                              conservative_weights=None,
-                             large_domain_backend='scrip'):
+                             large_domain_backend='scrip',
+                             collect_tidal_links=False):
         """
         Return output-grid bathymetry, cell area, optional active sediment layer
         thickness, and an invalid-domain mask for write_netcdf_chemical_density_map().
@@ -3287,6 +3288,7 @@ class ChemicalDriftPostProcessMixin:
             backend: Optional[str] = None
             extent_class: Optional[str] = None
             weights_source: Optional[str] = None
+            tidal_overlap_links: Optional[dict] = None
 
         @dataclass
         class _CellSet:
@@ -3982,6 +3984,7 @@ class ChemicalDriftPostProcessMixin:
             extent_class: Optional[str] = None,
             require_direct: bool = False,
             direct_match_decimals: int = 8,
+            collect_tidal_links: bool = False,
         ) -> Optional[ConservativeBathymetryResult]:
             """Direct same-grid/subset bathymetry transfer, or None if not applicable."""
             mapping, reason = _build_direct_source_mapping(
@@ -4054,6 +4057,9 @@ class ChemicalDriftPostProcessMixin:
                 backend="direct",
                 extent_class=extent_class,
                 weights_source="same_grid_direct",
+                tidal_overlap_links=(dict(row=np.flatnonzero(valid), col=mapping[valid],
+                                          area=target_area[valid], source_shape=source.shape,
+                                          backend="direct") if collect_tidal_links else None),
             )
 
         @dataclass
@@ -4269,6 +4275,7 @@ class ChemicalDriftPostProcessMixin:
             backend: Optional[str] = None,
             extent_class: Optional[str] = None,
             weights_source: Optional[str] = None,
+            tidal_overlap_links: Optional[dict] = None,
         ) -> ConservativeBathymetryResult:
             target_area = np.asarray(target_area, dtype=np.float64).reshape(-1)
             total_volume = np.asarray(total_volume, dtype=np.float64).reshape(-1)
@@ -4326,6 +4333,7 @@ class ChemicalDriftPostProcessMixin:
                 backend=backend,
                 extent_class=extent_class,
                 weights_source=weights_source,
+                tidal_overlap_links=tidal_overlap_links,
             )
 
         def _conservative_overlap_core_shapely(
@@ -4342,6 +4350,7 @@ class ChemicalDriftPostProcessMixin:
             target_metrics: Optional[dict[str, float]] = None,
             crop_source_to_target_bbox: bool = True,
             source_bbox_padding_degrees: float = 1.0,
+            collect_tidal_links: bool = False,
         ) -> ConservativeBathymetryResult:
             from shapely.strtree import STRtree
 
@@ -4403,6 +4412,7 @@ class ChemicalDriftPostProcessMixin:
             if aux_values is not None:
                 aux_volume = np.zeros(n_target, dtype=np.float64)
 
+            link_rows, link_cols, link_areas = [], [], []
             for j, tpoly in enumerate(tgt_polys):
                 if tpoly is None or not np.isfinite(target_area[j]) or target_area[j] <= 0.0:
                     continue
@@ -4427,6 +4437,10 @@ class ChemicalDriftPostProcessMixin:
                     if area <= min_overlap_area_m2:
                         continue
                     d = src_depth[k]
+                    if collect_tidal_links:
+                        link_rows.append(j)
+                        link_cols.append(int(src_idx[src_indices[k]]))
+                        link_areas.append(area)
                     valid_overlap_area[j] += area
                     total_volume[j] += d * area
                     if layer_volume is not None:
@@ -4445,6 +4459,11 @@ class ChemicalDriftPostProcessMixin:
                 remap_crs=remap_crs_str,
                 backend="shapely",
                 extent_class=extent_class,
+                tidal_overlap_links=(dict(row=np.asarray(link_rows, dtype=np.int64),
+                                          col=np.asarray(link_cols, dtype=np.int64),
+                                          area=np.asarray(link_areas, dtype=np.float64),
+                                          source_shape=source.shape, backend="shapely")
+                                     if collect_tidal_links else None),
             )
 
         def _conservative_overlap_core_weights(
@@ -4655,6 +4674,7 @@ class ChemicalDriftPostProcessMixin:
             backend: str = "auto",
             precomputed_weights: Any = None,
             large_domain_backend: str = "scrip",
+            collect_tidal_links: bool = False,
         ) -> ConservativeBathymetryResult:
             """Conservative bathymetry remap dispatcher.
 
@@ -4682,6 +4702,7 @@ class ChemicalDriftPostProcessMixin:
                 min_layer_thickness_m=min_layer_thickness_m,
                 extent_class=extent_class,
                 require_direct=(selected_backend == "direct"),
+                collect_tidal_links=collect_tidal_links,
             )
             if direct_result is not None:
                 return direct_result
@@ -4702,7 +4723,10 @@ class ChemicalDriftPostProcessMixin:
                     min_layer_thickness_m=min_layer_thickness_m,
                     extent_class=extent_class,
                     target_metrics=target_metrics,
+                    collect_tidal_links=collect_tidal_links,
                 )
+            if collect_tidal_links:
+                raise NotImplementedError("Tidal SCRIP/ESMF overlap areas require a separately qualified weight-area convention")
             return _conservative_overlap_core_weights(
                 source,
                 target,
@@ -4734,11 +4758,12 @@ class ChemicalDriftPostProcessMixin:
             conservative_backend: str = "auto",
             conservative_weights: Any = None,
             large_domain_backend: str = "scrip",
+            collect_tidal_links: bool = False,
         ) -> ConservativeBathymetryResult:
             """High-level conservative bathymetry remap from NetCDF file(s)."""
             import xarray as xr
 
-            with xr.open_dataset(bathymetry_nc) as ds:
+            with self._open_density_map_dataset(bathymetry_nc) as ds:
                 source = _source_cells_from_xarray(ds, bathymetry_var, source_crs=source_crs)
             source_aux = None
             if active_sediment_nc is not None:
@@ -4765,6 +4790,7 @@ class ChemicalDriftPostProcessMixin:
                 backend=conservative_backend,
                 precomputed_weights=conservative_weights,
                 large_domain_backend=large_domain_backend,
+                collect_tidal_links=collect_tidal_links,
             )
 
         # Integration helper
@@ -4791,6 +4817,7 @@ class ChemicalDriftPostProcessMixin:
             conservative_backend="auto",
             conservative_weights=None,
             large_domain_backend="scrip",
+            collect_tidal_links=False,
         ):
 
             """
@@ -4841,6 +4868,7 @@ class ChemicalDriftPostProcessMixin:
                 conservative_backend=mode_backend,
                 conservative_weights=conservative_weights,
                 large_domain_backend=large_domain_backend,
+                collect_tidal_links=collect_tidal_links,
             )
             meta = {
                 "bathymetry_remap": "direct" if cons.backend == "direct" else "conservative",
@@ -4855,6 +4883,7 @@ class ChemicalDriftPostProcessMixin:
                 "conservative_total_volume": cons.conservative_total_volume,
                 "source_valid_area": cons.source_valid_area,
                 "active_sediment_layer_volume": cons.active_sediment_layer_volume,
+                "tidal_overlap_links": cons.tidal_overlap_links,
             }
             result4 = (
                 cons.effective_depth,
@@ -4885,6 +4914,7 @@ class ChemicalDriftPostProcessMixin:
             conservative_backend=conservative_backend,
             conservative_weights=conservative_weights,
             large_domain_backend=large_domain_backend,
+            collect_tidal_links=collect_tidal_links,
         )
 
     @staticmethod
@@ -5834,6 +5864,21 @@ class ChemicalDriftPostProcessMixin:
                     raise ValueError('CF mean time bounds must have shape (time,2)')
                 low = converter(raw_bounds[:, 0])
                 high = converter(raw_bounds[:, 1])
+                # CF bounds govern selection. An explicitly supplied interval
+                # and reference must not contradict their recorded meaning.
+                if mean_interval is not None:
+                    if time_reference not in ('start', 'center', 'end'):
+                        raise ValueError('Unsupported explicit mean interval time reference')
+                    try:
+                        duration = float(pd.to_timedelta(mean_interval).total_seconds()) * scale
+                    except (ValueError, TypeError) as exc:
+                        raise ValueError('Invalid explicit mean interval') from exc
+                    offset = {'start': 0., 'center': .5, 'end': 1.}[time_reference]
+                    atol = 1e-6 * scale
+                    if (not np.isfinite(duration) or duration <= 0 or
+                            np.any(np.abs((high - low) - duration) > atol) or
+                            np.any(np.abs((src_num - duration * offset) - low) > atol)):
+                        raise ValueError('Explicit mean interval/reference contradict CF time bounds')
             else:
                 if mean_interval is None or time_reference not in ('start', 'center', 'end'):
                     raise ValueError('Mean elevation requires valid CF time bounds, or explicit interval+reference')
@@ -5933,6 +5978,18 @@ class ChemicalDriftPostProcessMixin:
                         del cache[old]
         return out.reshape((len(req_num),)+tuple(target_shape)), counts
 
+    @staticmethod
+    def _open_density_map_dataset(source, *, decode_times=True):
+        """Context manager: close path-opened datasets; never close caller-owned datasets."""
+        from contextlib import nullcontext
+        import os
+        import xarray as xr
+        if isinstance(source, xr.Dataset):
+            return nullcontext(source)
+        if isinstance(source, (str, os.PathLike)):
+            return xr.open_dataset(source, decode_times=decode_times)
+        raise TypeError('Density-map input must be a NetCDF path or xarray.Dataset')
+
     def _structured_grid_tidal_water_volumes(self, *, bathymetry_path, elevation_path,
                                  bathymetry_variable, filtered_times, z_array,
                                  output_lon, output_lat, pixel_mean_depth, pixel_area,
@@ -5947,8 +6004,8 @@ class ChemicalDriftPostProcessMixin:
         """
         import xarray as xr
         from pyproj import CRS
-        with xr.open_dataset(bathymetry_path, decode_times=True) as bds, \
-                xr.open_dataset(elevation_path, decode_times=True) as eds:
+        with self._open_density_map_dataset(bathymetry_path) as bds, \
+                self._open_density_map_dataset(elevation_path) as eds:
             if bathymetry_variable not in bds:
                 raise ValueError(f'Bathymetry source lacks {bathymetry_variable!r}')
             hb = bds[bathymetry_variable]
@@ -6046,6 +6103,100 @@ class ChemicalDriftPostProcessMixin:
         thickness = np.maximum(0., np.minimum(edges[1:][None, :, None, None], 0.) -
                                np.maximum(edges[:-1][None, :, None, None], -depth[:, None, :, :]))
         return (thickness * area[None, None, :, :]).astype('float32')
+
+    def _structured_conservative_tidal_water_volumes(self, *, bathymetry_path, elevation_path,
+            bathymetry_variable, filtered_times, z_array, tidal_links, target_shape,
+            water_level_record_type, water_level_mean_interval, water_level_time_reference,
+            time_chunk_size):
+        """Source-clipped tidal wet volumes on existing conservative bathymetry overlap links.
+
+        Link col indexes follow the existing _source_cells_from_xarray flattened (y,x)
+        convention, while row indexes follow the existing target (x,y) convention.
+        Each time record reads only overlapping source cells, and geometry is never rebuilt.
+        """
+        import xarray as xr
+        from pyproj import CRS
+        if tidal_links is None or tidal_links.get('backend') not in ('direct', 'shapely'):
+            raise ValueError('No qualified direct/Shapely bathymetry overlap links for tidal volumes')
+        row = np.asarray(tidal_links['row'], dtype=np.int64)
+        col = np.asarray(tidal_links['col'], dtype=np.int64)
+        area = np.asarray(tidal_links['area'], dtype=np.float64)
+        if not (row.size == col.size == area.size and row.size and
+                np.all(np.isfinite(area) & (area > 0)) and
+                np.all(row >= 0) and np.all(row < int(np.prod(target_shape)))):
+            raise ValueError('Invalid conservative overlap indices/physical areas')
+        with self._open_density_map_dataset(bathymetry_path) as bds, \
+             self._open_density_map_dataset(elevation_path) as eds:
+            if bathymetry_variable not in bds:
+                raise ValueError(f'Missing bathymetry variable {bathymetry_variable!r}')
+            hb = bds[bathymetry_variable]
+            options = [n for n in eds.data_vars if n in ('water_level','sea_surface_height') or
+                       eds[n].attrs.get('standard_name') == 'water_surface_height_above_reference_datum']
+            if len(options) != 1:
+                raise ValueError('Require exactly one structured water-level variable')
+            et = eds[options[0]]
+            valid_m = ('m','meter','metre','meters','metres')
+            if hb.attrs.get('units') not in valid_m or et.attrs.get('units') not in valid_m:
+                raise ValueError('Structured bathymetry/elevation must both use metres')
+            if hb.attrs.get('positive', 'down').lower() != 'down' or et.attrs.get('positive', 'up').lower() != 'up':
+                raise ValueError('Incompatible bathymetry/elevation positive direction')
+            bd = bds.attrs.get('vertical_datum', hb.attrs.get('vertical_datum'))
+            ed = eds.attrs.get('vertical_datum', et.attrs.get('vertical_datum'))
+            if not bd or not ed or str(bd) != str(ed):
+                raise ValueError('Structured source h/eta require matching explicitly documented fixed vertical datum')
+            bcrs = bds.attrs.get('crs', hb.attrs.get('crs', 'EPSG:4326'))
+            ecrs = eds.attrs.get('crs', et.attrs.get('crs', 'EPSG:4326'))
+            if CRS.from_user_input(bcrs) != CRS.from_user_input(ecrs):
+                raise ValueError('Structured h/eta source CRS mismatch')
+            if hb.attrs.get('grid_mapping') != et.attrs.get('grid_mapping'):
+                raise ValueError('Structured h/eta source grid mappings differ')
+            bg = self._normalize_output_grid(bds)
+            eg = self._normalize_output_grid(eds)
+            if bg.get('topology') != 'structured' or eg.get('topology') != 'structured':
+                raise ValueError('Structured source has invalid grid topology')
+            mapping = self._match_native_spatial_subset(eg, bg)
+            if bg['shape'] != eg['shape'] or not np.array_equal(mapping, np.arange(mapping.size)):
+                raise ValueError('Structured h/eta physical cell ordering differs; no spatial fusion')
+            if bg['binning_mode'] == 'rectilinear':
+                bx = next(n for n in ('lon','longitude') if n in bds)
+                by = next(n for n in ('lat','latitude') if n in bds)
+                ex = next(n for n in ('lon','longitude') if n in eds)
+                ey = next(n for n in ('lat','latitude') if n in eds)
+                bdims = (bds[by].dims[0], bds[bx].dims[0])
+                edims = (eds[ey].dims[0], eds[ex].dims[0])
+            else:
+                lonb = next(bds[n] for n in ('lon','longitude') if n in bds)
+                lone = next(eds[n] for n in ('lon','longitude') if n in eds)
+                bdims, edims = tuple(lonb.dims), tuple(lone.dims)
+            if set(hb.dims) != set(bdims) or set(et.dims) != {'time', *edims}:
+                raise ValueError('Structured h/eta must be unstaggered cell-centred arrays')
+            H = np.asarray(hb.transpose(*bdims).values, dtype=np.float64).reshape(-1)
+            if tuple(np.asarray(hb.transpose(*bdims).shape)) != tuple(tidal_links['source_shape']):
+                raise ValueError('Conservative link source geometry differs from bathymetry values')
+            if np.any(col >= H.size) or not np.all(np.isfinite(H[col])):
+                raise ValueError('Missing/invalid bathymetry over overlapping source support')
+            unique_col, inverse = np.unique(col, return_inverse=True)
+            eta, io = self._read_cf_time_aligned_elevation(
+                dataset=eds, elevation=et.transpose('time', *edims),
+                filtered_times=filtered_times, source_spatial_dims=edims,
+                source_flat_indices=unique_col, source_spatial_shape=tuple(tidal_links['source_shape']),
+                target_shape=(unique_col.size,), record_type=water_level_record_type,
+                mean_interval=water_level_mean_interval, time_reference=water_level_time_reference,
+                time_chunk_size=time_chunk_size)
+            self._last_tidal_forcing_io = io
+        edges = np.asarray(z_array, dtype=np.float64)
+        if (edges.ndim != 1 or edges.size < 2 or not np.isclose(edges[-1], 0) or
+                np.any(np.diff(edges) <= 0)):
+            raise ValueError('Expected strictly increasing surface-relative z edges ending at zero')
+        out = np.zeros((len(filtered_times), edges.size - 1, int(np.prod(target_shape))), dtype=np.float32)
+        # No three-dimensional source-to-target matrix and no time-dependent polygons.
+        for start in range(0, len(filtered_times), time_chunk_size):
+            for t in range(start, min(start + time_chunk_size, len(filtered_times))):
+                wet = H[unique_col] + eta[t, :]
+                for k in range(edges.size - 1):
+                    thick = np.maximum(0., min(edges[k + 1], 0.) - np.maximum(edges[k], -wet))
+                    np.add.at(out[t, k], row, area * thick[inverse])
+        return out.reshape((len(filtered_times), edges.size - 1) + tuple(target_shape))
 
     @staticmethod
     def _triangular_mesh_tidal_water_volumes(*, mesh, node_bathymetry,
@@ -6150,8 +6301,8 @@ class ChemicalDriftPostProcessMixin:
             raise ValueError('Native-node input requires normalized triangular mesh')
         nnode = int(mesh['nnode'])
         valid_units = ('m', 'meter', 'metre', 'meters', 'metres')
-        with xr.open_dataset(bathymetry_path, decode_times=True) as bds, \
-                xr.open_dataset(elevation_path, decode_times=True) as eds:
+        with self._open_density_map_dataset(bathymetry_path) as bds, \
+                self._open_density_map_dataset(elevation_path) as eds:
             if bathymetry_variable not in bds:
                 raise ValueError(f'Native bathymetry variable {bathymetry_variable!r} missing')
             hb = bds[bathymetry_variable]
@@ -6258,9 +6409,15 @@ class ChemicalDriftPostProcessMixin:
                                           bathymetry_variable='sea_floor_depth_below_sea_level',
                                           water_level_record_type='instantaneous',
                                           water_level_mean_interval=None,
-                                          water_level_time_reference=None):
+                                          water_level_time_reference=None,
+                                          mesh_file=None):
         '''
         write_netcdf_chemical_density_map
+
+        Path-based source datasets are opened/closed by this writer. Caller-owned
+        xarray.Dataset inputs are borrowed, not closed or modified. For legacy
+        CF-reader interpolation an object is serialized to a temporary NetCDF
+        and fed through the existing reader without changing its algorithm.
 
         Arguments:
             pixelsize_m:           float32 or 'auto', length of grid cells in m for the
@@ -6405,7 +6562,7 @@ class ChemicalDriftPostProcessMixin:
             weight_unit:           string, output unit label for weight_mode='mean'. This
                                    writer does not infer or convert units in mean mode.
 
-            output_grid:           xarray.Dataset, dict, or None. Explicit spatial output
+            output_grid:           NetCDF path, xarray.Dataset, dict, or None. Explicit spatial output
                                    grid passed to _normalize_output_grid(). Supported layouts:
                                      - 1D lon/lat regular geographic grid
                                      - 2D lon/lat curvilinear geographic grid
@@ -6750,9 +6907,17 @@ class ChemicalDriftPostProcessMixin:
             else:
                 raise ValueError(f'No variable found with name or standard_name {requested_name_or_standard_name!r}')
 
+        legacy_dataset_temp_files = []
         def _open_cf_reader_with_var(nc_path, var_name, llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat, allow_corner_adjust=False):
             from opendrift.readers import reader_netCDF_CF_generic
             import xarray as xr
+            if isinstance(nc_path, xr.Dataset):
+                import os, tempfile
+                fd, path = tempfile.mkstemp(prefix='chemdrift_cf_input_', suffix='.nc')
+                os.close(fd)
+                legacy_dataset_temp_files.append(path)
+                nc_path.to_netcdf(path)
+                nc_path = path
             for nm, vv in {'llcrnrlon': llcrnrlon, 'urcrnrlon': urcrnrlon, 'llcrnrlat': llcrnrlat, 'urcrnrlat': urcrnrlat}.items():
                 if vv is None or not np.isfinite(vv):
                     raise ValueError(f'{nm} must be finite, got {vv!r}')
@@ -6760,7 +6925,7 @@ class ChemicalDriftPostProcessMixin:
                 raise ValueError('Output corners must use the ChemicalDrift longitude convention [-180, 180]. 0..360 output domains are not supported here.')
             if llcrnrlon > urcrnrlon:
                 raise ValueError('Dateline-crossing output domains are not supported in this writer. Use non-crossing corners with llcrnrlon <= urcrnrlon.')
-            with xr.open_dataset(nc_path) as ds:
+            with self._open_density_map_dataset(nc_path) as ds:
                 resolved_var = _resolve_var_name(ds, var_name)
                 da = ds[resolved_var]
                 lat_names = ['latitude', 'lat']
@@ -6939,8 +7104,42 @@ class ChemicalDriftPostProcessMixin:
 
         try:
             explicit_grid = None
+            if mesh_file is not None:
+                if output_grid is not None or any(v is not None for v in
+                        (llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat, lat_resol, lon_resol)):
+                    raise ValueError('mesh_file cannot be combined with output_grid or geographic corners/resolution')
+                import xarray as xr
+                with self._open_density_map_dataset(mesh_file) as mesh_ds:
+                    # Accept a validated CF/UGRID topology descriptor, adapting
+                    # names only; existing parser still validates indexing/areas.
+                    topologies = [v for v in mesh_ds.variables
+                                  if mesh_ds[v].attrs.get('cf_role') == 'mesh_topology']
+                    if len(topologies) != 1:
+                        raise ValueError('mesh_file must contain exactly one CF/UGRID mesh_topology variable')
+                    topology = mesh_ds[topologies[0]].attrs
+                    if int(topology.get('topology_dimension', -1)) != 2:
+                        raise ValueError('mesh_file requires two-dimensional UGRID topology')
+                    conn_name = topology.get('face_node_connectivity')
+                    coords = str(topology.get('node_coordinates', '')).split()
+                    if not conn_name or conn_name not in mesh_ds or len(coords) != 2 or any(c not in mesh_ds for c in coords):
+                        raise ValueError('mesh_file requires declared connectivity and two declared node coordinates')
+                    lonname = next((v for v in coords if mesh_ds[v].attrs.get('standard_name') == 'longitude'), None)
+                    latname = next((v for v in coords if mesh_ds[v].attrs.get('standard_name') == 'latitude'), None)
+                    if lonname is None or latname is None:
+                        raise ValueError('mesh_file requires validated geographic longitude and latitude node coordinates')
+                    explicit_grid = self._normalize_output_grid({
+                        'face_node_connectivity': mesh_ds[conn_name],
+                        'node_lon': mesh_ds[lonname], 'node_lat': mesh_ds[latname],
+                    }, density_proj=density_proj)
+                if explicit_grid.get('topology') != 'triangular_unstructured':
+                    raise ValueError('mesh_file must contain validated triangular UGRID topology')
             if output_grid is not None:
-                explicit_grid = self._normalize_output_grid(output_grid, density_proj=density_proj)
+                if isinstance(output_grid, (str, __import__('os').PathLike)):
+                    with self._open_density_map_dataset(output_grid) as grid_ds:
+                        explicit_grid = self._normalize_output_grid(grid_ds, density_proj=density_proj)
+                else:
+                    explicit_grid = self._normalize_output_grid(output_grid, density_proj=density_proj)
+            if explicit_grid is not None:
                 if any(v is not None for v in (lat_resol, lon_resol)):
                     raise ValueError('lat_resol/lon_resol cannot be used together with output_grid.')
                 if pixelsize_m not in (None, 'auto'):
@@ -6962,8 +7161,9 @@ class ChemicalDriftPostProcessMixin:
                 if sum(x is None for x in [lat_resol, lon_resol]) == 1:
                     raise ValueError('Both lat_resol and lon_resol must be specified together.')
                 elif sum(x is None for x in [lat_resol, lon_resol]) == 0:
-                    if pixelsize_m is not None:
-                        raise ValueError('If lat_resol/lon_resol are specified, pixelsize_m must be None.')
+                    if pixelsize_m not in (None, 'auto'):
+                        raise ValueError('If lat_resol/lon_resol are specified, pixelsize_m must be None or auto.')
+                    pixelsize_m = None
 
             weight_mode = str(weight_mode).lower()
             bathymetry_remap = str(bathymetry_remap).lower()
@@ -6989,8 +7189,10 @@ class ChemicalDriftPostProcessMixin:
             if tidal_active:
                 if not reader_sea_surface_height:
                     raise ValueError('Tidal correction enabled by saved stretching: supplied sea-surface-height reader is mandatory')
-                if bathymetry_remap != 'direct':
-                    raise NotImplementedError('Tidal correction requires qualified conservative overlap geometry; only strict direct same-cell support is implemented. Interpolation and unverified SCRIP/Shapely geometry are not permitted.')
+                if bathymetry_remap not in ('direct', 'conservative', 'conservative_shapely'):
+                    raise NotImplementedError('Tidal correction requires direct or qualified structured conservative overlap; interpolate/SCRIP are not qualified.')
+                if unstructured and bathymetry_remap != 'direct':
+                    raise NotImplementedError('Native triangular tidal integration requires the unchanged direct mesh path')
                 if unstructured and reader_active_sediment_layer_thickness is not None:
                     raise ValueError('Tidal native-face output requires separately qualified sediment face thickness source; do not co-locate nodal sediment data silently')
             resolved_weight_unit = _resolve_weight_units()
@@ -7239,6 +7441,30 @@ class ChemicalDriftPostProcessMixin:
                 )
             nspecies_out = len(name_species_out)
 
+            # Reconstruct the already-binned metric cells only for the existing
+            # conservative overlap geometry. The histogram coordinates and physics
+            # remain unchanged. Corners are required to recover exact last-bin edges.
+            overlap_output_grid = explicit_grid
+            if (tidal_active and bathymetry_remap != 'interpolate' and
+                    not is_latlon and explicit_grid is None):
+                if not is_moll or any(v is None for v in
+                        (llcrnrlon, llcrnrlat, urcrnrlon, urcrnrlat)):
+                    raise ValueError('Metric-pixel tidal conservative remap requires Mollweide pixel-size and four geographic corners')
+                xlo, ylo = density_proj(llcrnrlon, llcrnrlat)
+                xhi, yhi = density_proj(urcrnrlon, urcrnrlat)
+                xedges = self._make_edges(xlo, xhi, pixelsize_m)
+                yedges = self._make_edges(ylo, yhi, pixelsize_m)
+                if (len(xedges) != len(x_centers) + 1 or
+                        len(yedges) != len(y_centers) + 1 or
+                        not np.allclose(0.5*(xedges[:-1]+xedges[1:]), x_centers, rtol=0, atol=1e-7) or
+                        not np.allclose(0.5*(yedges[:-1]+yedges[1:]), y_centers, rtol=0, atol=1e-7)):
+                    raise ValueError('Projected conservative overlap cells differ from existing histogram bins')
+                overlap_output_grid = self._normalize_output_grid(dict(
+                    x=x_centers, y=y_centers,
+                    x_bounds=np.column_stack((xedges[:-1], xedges[1:])),
+                    y_bounds=np.column_stack((yedges[:-1], yedges[1:])),
+                ), density_proj=density_proj_str)
+
             mesh_tidal_volumes = None
             if tidal_active and unstructured:
                 # Read strictly matching native-node h/eta on the existing
@@ -7272,7 +7498,7 @@ class ChemicalDriftPostProcessMixin:
                     is_latlon,
                     lat_resol,
                     lon_resol,
-                    output_grid=explicit_grid,
+                    output_grid=overlap_output_grid,
                     bathymetry_remap=bathymetry_remap,
                     bathymetry_source=reader_sea_depth,
                     bathymetry_var=bathymetry_variable,
@@ -7285,6 +7511,7 @@ class ChemicalDriftPostProcessMixin:
                     conservative_backend=bathymetry_conservative_backend,
                     conservative_weights=bathymetry_conservative_weights,
                     large_domain_backend=bathymetry_large_domain_backend,
+                    collect_tidal_links=(tidal_active and bathymetry_remap != 'direct'),
                 )
             pixel_layer_volume = bathy_meta.get('layer_volume') if bathy_meta else None
             pixel_mean_depth_for_volume = pixel_mean_depth
@@ -7294,12 +7521,13 @@ class ChemicalDriftPostProcessMixin:
             bathy_extent_class = bathy_meta.get('extent_class') if bathy_meta else None
 
             if bathymetry_remap != 'interpolate' and landmask_bathymetry_thr is not None:
-                if tidal_active and unstructured and float(landmask_bathymetry_thr) == 0.0:
+                if tidal_active and float(landmask_bathymetry_thr) == 0.0 and (unstructured or bathymetry_remap != 'direct'):
                     # In a signed common-datum mesh, h <= 0 does not mean
                     # permanently dry: positive tide may inundate a triangle.
                     # Only mask faces dry in EVERY requested tidal snapshot.
                     # Each instantaneous volume is still zero/NaN when dry.
-                    landmask_raw = ~np.any(mesh_tidal_volumes > 0.0, axis=(0, 1))
+                    landmask_raw = (~np.any(mesh_tidal_volumes > 0.0, axis=(0, 1))
+                                    if unstructured else np.zeros_like(pixel_mean_depth_for_output, dtype=bool))
                 else:
                     landmask_raw = np.asarray(pixel_mean_depth_for_output) <= landmask_bathymetry_thr
             elif landmask_bathymetry_thr is not None and reader_sea_depth_obj is not None:
@@ -7386,7 +7614,16 @@ class ChemicalDriftPostProcessMixin:
                     np.copyto(pixel_volume_time, np.nan, where=invalid_volume)
                     del invalid_volume
                 else:
-                    pixel_volume_time = self._structured_grid_tidal_water_volumes(
+                    pixel_volume_time = (self._structured_conservative_tidal_water_volumes(
+                        bathymetry_path=reader_sea_depth, elevation_path=reader_sea_surface_height,
+                        bathymetry_variable=bathymetry_variable, filtered_times=filtered_times,
+                        z_array=z_array, tidal_links=bathy_meta.get("tidal_overlap_links"),
+                        target_shape=tuple(pixel_area.shape),
+                        water_level_record_type=water_level_record_type,
+                        water_level_mean_interval=water_level_mean_interval,
+                        water_level_time_reference=water_level_time_reference,
+                        time_chunk_size=time_chunk_size)
+                        if bathymetry_remap != "direct" else self._structured_grid_tidal_water_volumes(
                         bathymetry_path=reader_sea_depth,
                         elevation_path=reader_sea_surface_height,
                         bathymetry_variable=bathymetry_variable,
@@ -7399,7 +7636,7 @@ class ChemicalDriftPostProcessMixin:
                         water_level_mean_interval=water_level_mean_interval,
                         water_level_time_reference=water_level_time_reference,
                         time_chunk_size=time_chunk_size,
-                    )
+                    ))
                     if pixel_volume_time.shape != (H.shape[0], len(z_array)-1) + tuple(pixel_area.shape):
                         raise ValueError('Time-varying direct volumes are not aligned with the native concentration histogram')
                     invalid_volume = combined_mask[None, None, :, :] | ~(pixel_volume_time > 0)
@@ -8091,8 +8328,8 @@ class ChemicalDriftPostProcessMixin:
                         vol_out = pixel_volume_time[:, ::-1, :]
                         _write_masked_time_slabs(volume, vol_out, combined_mask_face, FILL_F8)
                         nc.tidal_elevation_enabled=1
-                        nc.tidal_bathymetry_source=str(reader_sea_depth)
-                        nc.tidal_elevation_source=str(reader_sea_surface_height)
+                        nc.tidal_bathymetry_source=('caller_owned_xarray_Dataset' if hasattr(reader_sea_depth, 'data_vars') else str(reader_sea_depth))
+                        nc.tidal_elevation_source=('caller_owned_xarray_Dataset' if hasattr(reader_sea_surface_height, 'data_vars') else str(reader_sea_surface_height))
                         nc.tidal_bathymetry_variable=str(bathymetry_variable)
                         nc.tidal_water_volume_method='native_triangular_mesh_exact_affine_nodal_wet_integral'
                         nc.tidal_vertical_datum_assumption='user_attested_common_datum_total_depth_water_level_20261113'
@@ -8541,11 +8778,20 @@ class ChemicalDriftPostProcessMixin:
                     _write_masked_time_slabs(
                         volume, vol_out, combined_mask_yx, FILL_F8, transpose_xy=True)
                     nc.tidal_elevation_enabled = 1
-                    nc.tidal_bathymetry_source = str(reader_sea_depth)
-                    nc.tidal_elevation_source = str(reader_sea_surface_height)
+                    nc.tidal_bathymetry_source = ('caller_owned_xarray_Dataset' if hasattr(reader_sea_depth, 'data_vars') else str(reader_sea_depth))
+                    nc.tidal_elevation_source = ('caller_owned_xarray_Dataset' if hasattr(reader_sea_surface_height, 'data_vars') else str(reader_sea_surface_height))
                     nc.tidal_bathymetry_variable = str(bathymetry_variable)
-                    nc.tidal_water_volume_method = 'direct_same_cell_datum_h_plus_eta_wet_bin_thickness'
-                    nc.tidal_vertical_datum_assumption = 'user_attested_common_datum_total_depth_water_level_20261113'
+                    if bathymetry_remap == 'direct':
+                        nc.tidal_water_volume_method = 'direct_same_cell_datum_h_plus_eta_wet_bin_thickness'
+                        nc.tidal_vertical_datum_assumption = 'user_attested_common_datum_total_depth_water_level_20261113'
+                    else:
+                        nc.tidal_water_volume_method = 'structured_source_clipped_h_plus_eta_conservative_overlap_volume'
+                        nc.tidal_overlap_backend = str(bathy_backend)
+                        nc.tidal_overlap_area_convention = 'shapely_equal_area_intersection_m2_or_qualified_direct_cell_area_m2'
+                        import xarray as xr
+                        with self._open_density_map_dataset(reader_sea_depth) as _bathy_provenance:
+                            nc.tidal_vertical_datum_assumption = str(_bathy_provenance.attrs.get('vertical_datum'))
+                        nc.tidal_source_grid_check = 'exact_matching_collocated_structured_source_cells'
                 else:
                     _create_f8(nc, 'volume', ('depth', 'y', 'x'))
                     pv = np.asarray(pixel_volume_out, dtype=np.float64)
@@ -8629,6 +8875,11 @@ class ChemicalDriftPostProcessMixin:
             # Close explicit reader objects if they were opened
             _close_if_possible(reader_sea_depth_obj, 'reader_sea_depth_obj')
             _close_if_possible(active_sediment_layer_thickness_reader, 'active_sediment_layer_thickness_reader')
+            for _temporary_path in legacy_dataset_temp_files:
+                try:
+                    __import__('os').unlink(_temporary_path)
+                except FileNotFoundError:
+                    pass
 
             # Clear cached interpolation fields kept on self
             for attr in (
