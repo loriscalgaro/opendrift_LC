@@ -1334,9 +1334,13 @@ class ChemicalDriftPostProcessMixin:
                 elif lon_corners_4 is None or lat_corners_4 is None:
                     raise ValueError('Could not interpret curvilinear lon/lat bounds.')
             else:
-                lon_nodes, lat_nodes = proj(x_nodes, y_nodes, inverse=True)
-                lon_corners_4 = self._nodes_to_corners4(lon_nodes)
-                lat_corners_4 = self._nodes_to_corners4(lat_nodes)
+                if x_nodes is not None and y_nodes is not None:
+                    lon_nodes, lat_nodes = proj(x_nodes, y_nodes, inverse=True)
+                    lon_corners_4 = self._nodes_to_corners4(lon_nodes)
+                    lat_corners_4 = self._nodes_to_corners4(lat_nodes)
+                else:
+                    lon_nodes = lat_nodes = None
+                    lon_corners_4, lat_corners_4 = proj(x_corners_4, y_corners_4, inverse=True)
 
             if lon_nodes is not None and lat_nodes is not None:
                 _validate_projected_geographic_consistency(
@@ -5625,6 +5629,592 @@ class ChemicalDriftPostProcessMixin:
             separable=separable,
             Verbose=Verbose,
         )
+    @staticmethod
+    # MANDATORY_FIRST_READ: MANDATORY_FIRST_READ_TIDAL_FORCING_CF_TIME_AND_BOUNDED_IO_20261113.md
+    # SHA256: 81650003bb70476901a0811de03dbf417159d65adbdb68292f26bc5ec6f55e8d
+    def _resolve_saved_tidal_elevation_mode(result, current_setting, requested):
+        """Resolve tidal mode solely from saved simulation metadata; reject disagreements.
+
+        Parameters: result is the opened trajectory Dataset; current_setting is
+        the live model's get_config value; requested is None, True or False.
+        Returns: verified boolean saved stretching setting.
+        """
+        def parse(value, label):
+            if isinstance(value, (bool, np.bool_)):
+                return bool(value)
+            if isinstance(value, (int, np.integer)) and int(value) in (0, 1):
+                return bool(value)
+            if isinstance(value, str) and value.lower().strip() in ('true', 'false', '1', '0'):
+                return value.lower().strip() in ('true', '1')
+            raise ValueError(f'{label} must be an unambiguous boolean: {value!r}')
+
+        saved_key = 'config_drift:water_column_stretching'
+        saved_raw = getattr(result, 'attrs', {}).get(saved_key)
+        if saved_raw is None:
+            raise ValueError('Tidal setting cannot be inferred: saved trajectory lacks '
+                             + saved_key + '; refusing implicit tide=0 or implicit disabled mode')
+        saved = parse(saved_raw, saved_key)
+        if current_setting is not None and parse(current_setting, 'get_config stretching') != saved:
+            raise ValueError('Tidal setting conflict between saved trajectory and get_config')
+        if requested is not None and parse(requested, 'tidal_elevation_enabled') != saved:
+            raise ValueError('Tidal flag conflicts with saved trajectory stretching')
+        return saved
+
+    @staticmethod
+    def _match_native_spatial_subset(source_geometry, target_geometry, *, node_coordinates=False):
+        """Return exact source positions for each target cell/node (no remapping).
+
+        Inputs are normalized grids from ``_normalize_output_grid``.  Only a
+        unique full-cell/full-node identity counts as a native subset.  The
+        returned integer positions follow the target's original ordering.
+        """
+        if node_coordinates:
+            source_lon = np.asarray(source_geometry['node_lon'], dtype='float64')
+            target_lon = np.asarray(target_geometry['node_lon'], dtype='float64')
+            source_lat = np.asarray(source_geometry['node_lat'], dtype='float64')
+            target_lat = np.asarray(target_geometry['node_lat'], dtype='float64')
+            src_xy = (source_lon, source_lat)
+            tgt_xy = (target_lon, target_lat)
+            if source_geometry.get('node_x') is not None and target_geometry.get('node_x') is not None:
+                src_xy += (np.asarray(source_geometry['node_x'], dtype='float64'),
+                           np.asarray(source_geometry['node_y'], dtype='float64'))
+                tgt_xy += (np.asarray(target_geometry['node_x'], dtype='float64'),
+                           np.asarray(target_geometry['node_y'], dtype='float64'))
+        else:
+            if (source_geometry.get('topology') != 'structured' or
+                    target_geometry.get('topology') != 'structured' or
+                    source_geometry.get('binning_mode') != target_geometry.get('binning_mode') or
+                    source_geometry.get('binning_coords') != target_geometry.get('binning_coords')):
+                raise ValueError('Source elevation and target grid topology differ')
+            center_names = ('lon_center_2d', 'lat_center_2d', 'x_center_2d', 'y_center_2d')
+            corner_names = ('lon_corners_4', 'lat_corners_4', 'x_corners_4', 'y_corners_4')
+            available = []
+            for name in center_names + corner_names:
+                a = source_geometry.get(name)
+                b = target_geometry.get(name)
+                if (a is None) != (b is None):
+                    raise ValueError(f'Mismatched native grid geometry {name}')
+                if a is not None and name in center_names:
+                    available.append(name)
+            src_xy = tuple(np.asarray(source_geometry[name], dtype='float64').reshape(
+                (int(np.prod(source_geometry['shape'])), -1)) for name in available)
+            tgt_xy = tuple(np.asarray(target_geometry[name], dtype='float64').reshape(
+                (int(np.prod(target_geometry['shape'])), -1)) for name in available)
+        if not src_xy or len(src_xy) != len(tgt_xy):
+            raise ValueError('Missing qualified native spatial coordinate arrays')
+        nsrc = src_xy[0].shape[0]
+        ntgt = tgt_xy[0].shape[0]
+        if any(a.shape[0] != nsrc or not np.all(np.isfinite(a)) for a in src_xy):
+            raise ValueError('Source spatial coordinates contain missing/invalid values')
+        if any(a.shape[0] != ntgt or not np.all(np.isfinite(a)) for a in tgt_xy):
+            raise ValueError('Target spatial coordinates contain missing/invalid values')
+        def tuples(fields, n):
+            flattened = [np.asarray(field).reshape((n, -1)) for field in fields]
+            return [tuple(float(v) for part in flattened for v in part[i])
+                    for i in range(n)]
+        lookup = {}
+        for index, signature in enumerate(tuples(src_xy, nsrc)):
+            if signature in lookup:
+                raise ValueError('Ambiguous/duplicate source-cell or source-node coordinates')
+            lookup[signature] = index
+        selected = []
+        for signature in tuples(tgt_xy, ntgt):
+            if signature not in lookup:
+                raise ValueError('Native source grid differs: output cell/node is not an exact subset of elevation mesh')
+            selected.append(lookup[signature])
+        if len(set(selected)) != ntgt:
+            raise ValueError('Target grid contains repeated source cells or nodes')
+        if not node_coordinates:
+            # Cell corners inferred independently from subgrid endpoints can
+            # differ by a few floating-point ULPs; preserve exact *cell*
+            # matching and allow only roundoff in the derived corner arrays.
+            for name in corner_names:
+                if source_geometry.get(name) is None:
+                    continue
+                original = np.asarray(source_geometry[name], dtype='float64').reshape(nsrc, -1)
+                target = np.asarray(target_geometry[name], dtype='float64').reshape(ntgt, -1)
+                chosen = original[selected]
+                scale = max(1., float(np.max(np.abs(chosen))), float(np.max(np.abs(target))))
+                tolerance = 128. * np.finfo('float64').eps * scale
+                if (not np.all(np.isfinite(chosen)) or not np.all(np.isfinite(target)) or
+                        not np.allclose(chosen, target, rtol=0, atol=tolerance)):
+                    raise ValueError(f'Native source cell corners differ from target: {name}')
+        return np.asarray(selected, dtype=np.int64)
+
+    @staticmethod
+    def _read_cf_time_aligned_elevation(*, dataset, elevation, filtered_times,
+                                          source_spatial_dims, source_flat_indices,
+                                          source_spatial_shape, target_shape,
+                                          record_type='instantaneous', mean_interval=None,
+                                          time_reference=None, time_chunk_size=50):
+        """Validate CF time semantics and read only required source records/cells.
+
+        All observations remain on the native source cells/nodes; no horizontal
+        interpolation. For instant records interpolate two bracketing samples;
+        for mean records use their valid CF-bounded half-open interval.  This
+        function does not load an entire source (time,space) forcing variable.
+        Returns a time-major array in the requested output cell/node order.
+        """
+        import re
+        import pandas as pd
+        import xarray as xr
+        import cftime
+        if record_type not in ('instantaneous', 'mean'):
+            raise ValueError("water_level_record_type must be 'instantaneous' or 'mean'")
+        if (mean_interval is None) != (time_reference is None):
+            raise ValueError('Mean fallback requires BOTH interval and time reference')
+        if record_type == 'instantaneous' and mean_interval is not None:
+            raise ValueError('Mean interval/reference cannot be used for instantaneous records')
+        if not isinstance(time_chunk_size, (int, np.integer)) or time_chunk_size < 1:
+            raise ValueError('time_chunk_size must be a positive integer')
+        if 'time' not in elevation.dims or 'time' not in dataset:
+            raise ValueError('Elevation requires a CF time coordinate')
+        axis = dataset['time']
+        if axis.ndim != 1 or axis.dims != ('time',):
+            raise ValueError('CF time must be one-dimensional')
+        encoding = axis.encoding
+        unit = encoding.get('units', axis.attrs.get('units', ''))
+        calendar = encoding.get('calendar', axis.attrs.get('calendar', 'standard'))
+        if str(calendar).lower() not in ('standard', 'gregorian', 'proleptic_gregorian',
+                                          'julian', 'noleap', '365_day', 'all_leap',
+                                          '366_day', '360_day'):
+            raise ValueError('Unsupported CF time calendar')
+        if not isinstance(unit, str) or not re.match(
+                r'^\s*(microseconds|milliseconds|seconds|minutes|hours|days)\s+since\s+\S+',
+                unit, flags=re.IGNORECASE):
+            raise ValueError('CF time requires valid numerical origin units (... since ...)')
+        cell_methods = str(elevation.attrs.get('cell_methods', ''))
+        found = re.findall(r'\btime\s*:\s*(mean|point|sum|maximum|minimum)\b',
+                           cell_methods, flags=re.IGNORECASE)
+        if record_type == 'instantaneous' and any(x.lower() != 'point' for x in found):
+            raise ValueError('Water-level cell_methods contradict instantaneous record type')
+        if record_type == 'mean' and any(x.lower() != 'mean' for x in found):
+            raise ValueError('Water-level cell_methods contradict mean record type')
+        if record_type == 'mean' and not found:
+            # Explicit caller semantics are the authority; no custom metadata required.
+            pass
+        source = np.asarray(axis.values)
+        wanted = np.asarray(filtered_times)
+        if source.ndim != 1 or source.size < 1 or wanted.ndim != 1 or wanted.size < 1:
+            raise ValueError('Empty or multidimensional concentration/forcing timestamps')
+        if isinstance(source[0], cftime.datetime):
+            if not all(isinstance(t, cftime.datetime) and t.calendar == source[0].calendar for t in source):
+                raise ValueError('Inconsistent CF calendar representations')
+            if not (all(isinstance(t, cftime.datetime) and t.calendar == source[0].calendar
+                        for t in wanted)):
+                raise ValueError('Concentration/forcing calendars differ (no implicit conversion)')
+            converter = lambda x: np.asarray(cftime.date2num(
+                np.asarray(x).tolist(), 'seconds since 1970-01-01 00:00:00',
+                calendar=source[0].calendar), dtype='float64')
+            scale = 1.0
+        else:
+            def converter(x):
+                try:
+                    arr = np.asarray(pd.to_datetime(np.asarray(x), errors='raise'),
+                                     dtype='datetime64[ns]')
+                except (ValueError, TypeError, OverflowError) as exc:
+                    raise ValueError('CF time coordinates cannot be decoded into valid datetimes') from exc
+                if np.any(np.isnat(arr)):
+                    raise ValueError('CF time contains NaT/missing timestamps')
+                return arr.astype('int64')
+            scale = 1e9
+        src_num = converter(source)
+        req_num = converter(wanted)
+        if (not np.all(np.isfinite(src_num)) or not np.all(np.isfinite(req_num)) or
+                not np.all(np.diff(src_num) > 0)):
+            raise ValueError('CF source timestamps must be finite, unique and strictly increasing')
+        if record_type == 'mean':
+            bounds_name = axis.attrs.get('bounds', None)
+            if bounds_name is not None:
+                if bounds_name not in dataset:
+                    raise ValueError('CF time:bounds variable is missing')
+                raw_bounds = np.asarray(dataset[bounds_name].values)
+                if (raw_bounds.shape != (len(src_num), 2) or
+                        dataset[bounds_name].dims[0] != 'time'):
+                    raise ValueError('CF mean time bounds must have shape (time,2)')
+                low = converter(raw_bounds[:, 0])
+                high = converter(raw_bounds[:, 1])
+            else:
+                if mean_interval is None or time_reference not in ('start', 'center', 'end'):
+                    raise ValueError('Mean elevation requires valid CF time bounds, or explicit interval+reference')
+                if not isinstance(mean_interval, str) or not re.fullmatch(
+                        r'\d+(?:\.\d+)?\s*(?:s|sec|second|seconds|min|minute|minutes|h|hour|hours|D|day|days|w|week|weeks)',
+                        mean_interval):
+                    raise ValueError('Mean fallback interval must be a positive fixed duration, e.g. 1D, 1h')
+                dt = pd.to_timedelta(mean_interval)
+                duration = float(dt.total_seconds()) * scale
+                if not np.isfinite(duration) or duration <= 0:
+                    raise ValueError('Mean interval must be positive and finite')
+                offset = {'start': 0.0, 'center': 0.5, 'end': 1.0}[time_reference]
+                low = src_num - duration * offset
+                high = low + duration
+            if (not np.all(np.isfinite(low)) or not np.all(np.isfinite(high)) or
+                    np.any(low >= high) or np.any(src_num < low) or np.any(src_num > high) or
+                    np.any(low[1:] < high[:-1])):
+                raise ValueError('Invalid or overlapping CF mean time intervals')
+            indices = np.searchsorted(low, req_num, side='right') - 1
+            if (np.any(indices < 0) or np.any(indices >= len(src_num)) or
+                    np.any(req_num >= high[np.clip(indices, 0, len(src_num)-1)])):
+                raise ValueError('Requested time is outside a valid mean interval or in a gap')
+            left, right = indices, indices
+            frac = np.zeros(len(req_num), dtype='float64')
+        else:
+            if np.any(req_num < src_num[0]) or np.any(req_num > src_num[-1]):
+                raise ValueError('Tidal source time axis does not bracket requested instantaneous timestamps')
+            right = np.searchsorted(src_num, req_num, side='left')
+            right = np.minimum(right, len(src_num)-1)
+            left = np.maximum(right - 1, 0)
+            exact = (src_num[right] == req_num)
+            left = np.where(exact, right, left)
+            denom = src_num[right] - src_num[left]
+            frac = np.divide(req_num - src_num[left], denom,
+                             out=np.zeros(len(req_num), dtype='float64'), where=denom != 0)
+        source_flat_indices = np.asarray(source_flat_indices, dtype=np.int64)
+        if (np.any(source_flat_indices < 0) or
+                np.any(source_flat_indices >= int(np.prod(source_spatial_shape))) or
+                source_flat_indices.size != int(np.prod(target_shape))):
+            raise ValueError('Selected spatial indices do not match target dimensions')
+        if len(source_spatial_dims) not in (1, 2):
+            raise ValueError('Only one-dimensional nodes or two-dimensional cells supported')
+        x_idx = source_flat_indices // source_spatial_shape[1] if len(source_spatial_dims) == 2 else source_flat_indices
+        y_idx = source_flat_indices % source_spatial_shape[1] if len(source_spatial_dims) == 2 else None
+        out = np.empty((len(req_num), int(np.prod(target_shape))), dtype='float64')
+        # A rectangular target which is an exact contiguous native subset can
+        # be fetched as one backend hyperslab rather than one point per cell.
+        # Reordered/irregular native subsets retain the verified indexed path.
+        spatial_slice = None
+        if len(source_spatial_dims) == 2 and len(target_shape) == 2:
+            xx = x_idx.reshape(target_shape)
+            yy = y_idx.reshape(target_shape)
+            cols = xx[:, 0]
+            rows = yy[0, :]
+            if (np.array_equal(xx, np.broadcast_to(cols[:, None], target_shape)) and
+                    np.array_equal(yy, np.broadcast_to(rows[None, :], target_shape)) and
+                    (cols.size < 2 or np.all(np.diff(cols) == 1)) and
+                    (rows.size < 2 or np.all(np.diff(rows) == 1))):
+                spatial_slice = {
+                    source_spatial_dims[0]: slice(int(cols[0]), int(cols[-1]) + 1),
+                    source_spatial_dims[1]: slice(int(rows[0]), int(rows[-1]) + 1),
+                }
+        counts = {'source_time_records': len(src_num), 'selected_output_cells': int(len(source_flat_indices)),
+                  'source_spatial_cells': int(np.prod(source_spatial_shape)),
+                  'records_read': 0, 'max_values_per_record_read': 0,
+                  'spatial_read_strategy': 'contiguous_hyperslab' if spatial_slice else 'native_indexed',
+                  'snapshot_batch_size': int(time_chunk_size)}
+        cache = {}
+        def get_record(record_index):
+            key = int(record_index)
+            if key not in cache:
+                if spatial_slice is not None:
+                    selected = elevation.isel(time=key, **spatial_slice)
+                elif len(source_spatial_dims) == 1:
+                    indexer = {source_spatial_dims[0]: xr.DataArray(x_idx, dims='selected_cell')}
+                    selected = elevation.isel(time=key, **indexer)
+                else:
+                    indexer = {source_spatial_dims[0]: xr.DataArray(x_idx, dims='selected_cell'),
+                               source_spatial_dims[1]: xr.DataArray(y_idx, dims='selected_cell')}
+                    selected = elevation.isel(time=key, **indexer)
+                values = np.asarray(selected.values, dtype='float64').reshape(-1)
+                if values.size != len(source_flat_indices) or not np.all(np.isfinite(values)):
+                    raise ValueError('Missing/nonfinite source tidal elevation in selected native cells; no zero fallback')
+                counts['records_read'] += 1
+                counts['max_values_per_record_read'] = max(counts['max_values_per_record_read'], values.size)
+                cache[key] = values
+            return cache[key]
+        # At most two adjacent source frames need to be retained at any instant.
+        for start in range(0, len(req_num), time_chunk_size):
+            for j in range(start, min(start+time_chunk_size, len(req_num))):
+                l, r = int(left[j]), int(right[j])
+                vl = get_record(l)
+                vr = vl if r == l else get_record(r)
+                out[j, :] = vl + (vr - vl) * frac[j]
+                for old in list(cache):
+                    if old not in (l, r):
+                        del cache[old]
+        return out.reshape((len(req_num),)+tuple(target_shape)), counts
+
+    def _structured_grid_tidal_water_volumes(self, *, bathymetry_path, elevation_path,
+                                 bathymetry_variable, filtered_times, z_array,
+                                 output_lon, output_lat, pixel_mean_depth, pixel_area,
+                                 grid_spec=None, water_level_record_type='instantaneous',
+                                 water_level_mean_interval=None,
+                                 water_level_time_reference=None, time_chunk_size=50):
+        """Conservative native-cell tidal volumes; read only needed source times/cells.
+
+        The bathymetry grid must equal the output grid. Elevation may cover a
+        larger (but exactly matching) native grid, including a longer time span.
+        No spatial interpolation or unqualified source-cell remapping occurs.
+        """
+        import xarray as xr
+        from pyproj import CRS
+        with xr.open_dataset(bathymetry_path, decode_times=True) as bds, \
+                xr.open_dataset(elevation_path, decode_times=True) as eds:
+            if bathymetry_variable not in bds:
+                raise ValueError(f'Bathymetry source lacks {bathymetry_variable!r}')
+            hb = bds[bathymetry_variable]
+            options = [name for name in ('water_level', 'sea_surface_height') if name in eds]
+            options += [name for name in eds.data_vars if
+                        eds[name].attrs.get('standard_name') ==
+                        'water_surface_height_above_reference_datum' and name not in options]
+            if len(options) != 1:
+                raise ValueError('Require one unambiguous native water-level variable')
+            et = eds[options[0]]
+            units = ('m', 'meter', 'metre', 'meters', 'metres')
+            if hb.attrs.get('units') not in units or et.attrs.get('units') not in units:
+                raise ValueError('Bathymetry and water level must use metres')
+            if grid_spec is None:
+                grid_spec = self._normalize_output_grid(bds)
+            if grid_spec.get('topology') != 'structured':
+                raise ValueError('Structured volumes require a normalized structured grid')
+            projected = grid_spec['binning_coords'] == 'projected'
+            crs = CRS.from_user_input(grid_spec['density_proj_str'])
+            for ds, field in ((bds, hb), (eds, et)):
+                src_crs = ds.attrs.get('crs', field.attrs.get('crs', None))
+                if projected:
+                    if src_crs is None or CRS.from_user_input(src_crs) != crs:
+                        raise ValueError('Projected source CRS missing or inconsistent with output')
+                elif src_crs is not None and CRS.from_user_input(src_crs) != crs:
+                    raise ValueError('Source geographic CRS differs from output')
+            bg = self._normalize_output_grid(bds, density_proj=crs if projected else None)
+            eg = self._normalize_output_grid(eds, density_proj=crs if projected else None)
+            if (bg.get('topology') != 'structured' or
+                    bg['shape'] != grid_spec['shape'] or
+                    eg.get('topology') != 'structured'):
+                raise ValueError('Native bathymetry or elevation grid shape/type is invalid')
+            bmap = self._match_native_spatial_subset(bg, grid_spec)
+            if not np.array_equal(bmap, np.arange(int(np.prod(bg['shape'])))):
+                raise ValueError('Bathymetry cell ordering differs from output grid')
+            fmap = self._match_native_spatial_subset(eg, grid_spec)
+            if (hb.attrs.get('grid_mapping') != et.attrs.get('grid_mapping')):
+                raise ValueError('Bathymetry/elevation grid mapping differs')
+            if not (np.array_equal(grid_spec['lon_center_2d'], np.asarray(output_lon)) and
+                    np.array_equal(grid_spec['lat_center_2d'], np.asarray(output_lat))):
+                raise ValueError('Output center ordering differs from qualified grid')
+
+            def spatial_dims(ds, grid):
+                is_proj = grid['binning_coords'] == 'projected'
+                if is_proj and grid['binning_mode'] == 'rectilinear':
+                    xnames = ('x', 'projection_x_coordinate')
+                    ynames = ('y', 'projection_y_coordinate')
+                elif is_proj:
+                    xnames = ('x_center', 'xc', 'projection_x_coordinate_center')
+                    ynames = ('y_center', 'yc', 'projection_y_coordinate_center')
+                else:
+                    xnames = ('lon', 'longitude', 'lon_center', 'longitude_center')
+                    ynames = ('lat', 'latitude', 'lat_center', 'latitude_center')
+                xc = next((ds[name] for name in xnames if name in ds), None)
+                yc = next((ds[name] for name in ynames if name in ds), None)
+                if xc is None or yc is None:
+                    raise ValueError('Missing native source grid center coordinates')
+                if xc.ndim == 1 and yc.ndim == 1:
+                    return xc.dims[0], yc.dims[0]
+                if xc.ndim == 2 and yc.dims == xc.dims:
+                    d = xc.dims
+                    xlike = {'x', 'lon', 'longitude', 'xc'}
+                    ylike = {'y', 'lat', 'latitude', 'yc'}
+                    return (d[0], d[1]) if d[0].lower() in xlike and d[1].lower() in ylike else (d[1], d[0])
+                raise ValueError('Inconsistent source coordinate dimensions')
+
+            bx, by = spatial_dims(bds, bg)
+            ex, ey = spatial_dims(eds, eg)
+            if set(hb.dims) != {bx, by} or set(et.dims) != {'time', ex, ey}:
+                raise ValueError('Native h/eta dimensions must be cell-centred and unstaggered')
+            H = np.asarray(hb.transpose(bx, by).values, dtype=np.float64)
+            static_depth = np.asarray(pixel_mean_depth, dtype=np.float64)
+            area = np.asarray(pixel_area, dtype=np.float64)
+            if (H.shape != tuple(grid_spec['shape']) or H.shape != static_depth.shape or
+                    area.shape != H.shape):
+                raise ValueError('Source/target bathymetry and cell-area shapes differ')
+            if not np.allclose(H, static_depth, rtol=0, atol=1e-7, equal_nan=True):
+                raise ValueError('Qualified direct bathymetry differs from source')
+            if not np.all(np.isfinite(H) & (H >= 0)) or not np.all(np.isfinite(area) & (area > 0)):
+                raise ValueError('Invalid bathymetry or exact cell areas')
+            eta, io = self._read_cf_time_aligned_elevation(
+                dataset=eds, elevation=et.transpose('time', ex, ey),
+                filtered_times=filtered_times, source_spatial_dims=(ex, ey),
+                source_flat_indices=fmap, source_spatial_shape=tuple(eg['shape']),
+                target_shape=tuple(grid_spec['shape']), record_type=water_level_record_type,
+                mean_interval=water_level_mean_interval,
+                time_reference=water_level_time_reference,
+                time_chunk_size=time_chunk_size)
+            self._last_tidal_forcing_io = io
+        depth = H[None, :, :] + eta
+        edges = np.asarray(z_array, dtype=np.float64)
+        if (edges.ndim != 1 or edges.size < 2 or not np.isclose(edges[-1], 0) or
+                np.any(np.diff(edges) <= 0)):
+            raise ValueError('Expected bottom-to-surface z edges ending at zero')
+        thickness = np.maximum(0., np.minimum(edges[1:][None, :, None, None], 0.) -
+                               np.maximum(edges[:-1][None, :, None, None], -depth[:, None, :, :]))
+        return (thickness * area[None, None, :, :]).astype('float32')
+
+    @staticmethod
+    def _triangular_mesh_tidal_water_volumes(*, mesh, node_bathymetry,
+                                           node_water_level, z_array):
+        """Integrate time-dependent wet layer volumes on ANY normalized triangle mesh.
+
+        Parameters
+        ----------
+        mesh : dict
+            Existing ``_normalize_output_grid`` triangle specification, with
+            zero-based ``face_node_connectivity``, node coordinates and positive
+            geodesic ``cell_area`` for each face. No horizontal remapping occurs.
+        node_bathymetry : array, shape (node,)
+            Fixed signed positive-downward bathymetric coordinate relative to
+            the sea-level datum; negative means the bed is above datum.
+        node_water_level : array, shape (time, node)
+            Already time-aligned sea-surface elevation (positive upward) in
+            metres, referenced to the same datum. No default to zero.
+        z_array : array, shape (layer_edge,)
+            Strictly ascending surface-relative layer edges ending at zero.
+
+        Returns
+        -------
+        volume : float32 array (time, layer, face)
+            Exact area integral of the clipped affine nodal wet thickness over
+            each face, including partially submerged faces.
+        face_bathymetry : float64 array (face,)
+            Arithmetic mean of fixed depth at each triangle's vertices.
+
+        This numerical kernel has no file names, model identifiers, CRS or
+        SHYFEM-specific conventions. Source validation and temporal interpolation
+        happen in ``_read_native_nodal_tidal_fields``.
+        """
+        if mesh is None or mesh.get('topology') != 'triangular_unstructured':
+            raise ValueError('Expected normalized triangular unstructured mesh')
+        conn = np.asarray(mesh['face_node_connectivity'], dtype=np.int64)
+        area = np.asarray(mesh['cell_area'], dtype=np.float64)
+        nnode = int(mesh['nnode'])
+        if (conn.ndim != 2 or conn.shape[1] != 3 or conn.size == 0 or
+                area.shape != (conn.shape[0],) or
+                conn.min() < 0 or conn.max() >= nnode or
+                np.any((conn[:, 0] == conn[:, 1]) |
+                       (conn[:, 1] == conn[:, 2]) |
+                       (conn[:, 0] == conn[:, 2])) or
+                not np.all(np.isfinite(area) & (area > 0))):
+            raise ValueError('Invalid normalized triangular connectivity or face areas')
+        h = np.asarray(node_bathymetry, dtype=np.float64)
+        eta = np.asarray(node_water_level, dtype=np.float64)
+        if (h.shape != (nnode,) or eta.ndim != 2 or eta.shape[1] != nnode or
+                eta.shape[0] < 1 or not np.all(np.isfinite(h)) or
+                not np.all(np.isfinite(eta))):
+            raise ValueError('Invalid node-centered bathymetry or tidal water levels')
+        z = np.asarray(z_array, dtype=np.float64)
+        if (z.ndim != 1 or len(z) < 2 or not np.all(np.isfinite(z)) or
+                not np.isclose(z[-1], 0) or np.any(np.diff(z) <= 0)):
+            raise ValueError('Expected ascending surface-relative z edges ending at zero')
+        H = (h[None, :] + eta)[:, conn]
+
+        def mean_positive(nodes, threshold):
+            """Triangle-area mean of max(affine nodal H - threshold, 0)."""
+            a, b, c = np.moveaxis(np.sort(nodes, axis=-1), -1, 0)
+            threshold = float(threshold)
+            out = np.zeros_like(a)
+            low = threshold <= a
+            high = threshold >= c
+            out[low] = ((a + b + c) / 3 - threshold)[low]
+            middle = ~low & ~high
+            m1 = middle & (threshold < b)
+            m2 = middle & (threshold >= b)
+            if np.any(m1):
+                d = (threshold - a)[m1]
+                out[m1] = (((a + b + c) / 3 - threshold)[m1] +
+                           d ** 3 / (3 * (b - a)[m1] * (c - a)[m1]))
+            if np.any(m2):
+                d = (c - threshold)[m2]
+                out[m2] = d ** 3 / (3 * (c - a)[m2] * (c - b)[m2])
+            return out
+
+        volume = np.stack([
+            area[None, :] * np.maximum(0, mean_positive(H, -top) - mean_positive(H, -bot))
+            for bot, top in zip(z[:-1], z[1:])
+        ], axis=1)
+        if not np.all(np.isfinite(volume) & (volume >= 0)):
+            raise ValueError('Unqualified triangular-mesh wet volume')
+        return volume.astype(np.float32), np.mean(h[conn], axis=1)
+
+    def _read_native_nodal_tidal_fields(self, *, bathymetry_path, elevation_path,
+                                       bathymetry_variable, filtered_times, mesh,
+                                       water_level_record_type='instantaneous',
+                                       water_level_mean_interval=None,
+                                       water_level_time_reference=None,
+                                       time_chunk_size=50):
+        """Read validated h[node] and eta[time,node] from an exact native mesh subset.
+
+        SHYFEM requires no special code: the same mapping/CF time logic applies
+        to any compatible geographic or projected triangular mesh. This is an
+        input adapter, not a second integration or remapping kernel.
+        """
+        import xarray as xr
+        from pyproj import CRS
+        if mesh is None or mesh.get('topology') != 'triangular_unstructured':
+            raise ValueError('Native-node input requires normalized triangular mesh')
+        nnode = int(mesh['nnode'])
+        valid_units = ('m', 'meter', 'metre', 'meters', 'metres')
+        with xr.open_dataset(bathymetry_path, decode_times=True) as bds, \
+                xr.open_dataset(elevation_path, decode_times=True) as eds:
+            if bathymetry_variable not in bds:
+                raise ValueError(f'Native bathymetry variable {bathymetry_variable!r} missing')
+            hb = bds[bathymetry_variable]
+            options = [name for name in eds.data_vars if
+                       name in ('water_level', 'sea_surface_height') or
+                       eds[name].attrs.get('standard_name') ==
+                       'water_surface_height_above_reference_datum']
+            if len(options) != 1:
+                raise ValueError('Require exactly one identifiable native tidal elevation variable')
+            et = eds[options[0]]
+            if (hb.ndim != 1 or hb.shape[0] != nnode or et.ndim != 2 or
+                    et.dims[0] != 'time' or hb.attrs.get('units') not in valid_units or
+                    et.attrs.get('units') not in valid_units):
+                raise ValueError('Native h/eta must be node-centered metres with time,node elevation')
+            def coordinates(ds, dim, label):
+                def get(names):
+                    for name in names:
+                        if name in ds.variables and ds[name].dims == (dim,):
+                            return np.asarray(ds[name].values, dtype=np.float64)
+                    return None
+                lon, lat = get(('node_lon', 'longitude', 'lon')), get(('node_lat', 'latitude', 'lat'))
+                if lon is not None and lat is not None:
+                    if not (np.all(np.isfinite(lon)) and np.all(np.isfinite(lat))):
+                        raise ValueError(f'{label} native geographic coordinates invalid')
+                    return {'node_lon': lon, 'node_lat': lat}
+                xx, yy = get(('node_x', 'x_node')), get(('node_y', 'y_node'))
+                if xx is None or yy is None or mesh.get('node_x') is None:
+                    raise ValueError(f'{label} native coordinate system missing')
+                source_crs = ds.attrs.get('crs', ds[dim].attrs.get('crs') if dim in ds else None)
+                if source_crs is None or CRS.from_user_input(source_crs) != CRS.from_user_input(mesh['density_proj_str']):
+                    raise ValueError(f'{label} native projected CRS mismatch')
+                if not (np.all(np.isfinite(xx)) and np.all(np.isfinite(yy))):
+                    raise ValueError(f'{label} projected coordinates invalid')
+                return {'node_lon': xx, 'node_lat': yy}
+            bcoord = coordinates(bds, hb.dims[0], 'bathymetry')
+            ecoord = coordinates(eds, et.dims[1], 'elevation')
+            # Both coordinate systems must be expressed in the same native frame.
+            if mesh.get('node_x') is not None and (bds.attrs.get('crs') or eds.attrs.get('crs')):
+                target = {'node_lon': np.asarray(mesh['node_x']),
+                          'node_lat': np.asarray(mesh['node_y'])}
+            else:
+                target = {'node_lon': np.asarray(mesh['node_lon']),
+                          'node_lat': np.asarray(mesh['node_lat'])}
+            bmap = self._match_native_spatial_subset(bcoord, target, node_coordinates=True)
+            if not np.array_equal(bmap, np.arange(nnode)):
+                raise ValueError('Source bathymetry node order differs from output mesh')
+            fmap = self._match_native_spatial_subset(ecoord, target, node_coordinates=True)
+            h = np.asarray(hb.values, dtype=np.float64)
+            if h.shape != (nnode,) or not np.all(np.isfinite(h)):
+                raise ValueError('Invalid fixed datum-referenced nodal bathymetry')
+            eta, io = self._read_cf_time_aligned_elevation(
+                dataset=eds, elevation=et.transpose('time', et.dims[1]),
+                filtered_times=filtered_times, source_spatial_dims=(et.dims[1],),
+                source_flat_indices=fmap, source_spatial_shape=(et.shape[1],),
+                target_shape=(nnode,), record_type=water_level_record_type,
+                mean_interval=water_level_mean_interval,
+                time_reference=water_level_time_reference,
+                time_chunk_size=time_chunk_size)
+            self._last_tidal_forcing_io = io
+        return h, eta
+
+
+
     def write_netcdf_chemical_density_map(self, filename, pixelsize_m='auto', zlevels=None,
                                           lat_resol=None, lon_resol=None,
                                           deltat=None,
@@ -5662,7 +6252,13 @@ class ChemicalDriftPostProcessMixin:
                                           memory_budget_mb=None,
                                           memory_auto_fraction=0.50,
                                           memory_auto_reserve_mb=1024,
-                                          memory_auto_reserve_fraction=0.20):
+                                          memory_auto_reserve_fraction=0.20,
+                                          reader_sea_surface_height=None,
+                                          tidal_elevation_enabled=None,
+                                          bathymetry_variable='sea_floor_depth_below_sea_level',
+                                          water_level_record_type='instantaneous',
+                                          water_level_mean_interval=None,
+                                          water_level_time_reference=None):
         '''
         write_netcdf_chemical_density_map
 
@@ -5745,6 +6341,27 @@ class ChemicalDriftPostProcessMixin:
             reader_sea_depth:      string, path of bathymetry NetCDF file containing
                                    sea_floor_depth_below_sea_level, or a variable with this
                                    CF standard_name. Required.
+
+            reader_sea_surface_height: NetCDF path with source-cell sea-surface
+                                   elevation, mandatory when saved stretching is enabled.
+            tidal_elevation_enabled: None (inherit saved drift:water_column_stretching),
+                                   or the same explicit boolean; disagreement raises.
+            bathymetry_variable:   bathymetry variable name; default unchanged.
+                                   The verified SHYFEM 'total_depth' uses the same datum
+                                   as 'water_level' despite its incorrect standard_name.
+                                   This correction is USER ATTESTED, not derived from CF metadata.
+
+            water_level_record_type: 'instantaneous' (default) or 'mean'. Mandatory
+                                   explicit meaning: records cannot be classified
+                                   from time spacing or a variable name.
+            water_level_mean_interval: Optional fixed duration (e.g. '1h', '1D').
+                                   Mean records without standard CF time bounds
+                                   require this and the timestamp anchor together.
+            water_level_time_reference: 'start', 'center', or 'end', paired with
+                                   water_level_mean_interval for the fallback.
+                                   CF mean bounds are used when available.
+                                   Time/space selection reads only the required
+                                   elevation source records and native cells.
 
             reader_active_sediment_layer_thickness:
                                    string, path of NetCDF file containing variable
@@ -6290,7 +6907,8 @@ class ChemicalDriftPostProcessMixin:
         H_count_out = mean_dens_out = None
         Hcount_sm_out = mean_dens_sm_out = None
 
-        pixel_volume = pixel_volume_out = None
+        pixel_volume = pixel_volume_out = pixel_volume_time = None
+        tidal_active = False
         pixel_sed_mass = None
 
         pixel_mean_depth = pixel_area = None
@@ -6365,6 +6983,16 @@ class ChemicalDriftPostProcessMixin:
             if timestep_values and str(weight) == 'mass':
                 raise ValueError("timestep_values=True is intended for cumulative extensive quantities, not plain 'mass'.")
 
+            tidal_active = self._resolve_saved_tidal_elevation_mode(
+                self.result, self.get_config('drift:water_column_stretching'),
+                tidal_elevation_enabled)
+            if tidal_active:
+                if not reader_sea_surface_height:
+                    raise ValueError('Tidal correction enabled by saved stretching: supplied sea-surface-height reader is mandatory')
+                if bathymetry_remap != 'direct':
+                    raise NotImplementedError('Tidal correction requires qualified conservative overlap geometry; only strict direct same-cell support is implemented. Interpolation and unverified SCRIP/Shapely geometry are not permitted.')
+                if unstructured and reader_active_sediment_layer_thickness is not None:
+                    raise ValueError('Tidal native-face output requires separately qualified sediment face thickness source; do not co-locate nodal sediment data silently')
             resolved_weight_unit = _resolve_weight_units()
             if any(v is not None for v in (llcrnrlon, urcrnrlon)):
                 if llcrnrlon is None or urcrnrlon is None:
@@ -6413,7 +7041,9 @@ class ChemicalDriftPostProcessMixin:
                 self.add_reader(custom_landmask)
                 added_shape_reader = True
 
-            elif 'global_landmask' not in self.env.readers:
+            elif landmask_bathymetry_thr is None and 'global_landmask' not in self.env.readers:
+                # Bathymetry-threshold landmask below is self-contained.
+                # Avoid allocating the global raster (often >1 GiB) when unused.
                 from opendrift.readers import reader_global_landmask
                 global_landmask = reader_global_landmask.Reader()
                 self.add_reader(global_landmask)
@@ -6609,26 +7239,53 @@ class ChemicalDriftPostProcessMixin:
                 )
             nspecies_out = len(name_species_out)
 
-            pixel_mean_depth, pixel_area, pixel_active_sediment_layer_thickness, bathy_invalid_mask, bathy_meta = self.get_pixel_mean_depth(
-                lon_center_2d,
-                lat_center_2d,
-                is_moll,
-                is_latlon,
-                lat_resol,
-                lon_resol,
-                output_grid=explicit_grid,
-                bathymetry_remap=bathymetry_remap,
-                bathymetry_source=reader_sea_depth,
-                active_sediment_source=reader_active_sediment_layer_thickness,
-                z_array=z_array,
-                source_crs=bathymetry_source_crs,
-                remap_crs=bathymetry_remap_crs,
-                return_metadata=True,
-                min_wet_fraction=bathymetry_min_wet_fraction,
-                conservative_backend=bathymetry_conservative_backend,
-                conservative_weights=bathymetry_conservative_weights,
-                large_domain_backend=bathymetry_large_domain_backend,
-            )
+            mesh_tidal_volumes = None
+            if tidal_active and unstructured:
+                # Read strictly matching native-node h/eta on the existing
+                # normalized mesh; perform the same exact triangular integration
+                # for SHYFEM or any other compatible unstructured source.
+                node_h, node_eta = self._read_native_nodal_tidal_fields(
+                    bathymetry_path=reader_sea_depth,
+                    elevation_path=reader_sea_surface_height,
+                    bathymetry_variable=bathymetry_variable,
+                    filtered_times=filtered_times, mesh=explicit_grid,
+                    water_level_record_type=water_level_record_type,
+                    water_level_mean_interval=water_level_mean_interval,
+                    water_level_time_reference=water_level_time_reference,
+                    time_chunk_size=time_chunk_size)
+                mesh_tidal_volumes, face_h = self._triangular_mesh_tidal_water_volumes(
+                    mesh=explicit_grid, node_bathymetry=node_h,
+                    node_water_level=node_eta, z_array=z_array)
+                pixel_mean_depth = face_h
+                pixel_area = np.asarray(explicit_grid['cell_area'], dtype=np.float64)
+                pixel_active_sediment_layer_thickness = None
+                bathy_invalid_mask = np.zeros(pixel_area.shape, dtype=bool)
+                bathy_meta = {'layer_volume': None, 'wet_mean_depth': face_h,
+                              'wet_fraction': np.ones_like(pixel_area),
+                              'backend': 'native_mesh_direct_face_integration',
+                              'extent_class': 'native_mesh'}
+            else:
+                pixel_mean_depth, pixel_area, pixel_active_sediment_layer_thickness, bathy_invalid_mask, bathy_meta = self.get_pixel_mean_depth(
+                    lon_center_2d,
+                    lat_center_2d,
+                    is_moll,
+                    is_latlon,
+                    lat_resol,
+                    lon_resol,
+                    output_grid=explicit_grid,
+                    bathymetry_remap=bathymetry_remap,
+                    bathymetry_source=reader_sea_depth,
+                    bathymetry_var=bathymetry_variable,
+                    active_sediment_source=reader_active_sediment_layer_thickness,
+                    z_array=z_array,
+                    source_crs=bathymetry_source_crs,
+                    remap_crs=bathymetry_remap_crs,
+                    return_metadata=True,
+                    min_wet_fraction=bathymetry_min_wet_fraction,
+                    conservative_backend=bathymetry_conservative_backend,
+                    conservative_weights=bathymetry_conservative_weights,
+                    large_domain_backend=bathymetry_large_domain_backend,
+                )
             pixel_layer_volume = bathy_meta.get('layer_volume') if bathy_meta else None
             pixel_mean_depth_for_volume = pixel_mean_depth
             pixel_mean_depth_for_output = bathy_meta.get('wet_mean_depth', pixel_mean_depth) if bathy_meta else pixel_mean_depth
@@ -6637,7 +7294,14 @@ class ChemicalDriftPostProcessMixin:
             bathy_extent_class = bathy_meta.get('extent_class') if bathy_meta else None
 
             if bathymetry_remap != 'interpolate' and landmask_bathymetry_thr is not None:
-                landmask_raw = np.asarray(pixel_mean_depth_for_output) <= landmask_bathymetry_thr
+                if tidal_active and unstructured and float(landmask_bathymetry_thr) == 0.0:
+                    # In a signed common-datum mesh, h <= 0 does not mean
+                    # permanently dry: positive tide may inundate a triangle.
+                    # Only mask faces dry in EVERY requested tidal snapshot.
+                    # Each instantaneous volume is still zero/NaN when dry.
+                    landmask_raw = ~np.any(mesh_tidal_volumes > 0.0, axis=(0, 1))
+                else:
+                    landmask_raw = np.asarray(pixel_mean_depth_for_output) <= landmask_bathymetry_thr
             elif landmask_bathymetry_thr is not None and reader_sea_depth_obj is not None:
                 vals = reader_sea_depth_obj.get_variables_interpolated_xy(
                     ['sea_floor_depth_below_sea_level'],
@@ -6710,6 +7374,38 @@ class ChemicalDriftPostProcessMixin:
                         pixel_volume[zi, :, :] = topotmp * (pixelsize_m ** 2)
                 pixel_volume[pixel_volume == 0.0] = np.nan
                 pixel_volume = np.where(~combined_mask[None, :, :], pixel_volume, np.nan)
+            if tidal_active:
+                if pixel_area is None:
+                    raise ValueError('Direct tidal volumes require qualified horizontal cell area')
+                if unstructured:
+                    pixel_volume_time = mesh_tidal_volumes
+                    if pixel_volume_time.shape != (H.shape[0],len(z_array)-1,H.shape[-1]):
+                        raise ValueError('Native-mesh volumes differ from the face-based histogram')
+                    # Volumes are locally owned and no longer needed unmasked.
+                    # Update in place instead of materializing a second full array.
+                    invalid_volume = combined_mask_face[None, None, :] | ~(pixel_volume_time > 0)
+                    np.copyto(pixel_volume_time, np.nan, where=invalid_volume)
+                    del invalid_volume
+                else:
+                    pixel_volume_time = self._structured_grid_tidal_water_volumes(
+                        bathymetry_path=reader_sea_depth,
+                        elevation_path=reader_sea_surface_height,
+                        bathymetry_variable=bathymetry_variable,
+                        filtered_times=filtered_times, z_array=z_array,
+                        output_lon=lon_center_2d, output_lat=lat_center_2d,
+                        pixel_mean_depth=pixel_mean_depth_for_volume,
+                        pixel_area=pixel_area,
+                        grid_spec=explicit_grid,
+                        water_level_record_type=water_level_record_type,
+                        water_level_mean_interval=water_level_mean_interval,
+                        water_level_time_reference=water_level_time_reference,
+                        time_chunk_size=time_chunk_size,
+                    )
+                    if pixel_volume_time.shape != (H.shape[0], len(z_array)-1) + tuple(pixel_area.shape):
+                        raise ValueError('Time-varying direct volumes are not aligned with the native concentration histogram')
+                    invalid_volume = combined_mask[None, None, :, :] | ~(pixel_volume_time > 0)
+                    np.copyto(pixel_volume_time, np.nan, where=invalid_volume)
+                    del invalid_volume
             pixel_mean_depth = pixel_mean_depth_for_output
 
             sed_L_cfg = self.get_config('chemical:sediment:mixing_depth')
@@ -6730,13 +7426,28 @@ class ChemicalDriftPostProcessMixin:
 
             sediment_species_ids, _ = _species_category_ids()
             sediment_mask_out = np.array([int(old_id) in sediment_species_ids for old_id in keep_species], dtype=bool)
+            # A different bathymetry/water-level product used for postprocessing
+            # may classify some saved water particles as dry. Keep the water
+            # volume undefined there; warn rather than rejecting the entire map.
+            dry_water_mass_entries = 0
             if weight_mode == 'extensive':
                 for sp_out in range(nspecies_out):
                     if not sediment_mask_out[sp_out]:
                         if unstructured:
-                            H[:, sp_out, :, :] = H[:, sp_out, :, :] / pixel_volume[None, :, :]
+                            if tidal_active:
+                                dry_mass = ~np.isfinite(pixel_volume_time) & (H[:, sp_out, :, :] != 0)
+                                dry_water_mass_entries += int(np.count_nonzero(dry_mass))
+                                H[:, sp_out, :, :] = H[:, sp_out, :, :] / pixel_volume_time
+                            else:
+                                H[:, sp_out, :, :] = H[:, sp_out, :, :] / pixel_volume[None, :, :]
                         else:
-                            H[:, sp_out, :, :, :] = H[:, sp_out, :, :, :] / pixel_volume[None, :, :, :]
+                            if tidal_active:
+                                # A dry/masked denominator does not define a concentration.
+                                dry_mass = ~np.isfinite(pixel_volume_time) & (H[:, sp_out, :, :, :] != 0)
+                                dry_water_mass_entries += int(np.count_nonzero(dry_mass))
+                                H[:, sp_out, :, :, :] = H[:, sp_out, :, :, :] / pixel_volume_time
+                            else:
+                                H[:, sp_out, :, :, :] = H[:, sp_out, :, :, :] / pixel_volume[None, :, :, :]
                     else:
                         if unstructured:
                             H[:, sp_out, :, :] = H[:, sp_out, :, :] / pixel_sed_mass[None, None, :]
@@ -6746,6 +7457,17 @@ class ChemicalDriftPostProcessMixin:
                 if H_count is None:
                     raise ValueError("H_count is required for weight_mode='mean'.")
                 H = _safe_divide_num_count(H, H_count)
+
+            if dry_water_mass_entries:
+                import warnings
+                warnings.warn(
+                    'Postprocessing tidal bathymetry/elevation gives dry, masked, or zero-volume '
+                    'water cells/layers containing nonzero mapped water-phase mass '
+                    f'({dry_water_mass_entries} time/species/layer/cell entries). The corresponding '
+                    'concentrations remain undefined (NaN); no mass was reassigned. '
+                    'Verify whether the postprocessing forcing differs from the simulation.',
+                    RuntimeWarning, stacklevel=2,
+                )
 
             Hsm = None
             Hcount_sm = None
@@ -7137,6 +7859,52 @@ class ChemicalDriftPostProcessMixin:
                     if "crs" in nc.variables and not hasattr(var, "grid_mapping"):
                         var.grid_mapping = "crs"
 
+            def _write_masked_time_slabs(var_nc, data, spatial_mask, fill_value,
+                                         *, transpose_xy=False, counts_to_int32=False):
+                """Write existing results by time slabs; never duplicate the full field.
+
+                The calculation, depth order, mask/fill values and NetCDF type
+                are unchanged. Time slabs only bound temporary serialization RAM.
+                """
+                arr = np.asarray(data)
+                if transpose_xy:
+                    arr = np.swapaxes(arr, -2, -1)  # view: model (x,y) -> CF (y,x)
+                spatial_mask = np.asarray(spatial_mask, dtype=bool)
+                if spatial_mask.shape != arr.shape[-spatial_mask.ndim:]:
+                    if transpose_xy and spatial_mask.T.shape == arr.shape[-2:]:
+                        spatial_mask = spatial_mask.T
+                    else:
+                        raise ValueError('Output mask shape differs from spatial field')
+                record_bytes = max(1, int(np.prod(arr.shape[1:])) * arr.dtype.itemsize)
+                # Fixed internal serialization limit, not another output mode.
+                rows = max(1, (32 * 1024 * 1024) // record_bytes)
+                for start in range(0, arr.shape[0], rows):
+                    stop = min(arr.shape[0], start + rows)
+                    slab = arr[start:stop]
+                    if counts_to_int32:
+                        slab = self._density_counts_to_int32(slab)
+                    elif slab.dtype.kind not in {'f', 'i', 'u', 'b'}:
+                        slab = slab.astype('f8', copy=False)
+                    out = np.array(slab, copy=True, order='C')
+                    if out.dtype.kind == 'f':
+                        out[~np.isfinite(out)] = fill_value
+                    out[..., spatial_mask] = fill_value
+                    try:
+                        var_nc[start:stop, ...] = out
+                    except RuntimeError as exc:
+                        if not (transpose_xy and out.ndim == 5 and 'HDF' in str(exc)):
+                            raise
+                        # Preserve the original structured 5D NetCDF/HDF
+                        # fallback, now restricted to the current time slab.
+                        try:
+                            var_nc.set_auto_maskandscale(False)
+                        except Exception:
+                            pass
+                        for it in range(out.shape[0]):
+                            for isp in range(out.shape[1]):
+                                for iz in range(out.shape[2]):
+                                    var_nc[start + it, isp, iz, :, :] = out[it, isp, iz]
+
             # ------------------------------------------------------------------
             # Unstructured triangular writer
             # ------------------------------------------------------------------
@@ -7157,6 +7925,8 @@ class ChemicalDriftPostProcessMixin:
                         nc.phase_units_metadata_mode = 'specie_phase'
                     if bathymetry_remap != 'interpolate':
                         nc.comment = (
+                            'Native triangular-mesh source nodes are used directly for tidal-active volumes. '
+                            if tidal_active else
                             'Triangular unstructured mesh output. Bathymetry was conservatively remapped. '
                             'Local/regional maps use Shapely/STRtree polygon overlap in an equal-area CRS. '
                             'Basin/global maps use precomputed ESMF/xESMF/SCRIP conservative weights. '
@@ -7309,18 +8079,41 @@ class ChemicalDriftPostProcessMixin:
                         face_y.units = explicit_grid.get('native_y_units', 'm') or 'm'
                         face_y.axis = 'Y'
 
-                    volume = _create_f8(nc, 'volume', ('depth', 'face'))
-                    volume_mask = (np.broadcast_to(combined_mask_face[None, :], pixel_volume_out.shape) | ~np.isfinite(pixel_volume_out))
-                    volume_ma = np.ma.masked_array(pixel_volume_out, mask=volume_mask, copy=False)
-                    volume_ma.set_fill_value(FILL_F8)
-                    volume[:] = volume_ma
+                    if tidal_active:
+                        vdim='time' if not time_avg_conc else 'snapshot_time'
+                        if time_avg_conc:
+                            nc.createDimension('snapshot_time',len(filtered_times))
+                            vt=_create_f8(nc,'snapshot_time',('snapshot_time',))
+                            vt[:]=date2num(filtered_times.tolist(),'seconds since 1970-01-01 00:00:00')
+                            vt.units='seconds since 1970-01-01 00:00:00'
+                            vt.standard_name='time';vt.calendar='standard'
+                        volume=_create_f8(nc,'volume',(vdim,'depth','face'))
+                        # Depth order is exactly reversed: this is a view, not a copy.
+                        vol_out = pixel_volume_time[:, ::-1, :]
+                        _write_masked_time_slabs(volume, vol_out, combined_mask_face, FILL_F8)
+                        nc.tidal_elevation_enabled=1
+                        nc.tidal_bathymetry_source=str(reader_sea_depth)
+                        nc.tidal_elevation_source=str(reader_sea_surface_height)
+                        nc.tidal_bathymetry_variable=str(bathymetry_variable)
+                        nc.tidal_water_volume_method='native_triangular_mesh_exact_affine_nodal_wet_integral'
+                        nc.tidal_vertical_datum_assumption='user_attested_common_datum_total_depth_water_level_20261113'
+                    else:
+                        volume = _create_f8(nc, 'volume', ('depth', 'face'))
+                        volume_mask = (np.broadcast_to(combined_mask_face[None, :], pixel_volume_out.shape) | ~np.isfinite(pixel_volume_out))
+                        volume_ma = np.ma.masked_array(pixel_volume_out, mask=volume_mask, copy=False)
+                        volume_ma.set_fill_value(FILL_F8)
+                        volume[:] = volume_ma
                     volume.long_name = 'Water volume of grid cell'; volume.units = 'm3'; volume.mesh = 'mesh'; volume.location = 'face'; volume.grid_mapping = 'crs'; volume.coordinates = 'face_lon face_lat'
 
                     topo = _create_f8(nc, 'topo', ('face',))
                     topo_ma = np.ma.array(pixel_mean_depth, mask=combined_mask_face | ~np.isfinite(pixel_mean_depth),copy=False)
                     topo_ma.set_fill_value(FILL_F8)
                     topo[:] = topo_ma
-                    topo.long_name = 'Water depth at face center'; topo.standard_name = 'sea_floor_depth_below_sea_level'; topo.units = 'm'; topo.positive = 'down'; topo.mesh = 'mesh'; topo.location = 'face'; topo.grid_mapping = 'crs'; topo.coordinates = 'face_lon face_lat'
+                    topo.long_name = ('Signed fixed seabed depth below common reference datum'
+                                      if tidal_active else 'Water depth at face center')
+                    if not tidal_active:
+                        topo.standard_name = 'sea_floor_depth_below_sea_level'
+                    topo.units = 'm'; topo.positive = 'down'; topo.mesh = 'mesh'; topo.location = 'face'; topo.grid_mapping = 'crs'; topo.coordinates = 'face_lon face_lat'
 
                     if bathymetry_remap != 'interpolate' and bathy_wet_fraction is not None:
                         wet = _create_f8(nc, 'wet_fraction', ('face',))
@@ -7351,33 +8144,18 @@ class ChemicalDriftPostProcessMixin:
                     domain_invalid[:] = domain_invalid_face.astype('i4', copy=False)
                     domain_invalid.long_name = 'Invalid bathymetry/domain mask'; domain_invalid.flag_values = np.array([0, 1], dtype='i4'); domain_invalid.flag_meanings = 'valid invalid'; domain_invalid.units = '1'; domain_invalid.mesh = 'mesh'; domain_invalid.location = 'face'; domain_invalid.grid_mapping = 'crs'; domain_invalid.coordinates = 'face_lon face_lat'
 
-                    def _write_masked_4d(var_nc, arr_4d, mask_f, fill_value):
-                        arr = np.asarray(arr_4d)
-
-                        if arr.dtype.kind not in {"f", "i", "u", "b"}:
-                            arr = arr.astype("f8", copy=False)
-
-                        mask = np.broadcast_to(
-                            np.asarray(mask_f, dtype=bool)[None, None, None, :],
-                            arr.shape)
-                        if arr.dtype.kind == "f":
-                            invalid = ~np.isfinite(arr)
-                            mask = mask | invalid
-
-                        out = np.array(arr, copy=True)
-                        if out.dtype.kind == "f":
-                            invalid = ~np.isfinite(out)
-                            out[mask | invalid] = fill_value
-                        else:
-                            out[mask] = fill_value
-                        var_nc[:] = np.ascontiguousarray(out)
+                    def _write_masked_4d(var_nc, arr_4d, mask_f, fill_value,
+                                         *, counts_to_int32=False):
+                        _write_masked_time_slabs(
+                            var_nc, arr_4d, mask_f, fill_value,
+                            counts_to_int32=counts_to_int32)
 
                     if write_density:
                         if not time_avg_conc:
                             density_fill_value = np.int32(-1)
                             dname = nc.createVariable('density', 'i4', ('time', 'specie', 'depth', 'face'), fill_value=density_fill_value)
-                            H_count_i4 = self._density_counts_to_int32(H_count_out)
-                            _write_masked_4d(dname, H_count_i4, combined_mask_face, density_fill_value)
+                            _write_masked_4d(dname, H_count_out, combined_mask_face,
+                                             density_fill_value, counts_to_int32=True)
                             dname.long_name = 'Number of elements in face'; dname.units = '1'; dname.mesh = 'mesh'; dname.location = 'face'; dname.grid_mapping = 'crs'; dname.coordinates = 'face_lon face_lat'
                         else:
                             dname = _create_f4(nc, 'density_avg', ('avg_time', 'specie', 'depth', 'face'))
@@ -7576,16 +8354,6 @@ class ChemicalDriftPostProcessMixin:
                     nc.variables['smoothing_cells'].long_name = 'Horizontal smoothing stencil size in grid cells'
                     nc.variables['smoothing_cells'].units = '1'
 
-                def _mask5d(arr_5d_tsd_yx, mask_yx):
-                    mm = np.asarray(mask_yx, dtype=bool)
-                    if mm.shape != arr_5d_tsd_yx.shape[-2:]:
-                        if mm.T.shape == arr_5d_tsd_yx.shape[-2:]:
-                            mm = mm.T
-                        else:
-                            raise ValueError(f'mask_yx shape {mm.shape} not compatible with data YX {arr_5d_tsd_yx.shape[-2:]}')
-                    m = mm[None, None, None, :, :]
-                    return np.broadcast_to(m, arr_5d_tsd_yx.shape)
-
                 def _mask3d(arr_3d_d_yx, mask_yx):
                     mm = np.asarray(mask_yx, dtype=bool)
                     if mm.shape != arr_3d_d_yx.shape[-2:]:
@@ -7596,60 +8364,11 @@ class ChemicalDriftPostProcessMixin:
                     m = mm[None, :, :]
                     return np.broadcast_to(m, arr_3d_d_yx.shape)
 
-                def _write_masked_5d(var_nc, arr_5d_tsdxy, *, mask_yx, fill_value):
-                    """
-                    Write 5D array safely to NetCDF.
-                    For sparse origin_marker subsets, some arrays may contain NaN/Inf or become fully invalid, which can
-                    trigger low-level NetCDF/HDF errors during var_nc[:] assignment.
-                    This function:
-                      - swaps x/y
-                      - masks land/domain cells
-                      - also masks non-finite values
-                      - fills masked values explicitly
-                      - writes a contiguous ndarray instead of a masked array
-                    """
-                    arr = np.swapaxes(arr_5d_tsdxy, 3, 4)
-
-                    arr = np.asarray(arr)
-
-                    if arr.dtype.kind not in {"f", "i", "u", "b"}:
-                        arr = arr.astype("f8", copy=False)
-
-                    mask = _mask5d(arr, mask_yx)
-
-                    if arr.dtype.kind == "f":
-                        invalid = ~np.isfinite(arr)
-                        if invalid.any():
-                            mask = mask | invalid
-
-                    out = np.array(arr, copy=True)
-
-                    if out.dtype.kind == "f":
-                        invalid = ~np.isfinite(out)
-                        out[mask | invalid] = fill_value
-                    else:
-                        out[mask] = fill_value
-
-                    out = np.ascontiguousarray(out)
-
-                    try:
-                        var_nc[:] = out
-                    except RuntimeError as e:
-                        if "HDF" not in str(e):
-                            raise
-                        # Fallback: HDF5/netCDF4 can fail on one large 5D write.
-                        # Write smaller contiguous 2D slabs instead.
-                        try:
-                            var_nc.set_auto_maskandscale(False)
-                        except Exception:
-                            pass
-
-                        for it in range(out.shape[0]):
-                            for isp in range(out.shape[1]):
-                                for iz in range(out.shape[2]):
-                                    var_nc[it, isp, iz, :, :] = np.ascontiguousarray(
-                                        out[it, isp, iz, :, :]
-                                    )
+                def _write_masked_5d(var_nc, arr_5d_tsdxy, *, mask_yx,
+                                     fill_value, counts_to_int32=False):
+                    _write_masked_time_slabs(
+                        var_nc, arr_5d_tsdxy, mask_yx, fill_value,
+                        transpose_xy=True, counts_to_int32=counts_to_int32)
 
                 def _write_masked_3d(var_nc, arr_3d_dxy, *, mask_yx, fill_value):
                     """
@@ -7693,8 +8412,9 @@ class ChemicalDriftPostProcessMixin:
                     if not time_avg_conc:
                         density_fill_value = np.int32(-1)
                         nc.createVariable('density', 'i4', ('time', 'specie', 'depth', 'y', 'x'), fill_value=density_fill_value)
-                        H_count_i4 = self._density_counts_to_int32(H_count_out)
-                        _write_masked_5d(nc.variables['density'], H_count_i4, mask_yx=combined_mask_yx, fill_value=density_fill_value)
+                        _write_masked_5d(nc.variables['density'], H_count_out,
+                                         mask_yx=combined_mask_yx,
+                                         fill_value=density_fill_value, counts_to_int32=True)
                         _set_structured_spatial_attrs(nc.variables['density'],
                             long_name='Number of elements in grid cell', units='1',)
                         if horizontal_smoothing and Hcount_sm_out is not None:
@@ -7808,9 +8528,29 @@ class ChemicalDriftPostProcessMixin:
                             _set_horizontal_smoothing_attrs(nc.variables['property_mean_smooth_avg'], smoothing_cells)
 
 
-                _create_f8(nc, 'volume', ('depth', 'y', 'x'))
-                pv = np.asarray(pixel_volume_out, dtype=np.float64)
-                _write_masked_3d(nc.variables['volume'], pv, mask_yx=combined_mask_yx, fill_value=FILL_F8)
+                if tidal_active:
+                    volume_time_dim = 'time' if not time_avg_conc else 'snapshot_time'
+                    if time_avg_conc:
+                        nc.createDimension('snapshot_time', len(filtered_times))
+                        vt = _create_f8(nc, 'snapshot_time', ('snapshot_time',))
+                        vt[:] = date2num(filtered_times.tolist(), 'seconds since 1970-01-01 00:00:00')
+                        vt.units = 'seconds since 1970-01-01 00:00:00'
+                        vt.standard_name = 'time'; vt.calendar = 'standard'
+                    volume = _create_f8(nc, 'volume', (volume_time_dim, 'depth', 'y', 'x'))
+                    # Depth reversal and (x,y)->(y,x) are views, not copies.
+                    vol_out = pixel_volume_time[:, ::-1, :, :]
+                    _write_masked_time_slabs(
+                        volume, vol_out, combined_mask_yx, FILL_F8, transpose_xy=True)
+                    nc.tidal_elevation_enabled = 1
+                    nc.tidal_bathymetry_source = str(reader_sea_depth)
+                    nc.tidal_elevation_source = str(reader_sea_surface_height)
+                    nc.tidal_bathymetry_variable = str(bathymetry_variable)
+                    nc.tidal_water_volume_method = 'direct_same_cell_datum_h_plus_eta_wet_bin_thickness'
+                    nc.tidal_vertical_datum_assumption = 'user_attested_common_datum_total_depth_water_level_20261113'
+                else:
+                    _create_f8(nc, 'volume', ('depth', 'y', 'x'))
+                    pv = np.asarray(pixel_volume_out, dtype=np.float64)
+                    _write_masked_3d(nc.variables['volume'], pv, mask_yx=combined_mask_yx, fill_value=FILL_F8)
                 _set_structured_spatial_attrs(
                     nc.variables['volume'],
                     long_name='Water volume of grid cell',
@@ -7905,7 +8645,7 @@ class ChemicalDriftPostProcessMixin:
             del mean_field, mean_dens, mean_field_sm, mean_dens_sm
             del H_out, Hsm_out, mean_field_out, mean_field_sm_out
             del H_count_out, mean_dens_out, Hcount_sm_out, mean_dens_sm_out
-            del pixel_volume, pixel_volume_out, pixel_sed_mass
+            del pixel_volume, pixel_volume_out, pixel_volume_time, pixel_sed_mass
             del pixel_mean_depth, pixel_area, pixel_active_sediment_layer_thickness
             del bathy_invalid_mask, bathy_meta, pixel_layer_volume, bathy_wet_fraction
             del bathy_backend, bathy_extent_class
@@ -8509,7 +9249,6 @@ class ChemicalDriftPostProcessMixin:
 
         If Return_datasets=False, the function writes files only and returns None.
         '''
-        from datetime import datetime
         from pathlib import Path
         import time
         import warnings
@@ -24670,7 +25409,6 @@ class ChemicalDriftPostProcessMixin:
         import hashlib
         import os
         import tempfile
-        from datetime import datetime
 
         import numpy as np
         import xarray as xr
@@ -26867,7 +27605,6 @@ class ChemicalDriftPostProcessMixin:
         import warnings
 
         from pathlib import Path
-        from datetime import datetime
         from concurrent.futures import ProcessPoolExecutor, as_completed
 
         start = datetime.now()
