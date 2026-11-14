@@ -7381,8 +7381,7 @@ class ChemicalDriftPostProcessMixin:
                     pixel_volume_time = mesh_tidal_volumes
                     if pixel_volume_time.shape != (H.shape[0],len(z_array)-1,H.shape[-1]):
                         raise ValueError('Native-mesh volumes differ from the face-based histogram')
-                    # Volumes are locally owned and no longer needed unmasked.
-                    # Update in place instead of materializing a second full array.
+                    # Update owned volume storage in place to avoid a full-array copy.
                     invalid_volume = combined_mask_face[None, None, :] | ~(pixel_volume_time > 0)
                     np.copyto(pixel_volume_time, np.nan, where=invalid_volume)
                     del invalid_volume
@@ -7861,10 +7860,10 @@ class ChemicalDriftPostProcessMixin:
 
             def _write_masked_time_slabs(var_nc, data, spatial_mask, fill_value,
                                          *, transpose_xy=False, counts_to_int32=False):
-                """Write existing results by time slabs; never duplicate the full field.
+                """Write output arrays in time slabs to bound serialization memory.
 
-                The calculation, depth order, mask/fill values and NetCDF type
-                are unchanged. Time slabs only bound temporary serialization RAM.
+                Apply the supplied spatial mask, fill value and output type
+                when writing each time slab.
                 """
                 arr = np.asarray(data)
                 if transpose_xy:
@@ -7876,7 +7875,7 @@ class ChemicalDriftPostProcessMixin:
                     else:
                         raise ValueError('Output mask shape differs from spatial field')
                 record_bytes = max(1, int(np.prod(arr.shape[1:])) * arr.dtype.itemsize)
-                # Fixed internal serialization limit, not another output mode.
+                # Target 32 MiB per slab, with at least one time record.
                 rows = max(1, (32 * 1024 * 1024) // record_bytes)
                 for start in range(0, arr.shape[0], rows):
                     stop = min(arr.shape[0], start + rows)
@@ -7894,8 +7893,8 @@ class ChemicalDriftPostProcessMixin:
                     except RuntimeError as exc:
                         if not (transpose_xy and out.ndim == 5 and 'HDF' in str(exc)):
                             raise
-                        # Preserve the original structured 5D NetCDF/HDF
-                        # fallback, now restricted to the current time slab.
+                        # Retry structured 5D NetCDF/HDF output one layer at a time
+                        # within the current time slab.
                         try:
                             var_nc.set_auto_maskandscale(False)
                         except Exception:
