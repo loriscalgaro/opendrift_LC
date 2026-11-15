@@ -36,9 +36,13 @@ class ChemicalDriftPostProcessMixin:
     ###########################################################################
 
     def simulation_summary(self, chemical_compound):
-        '''Print a summary of the simulation: number of elements, number of transformations
-        and final speciation
-        '''
+        """Print the final species distribution and available mass-budget totals.
+
+        Parameters
+        ----------
+        chemical_compound : str, optional
+            Chemical compound selected in the current model.
+        """
         print(chemical_compound)
 
         if hasattr(self,'name_species'):
@@ -129,19 +133,42 @@ class ChemicalDriftPostProcessMixin:
 
     @staticmethod
     def _cumulative_to_deltas_ffill(w_cum, chunk_cols=20000, out=None, mode="deltas", out_ff=None):
-        """
-        Process cumulative (T,N) with NaNs after deactivation using forward-fill per element.
+        """Process cumulative (T,N) with NaNs after deactivation using forward-fill per element.
 
-        w_cum:         np.ndarray (T,N), Cumulative values with NaNs possible (post-deactivation and/or at start).
-        chunk_cols:    int, number of columns processed per chunk.
-        out:           np.ndarray or None, Preallocated output for mode="deltas" or mode="both". Shape (T,N), dtype float32.
-                       If None and mode in {"deltas","both"}, allocated.
-        mode:          string, {"deltas","ffill","both"}
-                        - "deltas": return per-timestep increments (float32), negatives/non-finite -> 0.
-                        - "ffill":  return forward-filled cumulative array (same dtype as w_cum unless out_ff provided).
-                        - "both":   return (deltas_out, ffill_out).
-        out_ff:        np.ndarray or None, Preallocated output for forward-filled array when mode in {"ffill","both"}.
-                       If None, allocated with dtype=w_cum.dtype.
+        Parameters
+        ----------
+        w_cum : object
+            np.ndarray (T,N), Cumulative values with NaNs possible (post-deactivation
+            and/or at start).
+
+        chunk_cols : int, default=20000
+            number of columns processed per chunk.
+
+        out : object, optional, default=None
+            np.ndarray or None, Preallocated output for mode="deltas" or mode="both".
+            Shape (T,N), dtype float32. If None and mode in {"deltas","both"},
+            allocated.
+
+        mode : str, default='deltas'
+            {"deltas","ffill","both"} - "deltas": return per-timestep increments
+            (float32), negatives/non-finite -> 0. - "ffill": return forward-filled
+            cumulative array (same dtype as w_cum unless out_ff provided). - "both":
+            return (deltas_out, ffill_out).
+
+        out_ff : object, optional, default=None
+            np.ndarray or None, Preallocated output for forward-filled array when mode in
+            {"ffill","both"}. If None, allocated with dtype=w_cum.dtype.
+
+        Returns
+        -------
+        result : numpy.ndarray or tuple
+            Return per-timestep deltas, forward-filled cumulative values, or both for
+            (time, particle) arrays.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
         """
         w_cum = np.asarray(w_cum)
         if w_cum.ndim != 2:
@@ -310,6 +337,24 @@ class ChemicalDriftPostProcessMixin:
         )
 
     def _build_curvilinear_locator(self, grid_spec):
+        """Handle build curvilinear locator.
+
+        Parameters
+        ----------
+        grid_spec : object
+            Provide grid spec for this operation.
+
+        Returns
+        -------
+        result : dict
+            Triangulation locator, triangle-to-cell indices and the spatial bounding
+            box.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        """
         import matplotlib.tri as mtri
 
         X, Y = grid_spec["shape"]
@@ -516,11 +561,38 @@ class ChemicalDriftPostProcessMixin:
         }
 
     def _normalize_output_grid(self, output_grid, density_proj=None):
-        """
+        """Normalize structured or triangular output-grid geometry.
 
-        Recommended `output_grid` layouts for `write_netcdf_chemical_density_map()`
-        General rules
-        -------------
+        Parameters
+        ----------
+        output_grid : mapping or xarray.Dataset, optional
+            xarray.Dataset or mapping, or None Spatial-only centers/nodes/corners. The
+            calling writer also accepts a NetCDF filename and opens it before passing
+            it here. A normalized dictionary marked _normalized_output_grid is
+            returned unchanged.
+
+        density_proj : CRS-like or None, default=None
+            pyproj-compatible CRS or None Required when only projected coordinates are
+            available. may be inferred from an otherwise complete grid. Geographic
+            lon/lat are in degrees.
+
+        Returns
+        -------
+        result : dict or None
+            Normalized grid geometry and coordinate metadata. None means no explicit
+            grid.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+
+        Notes
+        -----
+        - Support rectilinear and curvilinear structured grids, plus triangular UGRID meshes.
+        - Geographic coordinates use degrees. Projected coordinates require a compatible CRS.
+        - Internal structured arrays use (x,y). NetCDF structured arrays use (y,x).
+        - Reject time-bearing output grids, dateline-crossing longitudes, and inconsistent coordinate shapes.
         - `output_grid` is spatial only. Do NOT include a time dimension.
           The output time coordinate is always taken from `self.result.time`.
         - Supported layouts:
@@ -536,8 +608,10 @@ class ChemicalDriftPostProcessMixin:
         - Longitudes must follow the ChemicalDrift convention [-180, 180].
         - Explicit dateline-crossing grids are not supported.
 
-        Best recommended layouts by case
-        --------------------------------
+        Examples
+        --------
+        The following are supported spatial grid layouts and constructors.
+
         1) Regular geographic grid (best for simple lat/lon products)
            Use 1D `lon` and 1D `lat`.
            Optional bounds: `lon_bounds`, `lat_bounds`.
@@ -681,26 +755,6 @@ class ChemicalDriftPostProcessMixin:
                )
            This is the recommended layout for unstructured triangular meshes. Connectivity
            must define triangles, i.e. 3 node indices per face.
-
-Parameters / return contract
-----------------------------
-output_grid : xarray.Dataset or mapping, or None
-    Spatial-only centers/nodes/corners. The calling writer also accepts a
-    NetCDF filename and opens it before passing it here. A normalized
-    dictionary marked _normalized_output_grid is returned unchanged.
-density_proj : pyproj-compatible CRS or None
-    Required when only projected coordinates are available; may be inferred
-    from an otherwise complete grid. Geographic lon/lat are in degrees.
-Returns : dict or None
-    None when output_grid=None; otherwise normalized topology, cell shape,
-    lon/lat centers and polygon corners, output CRS, and for triangular
-    topology node positions, connectivity, face coordinates and areas.
-    Regular grid field arrays use the internal (x,y) order; exported NetCDF
-    structured spatial variables use (y,x). Triangles use (face,) order.
-Raises : ValueError / TypeError
-    Missing/inconsistent coordinate or corner arrays, invalid triangles,
-    unsupported topologies or CRS, and time-bearing specifications are
-    rejected. This routine defines geometry but does not remap fields.
         """
         from pyproj import CRS, Proj, Geod
 
@@ -1622,10 +1676,8 @@ Raises : ValueError / TypeError
 
     @classmethod
     def _detect_rlimit_as_remaining_bytes(cls, *, file_reader=None,
-                                           psutil_module=None,
-                                           allow_psutil=True,
-                                           sysconf_func=None,
-                                           rlimit_as_soft=None,
+                                           psutil_module=None, allow_psutil=True,
+                                           sysconf_func=None, rlimit_as_soft=None,
                                            current_vms_bytes=None):
         """Return finite RLIMIT_AS headroom when both limit and current VMS are reliable."""
         if rlimit_as_soft is None:
@@ -1664,12 +1716,9 @@ Raises : ValueError / TypeError
 
     @classmethod
     def _detect_effective_memory_capacity(cls, *, file_reader=None,
-                                           psutil_module=None,
-                                           allow_psutil=True,
-                                           sysconf_func=None,
-                                           cgroup_text=None,
-                                           mountinfo_text=None,
-                                           rlimit_as_soft=None,
+                                           psutil_module=None, allow_psutil=True,
+                                           sysconf_func=None, cgroup_text=None,
+                                           mountinfo_text=None, rlimit_as_soft=None,
                                            current_vms_bytes=None):
         """Detect effective currently available memory without adding swap capacity."""
         host = cls._detect_host_available_memory_bytes(
@@ -1704,8 +1753,7 @@ Raises : ValueError / TypeError
     def _density_known_working_set_factor(*, need_counts=False,
                                            weight_mode='extensive',
                                            horizontal_smoothing=False,
-                                           time_avg_conc=False,
-                                           avg_output_ratio=0.0,
+                                           time_avg_conc=False, avg_output_ratio=0.0,
                                            unstructured=False):
         """Return the modeled known-working-set factor relative to H + optional H_count."""
         if weight_mode not in ('extensive', 'mean'):
@@ -1752,9 +1800,38 @@ Raises : ValueError / TypeError
                                                    unstructured=False):
         """Estimate known large-array bytes for the current writer mode.
 
-        This is a deterministic model of the current persistent full-shape arrays
-        plus the documented mean-mode full-shape divide result. It is not an RSS
-        prediction and excludes smaller/library temporaries.
+        Parameters
+        ----------
+        shape : object
+            Provide shape for this operation.
+
+        need_counts : bool, default=False
+            Provide need counts for this operation.
+
+        weight_mode : str, default='extensive'
+            Select extensive mass sums or count-based property means.
+
+        horizontal_smoothing : bool, default=False
+            Provide horizontal smoothing for this operation.
+
+        time_avg_conc : bool, default=False
+            Provide time avg conc for this operation.
+
+        avg_output_ratio : float, default=0.0
+            Provide avg output ratio for this operation.
+
+        unstructured : bool, default=False
+            Provide unstructured for this operation.
+
+        Returns
+        -------
+        result : dict
+            Estimated primary and peak working-set sizes, in bytes.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
         """
         from math import prod
         dims = tuple(int(v) for v in shape)
@@ -1783,18 +1860,66 @@ Raises : ValueError / TypeError
 
     @classmethod
     def _resolve_density_memory_budget(cls, memory_budget_mb, *,
-                                       need_counts=False,
-                                       weight_mode='extensive',
+                                       need_counts=False, weight_mode='extensive',
                                        horizontal_smoothing=False,
-                                       time_avg_conc=False,
-                                       avg_output_ratio=0.0,
-                                       unstructured=False,
-                                       memory_auto_fraction=0.50,
+                                       time_avg_conc=False, avg_output_ratio=0.0,
+                                       unstructured=False, memory_auto_fraction=0.50,
                                        memory_auto_reserve_mb=1024,
                                        memory_auto_reserve_fraction=0.20,
                                        memory_capacity_report=None,
                                        detector_kwargs=None):
-        """Resolve None, explicit MiB, or 'auto' to a primary-histogram MiB budget."""
+        """Estimate a safe primary histogram memory budget.
+
+        Parameters
+        ----------
+        memory_budget_mb : float, "auto", or None
+            Memory budget in MiB for the principal operation.
+
+        need_counts : bool, default=False
+            Provide need counts for this operation.
+
+        weight_mode : str, default='extensive'
+            Select extensive mass sums or count-based property means.
+
+        horizontal_smoothing : bool, default=False
+            Provide horizontal smoothing for this operation.
+
+        time_avg_conc : bool, default=False
+            Provide time avg conc for this operation.
+
+        avg_output_ratio : float, default=0.0
+            Provide avg output ratio for this operation.
+
+        unstructured : bool, default=False
+            Provide unstructured for this operation.
+
+        memory_auto_fraction : float, default=0.5
+            Fraction of usable memory allotted to known large arrays.
+
+        memory_auto_reserve_mb : float, default=1024
+            Absolute reserve in MiB for automatic memory budgeting.
+
+        memory_auto_reserve_fraction : float, default=0.2
+            Fractional reserve for automatic memory budgeting.
+
+        memory_capacity_report : object, optional, default=None
+            Provide memory capacity report for this operation.
+
+        detector_kwargs : object, optional, default=None
+            Provide detector kwargs for this operation.
+
+        Returns
+        -------
+        result : object
+            Resolved memory budget and diagnostic information.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        RuntimeError
+            The required operation or model state is not available.
+        """
         if memory_budget_mb is None:
             return None, {
                 'mode': 'none',
@@ -1949,43 +2074,102 @@ Raises : ValueError / TypeError
                                    density_proj=None, llcrnrlon=None, llcrnrlat=None,
                                    urcrnrlon=None, urcrnrlat=None,
                                    weight=None, origin_marker=None,
-                                   active_status=False,
-                                   elements_density=False,
+                                   active_status=False, elements_density=False,
                                    time_start=None, time_end=None,
-                                   time_chunk_size=50,
-                                   timestep_values=False,
-                                   compress_species=False,
-                                   weight_mode='extensive',
+                                   time_chunk_size=50, timestep_values=False,
+                                   compress_species=False, weight_mode='extensive',
                                    output_grid=None,
                                    memory_budget_mb=None):
-        """
-        Compute a gridded species-resolved histogram from particle positions.
+        """Bin particle weights by snapshot, species, depth and output cell.
+
+        Parameters
+        ----------
+        pixelsize_m : float or "auto"
+            Projected output pixel size in metres.
+
+        z_array : array_like
+            Vertical histogram boundaries in model z coordinates (m, negative down).
+
+        is_moll : bool
+            Select projected Mollweide binning.
+
+        is_latlon : bool
+            Select geographic longitude/latitude binning.
+
+        lat_resol : float, optional, default=None
+            Latitude spacing in degrees for the geographic grid.
+
+        lon_resol : float, optional, default=None
+            Longitude spacing in degrees for the geographic grid.
+
+        density_proj : CRS-like or None, default=None
+            Coordinate reference system for the output grid.
+
+        llcrnrlon : float, optional, default=None
+            Minimum output longitude in degrees east.
+
+        llcrnrlat : float, optional, default=None
+            Minimum output latitude in degrees north.
+
+        urcrnrlon : float, optional, default=None
+            Maximum output longitude in degrees east.
+
+        urcrnrlat : float, optional, default=None
+            Maximum output latitude in degrees north.
+
+        weight : str, optional, default=None
+            Saved particle variable to aggregate or plot.
+
+        origin_marker : int or sequence, optional, default=None
+            Keep only trajectories with these origin IDs.
+
+        active_status : bool, default=False
+            Select particles with active status only.
+
+        elements_density : bool, default=False
+            Also count particles in each output bin.
+
+        time_start : datetime-like or float, optional, default=None
+            Start of the selected time interval. Units depend on the method.
+
+        time_end : datetime-like or float, optional, default=None
+            End of the selected time interval. Units depend on the method.
+
+        time_chunk_size : int, default=50
+            Number of snapshots to process per chunk.
+
+        timestep_values : bool, default=False
+            Convert supported cumulative mass weights to timestep increments.
+
+        compress_species : bool, default=False
+            Keep only observed species in the output index.
+
+        weight_mode : str, default='extensive'
+            Select extensive mass sums or count-based property means.
+
+        output_grid : mapping or xarray.Dataset, optional, default=None
+            Output-grid geometry. A time dimension is not accepted.
+
+        memory_budget_mb : float, "auto", or None, default=None
+            Memory budget in MiB for the principal operation.
 
         Returns
-        H : ndarray
-            Raw histogram sum of `weight` in each cell, shape (T, S, D, X, Y).
-        x_centers, y_centers : 1D ndarrays
-            Cell-center coordinates in the target grid coordinate system.
-            - If the target CRS is geographic, these are lon/lat centers in degrees.
-            - Otherwise, these are projected x/y centers in target CRS units.
-        lon_center_2d, lat_center_2d : 2D ndarrays
-            Geographic longitude/latitude of cell centers.
-            Centers are computed in projected x/y space first, then inverse-transformed.
-            For geographic grids, the returned centers are the rectilinear lon/lat centers.
-        H_count : ndarray or None
-            Number of elements in each bin, shape (T, S, D, X, Y).
-            Allocated if:
-              - elements_density=True
-              - or weight_mode='mean'
-        keep_species, name_species_out
-            Species compression metadata.
+        -------
+        result : tuple
+            Return the raw histogram, grid coordinates, particle counts and species
+            metadata. Structured grids use (time, specie, depth, x, y). Native
+            triangular grids use faces.
 
-        Notes / limitations
-        - This function expects ChemicalDrift longitudes in the native [-180, 180] convention.
-        - It does not support 0..360 longitudes.
-        - Automatic bounds inference is disabled for dateline-spanning data.
-        - Supplied output corners must be non-crossing in [-180, 180].
-        - timestep_values is intended only for cumulative extensive mass-like quantities.
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+
+        Notes
+        -----
+        - Return arrays in internal (time, species, depth, x, y) order for structured grids.
+        - Use longitudes in [-180, 180]. Do not cross the date line.
+        - Use timestep_values only for supported cumulative extensive quantities.
         """
         import pandas as pd
         from pyproj import Transformer, Proj
@@ -2593,34 +2777,42 @@ Raises : ValueError / TypeError
                                            is_moll, is_latlon,
                                            lat_resol, lon_resol,
                                            output_grid=None):
-        """
-        Interpolate auxiliary bathymetry and optional active sediment layer thickness
-        to output cell centers.
+        """Interpolate auxiliary bathymetry and optional active sediment layer thickness.
 
-        Non-conservative branch used when bathymetry_remap='interpolate'.
-        Bathymetry and active sediment layer thickness
-        are interpolated linearly from the auxiliary reader grid to the output centers;
-        remaining NaNs are filled by nearest-neighbour interpolation. The source
-        bathymetry invalid/masked region is interpolated separately as a nearest-neighbour
-        mask and re-applied so invalid source regions remain NaN in the target grid.
+        Parameters
+        ----------
+        lons : object
+            Provide lons for this operation.
 
-        Arguments
-        ---------
-            lons, lats:            arrays of output cell-center longitudes/latitudes.
-            is_moll:               True for the default Mollweide-like projected grid.
-            is_latlon:             True for geographic lon/lat output grids.
-            lat_resol, lon_resol:  output grid spacing used to compute cell area when
-                                   applicable.
-            output_grid:           normalized explicit output grid dictionary. If it
-                                   contains cell_area, that area is returned.
+        lats : object
+            Provide lats for this operation.
+
+        is_moll : bool
+            True for the default Mollweide-like projected grid.
+
+        is_latlon : bool
+            True for geographic lon/lat output grids.
+
+        lat_resol : float, optional
+            Latitude spacing in degrees for the geographic grid.
+
+        lon_resol : float, optional
+            Longitude spacing in degrees for the geographic grid.
+
+        output_grid : mapping or xarray.Dataset, optional, default=None
+            normalized explicit output grid dictionary. If it contains cell_area, that
+            area is returned.
+
         Returns
         -------
-            h:                     output-grid water depth [m].
-            area:                  output-grid horizontal cell area [m2], or None for
-                                   legacy Mollweide mode.
-            active_sediment_layer_thickness:
-                                   interpolated active sediment layer thickness [m], or None.
-            bathy_invalid_mask:    boolean mask; True means invalid source bathymetry/domain.
+        result : tuple
+            Interpolated depth, optional area, sediment thickness and invalid-domain
+            mask.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
         """
         from scipy import interpolate
         import gc
@@ -2728,30 +2920,19 @@ Raises : ValueError / TypeError
     def get_pixel_mean_depth(
         self,
         # Output-cell positions and grid geometry
-        lons,
-        lats,
-        is_moll,
-        is_latlon,
-        lat_resol,
-        lon_resol,
-        output_grid=None,
-        *,
+        lons, lats, is_moll,
+        is_latlon, lat_resol, lon_resol,
+        output_grid=None, *,
         # Bathymetry remapping mode and environmental sources
-        bathymetry_remap='interpolate',
-        bathymetry_source=None,
+        bathymetry_remap='interpolate', bathymetry_source=None,
         bathymetry_var='sea_floor_depth_below_sea_level',
         active_sediment_source=None,
         active_sediment_var='active_sediment_layer_thickness',
         # Vertical layers and source/target coordinate systems
-        z_array=None,
-        source_crs=None,
-        remap_crs=None,
+        z_array=None, source_crs=None, remap_crs=None,
         # Output details, coverage checks and conservative backend
-        return_metadata=False,
-        min_wet_fraction=0.0,
-        conservative_backend='auto',
-        conservative_weights=None,
-        large_domain_backend='scrip',
+        return_metadata=False, min_wet_fraction=0.0, conservative_backend='auto',
+        conservative_weights=None, large_domain_backend='scrip',
         collect_tidal_links=False,
     ):
         """
@@ -2798,56 +2979,64 @@ Raises : ValueError / TypeError
              If the check fails, the function raises an error explaining that
              bathymetry_remap='direct' was applied with wrong files.
 
-        Arguments
-        ---------
-            lons:                  array, longitude of output cell centers or faces,
-                                   in degrees_east. Longitudes must follow the
-                                   ChemicalDrift convention [-180, 180].
-                                   For structured outputs, shape is normally (x, y).
-                                   For triangular unstructured outputs, shape is normally
-                                   (face,).
+        Parameters
+        ----------
+        lons : array_like
+            array, longitude of output cell centers or faces,
+            in degrees_east. Longitudes must follow the
+            ChemicalDrift convention [-180, 180].
+            For structured outputs, shape is normally (x, y).
+            For triangular unstructured outputs, shape is normally
+            (face,).
 
-            lats:                  array, latitude of output cell centers or faces,
-                                   in degrees_north. Must match the shape of lons.
+        lats : array_like
+            array, latitude of output cell centers or faces,
+            in degrees_north. Must match the shape of lons.
 
-            is_moll:               boolean, True when the legacy output grid is the default
-                                   Mollweide-like projected grid. In interpolate mode this
-                                   means area may be returned as None because the writer can
-                                   use pixelsize_m upstream for simple square-pixel volume.
+        is_moll : bool
+            boolean, True when the legacy output grid is the default
+            Mollweide-like projected grid. In interpolate mode this
+            means area may be returned as None because the writer can
+            use pixelsize_m upstream for simple square-pixel volume.
 
-            is_latlon:             boolean, True when the legacy output grid is geographic
-                                   lon/lat. Used mainly when output_grid is None to compute
-                                   spherical cell area from lat_resol/lon_resol.
+        is_latlon : bool
+            boolean, True when the legacy output grid is geographic
+            lon/lat. Used mainly when output_grid is None to compute
+            spherical cell area from lat_resol/lon_resol.
 
-            lat_resol:             float, output grid spacing in latitude degrees for
-                                   geographic legacy grids, or projected y spacing for
-                                   projected legacy grids. Required for conservative/direct
-                                   remap without output_grid only when a legacy geographic
-                                   rectilinear target must be reconstructed.
+        lat_resol : float
+            float, output grid spacing in latitude degrees for
+            geographic legacy grids, or projected y spacing for
+            projected legacy grids. Required for conservative/direct
+            remap without output_grid only when a legacy geographic
+            rectilinear target must be reconstructed.
 
-            lon_resol:             float, output grid spacing in longitude degrees for
-                                   geographic legacy grids, or projected x spacing for
-                                   projected legacy grids. Required for conservative/direct
-                                   remap without output_grid only when a legacy geographic
-                                   rectilinear target must be reconstructed.
+        lon_resol : float
+            float, output grid spacing in longitude degrees for
+            geographic legacy grids, or projected x spacing for
+            projected legacy grids. Required for conservative/direct
+            remap without output_grid only when a legacy geographic
+            rectilinear target must be reconstructed.
 
-            output_grid:           dict or None, normalized output-grid dictionary produced
-                                   by _normalize_output_grid(). Recommended for all explicit
-                                   grids and required for conservative/direct remapping to
-                                   projected, curvilinear, or unstructured targets.
+        output_grid : dict or None, default=None
+            dict or None, normalized output-grid dictionary produced
+            by _normalize_output_grid(). Recommended for all explicit
+            grids and required for conservative/direct remapping to
+            projected, curvilinear, or unstructured targets.
 
-                                   For conservative or direct bathymetry handling, output_grid
-                                   must provide target cell geometry in geographic coordinates,
-                                   either as:
+            For conservative or direct bathymetry handling, output_grid
+            must provide target cell geometry in geographic coordinates,
+            either as:
                                      - lon_corners_4 and lat_corners_4
                                      - lon_nodes and lat_nodes
                                      - triangular_unstructured node/face geometry
 
-                                   If output_grid contains cell_area, that area is used as the
-                                   target area. Otherwise target cell area is computed from the
-                                   target polygons.
+            If output_grid contains cell_area, that area is used as the
+            target area. Otherwise target cell area is computed from the
+            target polygons.
 
-            bathymetry_remap:      string, one of:
+        bathymetry_remap : str, default='interpolate'
+            string, one of:
                                      - 'interpolate'
                                      - 'linear'
                                      - 'current'
@@ -2863,80 +3052,89 @@ Raises : ValueError / TypeError
                                      - 'conservative_scrip'
                                      - 'direct'
 
-                                   The interpolate/linear/current/legacy aliases use the
-                                   non-conservative interpolation branch.
+            The interpolate/linear/current/legacy aliases use the
+            non-conservative interpolation branch.
 
-                                   The conservative/conservative_auto aliases first attempt
-                                   automatic direct same-cell transfer. If this is not possible,
-                                   they choose the conservative backend from conservative_backend.
+            The conservative/conservative_auto aliases first attempt
+            automatic direct same-cell transfer. If this is not possible,
+            they choose the conservative backend from conservative_backend.
 
-                                   The conservative_shapely/shapely aliases first attempt
-                                   automatic direct same-cell transfer. If this is not possible,
-                                   they force the Shapely polygon-overlap backend.
+            The conservative_shapely/shapely aliases first attempt
+            automatic direct same-cell transfer. If this is not possible,
+            they force the Shapely polygon-overlap backend.
 
-                                   The scrip/xesmf/esmf/weights/conservative_scrip aliases first
-                                   attempt automatic direct same-cell transfer. If this is not
-                                   possible, they force the precomputed-weights backend.
+            The scrip/xesmf/esmf/weights/conservative_scrip aliases first
+            attempt automatic direct same-cell transfer. If this is not
+            possible, they force the precomputed-weights backend.
 
-                                   The direct alias requires a valid same-cell or source-subset
-                                   relationship between source and target grids. If this is not
-                                   true, an error is raised and no fallback remapping is used.
+            The direct alias requires a valid same-cell or source-subset
+            relationship between source and target grids. If this is not
+            true, an error is raised and no fallback remapping is used.
 
-            bathymetry_source:     string, path to the source bathymetry NetCDF file.
-                                   Required when bathymetry_remap uses conservative or direct
-                                   bathymetry handling. Not used by the legacy interpolation
-                                   branch, where the bathymetry field has already been loaded
-                                   into self.conc_topo.
+        bathymetry_source : str or None, default=None
+            string, path to the source bathymetry NetCDF file.
+            Required when bathymetry_remap uses conservative or direct
+            bathymetry handling. Not used by the legacy interpolation
+            branch, where the bathymetry field has already been loaded
+            into self.conc_topo.
 
-            bathymetry_var:        string, bathymetry variable name or CF standard_name in
-                                   bathymetry_source. Default:
-                                   'sea_floor_depth_below_sea_level'.
+        bathymetry_var : str, default='sea_floor_depth_below_sea_level'
+            string, bathymetry variable name or CF standard_name in
+            bathymetry_source. Default:
+            'sea_floor_depth_below_sea_level'.
 
-            active_sediment_source:
-                                   string or None, optional path to a NetCDF file containing
-                                   active sediment layer thickness on the same source grid as
-                                   bathymetry_source.
+        active_sediment_source : str or None, default=None
+            string or None, optional path to a NetCDF file containing
+            active sediment layer thickness on the same source grid as
+            bathymetry_source.
 
-            active_sediment_var:   string, active sediment layer thickness variable name or
-                                   CF standard_name in active_sediment_source. Default:
-                                   'active_sediment_layer_thickness'.
+        active_sediment_var : str, default='active_sediment_layer_thickness'
+            string, active sediment layer thickness variable name or
+            CF standard_name in active_sediment_source. Default:
+            'active_sediment_layer_thickness'.
 
-            z_array:               1D array or None, model z-layer edges in model coordinates,
-                                   with surface at 0 and negative values downward. If provided
-                                   in conservative or direct mode, layer_volume is also computed
-                                   and returned in the metadata dictionary.
-                                   Must be strictly increasing from bottom to surface, e.g.
-                                   [-10000, -50, -10, -5, 0].
+        z_array : array_like or None, default=None
+            1D array or None, model z-layer edges in model coordinates,
+            with surface at 0 and negative values downward. If provided
+            in conservative or direct mode, layer_volume is also computed
+            and returned in the metadata dictionary.
+            Must be strictly increasing from bottom to surface, e.g.
+            [-10000, -50, -10, -5, 0].
 
-            source_crs:            CRS definition or None. Required when a conservative/direct
-                                   source grid is supplied only in projected node coordinates
-                                   node_x/node_y. May be any pyproj-compatible CRS definition,
-                                   such as EPSG code, PROJ string, WKT, or pyproj.CRS.
+        source_crs : CRS-like or None, default=None
+            CRS definition or None. Required when a conservative/direct
+            source grid is supplied only in projected node coordinates
+            node_x/node_y. May be any pyproj-compatible CRS definition,
+            such as EPSG code, PROJ string, WKT, or pyproj.CRS.
 
-            remap_crs:             CRS definition or None. Optional equal-area CRS used by the
-                                   Shapely backend for polygon overlap. If None, an equal-area
-                                   CRS is chosen automatically from the target extent.
-                                   Not used when a direct same-cell mapping is applied.
+        remap_crs : CRS-like or None, default=None
+            CRS definition or None. Optional equal-area CRS used by the
+            Shapely backend for polygon overlap. If None, an equal-area
+            CRS is chosen automatically from the target extent.
+            Not used when a direct same-cell mapping is applied.
 
-            return_metadata:       boolean, if False return only:
+        return_metadata : bool, default=False
+            boolean, if False return only:
                                        h, area, active_sediment_layer_thickness,
                                        bathy_invalid_mask
 
-                                   If True, append a metadata dictionary:
+            If True, append a metadata dictionary:
                                        h, area, active_sediment_layer_thickness,
                                        bathy_invalid_mask, meta
 
-            min_wet_fraction:      float, minimum fraction of target cell area that must be
-                                   covered by valid source bathymetry for a conservative result
-                                   to be accepted. Target cells with wet_fraction <= min_wet_fraction
-                                   are marked invalid and returned as NaN.
-                                   With the default min_wet_fraction=0.0, cells with no valid
-                                   source overlap are masked.
+        min_wet_fraction : float, default=0.0
+            float, minimum fraction of target cell area that must be
+            covered by valid source bathymetry for a conservative result
+            to be accepted. Target cells with wet_fraction <= min_wet_fraction
+            are marked invalid and returned as NaN.
+            With the default min_wet_fraction=0.0, cells with no valid
+            source overlap are masked.
 
-                                   In direct mode, valid matched cells have wet_fraction=1.
-                                   Missing or invalid copied source bathymetry cells are masked.
+            In direct mode, valid matched cells have wet_fraction=1.
+            Missing or invalid copied source bathymetry cells are masked.
 
-            conservative_backend:  string, one of:
+        conservative_backend : str, default='auto'
+            string, one of:
                                      - 'auto'
                                      - 'direct'
                                      - 'shapely'
@@ -2945,126 +3143,73 @@ Raises : ValueError / TypeError
                                      - 'esmf'
                                      - 'weights'
 
-                                   In auto mode, a direct same-cell mapping is attempted first.
-                                   If it fails, local/regional target maps use Shapely/STRtree.
-                                   Basin/global target maps require precomputed weights and use
-                                   the SCRIP/ESMF/xESMF branch.
+            In auto mode, a direct same-cell mapping is attempted first.
+            If it fails, local/regional target maps use Shapely/STRtree.
+            Basin/global target maps require precomputed weights and use
+            the SCRIP/ESMF/xESMF branch.
 
-                                   If conservative_backend='direct', the same-cell check is
-                                   strict. If the source and target grids are not same-cell
-                                   compatible, an error is raised.
+            If conservative_backend='direct', the same-cell check is
+            strict. If the source and target grids are not same-cell
+            compatible, an error is raised.
 
-            conservative_weights:  object, path, xarray.Dataset, dict, scipy sparse matrix, or
-                                   ConservativeWeightMatrix-like object containing conservative
-                                   remapping weights. Required when the selected backend is
-                                   'scrip' or when backend='auto' classifies the target as basin
-                                   or global and no direct same-cell mapping is available.
+        conservative_weights : object or None, default=None
+            object, path, xarray.Dataset, dict, scipy sparse matrix, or
+            ConservativeWeightMatrix-like object containing conservative
+            remapping weights. Required when the selected backend is
+            'scrip' or when backend='auto' classifies the target as basin
+            or global and no direct same-cell mapping is available.
 
-            large_domain_backend:  string, backend used by auto mode for basin/global target
-                                   domains. Currently only 'scrip' is supported.
+        large_domain_backend : str, default='scrip'
+            string, backend used by auto mode for basin/global target
+            domains. Currently only 'scrip' is supported.
 
-        Recommended bathymetry source layouts
-        -------------------------------------
-        1) Rectilinear geographic source
-           Use 1D lon and 1D lat coordinates. The bathymetry variable must be aligned
-           on the corresponding latitude/longitude dimensions. Bounds are optional and
-           are inferred from centers if absent.
 
-           For direct mode, the source cell polygons must match the target cell polygons.
-           The source grid may be the same grid as the output grid or a larger grid
-           containing the output grid as a subset.
+        collect_tidal_links : bool, default=False
+            Collect direct/Shapely source-to-target overlap links for qualified tidal
+            wet-volume calculations. Requires return_metadata=True in the writer.
 
-           Example xarray print:
-           <xarray.Dataset>
-           Dimensions:                         (lat: NY, lon: NX)
-           Coordinates:
-             * lon                             (lon) float64 ...
-             * lat                             (lat) float64 ...
-           Data variables:
-               sea_floor_depth_below_sea_level (lat, lon) float64 ...
-               lon_bounds                      (lon, 2) float64 ...  # optional
-               lat_bounds                      (lat, 2) float64 ...  # optional
+        Returns
+        -------
+        If return_metadata=False:
+            h, area, active_sediment_layer_thickness, bathy_invalid_mask
 
-           Recommended constructor:
-               bathy = xr.Dataset(
-                   data_vars={
-                       "sea_floor_depth_below_sea_level": (("lat", "lon"), depth_yx),
-                   },
-                   coords={
-                       "lon": ("lon", lon_1d),
-                       "lat": ("lat", lat_1d),
-                   },
-               )
+        If return_metadata=True:
+            h, area, active_sediment_layer_thickness, bathy_invalid_mask, meta
 
-        2) Curvilinear geographic source
-           Use 2D lon and 2D lat with matching shape. The bathymetry variable must be
-           aligned to the same two spatial dimensions. Cell bounds are required.
+        where:
+            h:                     2D array or 1D face array, water depth on the output grid [m].
+                                   In conservative mode this is the effective depth:
+                                       total conservative water volume / target cell area.
+                                   In direct mode this is copied source bathymetry on the
+                                   matched target cells.
 
-           Bounds may be provided as:
-             - lon_bounds / lat_bounds with shape (y, x, 4)
-             - lon_bounds / lat_bounds with shape (4, y, x)
-             - node arrays with shape (y+1, x+1)
+            area:                  2D array, 1D face array, or None, horizontal target cell area [m2].
+                                   For explicit/conservative/direct grids, this is the target cell area.
+                                   For geographic interpolation grids, this is spherical cell area.
+                                   For Mollweide legacy interpolation grids, this may be None.
 
-           For direct mode, each target cell polygon must be found exactly in the source
-           bathymetry grid. This supports identical grids and target subsets of a larger
-           curvilinear source grid.
+            active_sediment_layer_thickness:
+                                   array or None, active sediment layer thickness on the output
+                                   grid [m], if an active sediment source was provided.
+                                   In direct mode this is copied from the matched source cells.
 
-           Example xarray print:
-           <xarray.Dataset>
-           Dimensions:                         (y: NY, x: NX, nv: 4)
-           Coordinates:
-               lon                             (y, x) float64 ...
-               lat                             (y, x) float64 ...
-           Data variables:
-               sea_floor_depth_below_sea_level (y, x) float64 ...
-               lon_bounds                      (y, x, nv) float64 ...
-               lat_bounds                      (y, x, nv) float64 ...
+            bathy_invalid_mask:    boolean array, same horizontal shape as h. True means the
+                                   target cell should be masked because bathymetry is invalid,
+                                   missing, outside the valid source domain, below the
+                                   min_wet_fraction threshold, or not directly matched in
+                                   strict direct mode.
 
-           Recommended constructor:
-               bathy = xr.Dataset(
-                   data_vars={
-                       "sea_floor_depth_below_sea_level": (("y", "x"), depth_yx),
-                       "lon_bounds": (("y", "x", "nv"), lon_corners_4),
-                       "lat_bounds": (("y", "x", "nv"), lat_corners_4),
-                   },
-                   coords={
-                       "lon": (("y", "x"), lon2d),
-                       "lat": (("y", "x"), lat2d),
-                   },
-               )
+            meta:                  dictionary, only returned when return_metadata=True.
 
-        3) Triangular unstructured source
-           Use face_node_connectivity plus either geographic node coordinates or
-           projected node coordinates.
+        Raises
+        ------
+        ValueError
+            Invalid grid geometry, source-cell ordering, or weight metadata.
+        NotImplementedError
+            An unsupported conservative overlap or tidal geometry is requested.
 
-           Geographic-node source:
-           <xarray.Dataset>
-           Dimensions:                         (face: NF, node: NN, nmax_face_nodes: 3)
-           Data variables:
-               face_node_connectivity          (face, nmax_face_nodes) int64 ...
-               node_lon                        (node) float64 ...
-               node_lat                        (node) float64 ...
-               sea_floor_depth_below_sea_level (face) float64 ...
-
-           Projected-node source:
-           <xarray.Dataset>
-           Dimensions:                         (face: NF, node: NN, nmax_face_nodes: 3)
-           Data variables:
-               face_node_connectivity          (face, nmax_face_nodes) int64 ...
-               node_x                          (node) float64 ...
-               node_y                          (node) float64 ...
-               sea_floor_depth_below_sea_level (face) float64 ...
-
-           For projected-node sources, source_crs must be provided.
-
-           Connectivity may be zero-based or one-based. If the connectivity variable has
-           a start_index attribute, it is used. If start_index is absent, zero-based
-           connectivity is assumed.
-
-           For direct mode, each target triangle must be found exactly in the source
-           bathymetry mesh. This supports identical meshes and target subsets of a larger
-           source mesh.
-
+        Notes
+        -----
         Active sediment source layouts
         ------------------------------
         active_sediment_source, when provided, must use the same source grid topology and
@@ -3176,39 +3321,6 @@ Raises : ValueError / TypeError
           - conservative_weights must be supplied
           - recommended for basin/global maps and large domains
 
-        Returned values
-        ---------------
-        If return_metadata=False:
-            h, area, active_sediment_layer_thickness, bathy_invalid_mask
-
-        If return_metadata=True:
-            h, area, active_sediment_layer_thickness, bathy_invalid_mask, meta
-
-        where:
-            h:                     2D array or 1D face array, water depth on the output grid [m].
-                                   In conservative mode this is the effective depth:
-                                       total conservative water volume / target cell area.
-                                   In direct mode this is copied source bathymetry on the
-                                   matched target cells.
-
-            area:                  2D array, 1D face array, or None, horizontal target cell area [m2].
-                                   For explicit/conservative/direct grids, this is the target cell area.
-                                   For geographic interpolation grids, this is spherical cell area.
-                                   For Mollweide legacy interpolation grids, this may be None.
-
-            active_sediment_layer_thickness:
-                                   array or None, active sediment layer thickness on the output
-                                   grid [m], if an active sediment source was provided.
-                                   In direct mode this is copied from the matched source cells.
-
-            bathy_invalid_mask:    boolean array, same horizontal shape as h. True means the
-                                   target cell should be masked because bathymetry is invalid,
-                                   missing, outside the valid source domain, below the
-                                   min_wet_fraction threshold, or not directly matched in
-                                   strict direct mode.
-
-            meta:                  dictionary, only returned when return_metadata=True.
-
         Metadata dictionary
         -------------------
         For bathymetry_remap='interpolate', meta contains:
@@ -3318,6 +3430,110 @@ Returns : (depth, area, sediment_thickness, invalid_mask[, metadata])
 Raises : ValueError / NotImplementedError
     Invalid source/target geometry or source-cell ordering; unsupported
     conservative weight-area convention when overlap links are requested.
+
+        Examples
+        --------
+        Source bathymetry layouts for direct or conservative mapping.
+
+        1) Rectilinear geographic source
+           Use 1D lon and 1D lat coordinates. The bathymetry variable must be aligned
+           on the corresponding latitude/longitude dimensions. Bounds are optional and
+           are inferred from centers if absent.
+
+           For direct mode, the source cell polygons must match the target cell polygons.
+           The source grid may be the same grid as the output grid or a larger grid
+           containing the output grid as a subset.
+
+           Example xarray print:
+           <xarray.Dataset>
+           Dimensions:                         (lat: NY, lon: NX)
+           Coordinates:
+             * lon                             (lon) float64 ...
+             * lat                             (lat) float64 ...
+           Data variables:
+               sea_floor_depth_below_sea_level (lat, lon) float64 ...
+               lon_bounds                      (lon, 2) float64 ...  # optional
+               lat_bounds                      (lat, 2) float64 ...  # optional
+
+           Recommended constructor:
+               bathy = xr.Dataset(
+                   data_vars={
+                       "sea_floor_depth_below_sea_level": (("lat", "lon"), depth_yx),
+                   },
+                   coords={
+                       "lon": ("lon", lon_1d),
+                       "lat": ("lat", lat_1d),
+                   },
+               )
+
+        2) Curvilinear geographic source
+           Use 2D lon and 2D lat with matching shape. The bathymetry variable must be
+           aligned to the same two spatial dimensions. Cell bounds are required.
+
+           Bounds may be provided as:
+             - lon_bounds / lat_bounds with shape (y, x, 4)
+             - lon_bounds / lat_bounds with shape (4, y, x)
+             - node arrays with shape (y+1, x+1)
+
+           For direct mode, each target cell polygon must be found exactly in the source
+           bathymetry grid. This supports identical grids and target subsets of a larger
+           curvilinear source grid.
+
+           Example xarray print:
+           <xarray.Dataset>
+           Dimensions:                         (y: NY, x: NX, nv: 4)
+           Coordinates:
+               lon                             (y, x) float64 ...
+               lat                             (y, x) float64 ...
+           Data variables:
+               sea_floor_depth_below_sea_level (y, x) float64 ...
+               lon_bounds                      (y, x, nv) float64 ...
+               lat_bounds                      (y, x, nv) float64 ...
+
+           Recommended constructor:
+               bathy = xr.Dataset(
+                   data_vars={
+                       "sea_floor_depth_below_sea_level": (("y", "x"), depth_yx),
+                       "lon_bounds": (("y", "x", "nv"), lon_corners_4),
+                       "lat_bounds": (("y", "x", "nv"), lat_corners_4),
+                   },
+                   coords={
+                       "lon": (("y", "x"), lon2d),
+                       "lat": (("y", "x"), lat2d),
+                   },
+               )
+
+        3) Triangular unstructured source
+           Use face_node_connectivity plus either geographic node coordinates or
+           projected node coordinates.
+
+           Geographic-node source:
+           <xarray.Dataset>
+           Dimensions:                         (face: NF, node: NN, nmax_face_nodes: 3)
+           Data variables:
+               face_node_connectivity          (face, nmax_face_nodes) int64 ...
+               node_lon                        (node) float64 ...
+               node_lat                        (node) float64 ...
+               sea_floor_depth_below_sea_level (face) float64 ...
+
+           Projected-node source:
+           <xarray.Dataset>
+           Dimensions:                         (face: NF, node: NN, nmax_face_nodes: 3)
+           Data variables:
+               face_node_connectivity          (face, nmax_face_nodes) int64 ...
+               node_x                          (node) float64 ...
+               node_y                          (node) float64 ...
+               sea_floor_depth_below_sea_level (face) float64 ...
+
+           For projected-node sources, source_crs must be provided.
+
+           Connectivity may be zero-based or one-based. If the connectivity variable has
+           a start_index attribute, it is used. If start_index is absent, zero-based
+           connectivity is assumed.
+
+           For direct mode, each target triangle must be found exactly in the source
+           bathymetry mesh. This supports identical meshes and target subsets of a larger
+           source mesh.
         """
         from dataclasses import dataclass
         from typing import Any, Iterable, Optional
@@ -5335,30 +5551,19 @@ ValueError / NotImplementedError
         def get_pixel_mean_depth_with_conservative_option(
             self,
             # Output-cell positions and grid geometry
-            lons,
-            lats,
-            is_moll,
-            is_latlon,
-            lat_resol,
-            lon_resol,
-            output_grid=None,
-            *,
+            lons, lats, is_moll,
+            is_latlon, lat_resol, lon_resol,
+            output_grid=None, *,
             # Bathymetry remapping mode and environmental sources
-            bathymetry_remap="interpolate",
-            bathymetry_source=None,
+            bathymetry_remap="interpolate", bathymetry_source=None,
             bathymetry_var="sea_floor_depth_below_sea_level",
             active_sediment_source=None,
             active_sediment_var="active_sediment_layer_thickness",
             # Vertical layers and source/target coordinate systems
-            z_array=None,
-            source_crs=None,
-            remap_crs=None,
+            z_array=None, source_crs=None, remap_crs=None,
             # Output details, coverage checks and conservative backend
-            return_metadata=False,
-            min_wet_fraction=0.0,
-            conservative_backend="auto",
-            conservative_weights=None,
-            large_domain_backend="scrip",
+            return_metadata=False, min_wet_fraction=0.0, conservative_backend="auto",
+            conservative_weights=None, large_domain_backend="scrip",
             collect_tidal_links=False,
         ):
 
@@ -5553,11 +5758,34 @@ ValueError / NotImplementedError
         return zlev.astype(np.float32, copy=False)
 
     def horizontal_smooth(self, a, n=0, landmask=None, pad_mode='edge', land_value=0.0):
-        """
-        2D box smoothing (mean over (2n+1)x(2n+1)), no wrap.
-        - Ignores NaNs
-        - If landmask is provided (True=land), land is excluded from averages
-        - Land cells in output are set to land_value (default 0.0)
+        """Apply a masked horizontal box mean to a two-dimensional field.
+
+        Parameters
+        ----------
+        a : ndarray
+            Two-dimensional input field.
+
+        n : nonnegative int, default=0
+            Half-width of the box filter, in cells.
+
+        landmask : array_like, optional, default=None
+            Boolean mask of invalid land cells.
+
+        pad_mode : str, default='edge'
+            Padding method at the smoothing boundary.
+
+        land_value : float, default=0.0
+            Value assigned to masked land cells after smoothing.
+
+        Returns
+        -------
+        result : numpy.ndarray
+            Array with the same shape as a. Keep masked land cells at land_value.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
         """
         a = np.asarray(a, dtype=np.float64)
         if n <= 0:
@@ -5896,6 +6124,35 @@ ValueError / NotImplementedError
         self, da, lat_var=None, lon_var=None,
         lat1d_from_2d=None, lon1d_from_2d=None,
         ):
+        """Attach rectilinear output coordinates to a DataArray.
+
+        Parameters
+        ----------
+        da : object
+            Provide da for this operation.
+
+        lat_var : object, optional, default=None
+            Provide lat var for this operation.
+
+        lon_var : object, optional, default=None
+            Provide lon var for this operation.
+
+        lat1d_from_2d : object, optional, default=None
+            Provide lat1d from 2d for this operation.
+
+        lon1d_from_2d : object, optional, default=None
+            Provide lon1d from 2d for this operation.
+
+        Returns
+        -------
+        result : xarray.DataArray
+            Input field with the normalized rectilinear coordinates.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        """
         out = da.copy(deep=False)
 
         def _maybe_get_existing_1d_coord(out_da, names):
@@ -6023,15 +6280,45 @@ ValueError / NotImplementedError
         return out
 
     def _prepare_curvilinear_output_da(
-        self,
-        da,
-        y_var=None,
-        x_var=None,
-        lon2d=None,
-        lat2d=None,
-        separable=False,
-        Verbose=True,
+        self, da, y_var=None,
+        x_var=None, lon2d=None, lat2d=None,
+        separable=False, Verbose=True,
     ):
+        """Attach curvilinear output coordinates to a DataArray.
+
+        Parameters
+        ----------
+        da : object
+            Provide da for this operation.
+
+        y_var : object, optional, default=None
+            Provide y var for this operation.
+
+        x_var : object, optional, default=None
+            Provide x var for this operation.
+
+        lon2d : object, optional, default=None
+            Provide lon2d for this operation.
+
+        lat2d : object, optional, default=None
+            Provide lat2d for this operation.
+
+        separable : bool, default=False
+            Provide separable for this operation.
+
+        Verbose : bool, default=True
+            Print progress messages when enabled.
+
+        Returns
+        -------
+        result : xarray.DataArray
+            Input field with the normalized curvilinear coordinates.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        """
         import xarray as xr
 
         out = da.copy(deep=False)
@@ -6127,14 +6414,43 @@ ValueError / NotImplementedError
         return out
 
     def prepare_derived_output_da(
-        self,
-        da,
-        src_ds,
-        time_name=None,
-        spatial_mode="auto",
+        self, da, src_ds,
+        time_name=None, spatial_mode="auto",
         rectilinear_tol=1e-10,
         Verbose=True,
     ):
+        """Attach consistent spatial and time coordinates to a derived DataArray.
+
+        Parameters
+        ----------
+        da : xarray.DataArray
+            DataArray to attach to normalized coordinates.
+
+        src_ds : xarray.Dataset
+            Dataset that provides grid and coordinate metadata.
+
+        time_name : str, optional, default=None
+            Existing name of the time dimension.
+
+        spatial_mode : str, default='auto'
+            Select automatic, rectilinear or curvilinear output geometry.
+
+        rectilinear_tol : float, default=1e-10
+            Tolerance used to detect separable coordinates.
+
+        Verbose : bool, default=True
+            Print progress messages when enabled.
+
+        Returns
+        -------
+        result : xarray.DataArray
+            DataArray with normalized spatial coordinates and dimension names.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        """
         spatial_mode = str(spatial_mode).lower()
         if spatial_mode not in {"auto", "rectilinear", "curvilinear"}:
             raise ValueError("spatial_mode must be one of: 'auto', 'rectilinear', 'curvilinear'")
@@ -6262,7 +6578,7 @@ result : xarray.Dataset-like trajectory
 current_setting : bool-like or None
     Live get_config("drift:water_column_stretching") setting, if known.
 requested : bool-like or None
-    Explicit writer tidal_elevation_enabled value; None inherits saved.
+    Explicit writer tidal_elevation_enabled value. None inherits saved.
 
 Returns
 -------
@@ -6305,7 +6621,7 @@ Parameters
 ----------
 source_geometry, target_geometry : normalized grid dict
     From _normalize_output_grid. Cell mode requires same structured
-    topology, coordinate type and unambiguous centers/corners; node mode
+    topology, coordinate type and unambiguous centers/corners. node mode
     requires exact geographic (and applicable projected) node positions.
 node_coordinates : bool, default False
     True compares nodes rather than horizontal structured cell polygons.
@@ -6408,7 +6724,7 @@ Parameters
 ----------
 dataset : xarray.Dataset
     Elevation source with one-dimensional CF time coordinate and valid
-    units/calendar; the caller owns the Dataset.
+    units/calendar. the caller owns the Dataset.
 elevation : xarray.DataArray
     Sea-surface elevation, units metres and positive upward, with
     dimensions (time, spatial dims), no horizontal interpolation.
@@ -6417,7 +6733,7 @@ filtered_times : sequence of datetime-like
 source_spatial_dims : tuple of 1 or 2 strings
     Node dimension or the ordered native structured spatial dimensions.
 source_flat_indices : integer ndarray
-    Selected source positions flattened in source_spatial_shape order;
+    Selected source positions flattened in source_spatial_shape order.
     may reorder/subset source to destination order.
 source_spatial_shape : tuple of ints
     Spatial shape before indexed selection (node,) or structured 2D.
@@ -6431,12 +6747,12 @@ mean_interval : duration str or None
 time_reference : {'start','center','end'} or None
     Timestamp anchor accompanying mean_interval.
 time_chunk_size : positive int, default 50
-    Size of snapshot read batches; only required records/cells are loaded.
+    Size of snapshot read batches. only required records/cells are loaded.
 
 Returns
 -------
 tuple (eta, counts)
-    eta : float64 array (n_snapshot, *target_shape), metres, positive up;
+    eta : float64 array (n_snapshot, *target_shape), metres, positive up.
     counts : dict with records_read, source_time_records,
     selected_output_cells and spatial read strategy, for I/O provenance.
 
@@ -6648,7 +6964,7 @@ Return an ownership-safe context manager for a NetCDF source Dataset.
 Parameters
 ----------
 source : str, os.PathLike or xarray.Dataset
-    Filename/path is opened by xarray and closed when leaving the context;
+    Filename/path is opened by xarray and closed when leaving the context.
     a caller-owned Dataset is borrowed via nullcontext, never closed.
 decode_times : bool, default True
     Passed to xarray.open_dataset for path-owned inputs only.
@@ -6675,27 +6991,18 @@ OSError / backend read exception
         raise TypeError('Density-map input must be a NetCDF path or xarray.Dataset')
 
     def _structured_grid_tidal_water_volumes(
-        self,
-        *,
+        self, *,
         # Direct-aligned bathymetry and tidal-elevation sources
-        bathymetry_path,
-        elevation_path,
+        bathymetry_path, elevation_path,
         # Bathymetry field and selected snapshot times
-        bathymetry_variable,
-        filtered_times,
+        bathymetry_variable, filtered_times,
         # Vertical-layer boundaries and target-cell positions
-        z_array,
-        output_lon,
-        output_lat,
+        z_array, output_lon, output_lat,
         # Direct-cell physical bathymetry and areas
-        pixel_mean_depth,
-        pixel_area,
-        grid_spec=None,
+        pixel_mean_depth, pixel_area, grid_spec=None,
         # CF water-level temporal semantics and chunking
-        water_level_record_type='instantaneous',
-        water_level_mean_interval=None,
-        water_level_time_reference=None,
-        time_chunk_size=50,
+        water_level_record_type='instantaneous', water_level_mean_interval=None,
+        water_level_time_reference=None, time_chunk_size=50,
         # Optional aligned source-geometry capture
         capture_reseeding_source=False,
     ):
@@ -6712,7 +7019,7 @@ bathymetry_variable : str
 filtered_times : datetime array, shape (snapshot,)
     Selected model trajectory snapshot times.
 z_array : 1D float array (nlayer+1,)
-    Ascending model-z bounds in metres, deepest to surface 0; clipped
+    Ascending model-z bounds in metres, deepest to surface 0. clipped
     against local bottom at -[bathymetry + sea_surface_height].
 output_lon, output_lat : float arrays (x,y)
     Geographic target cell centers (degrees), in native writer order.
@@ -6721,7 +7028,7 @@ pixel_mean_depth : float array (x,y)
 pixel_area : float array (x,y)
     Qualified target horizontal cell areas in square metres.
 grid_spec : normalized structured dict or None
-    Explicit spatial grid geometry; if None read from bathymetry source.
+    Explicit spatial grid geometry. if None read from bathymetry source.
 water_level_record_type : {'instantaneous','mean'}
     CF input record semantics, not inferred from sampling frequency.
 water_level_mean_interval, water_level_time_reference : str or None
@@ -6729,7 +7036,7 @@ water_level_mean_interval, water_level_time_reference : str or None
 time_chunk_size : positive int
     Number of records per I/O chunk.
 capture_reseeding_source : bool, default False
-    When True also return actual selected source wet-geometry payload;
+    When True also return actual selected source wet-geometry payload.
     no change to volume calculations.
 
 Returns
@@ -6866,23 +7173,16 @@ ValueError
         return volumes, source
 
     def _structured_conservative_tidal_water_volumes(
-        self,
-        *,
+        self, *,
         # Structured source bathymetry and tidal elevation
-        bathymetry_path,
-        elevation_path,
+        bathymetry_path, elevation_path,
         # Field selection and instantaneous snapshot times
-        bathymetry_variable,
-        filtered_times,
+        bathymetry_variable, filtered_times,
         # Vertical layers and existing source-to-target overlap geometry
-        z_array,
-        tidal_links,
-        target_shape,
+        z_array, tidal_links, target_shape,
         # CF-time record semantics and chunk size
-        water_level_record_type,
-        water_level_mean_interval,
-        water_level_time_reference,
-        time_chunk_size,
+        water_level_record_type, water_level_mean_interval,
+        water_level_time_reference, time_chunk_size,
         # Optional self-contained source capture
         capture_reseeding_source=False,
     ):
@@ -6902,10 +7202,10 @@ z_array : 1D float array (nlayer+1,)
     Strictly increasing negative-down layer edges ending at z=0 (m).
 tidal_links : dict
     Internal output of existing direct/Shapely conservative remapper:
-    row : flattened target index in (x,y) order;
-    col : flattened source index in (y,x) order;
-    area : physical source-target intersection area in m2;
-    source_shape : original source grid shape;
+    row : flattened target index in (x,y) order.
+    col : flattened source index in (y,x) order.
+    area : physical source-target intersection area in m2.
+    source_shape : original source grid shape.
     backend : 'direct' or 'shapely'.
     It is calculated internally, not passed by the end user. Sparse SCRIP
     weights without qualified physical overlap areas are not accepted.
@@ -7043,11 +7343,9 @@ ValueError / NotImplementedError
     def _triangular_mesh_tidal_water_volumes(
         *,
         # Triangular mesh topology and nodal bathymetry
-        mesh,
-        node_bathymetry,
+        mesh, node_bathymetry,
         # Time-dependent nodal sea surface and layer boundaries
-        node_water_level,
-        z_array,
+        node_water_level, z_array,
     ):
         """
 Integrate time-dependent wet layer volumes on ANY normalized triangle mesh.
@@ -7060,7 +7358,7 @@ Integrate time-dependent wet layer volumes on ANY normalized triangle mesh.
             geodesic ``cell_area`` for each face. No horizontal remapping occurs.
         node_bathymetry : array, shape (node,)
             Fixed signed positive-downward bathymetric coordinate relative to
-            the sea-level datum; negative means the bed is above datum.
+            the sea-level datum. negative means the bed is above datum.
         node_water_level : array, shape (time, node)
             Already time-aligned sea-surface elevation (positive upward) in
             metres, referenced to the same datum. No default to zero.
@@ -7083,7 +7381,7 @@ Raises
 ------
 ValueError
     Non-triangular mesh, bad node/face indices, invalid areas, non-finite
-    bathymetry/tide or invalid vertical edges. Returns no source payload;
+    bathymetry/tide or invalid vertical edges. Returns no source payload.
     native source export uses separately validated nodal arrays.
         """
         if mesh is None or mesh.get('topology') != 'triangular_unstructured':
@@ -7140,20 +7438,14 @@ ValueError
         return volume.astype(np.float32), np.mean(h[conn], axis=1)
 
     def _read_native_nodal_tidal_fields(
-        self,
-        *,
+        self, *,
         # Native mesh bathymetry and elevation sources
-        bathymetry_path,
-        elevation_path,
+        bathymetry_path, elevation_path,
         # Source field, snapshot times and target mesh
-        bathymetry_variable,
-        filtered_times,
-        mesh,
+        bathymetry_variable, filtered_times, mesh,
         # CF-time interpretation and I/O chunking
-        water_level_record_type='instantaneous',
-        water_level_mean_interval=None,
-        water_level_time_reference=None,
-        time_chunk_size=50,
+        water_level_record_type='instantaneous', water_level_mean_interval=None,
+        water_level_time_reference=None, time_chunk_size=50,
     ):
         """
 Read validated nodal h and eta from separate native triangular sources.
@@ -7162,7 +7454,7 @@ Parameters
 ----------
 bathymetry_path, elevation_path : NetCDF path or xarray.Dataset
     Fixed nodal depth and time-dependent nodal tidal elevations in metres.
-    Source node coordinates must match the normalized output mesh exactly;
+    Source node coordinates must match the normalized output mesh exactly.
     the tide dataset may cover a compatible larger native node set.
 bathymetry_variable : str
     Source depth variable name, positive down from common fixed datum.
@@ -7172,7 +7464,7 @@ mesh : normalized triangular output dict
     From _normalize_output_grid: topology, node_lon/node_lat, optional
     node_x/node_y, nnode, face_node_connectivity and face area.
 water_level_record_type : {'instantaneous','mean'}
-    Mandatory semantics for source records; not guessed from timestamps.
+    Mandatory semantics for source records. not guessed from timestamps.
 water_level_mean_interval, water_level_time_reference : str or None
     Paired mean interval/reference fallback when CF bounds are absent.
 time_chunk_size : positive int
@@ -7181,7 +7473,7 @@ time_chunk_size : positive int
 Returns
 -------
 (h, eta)
-    h : float64 array (node,), fixed bathymetry m positive down;
+    h : float64 array (node,), fixed bathymetry m positive down.
     eta : float64 array (snapshot,node), elevation m positive up.
     Both follow the target output node order and share vertical datum.
 
@@ -7266,16 +7558,13 @@ ValueError
     @staticmethod
     def _write_reseeding_source_group(
         # Destination NetCDF4 file
-        nc,
-        *,
+        nc, *,
         # Captured source geometry and aligned forcing snapshots
-        payload,
-        times,
+        payload, times,
         # Target geometry required for structured output
         target_grid=None,
         # Tidal time record and averaging semantics
-        water_level_record_type='instantaneous',
-        water_level_mean_interval=None,
+        water_level_record_type='instantaneous', water_level_mean_interval=None,
         water_level_time_reference=None,
     ):
         """
@@ -7297,7 +7586,7 @@ times : sequence of datetimes, shape (snapshot,)
     Saved instantaneous concentration timestamps used to align elevations.
 target_grid : normalized dict or None
     Mandatory structured target geometry with lon_corners_4/lat_corners_4
-    in (x,y,4) order and target CRS; unused for native triangles.
+    in (x,y,4) order and target CRS. unused for native triangles.
 water_level_record_type : str, default 'instantaneous'
     CF source time semantics recorded as provenance.
 water_level_mean_interval, water_level_time_reference : str or None
@@ -7307,20 +7596,20 @@ Returns
 -------
 None
     Creates /reseeding_source group and sets root attribute
-    reseeding_source_group=/reseeding_source; does not modify root volume.
+    reseeding_source_group=/reseeding_source. does not modify root volume.
 
 Raises
 ------
 ValueError
     Invalid payload kind, shape, nonfinite polygon bounds or mismatched
-    time counts; invalid/missing structured target corners.
+    time counts. invalid/missing structured target corners.
 
 Group format (version 1)
 ------------------------
 Common: snapshot_time(snapshot), source_bathymetry(source_cell or
 source_node), source_sea_surface_height(snapshot,source_cell or
 source_node). Depth is positive downward, elevation positive upward,
-both referenced to the same datum; model depth_bounds are relative to
+both referenced to the same datum. model depth_bounds are relative to
 instantaneous water surface.
 
 Structured: source_lon_bounds/source_lat_bounds(source_cell,vertex=4),
@@ -7328,13 +7617,13 @@ target_lon_bounds/target_lat_bounds(target_cell,vertex=4),
 source_flat_index(source_cell), source_ny/nx and target_nx/ny attributes,
 source_flatten_order='y_then_x', target_flatten_order='x_then_y', and
 source_crs/target_crs/overlap_crs. Longitude/latitude bounds are degrees.
-Native triangle: source_node index is identical to root /node; use
+Native triangle: source_node index is identical to root /node. use
 /mesh and /face_node_connectivity, /node_lon and /node_lat in the root.
 
 Neither a mass variable nor time-dependent polygon-overlap arrays are
 stored. A future reseeder reconstructs the wet source overlaps, checks
 their summed volumes against /volume and allocates each target-cell mass
-to physically wet regions. This writer exports data; it does not seed.
+to physically wet regions. This writer exports data. it does not seed.
         """
         from netCDF4 import date2num
         g = nc.createGroup('reseeding_source')
@@ -7424,63 +7713,37 @@ to physically wet regions. This writer exports data; it does not seed.
     def write_netcdf_chemical_density_map(
         self,
         # Output file and generated-grid resolution / vertical layers
-        filename,
-        pixelsize_m='auto',
-        zlevels=None,
-        lat_resol=None,
-        lon_resol=None,
+        filename, pixelsize_m='auto', zlevels=None,
+        lat_resol=None, lon_resol=None,
         # Averaging interval and output coordinate reference system
-        deltat=None,
-        density_proj=None,
+        deltat=None, density_proj=None,
         # Geographic bounds for a generated output grid
-        llcrnrlon=None,
-        llcrnrlat=None,
-        urcrnrlon=None,
+        llcrnrlon=None, llcrnrlat=None, urcrnrlon=None,
         urcrnrlat=None,
         # Mass units and snapshot time selection
-        mass_unit=None,
-        time_avg_conc=False,
-        time_start=None,
-        time_end=None,
-        time_chunk_size=50,
+        mass_unit=None, time_avg_conc=False, time_start=None,
+        time_end=None, time_chunk_size=50,
         # Optional spatial smoothing
-        horizontal_smoothing=False,
-        smoothing_cells=0,
+        horizontal_smoothing=False, smoothing_cells=0,
         # Environmental source files and land masking
-        reader_sea_depth=None,
-        reader_active_sediment_layer_thickness=None,
-        landmask_shapefile=None,
-        landmask_bathymetry_thr=None,
+        reader_sea_depth=None, reader_active_sediment_layer_thickness=None,
+        landmask_shapefile=None, landmask_bathymetry_thr=None,
         # Particle selection, chemical quantities and output fields
-        origin_marker=None,
-        elements_density=False,
-        active_status=False,
-        weight=None,
-        sim_description=None,
-        timestep_values=False,
-        compress_species=False,
-        weight_mode='extensive',
-        weight_unit=None,
+        origin_marker=None, elements_density=False, active_status=False,
+        weight=None, sim_description=None, timestep_values=False,
+        compress_species=False, weight_mode='extensive', weight_unit=None,
         # Explicit output grid and bathymetry remapping
-        output_grid=None,
-        bathymetry_remap='interpolate',
-        bathymetry_remap_crs=None,
-        bathymetry_source_crs=None,
-        bathymetry_min_wet_fraction=0.0,
-        bathymetry_conservative_backend='auto',
-        bathymetry_conservative_weights=None,
+        output_grid=None, bathymetry_remap='interpolate', bathymetry_remap_crs=None,
+        bathymetry_source_crs=None, bathymetry_min_wet_fraction=0.0,
+        bathymetry_conservative_backend='auto', bathymetry_conservative_weights=None,
         bathymetry_large_domain_backend='scrip',
         # Memory budget and automatic RAM reserves
-        memory_budget_mb=None,
-        memory_auto_fraction=0.50,
-        memory_auto_reserve_mb=1024,
-        memory_auto_reserve_fraction=0.20,
+        memory_budget_mb=None, memory_auto_fraction=0.50,
+        memory_auto_reserve_mb=1024, memory_auto_reserve_fraction=0.20,
         # Tidal forcing, time semantics and vertical datum
-        reader_sea_surface_height=None,
-        tidal_elevation_enabled=None,
+        reader_sea_surface_height=None, tidal_elevation_enabled=None,
         bathymetry_variable='sea_floor_depth_below_sea_level',
-        water_level_record_type='instantaneous',
-        water_level_mean_interval=None,
+        water_level_record_type='instantaneous', water_level_mean_interval=None,
         water_level_time_reference=None,
         # Native triangular mesh connectivity
         mesh_file=None,
@@ -7489,7 +7752,7 @@ to physically wet regions. This writer exports data; it does not seed.
         # Optional combined instantaneous and averaged output
         include_instantaneous_when_averaging=False,
     ):
-        '''
+        """
 
         Write particle-density, concentration and property fields to NetCDF.
 
@@ -7504,8 +7767,8 @@ to physically wet regions. This writer exports data; it does not seed.
         CF-reader interpolation an object is serialized to a temporary NetCDF
         and fed through the existing reader without changing its algorithm.
 
-        Architecture / scientific contract
-        ----------------------------------
+        Notes
+        -----
         1. Read saved ChemicalDrift particle trajectories and select snapshots,
            species, statuses, origins, weight and spatial/vertical bins.
         2. Construct the output grid from corners/resolution, output_grid or
@@ -8035,8 +8298,15 @@ to physically wet regions. This writer exports data; it does not seed.
         particle weights. Unrecoverable mass in dry/zero-volume cells must be
         reported, not silently dropped. The exporter does not itself reseed.
 
-        Raises / returns
-        ----------------
+        Raises
+        ------
+        ValueError, TypeError
+            Invalid input, geometry, units, time or stretching configuration.
+        NotImplementedError
+            A tidal remapping mode is not scientifically qualified.
+
+        Notes on completion and exceptions
+        ----------------------------------
         Returns None after writing filename; if no requested trajectory times
         remain, returns early with a warning. Raises ValueError or TypeError
         for invalid inputs, incompatible dimensions/datum/time coordinates,
@@ -8047,8 +8317,8 @@ to physically wet regions. This writer exports data; it does not seed.
         of differing resolution or topology. Input paths are opened and closed;
         caller-owned xarray.Dataset inputs remain open.
 
-        Minimal usage examples (``model`` is an opened ChemicalDrift result)
-        -------------------------------------------------------------------
+        Examples
+        --------
         Each example assumes the saved trajectory records its actual stretching
         setting; bathymetry and water-level data use matching source geometry,
         compatible time semantics and a common vertical datum. Other optional
@@ -8107,7 +8377,7 @@ to physically wet regions. This writer exports data; it does not seed.
                 include_instantaneous_when_averaging=True,
                 save_reseeding_source=True,
                 weight='mass', weight_mode='extensive', mass_unit='ug')
-        '''
+        """
 
         import numpy as np
         import pandas as pd
@@ -10394,6 +10664,33 @@ to physically wet regions. This writer exports data; it does not seed.
 
     @staticmethod
     def _sediment_conc_sum(TOT_Conc, specie_ids_num, sed_species, Verbose=False, debug_check_single_depth=False, nonzero_tol=0.0):
+        """Handle sediment conc sum.
+
+        Parameters
+        ----------
+        TOT_Conc : object
+            Provide TOT Conc for this operation.
+
+        specie_ids_num : object
+            Provide specie ids num for this operation.
+
+        sed_species : object
+            Provide sed species for this operation.
+
+        Verbose : bool, default=False
+            Print progress messages when enabled.
+
+        debug_check_single_depth : int or float, default=False
+            Provide debug check single depth for this operation.
+
+        nonzero_tol : float, default=0.0
+            Provide nonzero tol for this operation.
+
+        Returns
+        -------
+        result : tuple
+            Sediment concentration sum and included species names.
+        """
         import xarray as xr
         specie_coord_vals = set(TOT_Conc['specie'].values) if 'specie' in TOT_Conc.coords else None
         da_sed = None
@@ -10453,6 +10750,29 @@ to physically wet regions. This writer exports data; it does not seed.
 
 
     def specie_ids_num_from_ds(self, DS, TOT_Conc=None, legacy_alias=None):
+        """Read species-name to species-index mappings from a dataset.
+
+        Parameters
+        ----------
+        DS : xarray.Dataset
+            Dataset that contains species coordinates or names.
+
+        TOT_Conc : xarray.DataArray, optional, default=None
+            Concentration array used as a metadata fallback.
+
+        legacy_alias : mapping, optional, default=None
+            Accepted legacy species-name aliases.
+
+        Returns
+        -------
+        result : dict[str, int]
+            Map decoded species names and aliases to numeric indices.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        """
         if legacy_alias is None:
             legacy_alias = {}
         def _clean_name(x):
@@ -10534,6 +10854,18 @@ to physically wet regions. This writer exports data; it does not seed.
         raise ValueError('Cannot build species mapping: missing specie_name and long_name.')
 
     def fallback_specie_ids_num_from_flags(self):
+        """Build the standard species-index mapping from model configuration.
+
+        Returns
+        -------
+        result : dict[str, int]
+            Map active standard species names to zero-based indices.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        """
         transfer_setup = self.get_config('chemical:transfer_setup')
         slowly = bool(self.get_config('chemical:slowly_fraction'))
         irrev = bool(self.get_config('chemical:irreversible_fraction'))
@@ -10578,6 +10910,36 @@ to physically wet regions. This writer exports data; it does not seed.
 
     @staticmethod
     def _species_weighted_mean(TOT_Value, TOT_Count, specie_ids_num, species_names, Verbose=False, collapse_depth=False, debug_check_single_depth=False):
+        """Handle species weighted mean.
+
+        Parameters
+        ----------
+        TOT_Value : object
+            Provide TOT Value for this operation.
+
+        TOT_Count : int or float
+            Provide TOT Count for this operation.
+
+        specie_ids_num : object
+            Provide specie ids num for this operation.
+
+        species_names : object
+            Provide species names for this operation.
+
+        Verbose : bool, default=False
+            Print progress messages when enabled.
+
+        collapse_depth : int or float, default=False
+            Provide collapse depth for this operation.
+
+        debug_check_single_depth : int or float, default=False
+            Provide debug check single depth for this operation.
+
+        Returns
+        -------
+        result : tuple
+            Particle-count-weighted mean and included species names.
+        """
         import xarray as xr
         value_specie_vals = set(TOT_Value['specie'].values) if 'specie' in TOT_Value.coords else None
         count_specie_vals = set(TOT_Count['specie'].values) if 'specie' in TOT_Count.coords else None
@@ -10622,75 +10984,84 @@ to physically wet regions. This writer exports data; it does not seed.
         return out, included
 
     def calculate_water_sediment_conc(self,
-                                   File_Path,
-                                   File_Name,
-                                   File_Path_out,
-                                   Chemical_name,
-                                   Origin_marker_name,
-                                   File_Name_out=None,
-                                   variables=None,
-                                   Concentration_file=None,
-                                   Excluded_species=None,
-                                   Sim_description=None,
-                                   Save_files=True,
-                                   Return_datasets=True,
-                                   spatial_mode='auto',
-                                   which_conc='both',
-                                   debug_check_single_depth=False,
+                                   File_Path, File_Name, File_Path_out,
+                                   Chemical_name, Origin_marker_name,
+                                   File_Name_out=None, variables=None,
+                                   Concentration_file=None, Excluded_species=None,
+                                   Sim_description=None, Save_files=True,
+                                   Return_datasets=True, spatial_mode='auto',
+                                   which_conc='both', debug_check_single_depth=False,
                                    Verbose=True):
-        '''
-        Arguments:
-            File_Path:             string, path to the folder containing the concentration NetCDF file.
-                                   Used only when Concentration_file is None.
-            File_Name:             string, name of the concentration NetCDF file produced by
-                                   write_netcdf_chemical_density_map. The file is opened as
-                                   File_Path + File_Name when Concentration_file is None.
-            File_Path_out:         string, path to the folder where the derived water and/or sediment
-                                   concentration files will be written when Save_files=True.
-            Chemical_name:         string, chemical/compound name used to construct default output
-                                   filenames and long_name metadata.
-            Origin_marker_name:    string, origin-marker label used to construct default output
-                                   filenames.
-            File_Name_out:         string, optional common output filename. If provided, the water
-                                   file is written as 'wat_' + File_Name_out and the sediment file
-                                   as 'sed_' + File_Name_out. The '.nc' suffix is appended if missing.
-                                   If not provided, default filenames are generated from Chemical_name
-                                   and Origin_marker_name.
-            variables:             list of strings, optional subset of variables to process. If None,
-                                   all supported variables present in the input dataset are processed.
-                                   Supported variables are:
+        """Aggregate saved concentration fields by water and sediment phase.
+
+        Parameters
+        ----------
+        File_Path : str
+            string, path to the folder containing the concentration NetCDF file.
+            Used only when Concentration_file is None.
+        File_Name : str
+            string, name of the concentration NetCDF file produced by
+            write_netcdf_chemical_density_map. The file is opened as
+            File_Path + File_Name when Concentration_file is None.
+        File_Path_out : str
+            string, path to the folder where the derived water and/or sediment
+            concentration files will be written when Save_files=True.
+        Chemical_name : str
+            string, chemical/compound name used to construct default output
+            filenames and long_name metadata.
+        Origin_marker_name : str
+            string, origin-marker label used to construct default output
+            filenames.
+        File_Name_out : str or None, default=None
+            string, optional common output filename. If provided, the water
+            file is written as 'wat_' + File_Name_out and the sediment file
+            as 'sed_' + File_Name_out. The '.nc' suffix is appended if missing.
+            If not provided, default filenames are generated from Chemical_name
+            and Origin_marker_name.
+        variables : sequence of str or None, default=None
+            list of strings, optional subset of variables to process. If None,
+            all supported variables present in the input dataset are processed.
+            Supported variables are:
                                      - concentration, concentration_avg, concentration_smooth, concentration_smooth_avg
                                      - density, density_avg, density_smooth, density_smooth_avg
                                      - property_mean, property_mean_avg, property_mean_smooth, property_mean_smooth_avg
-            Concentration_file:    xarray.Dataset, optional already-opened concentration dataset. If
-                                   provided, File_Path and File_Name are not used to open the input.
-            Excluded_species:      dict, optional species-exclusion dictionary with keys 'water' and/or
-                                   'sediment'/'sed'. Species listed here are removed before aggregation.
-                                   Legacy species names are accepted and mapped internally, e.g.
-                                   dissolved -> LMM, DOC -> Humic colloid, SPM -> Particle reversible,
-                                   sediment -> Sediment reversible, buried -> Sediment buried.
-            Sim_description:       string, optional simulation description. Used if the source variable
-                                   does not already contain a sim_description attribute.
-            Save_files:            boolean, if True save the derived water and/or sediment datasets to
-                                   NetCDF files.
-            Return_datasets:       boolean, if True return the derived water and/or sediment xarray
-                                   datasets. At least one of Save_files or Return_datasets must be True.
-            spatial_mode:          string, spatial-coordinate handling mode passed to
-                                   prepare_derived_output_da. The default 'auto' lets the helper infer
-                                   whether the dataset is structured, projected, curvilinear, or
-                                   unstructured.
-            which_conc:            string, one of:
+        Concentration_file : xarray.Dataset or None, default=None
+            xarray.Dataset, optional already-opened concentration dataset. If
+            provided, File_Path and File_Name are not used to open the input.
+        Excluded_species : dict or None, default=None
+            dict, optional species-exclusion dictionary with keys 'water' and/or
+            'sediment'/'sed'. Species listed here are removed before aggregation.
+            Legacy species names are accepted and mapped internally, e.g.
+            dissolved -> LMM, DOC -> Humic colloid, SPM -> Particle reversible,
+            sediment -> Sediment reversible, buried -> Sediment buried.
+        Sim_description : str or None, default=None
+            string, optional simulation description. Used if the source variable
+            does not already contain a sim_description attribute.
+        Save_files : bool, default=True
+            boolean, if True save the derived water and/or sediment datasets to
+            NetCDF files.
+        Return_datasets : bool, default=True
+            boolean, if True return the derived water and/or sediment xarray
+            datasets. At least one of Save_files or Return_datasets must be True.
+        spatial_mode : str, default='auto'
+            string, spatial-coordinate handling mode passed to
+            prepare_derived_output_da. The default 'auto' lets the helper infer
+            whether the dataset is structured, projected, curvilinear, or
+            unstructured.
+        which_conc : str, default='both'
+            string, one of:
                                      - 'water': calculate only water-column outputs
                                      - 'sediment': calculate only sediment outputs
                                      - 'both': calculate both water-column and sediment outputs
-            debug_check_single_depth:
-                                   boolean, if True perform diagnostic checks that sediment-derived
-                                   quantities occupy no more than one depth bin in each horizontal cell.
-                                   Useful for validating sediment-layer bookkeeping.
-            Verbose:               boolean, if True print progress messages and included/skipped species.
+        debug_check_single_depth : bool, default=False
+            boolean, if True perform diagnostic checks that sediment-derived
+            quantities occupy no more than one depth bin in each horizontal cell.
+            Useful for validating sediment-layer bookkeeping.
+        Verbose : bool, default=True
+            boolean, if True print progress messages and included/skipped species.
 
-        Purpose
-        -------
+        Notes
+        -----
         This function post-processes a concentration/property/count NetCDF file produced by
         write_netcdf_chemical_density_map and separates the species-resolved output into
         water-column and sediment-derived fields.
@@ -10855,7 +11226,7 @@ to physically wet regions. This writer exports data; it does not seed.
           - for which_conc='sediment': returns (None, DS_sed_fin)
 
         If Return_datasets=False, the function writes files only and returns None.
-        '''
+        """
         from pathlib import Path
         import time
         import warnings
@@ -11853,20 +12224,20 @@ to physically wet regions. This writer exports data; it does not seed.
 
     ##### Seeding of elements
     def emission_factors(self, scrubber_type, chemical_compound):
-        """Emission factors for heavy metals and PAHs in
-            open loop and closed loop scrubbers
+        """Return scrubber emission factors for the selected chemical.
 
-            Hermansson et al 2021
-            https://doi.org/10.1016/j.trd.2021.102912
+        Parameters
+        ----------
+        scrubber_type : str
+            Scrubber operating mode used to select emission factors.
 
-            bilge water, gray water, anti fouling paint,
-            sewage, food waster
+        chemical_compound : str
+            Chemical for which emission factors are returned.
 
-            from EMERGE Deliverable 2.1
-
-            ash (atmospheric depositions)
-            from EMERGE Deliverable 3.2
-
+        Returns
+        -------
+        result : object
+            Emission factor or factors selected for the chemical and scrubber mode.
         """
         emission_factors_open_loop = {
             #                           mean    +/-95%
@@ -12103,15 +12474,37 @@ to physically wet regions. This writer exports data; it does not seed.
         # TODO: Add emission uncertainty based on 95% confidence interval
 
     def seed_from_DataArray(self, steam, lowerbound=0, higherbound=np.inf, radius=0, scrubber_type="open_loop", chemical_compound="Copper", mass_element_ug=100e3, number_of_elements=None, **kwargs):
-            """Seed elements based on a dataarray with STEAM emission data
+            """Seed particles from a gridded scrubber-emission DataArray.
 
-            Arguments:
-                steam: dataarray with steam emission data, with coordinates
-                    * latitude   (latitude) float32
-                    * longitude  (longitude) float32
-                    * time       (time) datetime64[ns]
-                radius:      scalar, unit: meters
-                lowerbound:  scalar, elements with lower values are discarded
+            Parameters
+            ----------
+            steam : xarray.DataArray
+                dataarray with steam emission data, with coordinates * latitude (latitude)
+                float32 * longitude (longitude) float32 * time (time) datetime64[ns]
+
+            lowerbound : int, default=0
+                scalar, elements with lower values are discarded
+
+            higherbound : float, default=np.inf
+                Exclusive upper value limit for emission cells.
+
+            radius : int, default=0
+                scalar, unit: meters
+
+            scrubber_type : str, default='open_loop'
+                Scrubber category used to select the emission factor.
+
+            chemical_compound : str, optional, default='Copper'
+                Chemical compound selected in the current model.
+
+            mass_element_ug : float, optional, default=100000.0
+                Nominal particle mass in micrograms.
+
+            number_of_elements : int, optional, default=None
+                Number of new particles per selected input record.
+
+            kwargs : mapping
+                Additional keyword arguments forwarded to particle seeding.
             """
 
             if chemical_compound is None:
@@ -12220,7 +12613,26 @@ to physically wet regions. This writer exports data; it does not seed.
 
     @staticmethod
     def _plan_mass_generation(data_point, mass_element_ug):
-        """Return a numerically stable (full_element_count, residual_mass_ug) plan."""
+        """Plan the number and mass of particles to seed.
+
+        Parameters
+        ----------
+        data_point : object
+            Provide data point for this operation.
+
+        mass_element_ug : float, optional
+            Nominal particle mass in micrograms.
+
+        Returns
+        -------
+        result : tuple
+            Number of complete particles and remaining mass.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        """
         import numpy as np
 
         if isinstance(mass_element_ug, (bool, np.bool_)):
@@ -12300,19 +12712,57 @@ to physically wet regions. This writer exports data; it does not seed.
 
     @staticmethod
     def _validate_z_placement(
-        mode,
-        number,
-        NETCDF_data_dim_names,
+        mode, number, NETCDF_data_dim_names,
         depth_seed=None, depth_min=None, depth_max=None,
-        emission_placement="upper_1m",
-        emission_seafloor_eps=None,
+        emission_placement="upper_1m", emission_seafloor_eps=None,
         emission_depth_value=None,
     ):
         """Validate vertical placement and return a deterministic descriptor.
 
-        This helper never consumes random numbers and never allocates a
-        particle-length stochastic array.  ``_get_z`` materializes the
-        descriptor for real seeding.
+        Parameters
+        ----------
+        mode : str
+            Select the operation mode. See Notes for supported values.
+
+        number : object
+            Provide number for this operation.
+
+        NETCDF_data_dim_names : object
+            Provide NETCDF data dim names for this operation.
+
+        depth_seed : object, optional, default=None
+            Provide depth seed for this operation.
+
+        depth_min : float, default=None
+            Provide depth min for this operation.
+
+        depth_max : float, default=None
+            Provide depth max for this operation.
+
+        emission_placement : str, default='upper_1m'
+            Provide emission placement for this operation.
+
+        emission_seafloor_eps : float, default=None
+            Provide emission seafloor eps for this operation.
+
+        emission_depth_value : object, optional, default=None
+            Provide emission depth value for this operation.
+
+        Returns
+        -------
+        result : dict
+            Validated depth-placement mode, count and value.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+
+        Notes
+        -----
+        Do not consume random numbers or allocate stochastic
+        particle arrays. The _get_z helper materializes this descriptor during
+        actual seeding.
         """
         import numpy as np
 
@@ -12460,15 +12910,52 @@ to physically wet regions. This writer exports data; it does not seed.
 
     @staticmethod
     def _get_z(
-        mode,
-        number,
-        NETCDF_data_dim_names,
+        mode, number, NETCDF_data_dim_names,
         depth_seed=None, depth_min=None, depth_max=None,
-        emission_placement="upper_1m",
-        emission_seafloor_eps=None,
+        emission_placement="upper_1m", emission_seafloor_eps=None,
         emission_depth_value=None,
     ):
-        """Materialize validated vertical placement for real seeding."""
+        """Select initial particle depths for the requested seeding mode.
+
+        Parameters
+        ----------
+        mode : str
+            Select the operation mode. See Notes for supported values.
+
+        number : object
+            Provide number for this operation.
+
+        NETCDF_data_dim_names : object
+            Provide NETCDF data dim names for this operation.
+
+        depth_seed : object, optional, default=None
+            Provide depth seed for this operation.
+
+        depth_min : float, default=None
+            Provide depth min for this operation.
+
+        depth_max : float, default=None
+            Provide depth max for this operation.
+
+        emission_placement : str, default='upper_1m'
+            Provide emission placement for this operation.
+
+        emission_seafloor_eps : float, default=None
+            Provide emission seafloor eps for this operation.
+
+        emission_depth_value : object, optional, default=None
+            Provide emission depth value for this operation.
+
+        Returns
+        -------
+        result : numpy.ndarray or scalar
+            Initial depths for the requested particles, in model z coordinates.
+
+        Raises
+        ------
+        RuntimeError
+            The required operation or model state is not available.
+        """
         import numpy as np
 
         plan = ChemicalDriftPostProcessMixin._validate_z_placement(
@@ -12681,25 +13168,37 @@ to physically wet regions. This writer exports data; it does not seed.
 
     @staticmethod
     def _normalize_seed_geographic_coordinates(da, label="DataArray"):
-        """
-        Return a rectilinear geographic DataArray with canonical horizontal
-        dimension/coordinate names ``latitude`` and ``longitude``.
+        """Validate and normalize geographic seeding coordinates.
 
-        Accepted input representations are, in priority order:
+        Parameters
+        ----------
+        da : object
+            Provide da for this operation.
 
-        1. canonical ``latitude`` / ``longitude`` coordinates;
-        2. ``lat`` / ``lon`` aliases;
-        3. coordinates identified by CF ``standard_name`` metadata;
-        4. ``y`` / ``x`` coordinates only when their CF metadata identify
-           them unambiguously as geographic latitude/longitude.
+        label : str, default='DataArray'
+            Provide label for this operation.
 
-        Separable 2-D geographic auxiliary coordinates are reduced to 1-D
-        latitude/longitude vectors. Genuinely curvilinear 2-D coordinates and
-        projected-only x/y coordinates are rejected rather than guessed.
+        Returns
+        -------
+        result : xarray.DataArray or None
+            Input with normalized geographic coordinates, or None when absent.
 
-        No regridding or coordinate shift is performed here. The existing
-        ``concentration_coordinate_mode`` / ``emission_coordinate_mode`` logic
-        remains responsible for any half-cell offset applied during seeding.
+        Raises
+        ------
+        TypeError
+            An input has an unsupported type.
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+
+        Notes
+        -----
+        - Use geographic longitude/latitude conventions. Reject incompatible coordinate dimensions.
+        - Accept geographic coordinates in this order:
+        latitude/longitude, lat/lon, CF standard_name, or CF-labelled geographic
+        y/x. Reduce separable 2-D coordinates to 1-D axes. Reject curvilinear
+        2-D and projected-only coordinates. This helper does not shift cells.
+        The concentration_coordinate_mode and emission_coordinate_mode options
+        control any seeding half-cell offsets.
         """
         import numpy as np
 
@@ -13113,13 +13612,38 @@ to physically wet regions. This writer exports data; it does not seed.
 
     @staticmethod
     def _species_value_to_index(
-        value,
-        name_to_idx,
-        active_names,
-        label="speciation",
-        missing_names=None,
+        value, name_to_idx, active_names,
+        label="speciation", missing_names=None,
     ):
-        """Convert one species name/index to a validated integer index."""
+        """Convert one species name/index to a validated integer index.
+
+        Parameters
+        ----------
+        value : object
+            Provide value for this operation.
+
+        name_to_idx : object
+            Provide name to idx for this operation.
+
+        active_names : object
+            Provide active names for this operation.
+
+        label : str, default='speciation'
+            Provide label for this operation.
+
+        missing_names : object, optional, default=None
+            Provide missing names for this operation.
+
+        Returns
+        -------
+        result : int or None
+            Resolved species index, or None for an unspecified species.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        """
         import numbers
         import numpy as np
 
@@ -13154,11 +13678,36 @@ to physically wet regions. This writer exports data; it does not seed.
         return idx
 
     def _resolve_speciation_plan(self, n, speciation, default_specie):
-        """Normalize speciation without sampling.
+        """Resolve requested species assignment from the active configuration.
 
-        Returns a dict with basis ``unresolved``, ``exact`` or ``expected``.
-        The helper validates the same species names/indices and dictionary
-        fractions that real seeding uses, but never consumes RNG.
+        Parameters
+        ----------
+        n : object
+            Provide n for this operation.
+
+        speciation : object
+            Requested species assignment. Accepted forms depend on the seeding mode.
+
+        default_specie : object
+            Provide default specie for this operation.
+
+        Returns
+        -------
+        result : dict
+            Species assignment basis, indices and optional fractions.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        TypeError
+            An input has an unsupported type.
+
+        Notes
+        -----
+        Return the assignment basis unresolved, exact
+        or expected. Validate the configured species and dictionary fractions.
+        Do not consume the random-number generator.
         """
         import numpy as np
 
@@ -13241,7 +13790,30 @@ to physically wet regions. This writer exports data; it does not seed.
         )
 
     def build_specie_array(self, n, speciation, default_specie):
-        """Build the realized per-element species array for real seeding."""
+        """Sample or assign an initial species index to each new particle.
+
+        Parameters
+        ----------
+        n : int
+            Number of new particles.
+
+        speciation : object
+            Requested species assignment. Accepted forms depend on the seeding mode.
+
+        default_specie : int
+            Fallback species index.
+
+        Returns
+        -------
+        result : numpy.ndarray or None
+            Particle species indices of length n, or None when the plan needs no
+            explicit array.
+
+        Raises
+        ------
+        RuntimeError
+            The required operation or model state is not available.
+        """
         import numpy as np
 
         plan = self._resolve_speciation_plan(
@@ -13262,9 +13834,31 @@ to physically wet regions. This writer exports data; it does not seed.
         raise RuntimeError(f"Unsupported speciation plan basis {plan['basis']!r}")
 
     def speciation_to_indices_set(self, speciation, name_to_idx, active_names, label="speciation"):
-        """
-        Return a set of species indices referenced by speciation input (without sampling).
-        speciation may be: None/"config"/"default", int, str, array-like of int/str, dict with int/str keys.
+        """Resolve the species indices referenced by a speciation input.
+
+        Parameters
+        ----------
+        speciation : object
+            Requested species assignment. Accepted forms depend on the seeding mode.
+
+        name_to_idx : mapping
+            Species-name to species-index mapping.
+
+        active_names : collection of str
+            Species names active in the selected configuration.
+
+        label : str, default='speciation'
+            Label used in input validation messages.
+
+        Returns
+        -------
+        result : tuple[set[int], set[str]]
+            Return referenced species indices and missing names.
+
+        Raises
+        ------
+        TypeError
+            An input has an unsupported type.
         """
         import numpy as np
 
@@ -13294,14 +13888,30 @@ to physically wet regions. This writer exports data; it does not seed.
         return used, missing
 
     def validate_speciation_input_allowed(self, speciation, allowed_names, label="speciation"):
-        """
-        Validate that the user-provided speciation references only species allowed for this context,
-        AND that requested species are available (active) in self.name_species for this run.
+        """Check that a seeding speciation uses available, permitted species.
 
-        - water_speciation accepts speciation as None/"config"/"default" (config-driven) and int/str/array/dict
-        - sediment_speciation accepts speciation as "default"/int/str/array/dict, but not None/"config"
-        - allowed_names may include species that are not active in this run; those are ignored for building allowed_idx.
-        - If the user requests a species name not active in this run -> raises ValueError with a helpful message.
+        Parameters
+        ----------
+        speciation : object
+            Requested species assignment. Accepted forms depend on the seeding mode.
+
+        allowed_names : collection of str
+            Species that the current context permits.
+
+        label : str, default='speciation'
+            Label used in validation messages.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+
+        Notes
+        -----
+        For water speciation, allow None,
+        config, default or explicit species input. For sediment speciation,
+        require default or explicit input. Ignore inactive allowed_names when
+        building allowed indices, but reject any requested inactive species.
         """
         if speciation is None or (isinstance(speciation, str) and speciation in ("config", "default")):
             if label == "sed_speciation" and (speciation is None or speciation == "config"):
@@ -13415,112 +14025,164 @@ to physically wet regions. This writer exports data; it does not seed.
         )
 
     def seed_from_NETCDF(
-            self,
-            NETCDF_data,
-            Bathimetry_data=None,
-            Bathimetry_seed_data=None,
-            mode='water_conc',
-            lon_resol=None,
-            lat_resol=None,
-            lowerbound=0,
+            self, NETCDF_data, Bathimetry_data=None,
+            Bathimetry_seed_data=None, mode='water_conc', lon_resol=None,
+            lat_resol=None, lowerbound=0,
             higherbound=float("inf"),
             radius=50,
             mass_element_ug=100e3,
-            number_of_elements=None,
-            origin_marker=1,
-            gen_mode="mass",
-            water_speciation=None,
-            sed_speciation="default",
-            last_depth_until_bathimetry=True,
-            depth_layer_convention=None,
-            emission_placement="upper_1m",
-            emission_seafloor_eps=None,
+            number_of_elements=None, origin_marker=1, gen_mode="mass",
+            water_speciation=None, sed_speciation="default",
+            last_depth_until_bathimetry=True, depth_layer_convention=None,
+            emission_placement="upper_1m", emission_seafloor_eps=None,
             active_sediment_layer_thickness_data=None,
-            emission_coordinate_mode="pixel_center",
-            emission_wetcell_recovery=False,
-            emission_wetcell_diagnostic_radius=2000,
-            water_concentration_unit=None,
-            concentration_coordinate_mode="legacy",
-            dry_run=False,
+            emission_coordinate_mode="pixel_center", emission_wetcell_recovery=False,
+            emission_wetcell_diagnostic_radius=2000, water_concentration_unit=None,
+            concentration_coordinate_mode="legacy", dry_run=False,
     ):
-        """
-        Seed elements based on a dataarray with water/sediment concentration or direct emissions to water.
+        """Seed particles from water/sediment concentrations or direct emissions.
 
-        Arguments:
-        NETCDF_data:          dataarray with concentration or emission data on a rectilinear geographic grid.
-                              Accepted horizontal coordinate representations are:
-                                * latitude / longitude
-                                * lat / lon
-                                * CF-compliant geographic y / x axes
-                                * separable 2-D geographic lat/lon auxiliary coordinates
-                              Projected-only x/y and genuinely curvilinear 2-D lon/lat grids are rejected.
-            * time            (time) datetime64[ns]
-            * depth           (depth) float32 (optional)
-        Bathimetry_data:      dataarray with bathimetry data to calculate volume of grid cells for water_conc.
-                              Uses the same accepted geographic coordinate representations as NETCDF_data,
-                              has no time dimension, and contains positive-down water depth.
-        Bathimetry_seed_data: dataarray with bathimetry data to check seeding of elements.
-                              Uses the same accepted geographic coordinate representations as NETCDF_data,
-                              has no time dimension, and contains positive-down water depth.
-                              Required for "water_conc", "sed_conc", and "emission_depth".
-        active_sediment_layer_thickness_data: dataarray with local active sediment layer thickness [m].
-                              Uses the same accepted geographic coordinate representations as NETCDF_data.
-                              Used only for mode='sed_conc'. If not given, or if local values are invalid,
-                              the global self.get_config('chemical:sediment:mixing_depth') is used.
-        mode:                 "water_conc" (seed from concentration in water column, in ug/L),
-                      "sed_conc" (seed from sediment concentration, in ug/kg d.w.),
-                      "emission" (seed from direct discharge to water, in kg),
-                      "emission_depth" (seed from direct discharge to water, in kg,
-                                        at depth given by NETCDF_data.depth)
-        radius:               float32, unit: meters, elements will be created in a circular area around coordinates
-        lowerbound:           float32 elements with lower values are discarded
-        higherbound:          float32, elements with higher values are discarded
-        number_of_elements:   int, number of elements created for each vertical layer at each gridpoint
-        mass_element_ug:      float32, maximum mass of elements if number_of_elements is not specificed
-        lon_resol:            float32, longitude resolution of the NETCDF dataset
-        lat_resol:            float32, latitude resolution of the NETCDF dataset
-        gen_mode:             string, "mass" (elements generated from mass), "fixed" (fixed number of elements for each data point)
-        water_speciation:     Controls initial species assignment for elements seeded in water_conc, emission, and emission_depth modes.
-                              Accepted values:
-                                - None or "config": config-driven partitioning
-                                - "default": transfer_setup-dependent canonical default specie
-                                - int / str / array-like / dict: explicit species selection
-                              For chemical:transfer_setup='custom', only explicit species selection is allowed. None/"config"/"default" are rejected.
-        sed_speciation:       Controls initial species assignment for elements seeded in sed_conc mode.
-                              Accepted values:
-                                - "default"
-                                - int / str / array-like / dict: explicit species selection
-                              For chemical:transfer_setup='custom', only explicit species
-                              selection is allowed. None/"config"/"default" are rejected.
-        depth_layer_convention: string,"top" if depth coordinate stores TOP of each layer, "bottom" if depth coordinate stores BOTTOM of each layer.
-                                  Used only for mode='water_conc'.
-        last_depth_until_bathimetry: boolean, when depth is specified in NETCDF_data using "water_conc" mode
-                                    the water column below the highest depth value is considered the same as the last
-                                    available layer (True) or is consedered without chemical (False)
-        emission_placement:   "upper_1m" or "seafloor"
-                              Controls where emission-mode particles are initialized. Used only for mode='emission'.
-        emission_seafloor_eps: float32, optional offset above seabed used only when
-                              mode='emission' and emission_placement='seafloor'.
-        origin_marker:        int, or string "single", assign a marker to seeded elements. If "single" a different origin_marker will be assigned to each datapoint
-        emission_coordinate_mode: string, "pixel_center" or "source". Controls horizontal seed location for mode='emission'. Only used for mode='emission'.
-                      "pixel_center" seds at : lon/lat + half grid cell.
-                      "source" seeds at the exact coordinates in NETCDF_data.
-        emission_wetcell_recovery: boolean, If True, direct emission points with invalid/NaN.
-                       Bathimetry_seed_data are moved to the nearest valid wet bathymetry cell within radius.
-        emission_wetcell_diagnostic_radius: flot32, Radius in meters used only for debug diagnostics when emission_wetcell_recovery is enabled but no valid wet
-                               cell is found within radius. Set to None or 0 to disable outside-radius diagnostic lookup.
-        water_concentration_unit: string or None, input water concentration unit, used only for mode='water_conc'.
-                              If None, reads 'units_water' or 'units' from input attributes; defaults to 'ug/L' if missing.
-                              Supports kg/g/mg/ug/µg/ng per m3 or L. Explicit values override metadata.
-                              Conversion applies to mass calculation; selection bounds remain in input units.
-        concentration_coordinate_mode: string, "legacy" or "center", used for water_conc and sed_conc.
-                              "legacy" adds half the grid resolution to input coordinates (default).
-                              "center" uses input coordinates directly, as required for writer-derived cell centres.
-                              Emission placement and radius-based spreading are unchanged.
-        dry_run:              boolean. If True, validate and return a deterministic seeding estimate
-                              without sampling stochastic z/species values or calling seed_elements().
+        Parameters
+        ----------
+        NETCDF_data : object
+            dataarray with concentration or emission data on a rectilinear geographic
+            grid. Accepted horizontal coordinate representations are: * latitude /
+            longitude * lat / lon * CF-compliant geographic y / x axes * separable
+            2-D geographic lat/lon auxiliary coordinates.
 
+        Bathimetry_data : object, optional, default=None
+            dataarray with bathimetry data to calculate volume of grid cells for
+            water_conc. Uses the same accepted geographic coordinate representations
+            as NETCDF_data, has no time dimension, and contains positive-down water
+            depth.
 
+        Bathimetry_seed_data : object, optional, default=None
+            dataarray with bathimetry data to check seeding of elements. Uses the same
+            accepted geographic coordinate representations as NETCDF_data, has no
+            time dimension, and contains positive-down water depth. Required for
+            "water_conc", "sed_conc", and "emission_depth".
+
+        mode : str, default='water_conc'
+            "water_conc" (seed from concentration in water column, in ug/L), "sed_conc"
+            (seed from sediment concentration, in ug/kg d.w.), "emission" (seed from
+            direct discharge to water, in kg), "emission_depth" (seed from direct
+            discharge to water, in kg, at depth given by.
+
+        lon_resol : float, optional, default=None
+            longitude resolution of the NETCDF dataset
+
+        lat_resol : float, optional, default=None
+            latitude resolution of the NETCDF dataset
+
+        lowerbound : int, default=0
+            float32 elements with lower values are discarded
+
+        higherbound : object, default=float('inf')
+            elements with higher values are discarded
+
+        radius : int, default=50
+            unit: meters, elements will be created in a circular area around coordinates
+
+        mass_element_ug : float, optional, default=100000.0
+            maximum mass of elements if number_of_elements is not specificed
+
+        number_of_elements : int, optional, default=None
+            number of elements created for each vertical layer at each gridpoint
+
+        origin_marker : int or array_like, optional, default=1
+            or string "single", assign a marker to seeded elements. If "single" a
+            different origin_marker will be assigned to each datapoint
+
+        gen_mode : str or path-like, default='mass'
+            "mass" (elements generated from mass), "fixed" (fixed number of elements for
+            each data point)
+
+        water_speciation : object, optional, default=None
+            Controls initial species assignment for elements seeded in water_conc,
+            emission, and emission_depth modes. Accepted values: - None or "config":
+            config-driven partitioning - "default": transfer_setup-dependent
+            canonical default specie - int / str / array-like / dict:.
+
+        sed_speciation : str, default='default'
+            Controls initial species assignment for elements seeded in sed_conc mode.
+            Accepted values: - "default" - int / str / array-like / dict: explicit
+            species selection For chemical:transfer_setup='custom', only explicit
+            species selection is allowed.
+
+        last_depth_until_bathimetry : bool, default=True
+            when depth is specified in NETCDF_data using "water_conc" mode the water
+            column below the highest depth value is considered the same as the last
+            available layer (True) or is consedered without chemical (False)
+
+        depth_layer_convention : object, optional, default=None
+            "top" if depth coordinate stores TOP of each layer, "bottom" if depth
+            coordinate stores BOTTOM of each layer. Used only for mode='water_conc'.
+
+        emission_placement : str, default='upper_1m'
+            "upper_1m" or "seafloor" Controls where emission-mode particles are
+            initialized. Used only for mode='emission'.
+
+        emission_seafloor_eps : float, default=None
+            optional offset above seabed used only when mode='emission' and
+            emission_placement='seafloor'.
+
+        active_sediment_layer_thickness_data : object, optional, default=None
+            dataarray with local active sediment layer thickness [m]. Uses the same
+            accepted geographic coordinate representations as NETCDF_data. Used only
+            for mode='sed_conc'.
+
+        emission_coordinate_mode : str or path-like, default='pixel_center'
+            "pixel_center" or "source". Controls horizontal seed location for
+            mode='emission'. Only used for mode='emission'. "pixel_center" seds at :
+            lon/lat + half grid cell. "source" seeds at the exact coordinates in
+            NETCDF_data.
+
+        emission_wetcell_recovery : bool, default=False
+            If True, direct emission points with invalid/NaN. Bathimetry_seed_data are
+            moved to the nearest valid wet bathymetry cell within radius.
+
+        emission_wetcell_diagnostic_radius : int, default=2000
+            flot32, Radius in meters used only for debug diagnostics when
+            emission_wetcell_recovery is enabled but no valid wet cell is found
+            within radius. Set to None or 0 to disable outside-radius diagnostic
+            lookup.
+
+        water_concentration_unit : str or path-like, default=None
+            string or None, input water concentration unit, used only for
+            mode='water_conc'. If None, reads 'units_water' or 'units' from input
+            attributes. defaults to 'ug/L' if missing. Supports kg/g/mg/ug/µg/ng per
+            m3 or L. Explicit values override metadata.
+
+        concentration_coordinate_mode : str or path-like, default='legacy'
+            "legacy" or "center", used for water_conc and sed_conc. "legacy" adds half
+            the grid resolution to input coordinates (default). "center" uses input
+            coordinates directly, as required for writer-derived cell centres.
+
+        dry_run : bool, default=False
+            If True, validate and return a deterministic seeding estimate without
+            sampling stochastic z/species values or calling seed_elements().
+
+        Returns
+        -------
+        result : dict or None
+            Return a deterministic seed estimate in dry_run mode. Normal seeding
+            modifies the model state.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        RuntimeError
+            The required operation or model state is not available.
+
+        Notes
+        -----
+        - Water concentrations are mass per volume. Sediment concentrations are mass per dry sediment mass.
+        - Validate bathymetry before sampling an initial depth.
+        - The dry_run mode reports estimates and does not seed particles.
+        - For sediment concentration seeding, use the local active
+        sediment thickness. When the thickness is missing or invalid, use
+        chemical:sediment:mixing_depth from the model configuration.
         """
         import opendrift
         from datetime import datetime, timezone
@@ -15237,15 +15899,31 @@ to physically wet regions. This writer exports data; it does not seed.
         return None
 
     def _normalize_regrid_structured_source(self, ds):
-        """Normalize one supported structured source grid for :meth:`regrid_conc`.
+        """Normalize coordinates and topology for structured-grid regridding.
 
-        The returned geometry follows the internal ``(x, y)`` convention already used
-        by ``_normalize_output_grid``.  Science variables are transposed to the returned
-        ``horizontal_dims`` before flattening, so geometry and values remain aligned.
+        Parameters
+        ----------
+        ds : object
+            Provide ds for this operation.
 
-        Supported sources are regular/curvilinear geographic and regular/curvilinear
-        projected grids.  UGRID/face-node meshes are intentionally rejected here,
-        before any remapping state is allocated.
+        Returns
+        -------
+        result : dict
+            Normalized coordinate geometry, dimensions and topology.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        NotImplementedError
+            The requested scientific or grid mode is not implemented.
+
+        Notes
+        -----
+        Normalize inputs for ``regrid_conc``. Use internal (x, y) geometry from
+        ``_normalize_output_grid``. Align values with horizontal_dims before
+        flattening. Accept regular/curvilinear geographic and projected grids.
+        Reject UGRID meshes before allocating remapping data.
         """
         import xarray as xr
         from pyproj import CRS
@@ -15521,9 +16199,35 @@ to physically wet regions. This writer exports data; it does not seed.
     def _build_regrid_target_grid(latmin, latmax, latstep, lonmin, lonmax, lonstep):
         """Construct the regular geographic target grid used by ``regrid_conc``.
 
-        Backward-compatible endpoint semantics are explicit: ``latmin``/``lonmin`` are
-        the first target *centers* and ``latmax``/``lonmax`` are exclusive upper center
-        limits.  Cell bounds extend one half-step around each center.
+        Parameters
+        ----------
+        latmin : float
+            First latitude center of the target grid, in degrees north.
+
+        latmax : float
+            Exclusive upper latitude-center limit, in degrees north.
+
+        latstep : float
+            Latitude step of the output grid in degrees.
+
+        lonmin : float
+            First longitude center of the target grid, in degrees east.
+
+        lonmax : float
+            Exclusive upper longitude-center limit, in degrees east.
+
+        lonstep : float
+            Longitude step of the output grid in degrees.
+
+        Returns
+        -------
+        result : dict
+            Target latitude/longitude axes, bounds and area metadata.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
         """
         from pyproj import Geod
 
@@ -15607,10 +16311,41 @@ to physically wet regions. This writer exports data; it does not seed.
                                       memory_auto_reserve_fraction=0.20,
                                       memory_capacity_report=None,
                                       detector_kwargs=None):
-        """Resolve the managed regrid working-set budget in MiB.
+        """Select a memory budget for conservative regridding.
 
-        ``'auto'`` shares the writer's effective-capacity detector (host, cgroup and
-        RLIMIT-aware) but deliberately uses a regrid-specific allocation model.
+        Parameters
+        ----------
+        memory_budget_mb : float, "auto", or None, default='auto'
+            Memory budget in MiB for the principal operation.
+
+        memory_auto_fraction : float, default=0.5
+            Fraction of usable memory allotted to known large arrays.
+
+        memory_auto_reserve_mb : float, default=1024
+            Absolute reserve in MiB for automatic memory budgeting.
+
+        memory_auto_reserve_fraction : float, default=0.2
+            Fractional reserve for automatic memory budgeting.
+
+        memory_capacity_report : object, optional, default=None
+            Provide memory capacity report for this operation.
+
+        detector_kwargs : object, optional, default=None
+            Provide detector kwargs for this operation.
+
+        Returns
+        -------
+        result : tuple
+            Resolved memory limit and the decision report.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        RuntimeError
+            The required operation or model state is not available.
+        MemoryError
+            The requested data allocation exceeds available memory.
         """
         if memory_budget_mb is None:
             return None, {'mode': 'none', 'resolved_budget_bytes': None, 'decision': 'ALLOW'}
@@ -16085,7 +16820,29 @@ to physically wet regions. This writer exports data; it does not seed.
 
     @staticmethod
     def _build_regrid_source_polygons(source_desc, *, area_rtol=5e-6, area_atol_m2=1e-3):
-        """Build validated Shapely polygons aligned with flattened internal source cells."""
+        """Construct source-cell polygons for conservative regridding.
+
+        Parameters
+        ----------
+        source_desc : object
+            Source desc used by the operation.
+
+        area_rtol : float, default=5e-06
+            Provide area rtol for this operation.
+
+        area_atol_m2 : float, default=0.001
+            Provide area atol m2 for this operation.
+
+        Returns
+        -------
+        result : dict
+            Source-cell polygons and valid flattened indices.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        """
         from shapely.geometry import Polygon
         from pyproj import Geod
 
@@ -16142,10 +16899,23 @@ to physically wet regions. This writer exports data; it does not seed.
     def _build_regrid_spatial_index(source_geometry, source_desc=None):
         """Build an equal-area STRtree and retain source-flat-index mappings.
 
-        Polygon intersections are performed in a WGS84 cylindrical equal-area working
-        CRS.  This makes overlap areas additive across target-cell partitions, unlike
-        summing independently geodesic sub-polygons whose subdivided edges are not the
-        same geodesic curves as the unsplit source edge.
+        Parameters
+        ----------
+        source_geometry : object
+            Source geometry used by the operation.
+
+        source_desc : object, optional, default=None
+            Source desc used by the operation.
+
+        Returns
+        -------
+        result : dict
+            Spatial STRtree and its source-index lookup.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
         """
         from shapely.strtree import STRtree
         from shapely.ops import transform as shapely_transform
@@ -16205,7 +16975,46 @@ to physically wet regions. This writer exports data; it does not seed.
 
     def _build_regrid_overlap_chunk(self, source_desc, source_geometry, spatial_index,
                                     target_grid, row_start, row_end, *, area_tol_fraction=1e-8):
-        """Build additive equal-area source/target overlap records for target rows."""
+        """Calculate target-to-source intersection areas for one chunk.
+
+        Parameters
+        ----------
+        source_desc : object
+            Source desc used by the operation.
+
+        source_geometry : object
+            Source geometry used by the operation.
+
+        spatial_index : object
+            Provide spatial index for this operation.
+
+        target_grid : object
+            Target grid used by the operation.
+
+        row_start : object
+            Provide row start for this operation.
+
+        row_end : object
+            Provide row end for this operation.
+
+        area_tol_fraction : float, default=1e-08
+            Provide area tol fraction for this operation.
+
+        Returns
+        -------
+        result : dict
+            Sparse intersection indices and weights for one target-row chunk.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+
+        Notes
+        -----
+        - Preserve conservative source-to-target overlap semantics.
+        - Do not treat physical wet-layer volume as an ordinary static area weight.
+        """
         from shapely.geometry import Polygon
         from shapely.ops import transform as shapely_transform
 
@@ -16274,7 +17083,37 @@ to physically wet regions. This writer exports data; it does not seed.
         }
 
     def _build_overlap_plan(self, source_desc, target_grid, *, row_chunk, plan_directory):
-        """Persist bounded overlap chunks so all later variable slabs reuse one spatial plan."""
+        """Prepare a sparse conservative overlap plan.
+
+        Parameters
+        ----------
+        source_desc : object
+            Source desc used by the operation.
+
+        target_grid : object
+            Target grid used by the operation.
+
+        row_chunk : int or float
+            Provide row chunk for this operation.
+
+        plan_directory : object
+            Provide plan directory for this operation.
+
+        Returns
+        -------
+        result : dict
+            Overlap chunks, row-chunk size and record count.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+
+        Notes
+        -----
+        - Preserve conservative source-to-target overlap semantics.
+        - Do not treat physical wet-layer volume as an ordinary static area weight.
+        """
         import os
 
         row_chunk = int(row_chunk)
@@ -16337,7 +17176,29 @@ to physically wet regions. This writer exports data; it does not seed.
         return 'density' + name[len('property_mean'):]
 
     def _classify_regrid_variable(self, name, da, ds):
-        """Classify spatial remap semantics from the current writer/downstream contract."""
+        """Classify spatial remap semantics from the current writer/downstream contract.
+
+        Parameters
+        ----------
+        name : object
+            Provide name for this operation.
+
+        da : object
+            Provide da for this operation.
+
+        ds : object
+            Provide ds for this operation.
+
+        Returns
+        -------
+        result : dict
+            Selected remapping operation and any weighting support variable.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        """
         lname = str(name).lower()
         attrs = dict(getattr(da, 'attrs', {}))
         explicit = str(attrs.get('regrid_semantics', '')).strip().lower()
@@ -16419,7 +17280,43 @@ to physically wet regions. This writer exports data; it does not seed.
     @staticmethod
     def _remap_overlap_chunk(values_xy, overlap_chunk, overlap_plan, kind, *, support_values_xy=None,
                              categorical_threshold=0.5):
-        """Apply one semantic remap kernel to a persisted overlap chunk."""
+        """Apply conservative overlaps according to variable type.
+
+        Parameters
+        ----------
+        values_xy : object
+            Provide values xy for this operation.
+
+        overlap_chunk : int or float
+            Provide overlap chunk for this operation.
+
+        overlap_plan : object
+            Provide overlap plan for this operation.
+
+        kind : object
+            Provide kind for this operation.
+
+        support_values_xy : object, optional, default=None
+            Provide support values xy for this operation.
+
+        categorical_threshold : float, default=0.5
+            Provide categorical threshold for this operation.
+
+        Returns
+        -------
+        result : numpy.ndarray
+            Remapped values for one target-row chunk, shape (rows, longitude).
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+
+        Notes
+        -----
+        - Preserve conservative source-to-target overlap semantics.
+        - Do not treat physical wet-layer volume as an ordinary static area weight.
+        """
         values = np.asarray(values_xy)
         if values.ndim != 2:
             raise ValueError('values_xy must be a 2-D geometry-aligned source slab.')
@@ -16500,7 +17397,33 @@ to physically wet regions. This writer exports data; it does not seed.
     def _remap_regrid_mask_chunk(self, name, values_xy, overlap_chunk, overlap_plan, *,
                                  categorical_threshold=0.5,
                                  domain_valid_coverage_threshold=0.999999):
-        """Apply explicit categorical/domain-invalid policies."""
+        """Apply explicit categorical/domain-invalid policies.
+
+        Parameters
+        ----------
+        name : object
+            Provide name for this operation.
+
+        values_xy : object
+            Provide values xy for this operation.
+
+        overlap_chunk : int or float
+            Provide overlap chunk for this operation.
+
+        overlap_plan : object
+            Provide overlap plan for this operation.
+
+        categorical_threshold : float, default=0.5
+            Provide categorical threshold for this operation.
+
+        domain_valid_coverage_threshold : float, default=0.999999
+            Provide domain valid coverage threshold for this operation.
+
+        Returns
+        -------
+        result : numpy.ndarray
+            Remapped mask values or coverage for the selected target rows.
+        """
         lname = str(name).lower()
         if lname == 'domain_invalid':
             coverage = np.asarray(overlap_chunk['coverage_fraction'], dtype=np.float64)
@@ -16533,7 +17456,23 @@ to physically wet regions. This writer exports data; it does not seed.
         return support_name, slab
 
     def _validate_regrid_metadata_references(self, dataset_or_filename):
-        """Mechanically reject dangling CF/support references in a regrid result."""
+        """Check metadata references in a regridded NetCDF output.
+
+        Parameters
+        ----------
+        dataset_or_filename : object
+            Provide dataset or filename for this operation.
+
+        Returns
+        -------
+        result : bool
+            True when the output references are valid.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        """
         import xarray as xr
 
         opened_here = isinstance(dataset_or_filename, (str, bytes))
@@ -16579,12 +17518,26 @@ to physically wet regions. This writer exports data; it does not seed.
                 ds.close()
 
     def interp_weights(self, xyz, uvw):
-        """Compatibility helper for 2-D barycentric interpolation.
+        """Calculate compatibility barycentric interpolation vertices and weights.
 
-        Points outside the Delaunay hull receive NaN weights.  The legacy implementation
-        indexed simplex ``-1`` and could therefore return plausible but incorrect finite
-        extrapolations.  Production regrid_conc no longer uses this helper for conservative
-        cell remapping.
+        Parameters
+        ----------
+        xyz : array_like
+            Source-point coordinates, shape (n_points, 2).
+
+        uvw : array_like
+            Target-point coordinates, shape (n_target, 2).
+
+        Returns
+        -------
+        result : tuple of ndarray
+            Simplex vertices and interpolation weights. Points outside the source hull
+            have invalid weights.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
         """
         import scipy.spatial as sp
 
@@ -16607,7 +17560,29 @@ to physically wet regions. This writer exports data; it does not seed.
         return vertices, weights
 
     def interpolate_regrid(self, values, vtx, wts):
-        """Apply compatibility barycentric weights, preserving invalid targets as NaN."""
+        """Apply barycentric interpolation weights to source values.
+
+        Parameters
+        ----------
+        values : array_like
+            Values on the source grid.
+
+        vtx : ndarray
+            Source-vertex indices returned by interp_weights.
+
+        wts : ndarray
+            Barycentric weights returned by interp_weights.
+
+        Returns
+        -------
+        result : numpy.ndarray
+            Interpolated target values with NaN outside valid source geometry.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        """
         values = np.asarray(values)
         vtx = np.asarray(vtx, dtype=np.int64)
         wts = np.asarray(wts, dtype=np.float64)
@@ -16620,24 +17595,61 @@ to physically wet regions. This writer exports data; it does not seed.
         return out
 
     def regrid_dataarray(self,
-                         mode,
-                         ds,
+                         mode, ds,
                          new_lat, new_lon,
                          lonlat_2d, lonlat_2d_new,
                          new_lon_coords, new_lat_coords,
                          variable,
                          time_name, **kwargs):
-        '''
-        Regrid output of "write_netcdf_chemical_density_map" or "calculate_water_sediment_conc" functions
-        depending on the value of "mode"
-        Used inside "regrid_conc" function
+        """Interpolate a selected legacy map variable onto target coordinates.
 
-        mode:         string, "chemical_density_map" or "wat_sed_map"
-        ds:           xarray DataSet containing "variable", topo (density, optional) dataarrays to be regridded
-        variable:     string, name of concentration variable to be regridded within ds
-        time_name:    string, name of time dimension (time or time_avg)
+        Parameters
+        ----------
+        mode : str
+            "chemical_density_map" or "wat_sed_map"
 
-        '''
+        ds : xarray.Dataset
+            xarray DataSet containing "variable", topo (density, optional) dataarrays to
+            be regridded
+
+        new_lat : array_like
+            Target latitude coordinates in degrees north.
+
+        new_lon : array_like
+            Target longitude coordinates in degrees east.
+
+        lonlat_2d : array_like
+            Source horizontal coordinate pairs.
+
+        lonlat_2d_new : array_like
+            Target horizontal coordinate pairs.
+
+        new_lon_coords : array_like
+            Target longitude coordinate axis.
+
+        new_lat_coords : array_like
+            Target latitude coordinate axis.
+
+        variable : str
+            name of concentration variable to be regridded within ds
+
+        time_name : str
+            name of time dimension (time or time_avg)
+
+        kwargs : mapping
+            Additional keyword options, if accepted by the selected call.
+
+        Returns
+        -------
+        result : tuple
+            Regridded array, simplex vertices, and interpolation weights.
+
+        Notes
+        -----
+        Use this helper within regrid_conc for output from
+        write_netcdf_chemical_density_map (mode='chemical_density_map') or
+        calculate_water_sediment_conc (mode='wat_sed_map').
+        """
         import xarray as xr
 
         # create an empty arrays to store the regridded data
@@ -16704,21 +17716,90 @@ to physically wet regions. This writer exports data; it does not seed.
                     categorical_threshold=0.5,
                     domain_valid_coverage_threshold=0.999999,
                     validate_metadata=True):
-        """Regrid a supported structured ChemicalDrift product to regular latitude/longitude.
+        """Remap a structured concentration product to a regular geographic grid.
 
-        Accepted source topologies are regular/curvilinear geographic and
-        regular/curvilinear projected structured grids.  Triangular/unstructured meshes
-        are intentionally rejected.  The target uses constant angular spacing with
-        ``latmin/lonmin`` as first centers and ``latmax/lonmax`` as exclusive center limits.
+        Parameters
+        ----------
+        filename : str or path-like
+            Input concentration NetCDF file.
 
-        Spatial semantics are quantity-aware: density/count fields use conservative
-        equal-area overlap fractions; current concentration fields use overlap-weighted
-        intensive averaging; property_mean fields remap count-weighted numerator and
-        denominator; topography is continuous and categorical masks use area coverage.
+        filename_regridded : str or path-like
+            Output NetCDF path.
 
-        ``mode``, ``lon_2d_ncdm`` and ``lat_2d_ncdm`` are retained only for call
-        compatibility.  Current files are interpreted from their own coordinate/CRS
-        metadata and do not require those legacy arguments.
+        latmin : float
+            First latitude center of the target grid, in degrees north.
+
+        latmax : float
+            Exclusive upper latitude-center limit, in degrees north.
+
+        latstep : float
+            Latitude step of the output grid in degrees.
+
+        lonmin : float
+            First longitude center of the target grid, in degrees east.
+
+        lonmax : float
+            Exclusive upper longitude-center limit, in degrees east.
+
+        lonstep : float
+            Longitude step of the output grid in degrees.
+
+        mode : str, optional, default=None
+            Legacy compatibility argument. Spatial interpretation uses file metadata.
+
+        variables : sequence of str, optional, default=None
+            Variables to remap. None selects supported variables.
+
+        concfile : xarray.Dataset or None, default=None
+            Optional already-loaded concentration dataset.
+
+        lon_2d_ncdm : array_like, optional, default=None
+            Legacy compatibility argument.
+
+        lat_2d_ncdm : array_like, optional, default=None
+            Legacy compatibility argument.
+
+        memory_budget_mb : float, "auto", or None, default='auto'
+            Memory budget in MiB for the principal operation.
+
+        memory_auto_fraction : float, default=0.5
+            Fraction of usable memory allotted to known large arrays.
+
+        memory_auto_reserve_mb : float, default=1024
+            Absolute reserve in MiB for automatic memory budgeting.
+
+        memory_auto_reserve_fraction : float, default=0.2
+            Fractional reserve for automatic memory budgeting.
+
+        categorical_threshold : float, default=0.5
+            Overlap coverage threshold for categorical fields.
+
+        domain_valid_coverage_threshold : float, default=0.999999
+            Coverage threshold for valid-domain classification.
+
+        validate_metadata : bool, default=True
+            Validate CF and grid metadata in the output.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        TypeError
+            An input has an unsupported type.
+
+        Notes
+        -----
+        - Only structured inputs are supported. Native triangular UGRID grids are rejected.
+        - Remap extensive counts with area overlap and intensive concentrations with overlap-weighted means.
+        - Keep the CF-time coordinate and source variable semantics.
+
+        Examples
+        --------
+        Assume ``model`` can access the source file and its grid metadata.
+
+        >>> model.regrid_conc('map.nc', 'map_regular.nc',
+        ...                   latmin=44.0, latmax=45.0, latstep=0.01,
+        ...                   lonmin=12.0, lonmax=13.0, lonstep=0.01)
         """
         import os
         import tempfile
@@ -17108,9 +18189,7 @@ to physically wet regions. This writer exports data; it does not seed.
 
     @classmethod
     def _save_masked_DataArray(cls,
-                               DataArray_masked,
-                               file_output_path,
-                               file_output_name,
+                               DataArray_masked, file_output_path, file_output_name,
                                to_netcdf_kwargs=None):
         """Serialize a masked xarray object through a validated atomic write."""
         import os
@@ -17200,7 +18279,26 @@ to physically wet regions. This writer exports data; it does not seed.
 
     @classmethod
     def _resolve_mask_grid_crs(cls, obj, raster_crs=None):
-        """Resolve the grid CRS without borrowing the vector-mask CRS."""
+        """Resolve the coordinate reference system for masking.
+
+        Parameters
+        ----------
+        obj : object
+            Provide obj for this operation.
+
+        raster_crs : object, optional, default=None
+            Provide raster crs for this operation.
+
+        Returns
+        -------
+        result : pyproj.CRS
+            CRS used to compare the mask geometry and input cells.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        """
         import xarray as xr
         from pyproj import CRS
 
@@ -17311,7 +18409,28 @@ to physically wet regions. This writer exports data; it does not seed.
 
     @classmethod
     def _detect_mask_grid_topology(cls, obj, raster_crs=None):
-        """Classify supported writer grids without guessing ambiguous layouts."""
+        """Determine the spatial topology of a masked grid.
+
+        Parameters
+        ----------
+        obj : object
+            Provide obj for this operation.
+
+        raster_crs : object, optional, default=None
+            Provide raster crs for this operation.
+
+        Returns
+        -------
+        result : dict
+            Detected grid topology and spatial dimensions.
+
+        Raises
+        ------
+        TypeError
+            An input has an unsupported type.
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        """
         import xarray as xr
 
         if not isinstance(obj, (xr.DataArray, xr.Dataset)):
@@ -17662,18 +18781,51 @@ to physically wet regions. This writer exports data; it does not seed.
 
     @classmethod
     def _mask_DataArray(cls,
-                        DataArray,
-                        shp_mask,
-                        shp_epsg="epsg:4326",
-                        invert_shp=False,
-                        drop_data=False,
-                        raster_crs=None,
+                        DataArray, shp_mask, shp_epsg="epsg:4326",
+                        invert_shp=False, drop_data=False, raster_crs=None,
                         mask_chunk_size=250000):
         """Mask a supported structured or triangular xarray object by cell/face center.
 
-        The routine supports every grid topology written by
-        ``write_netcdf_chemical_density_map``.  Grid CRS and vector CRS are resolved
-        independently.  Projected coordinates are never relabeled as geographic.
+        Parameters
+        ----------
+        DataArray : object
+            Provide DataArray for this operation.
+
+        shp_mask : object
+            Mask that selects valid cells or particles.
+
+        shp_epsg : str, default='epsg:4326'
+            Provide shp epsg for this operation.
+
+        invert_shp : bool, default=False
+            Provide invert shp for this operation.
+
+        drop_data : bool, default=False
+            Source data used by this operation.
+
+        raster_crs : object, optional, default=None
+            Provide raster crs for this operation.
+
+        mask_chunk_size : int or float, default=250000
+            Provide mask chunk size for this operation.
+
+        Returns
+        -------
+        result : xarray.DataArray
+            Masked field with the original nonspatial coordinates.
+
+        Raises
+        ------
+        TypeError
+            An input has an unsupported type.
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+
+        Notes
+        -----
+        Support every structured or triangular topology from
+        ``write_netcdf_chemical_density_map``. Resolve the grid and vector CRS
+        independently. Do not label projected coordinates as geographic.
         """
         import xarray as xr
 
@@ -17765,10 +18917,22 @@ to physically wet regions. This writer exports data; it does not seed.
     def _merge_masked_dataset(DataArray_ls):
         """Merge DataArray/Dataset objects without changing their topology.
 
-        The legacy caller may supply ``[declared_names, object]`` pairs.  The
-        declared names are used only to name an anonymous DataArray.  Dataset
-        variables are never stacked through ``to_dataarray()`` and dimensions
-        are never collapsed to force compatibility.
+        Parameters
+        ----------
+        DataArray_ls : object
+            Provide DataArray ls for this operation.
+
+        Returns
+        -------
+        result : xarray.Dataset
+            Merged masked variables and structural metadata.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        TypeError
+            An input has an unsupported type.
         """
         import xarray as xr
 
@@ -17841,7 +19005,55 @@ to physically wet regions. This writer exports data; it does not seed.
                                       file_output_name=None, loader='auto', mask_chunk_size=250000,
                                       open_dataset_kwargs=None, open_rasterio_kwargs=None,
                                       to_netcdf_kwargs=None):
-        """Validate public mask dispatch arguments before file or geometry I/O."""
+        """Validate vector-mask input and output combinations.
+
+        Parameters
+        ----------
+        DataArray : object, optional, default=None
+            Provide DataArray for this operation.
+
+        file_path : str or path-like, optional, default=None
+            Directory or path of an input dataset.
+
+        file_name : str, optional, default=None
+            Input or output filename.
+
+        save_masked_file : bool, default=False
+            Provide save masked file for this operation.
+
+        file_output_path : str or path-like, optional, default=None
+            Destination directory for output files.
+
+        file_output_name : str, optional, default=None
+            Name of the saved output file.
+
+        loader : str, default='auto'
+            Provide loader for this operation.
+
+        mask_chunk_size : int or float, default=250000
+            Provide mask chunk size for this operation.
+
+        open_dataset_kwargs : object, optional, default=None
+            Provide open dataset kwargs for this operation.
+
+        open_rasterio_kwargs : object, optional, default=None
+            Provide open rasterio kwargs for this operation.
+
+        to_netcdf_kwargs : object, optional, default=None
+            Provide to netcdf kwargs for this operation.
+
+        Returns
+        -------
+        result : bool
+            True after validation of the masking request.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        TypeError
+            An input has an unsupported type.
+        """
         import os
 
         if not isinstance(save_masked_file, bool):
@@ -17923,35 +19135,93 @@ to physically wet regions. This writer exports data; it does not seed.
         return f"{stem}_{int(index):03d}{ext}"
 
     def mask_netcdf_map(self,
-                        shp_mask_file,
-                        file_path=None,
-                        file_name=None,
-                        DataArray=None,
-                        shp_epsg="epsg:4326",
-                        invert_shp=False,
-                        drop_data=False,
-                        save_masked_file=False,
-                        file_output_path=None,
-                        file_output_name=None,
-                        permitted_dims=None,
-                        raster_crs=None,
-                        chunks=None,
-                        open_dataset_kwargs=None,
-                        open_rasterio_kwargs=None,
-                        loader='auto',
-                        mask_chunk_size=250000,
+                        shp_mask_file, file_path=None, file_name=None,
+                        DataArray=None, shp_epsg="epsg:4326", invert_shp=False,
+                        drop_data=False, save_masked_file=False,
+                        file_output_path=None, file_output_name=None,
+                        permitted_dims=None, raster_crs=None, chunks=None,
+                        open_dataset_kwargs=None, open_rasterio_kwargs=None,
+                        loader='auto', mask_chunk_size=250000,
                         to_netcdf_kwargs=None):
-        """Mask xarray data with a vector geometry on all ChemicalDrift writer grids.
+        """Mask NetCDF or xarray data using a vector polygon.
 
-        Supported spatial topologies are regular geographic, curvilinear geographic,
-        regular projected, curvilinear projected, and triangular unstructured grids.
-        Selection uses cell/face centers.  One horizontal mask is broadcast over other
-        payload dimensions; CF/UGRID structural variables remain unmasked.
+        Parameters
+        ----------
+        shp_mask_file : str or path-like
+            Polygon vector file used to define the mask.
 
-        Direct DataArray input returns a DataArray.  Direct/file Dataset input returns
-        one self-contained Dataset.  Legacy list/tuple input returns an ordered list.
-        When ``save_masked_file`` is true, the function returns the written path or
-        ordered list of paths.
+        file_path : str or path-like, optional, default=None
+            Directory or path of an input dataset.
+
+        file_name : str, optional, default=None
+            Input or output filename.
+
+        DataArray : xarray.DataArray, Dataset, or sequence, optional, default=None
+            In-memory input. When absent, use the selected file path.
+
+        shp_epsg : str or CRS, default='epsg:4326'
+            Coordinate reference system of the mask polygon.
+
+        invert_shp : bool, default=False
+            Invert the polygon inclusion condition.
+
+        drop_data : bool, default=False
+            Drop data outside the selected mask where supported.
+
+        save_masked_file : bool, default=False
+            Write masked data to disk and return saved path(s).
+
+        file_output_path : str or path-like, optional, default=None
+            Destination directory for output files.
+
+        file_output_name : str, optional, default=None
+            Name of the saved output file.
+
+        permitted_dims : sequence of str, optional, default=None
+            Allowed dimensions for the masked data.
+
+        raster_crs : CRS-like, optional, default=None
+            Override the raster coordinate reference system.
+
+        chunks : mapping, optional, default=None
+            Optional xarray chunk specification.
+
+        open_dataset_kwargs : mapping, optional, default=None
+            Keyword arguments for opening NetCDF datasets.
+
+        open_rasterio_kwargs : mapping, optional, default=None
+            Keyword arguments for opening raster data.
+
+        loader : str, default='auto'
+            Select the file-loading backend.
+
+        mask_chunk_size : positive int, default=250000
+            Maximum number of spatial points per mask chunk.
+
+        to_netcdf_kwargs : mapping, optional, default=None
+            NetCDF encoding or save options.
+
+        Returns
+        -------
+        result : xarray object, list, or str
+            Masked data or saved file paths. Return type follows the input and save
+            options.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+
+        Notes
+        -----
+        - Use cell or face centers to decide polygon inclusion.
+        - Do not mask CF/UGRID mesh topology or structural metadata variables.
+
+        Examples
+        --------
+        Mask an already-loaded xarray DataArray.
+
+        >>> result = model.mask_netcdf_map('coast_mask.shp', DataArray=field)
         """
         import os
         import geopandas as gpd
@@ -18232,7 +19502,32 @@ to physically wet regions. This writer exports data; it does not seed.
     @classmethod
     def _prepare_create_images_dataarray(cls, Conc_Dataset, variable_name,
                                          time_start, time_end):
-        """Select one field and its native plotting geometry without modifying input."""
+        """Select one field and its native plotting geometry without modifying input.
+
+        Parameters
+        ----------
+        Conc_Dataset : object
+            Provide Conc Dataset for this operation.
+
+        variable_name : str
+            Name of the selected data variable.
+
+        time_start : datetime-like or float, optional
+            Start of the selected time interval. Units depend on the method.
+
+        time_end : datetime-like or float, optional
+            End of the selected time interval. Units depend on the method.
+
+        Returns
+        -------
+        result : tuple
+            Selected map DataArray and its spatial geometry.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        """
         import numpy as np
         import pandas as pd
 
@@ -18640,6 +19935,37 @@ to physically wet regions. This writer exports data; it does not seed.
                                              memory_auto_reserve_mb=1024,
                                              memory_auto_reserve_fraction=0.20,
                                              memory_capacity_report=None):
+        """Select a memory budget for image generation.
+
+        Parameters
+        ----------
+        memory_budget_mb : float, "auto", or None, default='auto'
+            Memory budget in MiB for the principal operation.
+
+        memory_auto_fraction : float, default=0.5
+            Fraction of usable memory allotted to known large arrays.
+
+        memory_auto_reserve_mb : float, default=1024
+            Absolute reserve in MiB for automatic memory budgeting.
+
+        memory_auto_reserve_fraction : float, default=0.2
+            Fractional reserve for automatic memory budgeting.
+
+        memory_capacity_report : object, optional, default=None
+            Provide memory capacity report for this operation.
+
+        Returns
+        -------
+        result : tuple
+            Resolved image memory budget and diagnostic report.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        RuntimeError
+            The required operation or model state is not available.
+        """
         import numpy as np
 
         if memory_budget_mb is None:
@@ -18787,54 +20113,194 @@ to physically wet regions. This writer exports data; it does not seed.
             plt.close(fig)
 
     def create_images(self,
-                      Conc_Dataset,
-                      time_start,
-                      time_end,
+                      Conc_Dataset, time_start, time_end,
                       long_min, long_max,
                       lat_min, lat_max,
-                      file_out_path,
-                      file_out_sub_folder,
-                      figure_file_name,
-                      shp_file_path,
-                      title_caption,
-                      unit_measure,
-                      full_title=None,
-                      vmin=None,
-                      vmax=None,
-                      selected_colormap=None,
-                      colormap_norm=None,
-                      levels_colormap=None,
-                      simmetrical_cmap=False,
-                      scientific_colorbar=False,
-                      colorbar_title=None,
-                      selected_depth=0,
-                      fig_format='.jpg',
-                      fig_dpi=100,
-                      make_animation=False,
-                      concat_animation=False,
-                      animation_format='.mp4',
-                      fps=8,
-                      load_img_from_folder=False,
-                      fig_numbers=None,
-                      add_shp_to_figure=False,
-                      variable_name=None,
+                      file_out_path, file_out_sub_folder, figure_file_name,
+                      shp_file_path, title_caption, unit_measure,
+                      full_title=None, vmin=None, vmax=None,
+                      selected_colormap=None, colormap_norm=None,
+                      levels_colormap=None, simmetrical_cmap=False,
+                      scientific_colorbar=False, colorbar_title=None,
+                      selected_depth=0, fig_format='.jpg', fig_dpi=100,
+                      make_animation=False, concat_animation=False,
+                      animation_format='.mp4', fps=8, load_img_from_folder=False,
+                      fig_numbers=None, add_shp_to_figure=False, variable_name=None,
                       labels_font_sizes=[30,30,30,25,25,25,25],
-                      shp_edge_color='black',
-                      shp_face_color='black',
-                      shp_linewidth=0.2,
-                      shp_alpha=1,
-                      trim_images=True,
-                      save_figures=True,
-                      shading=None,
-                      date_str_lenght=10,
+                      shp_edge_color='black', shp_face_color='black',
+                      shp_linewidth=0.2, shp_alpha=1, trim_images=True,
+                      save_figures=True, shading=None, date_str_lenght=10,
                       width_fig=26, high_fig=15,
                       padding_r=0, padding_c=0,
-                      low_quality=False,
-                      memory_budget_mb='auto',
-                      memory_auto_fraction=0.50,
-                      memory_auto_reserve_mb=1024,
+                      low_quality=False, memory_budget_mb='auto',
+                      memory_auto_fraction=0.50, memory_auto_reserve_mb=1024,
                       memory_auto_reserve_fraction=0.20):
-        '''Create concentration-map images and optional GIF/MP4 animations.'''
+        """Render concentration-map images and optional animations.
+
+        Parameters
+        ----------
+        Conc_Dataset : xarray.Dataset or DataArray
+            Concentration map to render.
+
+        time_start : datetime-like
+            Start of the displayed interval.
+
+        time_end : datetime-like
+            End of the displayed interval.
+
+        long_min : float
+            Minimum displayed longitude, degrees east.
+
+        long_max : float
+            Maximum displayed longitude, degrees east.
+
+        lat_min : float
+            Minimum displayed latitude, degrees north.
+
+        lat_max : float
+            Maximum displayed latitude, degrees north.
+
+        file_out_path : str or path-like
+            Directory in which image outputs are written.
+
+        file_out_sub_folder : str
+            Subdirectory name for image outputs.
+
+        figure_file_name : str
+            Basename of figure files.
+
+        shp_file_path : str or path-like, optional
+            Polygon overlay file.
+
+        title_caption : str
+            Label displayed above or below the map.
+
+        unit_measure : str
+            Concentration unit displayed with color scale.
+
+        full_title : str, optional, default=None
+            Full figure title.
+
+        vmin : float, optional, default=None
+            Lower display color limit.
+
+        vmax : float, optional, default=None
+            Upper display color limit.
+
+        selected_colormap : str or Colormap, optional, default=None
+            Matplotlib colormap for the data.
+
+        colormap_norm : matplotlib.colors.Normalize or None, default=None
+            Color mapping normalization.
+
+        levels_colormap : sequence of float, optional, default=None
+            Color-level boundaries.
+
+        simmetrical_cmap : bool, default=False
+            Use symmetric color limits around zero.
+
+        scientific_colorbar : bool, default=False
+            Use scientific notation on the colorbar.
+
+        colorbar_title : str, optional, default=None
+            Colorbar label.
+
+        selected_depth : int or float, default=0
+            Selected vertical layer or depth.
+
+        fig_format : str, default='.jpg'
+            Output image extension.
+
+        fig_dpi : positive int, default=100
+            Resolution of saved images in dots per inch.
+
+        make_animation : bool, default=False
+            Create an animation from selected frames.
+
+        concat_animation : bool, default=False
+            Combine existing animation frames or files.
+
+        animation_format : str, default='.mp4'
+            Format of the exported animation.
+
+        fps : positive float, default=8
+            Animation frames per second.
+
+        load_img_from_folder : bool, default=False
+            Read previously saved frames rather than recalculating them.
+
+        fig_numbers : sequence of int or None, default=None
+            Frames to read when selecting existing image files.
+
+        add_shp_to_figure : bool, default=False
+            Draw the optional polygon layer on the map.
+
+        variable_name : str, optional, default=None
+            Name of the variable to plot.
+
+        labels_font_sizes : sequence of numbers, default=[30, 30, 30, 25, 25, 25, 25]
+            Font sizes for plot labels.
+
+        shp_edge_color : str, default='black'
+            Outline color of overlaid polygons.
+
+        shp_face_color : str, default='black'
+            Fill color of overlaid polygons.
+
+        shp_linewidth : float, default=0.2
+            Line width of polygon overlays.
+
+        shp_alpha : float, default=1
+            Opacity of polygon overlays.
+
+        trim_images : bool, default=True
+            Trim white margins from image files.
+
+        save_figures : bool, default=True
+            Write rendered figures to the output directory.
+
+        shading : str or None, default=None
+            Matplotlib shading mode for cell rendering.
+
+        date_str_lenght : int, default=10
+            Number of date-string characters used in figure labeling.
+
+        width_fig : float, default=26
+            Figure width in inches.
+
+        high_fig : float, default=15
+            Figure height in inches.
+
+        padding_r : float, default=0
+            Row padding in assembled layouts.
+
+        padding_c : float, default=0
+            Column padding in assembled layouts.
+
+        low_quality : bool, default=False
+            Select reduced image rendering quality.
+
+        memory_budget_mb : float, "auto", or None, default='auto'
+            Memory budget in MiB for the principal operation.
+
+        memory_auto_fraction : float, default=0.5
+            Fraction of usable memory allotted to known large arrays.
+
+        memory_auto_reserve_mb : float, default=1024
+            Absolute reserve in MiB for automatic memory budgeting.
+
+        memory_auto_reserve_fraction : float, default=0.2
+            Fractional reserve for automatic memory budgeting.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        FileNotFoundError
+            A required input file does not exist.
+        RuntimeError
+            The required operation or model state is not available.
+        """
         import gc
         import os
         from contextlib import ExitStack
@@ -19233,61 +20699,114 @@ to physically wet regions. This writer exports data; it does not seed.
 
 
     def summary_created_elements(
-        self,
-        file_folder,
-        file_name,
-        variable_name,
-        mass_factor,
-        upper_limit,
-        lower_limit,
-        name_dataset,
-        long_min=None,
-        long_max=None,
-        lat_min=None,
-        lat_max=None,
-        time_start=None,
-        time_end=None,
-        range_max=None,
-        range_min=None,
-        n_bins=100,
-        zoom_max=100,
-        zoom_min=0,
-        print_results=False,
-        mass_unit=None,
+        self, file_folder, file_name,
+        variable_name, mass_factor, upper_limit,
+        lower_limit, name_dataset, long_min=None,
+        long_max=None, lat_min=None, lat_max=None,
+        time_start=None, time_end=None, range_max=None,
+        range_min=None, n_bins=100, zoom_max=100,
+        zoom_min=0, print_results=False, mass_unit=None,
         mass_element_ug=100e3,
-        number_of_elements=None,
-        estimate_mode="mass",
+        number_of_elements=None, estimate_mode="mass",
     ):
-        '''
-        Calculate the maximum number of elements in a simulation created by seed_from_NETCDF from xarray DataArray.
-        Produce histograms with frequency of datapoints values within the specified limits.
-        Estimate the number of seeded elements ignoring bathymetry consistency checks.
+        """Estimate particle counts and plot the source-data distribution.
 
-        file_folder:         string, path to file, must end with /
-        file_name:           string, name of file, must end with .nc
-        variable_name:       string, name of xarray DataArray variable
-        mass_factor:         float32, multiplicative conversion factor between data values and mass units used for seeded elements
-        upper_limit:         float32, upper selection limit; datapoints >= upper_limit are ignored by seed_from_NETCDF
-        lower_limit:         float32, lower selection limit; datapoints <= lower_limit are ignored by seed_from_NETCDF
-        name_dataset:        string, name of data to be reported in the title of figures
-        time_start:          datetime64[ns] or None, start time of dataset considered; if None, start from first available time
-        time_end:            datetime64[ns] or None, end time of dataset considered; if None, end at last available time
-        long_min:            float32 or None, min longitude of dataset considered; if None, use whole longitude range
-        long_max:            float32 or None, max longitude of dataset considered; if None, use whole longitude range
-        lat_min:             float32 or None, min latitude of dataset considered; if None, use whole latitude range
-        lat_max:             float32 or None, max latitude of dataset considered; if None, use whole latitude range
-        range_max:           float32 or None, max value shown in the figure on data frequency for the selected dataset
-        range_min:           float32 or None, min value shown in the figure on data frequency for the selected dataset
-        n_bins:              int, number of bins used for histograms
-        zoom_max:            int, % of histogram bins where the zoomed area stops
-        zoom_min:            int, % of histogram bins where the zoomed area starts
-        print_results:       boolean, select if results are printed or returned as dictionary
-        mass_unit:           string or None, unit label used when printing masses; if None, results are reported as "mass units"
-        mass_element_ug:     float32 or None, mass of one seeded element when estimate_mode includes "mass"
-        number_of_elements:  int or None, fixed number of elements per selected datapoint when estimate_mode includes "fixed"
-        estimate_mode:       string, choose which estimate to calculate:
-                             "mass", "fixed", or "both"
-        '''
+        Parameters
+        ----------
+        file_folder : str or path-like
+            path to file, must end with /
+
+        file_name : str, optional
+            name of file, must end with .nc
+
+        variable_name : str
+            name of xarray DataArray variable
+
+        mass_factor : float
+            multiplicative conversion factor between data values and mass units used for
+            seeded elements
+
+        upper_limit : object
+            upper selection limit. datapoints >= upper_limit are ignored by
+            seed_from_NETCDF
+
+        lower_limit : object
+            lower selection limit. datapoints <= lower_limit are ignored by
+            seed_from_NETCDF
+
+        name_dataset : object
+            name of data to be reported in the title of figures
+
+        long_min : float, optional, default=None
+            float32 or None, min longitude of dataset considered. if None, use whole
+            longitude range
+
+        long_max : float, optional, default=None
+            float32 or None, max longitude of dataset considered. if None, use whole
+            longitude range
+
+        lat_min : float, optional, default=None
+            float32 or None, min latitude of dataset considered. if None, use whole
+            latitude range
+
+        lat_max : float, optional, default=None
+            float32 or None, max latitude of dataset considered. if None, use whole
+            latitude range
+
+        time_start : datetime-like or float, optional, default=None
+            datetime64[ns] or None, start time of dataset considered. if None, start from
+            first available time
+
+        time_end : datetime-like or float, optional, default=None
+            datetime64[ns] or None, end time of dataset considered. if None, end at last
+            available time
+
+        range_max : float, default=None
+            float32 or None, max value shown in the figure on data frequency for the
+            selected dataset
+
+        range_min : float, default=None
+            float32 or None, min value shown in the figure on data frequency for the
+            selected dataset
+
+        n_bins : int or float, default=100
+            number of bins used for histograms
+
+        zoom_max : float, default=100
+            % of histogram bins where the zoomed area stops
+
+        zoom_min : float, default=0
+            % of histogram bins where the zoomed area starts
+
+        print_results : bool, default=False
+            select if results are printed or returned as dictionary
+
+        mass_unit : str, default=None
+            string or None, unit label used when printing masses. if None, results are
+            reported as "mass units"
+
+        mass_element_ug : float, optional, default=100000.0
+            float32 or None, mass of one seeded element when estimate_mode includes
+            "mass"
+
+        number_of_elements : int, optional, default=None
+            int or None, fixed number of elements per selected datapoint when
+            estimate_mode includes "fixed"
+
+        estimate_mode : str or path-like, default='mass'
+            choose which estimate to calculate: "mass", "fixed", or "both"
+
+        Returns
+        -------
+        result : dict
+            Estimates and diagnostics for the selected source data. The method can also
+            print results.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        """
         import xarray as xr
         import matplotlib.pyplot as plt
         import numpy as np
@@ -19496,15 +21015,18 @@ to physically wet regions. This writer exports data; it does not seed.
         return results_dict
 
     def init_chemical_compound(self, chemical_compound = None):
-        ''' Chemical parameters for a selection of PAHs:
-            Naphthalene, Phenanthrene, Fluorene,
-            Benzo-a-anthracene, Benzo-a-pyrene, Dibenzo-ah-anthracene
+        """Set the available compound parameters for the selected chemical.
 
-            Data collected from literature by
-            Isabel Hanstein (University of Heidelberg / Norwegian Meteorological Insitute)
-            Mattia Boscherini, Loris Calgaro (University Ca' Foscari, Venezia)
-            Manuel Aghito (Norwegian Meteorological Institute / University of Bergen)
-        '''
+        Parameters
+        ----------
+        chemical_compound : str, optional, default=None
+            Chemical compound selected in the current model.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        """
 
         if chemical_compound is not None:
             self.set_config('chemical:compound',chemical_compound)
@@ -19816,16 +21338,34 @@ to physically wet regions. This writer exports data; it does not seed.
 
     def plot_mass(self,
                   legend=['dissolved','SPM','sediment'],
-                  mass_unit='g',
-                  time_unit='hours',
-                  title=None,
+                  mass_unit='g', time_unit='hours', title=None,
                   filename=None,
                   start_date=None):
-        """Plot chemical mass distribution between the different species
-            legend      list of specie labels, for example ['dissolved','SPM','sediment']
-            mass_unit   'g','mg','ug'
-            time_unit   'seconds', 'minutes', 'hours' , 'days'
-            title       figure title string
+        """Plot chemical mass by species over simulation time.
+
+        Parameters
+        ----------
+        legend : sequence of str, default=['dissolved', 'SPM', 'sediment']
+            Labels for the plotted species.
+
+        mass_unit : str, default='g'
+            Requested mass unit. No conversion is implied unless the method performs it.
+
+        time_unit : str, default='hours'
+            Requested unit of the elapsed-time axis.
+
+        title : str, optional, default=None
+            Optional plot title.
+
+        filename : str or path-like, default=None
+            Path of the NetCDF file.
+
+        start_date : datetime-like, optional, default=None
+            Start date used to filter or align output records.
+
+        Notes
+        -----
+        Supported time units include seconds, minutes, hours and days.
         """
 
         import matplotlib.pyplot as plt
@@ -20160,10 +21700,28 @@ to physically wet regions. This writer exports data; it does not seed.
         return registry
 
     def calc_mass_conversion_factor(self, mass_unit):
-        """
-        Returns factor f such that:
-            value_in_requested_unit = value_in_current_unit * f
-        where current unit is self.elements.variables['mass']['units'].
+        """Get the factor that converts the model mass unit to a target unit.
+
+        Parameters
+        ----------
+        mass_unit : str
+            Requested mass unit. No conversion is implied unless the method performs it.
+
+        Returns
+        -------
+        result : float
+            Multiply stored mass values by this factor to obtain mass_unit.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+
+        Notes
+        -----
+        The source mass unit is
+        self.elements.variables['mass']['units']. Multiply a value by the
+        returned factor to convert it to the requested mass unit.
         """
         _MASS_TO_GRAMS = {
                         "ug": 1e-6,
@@ -20189,10 +21747,22 @@ to physically wet regions. This writer exports data; it does not seed.
         return _MASS_TO_GRAMS[src] / _MASS_TO_GRAMS[dst]
 
     def calc_time_conversion_factor(self, time_unit):
-        """
-        Returns factor f such that:
-            value_in_requested_unit = value_in_seconds * f
-        where value_in_seconds is based on self.time_step_output.
+        """Get the factor that converts seconds to the requested time unit.
+
+        Parameters
+        ----------
+        time_unit : str
+            Requested unit of the elapsed-time axis.
+
+        Returns
+        -------
+        result : float
+            Multiply elapsed seconds by this factor to obtain time_unit.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
         """
         _TIME_TO_SECONDS = {
                         "s":  1.0,
@@ -20269,14 +21839,32 @@ to physically wet regions. This writer exports data; it does not seed.
 
     @staticmethod
     def adv_out_mass_ts(mass, adv_out, mass_conversion_factor=1.0, chunk_cols=20000):
-        """
-        mass:   (T,N) float array with NaNs after deactivation
-        adv_out:(T,N) bool array (True == outside)
-        Ignores initial outside at t=0.
-        Only counts False -> True transitions for t > 0.
-        Returns:
-            exit_outside_at_t: (T,) float64
-            cum_exit_outside:  (T,) float64
+        """Sum mass at transitions from inside to outside the model domain.
+
+        Parameters
+        ----------
+        mass : array_like
+            (T,N) float array with NaNs after deactivation
+
+        adv_out : array_like
+            (T,N) bool array (True == outside)
+
+        mass_conversion_factor : float, default=1.0
+            Factor applied to mass totals.
+
+        chunk_cols : int, default=20000
+            Particle columns processed per chunk.
+
+        Returns
+        -------
+        result : tuple of numpy.ndarray
+            Per-timestep exit mass and cumulative exit mass. Each array has shape
+            (time,).
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
         """
         mass = np.asarray(mass)
         adv_out = np.asarray(adv_out, dtype=bool)
@@ -20346,24 +21934,43 @@ to physically wet regions. This writer exports data; it does not seed.
         require_inside_now=False, require_inside_prev=False,
         chunk_cols=50000, mass_conversion_factor=1.0,
     ):
-        """
-        Generic event counter.
-        Sums forward-filled mass for elements that become event == True
-        at each timestep.
+        """Generic event counter.
 
-        mass:       (T,N) float array with NaNs after deactivation
-        event_mask: (T,N) bool array
-        adv_out:    (T,N) bool array, used if require_inside_* is True
-        allow_initial_event:
+        Parameters
+        ----------
+        mass : array_like
+            (T,N) float array with NaNs after deactivation
+
+        event_mask : object
+            (T,N) bool array
+
+        adv_out : array_like, default=None
+            (T,N) bool array, used if require_inside_* is True
+
+        allow_initial_event : bool, default=False
             If True, count event at t=0 when event_mask[0] is True.
-        require_inside_now:
+
+        require_inside_now : bool, default=False
             If True, count only when ~adv_out[t].
-        require_inside_prev:
+
+        require_inside_prev : bool, default=False
             If True, count only when ~adv_out[t-1] for t > 0.
 
-        Returns:
-            event_ts:        (T,) float64
-            event_cumulative:(T,) float64
+        chunk_cols : int, default=50000
+            Number of particle columns processed per chunk.
+
+        mass_conversion_factor : float, default=1.0
+            Multiplicative factor for the selected quantity.
+
+        Returns
+        -------
+        result : tuple of numpy.ndarray
+            Per-step mass and cumulative event mass, shape (time,).
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
         """
         mass = np.asarray(mass)
         event_mask = np.asarray(event_mask, dtype=bool)
@@ -20463,12 +22070,52 @@ to physically wet regions. This writer exports data; it does not seed.
         require_inside_now=True, require_inside_prev=True,
         chunk_cols=50000,
     ):
-        """
-        Per-timestep mass for exact specie transitions src_idx -> dst_idx.
+        """Per-timestep mass for exact specie transitions src_idx -> dst_idx.
 
-        Only transitions inside the domain are counted when:
-          require_inside_now=True  -> element must be inside at timestep t
-          require_inside_prev=True -> element must be inside at timestep t-1
+        Parameters
+        ----------
+        mass : array_like
+            Provide mass for this operation.
+
+        specie : array_like
+            Species identifiers for particle records.
+
+        inside_mask : object
+            Mask that selects valid cells or particles.
+
+        src_idx : object
+            Provide src idx for this operation.
+
+        dst_idx : object
+            Provide dst idx for this operation.
+
+        steps : array_like
+            Provide steps for this operation.
+
+        N_elem : array_like
+            Provide N elem for this operation.
+
+        mass_conversion_factor : float, default=1.0
+            Multiplicative factor for the selected quantity.
+
+        require_inside_now : bool, default=True
+            Provide require inside now for this operation.
+
+        require_inside_prev : bool, default=True
+            Provide require inside prev for this operation.
+
+        chunk_cols : int, default=50000
+            Number of particle columns processed per chunk.
+
+        Returns
+        -------
+        result : numpy.ndarray
+            Per-step species-transition mass, shape (steps,).
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
         """
         if (src_idx is None) or (dst_idx is None):
             return np.zeros(steps, dtype=np.float32)
@@ -20543,6 +22190,39 @@ to physically wet regions. This writer exports data; it does not seed.
 
     def sum_transition_pairs(self, pairs, mass, specie, inside_mask, steps, N_elem,
                               mass_conversion_factor=1.0, chunk_cols=50000):
+        """Sum mass fluxes for selected species-transition pairs.
+
+        Parameters
+        ----------
+        pairs : iterable of (int, int)
+            Source/destination species-index pairs to sum.
+
+        mass : ndarray
+            Particle mass, shape (time, particle).
+
+        specie : ndarray
+            Particle species indices, shape (time, particle).
+
+        inside_mask : ndarray of bool
+            Inside-domain mask, shape (time, particle).
+
+        steps : int
+            Number of output timesteps.
+
+        N_elem : int
+            Number of particle trajectories.
+
+        mass_conversion_factor : float, default=1.0
+            Factor from stored mass units to requested units.
+
+        chunk_cols : int, default=50000
+            Number of particle columns processed per chunk.
+
+        Returns
+        -------
+        result : numpy.ndarray
+            Per-timestep transition mass, shape (steps,).
+        """
         out = np.zeros(steps, dtype=np.float32)
         for src_idx, dst_idx in pairs:
             out += self._transition_mass_ts(
@@ -20711,7 +22391,29 @@ to physically wet regions. This writer exports data; it does not seed.
         return spec.get('units') or '1'
 
     def _resolve_summary_field_specs(self, result_ds, summary_variables=None, extra_fields=None):
-        """Resolve registered fields that are available in a finished result."""
+        """Resolve registered fields that are available in a finished result.
+
+        Parameters
+        ----------
+        result_ds : object
+            Provide result ds for this operation.
+
+        summary_variables : object, optional, default=None
+            Provide summary variables for this operation.
+
+        extra_fields : object, optional, default=None
+            Provide extra fields for this operation.
+
+        Returns
+        -------
+        result : object
+            Resolved summary-field specifications.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        """
         import warnings
 
         registry = self.CHEMICALDRIFT_VARIABLE_REGISTRY
@@ -20840,7 +22542,13 @@ to physically wet regions. This writer exports data; it does not seed.
         return str(value)
 
     def _summary_configuration_metadata(self):
-        """Return interpretation-relevant ChemicalDrift configuration metadata."""
+        """Return interpretation-relevant ChemicalDrift configuration metadata.
+
+        Returns
+        -------
+        result : dict
+            Configuration provenance used in summary metadata.
+        """
         config_keys = (
             'chemical:dynamic_partitioning',
             'chemical:transformations:degradation',
@@ -20962,21 +22670,11 @@ to physically wet regions. This writer exports data; it does not seed.
         return df
 
     def extract_summary_timeseries(self,
-            timeseries_file_path=None,
-            mass_unit='g',
-            time_unit='h',
-            shp_file_path = None,
-            lon_min = None,
-            lon_max = None,
-            lat_min = None,
-            lat_max = None,
-            start_date = None,
-            end_date = None,
-            time_start=None,
-            time_end=None,
-            extra_fields=None,
-            summary_variables=None,
-            output_format='both',
+            timeseries_file_path=None, mass_unit='g', time_unit='h',
+            shp_file_path = None, lon_min = None, lon_max = None,
+            lat_min = None, lat_max = None, start_date = None,
+            end_date = None, time_start=None, time_end=None,
+            extra_fields=None, summary_variables=None, output_format='both',
             save_files = True,
             verbose = False
             ):
@@ -21060,8 +22758,8 @@ to physically wet regions. This writer exports data; it does not seed.
         verbose : bool
             Print progress information.
 
-        Processes / logic
-        -----------------
+        Notes
+        -----
         1) Ensures species and transfer-rate metadata exist (init_species/init_transfer_rates) if not
            already available.
         2) Detects whether drift:deactivate_north_of/south_of/east_of/west_of were used
@@ -22655,8 +24353,26 @@ to physically wet regions. This writer exports data; it does not seed.
         return _TIME_TO_SECONDS[src] / _TIME_TO_SECONDS[dst]
 
     def convert_units(self, df, target_mass_unit=None, target_time_unit=None, time_col=None):
-        """
-        Returns: (df_converted, UM_mass, UM_time, time_col_name)
+        """Convert compatible mass and time columns in a summary DataFrame.
+
+        Parameters
+        ----------
+        df : pandas.DataFrame
+            Summary table with unit tags in column names.
+
+        target_mass_unit : str, optional, default=None
+            Requested mass unit. None keeps the source unit.
+
+        target_time_unit : str, optional, default=None
+            Requested time unit. None keeps the source unit.
+
+        time_col : str, optional, default=None
+            Time column to convert. None selects a time-tagged column.
+
+        Returns
+        -------
+        result : tuple
+            Converted DataFrame, mass unit, time unit, and time-column name.
         """
         import pandas as pd
         dfc = df.copy()
@@ -23069,93 +24785,122 @@ to physically wet regions. This writer exports data; it does not seed.
 
     def plot_summary_timeseries(
         self, df=None,
-        timeseries_file_path=None,
-        target_mass_unit=None,
-        target_time_unit=None,
-        use_date=None,
-        time_col=None,
-        start_date=None,
-        end_date=None,
-        x_tick_max=10,
-        x_tick_every=None,
-        fig_title=None,
-        font_sizes=None,
-        font_scale=1.0,
-        split_a4=False,
-        pdf_path=None,
-        row_mode="double",
-        page_output="pdf",
-        png_dir=None,
-        png_dpi=200,
-        png_prefix=None,
-        ts_cumulative_twin_axes=False,
+        timeseries_file_path=None, target_mass_unit=None, target_time_unit=None,
+        use_date=None, time_col=None, start_date=None,
+        end_date=None, x_tick_max=10, x_tick_every=None,
+        fig_title=None, font_sizes=None, font_scale=1.0,
+        split_a4=False, pdf_path=None, row_mode="double",
+        page_output="pdf", png_dir=None, png_dpi=200,
+        png_prefix=None, ts_cumulative_twin_axes=False,
         *, summary=None, plot_additional_fields=True, plot_ancillary=False,
     ):
-        """
-            Plot summary time-series panels for mass balance, elimination pathways, and speciation.
+        """Plot summary time-series data without changing source values.
 
-            summary:                Preferred keyword-only input: xr.Dataset, pd.DataFrame, or
-                                    .nc/.netcdf/.csv path. Precedence: summary > df > timeseries_file_path.
-            df:                     Backward-compatible input, including the original positional slot.
-            timeseries_file_path:   Input path when summary/df is absent; otherwise output-naming hint.
-            target_mass_unit:       str, Target mass unit for conversion ("ug", "mg", "g", "kg").
-            target_time_unit:       str, Target time unit for conversion ("s", "m", "hr", "d").
-            use_date:               bool or None. None uses datetime for Dataset/NetCDF inputs
-                                    when available, numeric time for legacy CSV/DataFrame inputs.
-                                    True uses datetime when available; False uses elapsed time.
-            time_col:               str, Name of the time column to use
-                                    (for example: `time [hr]`).
-                                    If None, it is inferred automatically.
-            start_date:             date-like str, Start of the period to include in the figure. If `use_date=True`, interpreted as a date,
-                                     otherwise interpreted as a numeric lower time bound.
-            end_date:               date-like str, End of the period to include in the figure. If `use_date=True`, interpreted as a date,
-                                     otherwise interpreted as a numeric upper time bound.
-            x_tick_max:             int, Maximum number of x-ticks to show when `x_tick_every` is None.
-                                    Date axes use Matplotlib's ConciseDateFormatter.
-            x_tick_every:           int or None, If provided, show one x-tick every N time steps
-                                    for deterministic tick placement. The last timestep is also shown.
-            fig_title:              str, Global figure title.
-            font_sizes:             dict, Explicit font-size overrides.
-            font_scale:             float, Global multiplicative scale applied to default
-                                    font sizes before `font_sizes` overrides are applied.
-            split_a4:               bool, If True, split output into A4 portrait pages grouped by topic.
-                                    False preserves the existing single-figure layout.
-            pdf_path:               Output PDF path. With split_a4=True, all pages share one PDF.
-            row_mode:               {"double", "single"}, Panel layout mode.
-                                    `"double"`: two panels per row, `"single"`: one wide panel per row
-            page_output: {'pdf', 'png', 'both', 'none'}
-                Applied in both layout modes.
-                - 'pdf' : save the figure/pages to a PDF
-                - 'png' : save each page as a PNG image
-                - 'both': save both PDF and PNG pages
-                - 'none': do not write page files; just return figure objects
-            png_dir: str or path-like, optional
-                Directory where page PNG files are written when page_output is 'png' or 'both'.
-                If None, a directory is inferred from pdf_path or timeseries_file_path.
-            png_dpi: int
-                DPI used for saved PNG pages.
-            png_prefix: str, optional
-                Prefix used for PNG filenames. If None, a prefix is inferred.
-            ts_cumulative_twin_axes: bool
-                If True, line panels containing matching *_ts and *_cumulative columns
-                plot timestep values on the primary left y-axis and cumulative values
-                on a secondary right y-axis. Default False preserves the previous
-                single-axis behaviour.
-            plot_additional_fields: bool, Include primary environmental/diagnostic panels (default True).
-            plot_ancillary:         bool, Add a separate count/effective-count section (default False).
-                                    Circular sine/cosine support arrays and speciation QC stay hidden.
+        Parameters
+        ----------
+        df : object, optional, default=None
+            Backward-compatible input, including the original positional slot.
 
-            Notes
-            -----
-            Plotting never interpolates, rebins, rebases cumulative series, or changes self.result.
-            Existing percentages, stored elapsed-time origin and source timestamps are retained.
-            A date filter is a display crop, not a new cumulative accounting window. NaN line
-            gaps are preserved; circular wrap crossings are broken for display only.
+        timeseries_file_path : str or path-like, default=None
+            Input path when summary/df is absent. otherwise output-naming hint.
 
-            Returns
-            -------
-            (figs, axes, plotting_dataframe, saved_png_paths, saved_pdf_path)
-                The original five-item return contract is retained in both layout modes.
+        target_mass_unit : str or path-like, default=None
+            Target mass unit for conversion ("ug", "mg", "g", "kg").
+
+        target_time_unit : str or path-like, default=None
+            Target time unit for conversion ("s", "m", "hr", "d").
+
+        use_date : bool, default=None
+            bool or None. None uses datetime for Dataset/NetCDF inputs when available,
+            numeric time for legacy CSV/DataFrame inputs. True uses datetime when
+            available. False uses elapsed time.
+
+        time_col : object, optional, default=None
+            Name of the time column to use (for example: `time [hr]`). If None, it is
+            inferred automatically.
+
+        start_date : datetime-like, optional, default=None
+            date-like str, Start of the period to include in the figure. If
+            `use_date=True`, interpreted as a date, otherwise interpreted as a
+            numeric lower time bound.
+
+        end_date : datetime-like, optional, default=None
+            date-like str, End of the period to include in the figure. If
+            `use_date=True`, interpreted as a date, otherwise interpreted as a
+            numeric upper time bound.
+
+        x_tick_max : float, default=10
+            Maximum number of x-ticks to show when `x_tick_every` is None. Date axes use
+            Matplotlib's ConciseDateFormatter.
+
+        x_tick_every : object, optional, default=None
+            int or None, If provided, show one x-tick every N time steps for
+            deterministic tick placement. The last timestep is also shown.
+
+        fig_title : str or path-like, default=None
+            Global figure title.
+
+        font_sizes : object, optional, default=None
+            Explicit font-size overrides.
+
+        font_scale : float, default=1.0
+            float, Global multiplicative scale applied to default font sizes before
+            `font_sizes` overrides are applied.
+
+        split_a4 : bool, default=False
+            If True, split output into A4 portrait pages grouped by topic. False
+            preserves the existing single-figure layout.
+
+        pdf_path : str or path-like, default=None
+            Output PDF path. With split_a4=True, all pages share one PDF.
+
+        row_mode : str or path-like, default='double'
+            {"double", "single"}, Panel layout mode. `"double"`: two panels per row,
+            `"single"`: one wide panel per row
+
+        page_output : str, default='pdf'
+            {'pdf', 'png', 'both', 'none'} Applied in both layout modes. - 'pdf' : save
+            the figure/pages to a PDF - 'png' : save each page as a PNG image -
+            'both': save both PDF and PNG pages - 'none': do not write page files.
+            just return figure objects
+
+        png_dir : object, optional, default=None
+            str or path-like, optional Directory where page PNG files are written when
+            page_output is 'png' or 'both'. If None, a directory is inferred from
+            pdf_path or timeseries_file_path.
+
+        png_dpi : int or float, default=200
+            int DPI used for saved PNG pages.
+
+        png_prefix : object, optional, default=None
+            optional Prefix used for PNG filenames. If None, a prefix is inferred.
+
+        ts_cumulative_twin_axes : bool, default=False
+            bool If True, line panels containing matching *_ts and *_cumulative columns
+            plot timestep values on the primary left y-axis and cumulative values on
+            a secondary right y-axis. Default False preserves the previous single-
+            axis behaviour.
+
+        summary : object, optional, default=None
+            Preferred keyword-only input: xr.Dataset, pd.DataFrame, or .nc/.netcdf/.csv
+            path. Precedence: summary > df > timeseries_file_path.
+
+        plot_additional_fields : bool, default=True
+            Include primary environmental/diagnostic panels (default True).
+
+        plot_ancillary : bool, default=False
+            Add a separate count/effective-count section (default False). Circular
+            sine/cosine support arrays and speciation QC stay hidden.
+
+        Returns
+        -------
+        result : tuple
+            Figure list, axes, plotting DataFrame, PNG paths, and optional PDF path.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
         """
         import re
         from pathlib import Path
@@ -24871,9 +26616,7 @@ to physically wet regions. This writer exports data; it does not seed.
 
     @staticmethod
     def _speciation_qc_check(
-        df,
-        mass_unit,
-        *,
+        df, mass_unit, *,
         denom_base = "mass_actual_ts",
         exclude_keys = ("sed_buried",),
         abs_tol_mass = 1e-9,     # in target mass units
@@ -24885,39 +26628,64 @@ to physically wet regions. This writer exports data; it does not seed.
         return_report = False,    # default: don't return anything extra
         time_hint_col = None,  # e.g. "date_of_timestep" for nicer reporting
     ):
-        '''
-        Run QC checks for speciation consistency (mass closure + percent sum).
+        """Check species percentages against the expected mass balance.
 
-        df:              pandas.DataFrame, DataFrame to validate.
-                             Expected columns:
-                               Denominator: f"{denom_base} [{mass_unit}]"
-                               Species masses: "mass_sp_<key>_ts [{mass_unit}]"
-                               Species percents: "perc_sp_<key>_ts [%]"
-        mass_unit:       str, Mass unit token (without brackets), e.g. "g", "mg", "ug".
-                             Used to find the unit-tagged columns in df.
-        denom_base:      str, Base name for the denominator (default "mass_actual_ts").
-                             If denom_base already contains brackets, it is used as-is.
-                             Otherwise the denominator column is f"{denom_base} [{mass_unit}]".
-        exclude_keys:    tuple[str,...], Species keys excluded from QC (default includes "sed_buried").
-                             These are treated as outside-system and not part of the 100% partition.
-        abs_tol_mass:    float, Absolute tolerance for mass closure residual (in target mass units).
-        rel_tol_mass:    float, Relative tolerance for mass closure residual (fraction of denominator when denom>0).
-        abs_tol_perc:    float, Absolute tolerance for percent-sum error (percentage points).
-        add_qc_columns:  bool, If True, append diagnostic columns (prefixed with qc_prefix) to df.
-        qc_prefix:       str, Prefix for diagnostic columns when add_qc_columns is True.
-        on_fail:         str, Failure behavior. Allowed: "warn"|"raise"|"ignore".
-                            "warn": emit RuntimeWarning
-                            "raise": raise ValueError
-                            "ignore": do nothing
-        return_report:   bool, If True, return a summary report dict (and df if add_qc_columns=True).
-        time_hint_col:   str|None, Optional column used only to include a timestamp/value in warning/error messages.
+        Parameters
+        ----------
+        df : object
+            pandas.DataFrame, DataFrame to validate. Expected columns:
 
-        Returns:
-            None, If return_report=False and add_qc_columns=False (only warns/raises as configured).
-            pandas.DataFrame, If return_report=False and add_qc_columns=True (df with QC columns).
-            dict, If return_report=True and add_qc_columns=False (QC report).
-            (pandas.DataFrame, dict), If return_report=True and add_qc_columns=True (df with QC columns + report).
-        '''
+        mass_unit : str
+            Mass unit token (without brackets), e.g. "g", "mg", "ug". Used to find the
+            unit-tagged columns in df.
+
+        denom_base : str, default='mass_actual_ts'
+            Base name for the denominator (default "mass_actual_ts"). If denom_base
+            already contains brackets, it is used as-is. Otherwise the denominator
+            column is f"{denom_base} [{mass_unit}]".
+
+        exclude_keys : object, default=('sed_buried',)
+            tuple[str,...], Species keys excluded from QC (default includes
+            "sed_buried"). These are treated as outside-system and not part of the
+            100% partition.
+
+        abs_tol_mass : float, default=1e-09
+            float, Absolute tolerance for mass closure residual (in target mass units).
+
+        rel_tol_mass : float, default=1e-06
+            float, Relative tolerance for mass closure residual (fraction of denominator
+            when denom>0).
+
+        abs_tol_perc : float, default=1e-06
+            float, Absolute tolerance for percent-sum error (percentage points).
+
+        add_qc_columns : bool, default=False
+            If True, append diagnostic columns (prefixed with qc_prefix) to df.
+
+        qc_prefix : str, default='qc_'
+            Prefix for diagnostic columns when add_qc_columns is True.
+
+        on_fail : str, default='warn'
+            Failure behavior. Allowed: "warn"|"raise"|"ignore". "warn": emit
+            RuntimeWarning "raise": raise ValueError "ignore": do nothing
+
+        return_report : bool, default=False
+            If True, return a summary report dict (and df if add_qc_columns=True).
+
+        time_hint_col : object, optional, default=None
+            str|None, Optional column used only to include a timestamp/value in
+            warning/error messages.
+
+        Returns
+        -------
+        result : object
+            Quality-control results, optionally with updated columns and a report.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        """
         import numpy as np
         import pandas as pd
         import re
@@ -25048,32 +26816,38 @@ to physically wet regions. This writer exports data; it does not seed.
 
     @staticmethod
     def _recompute_perc_sp(
-        df,
-        mass_unit,
-        *,
-        denom_base="mass_actual_ts",
-        normalize_to_100=False,
+        df, mass_unit, *,
+        denom_base="mass_actual_ts", normalize_to_100=False,
         exclude_keys=("sed_buried",),
     ):
-        '''
-        Recompute perc_sp_*_ts [%] from mass_sp_*_ts and the denominator.
+        """Recompute perc_sp_*_ts [%] from mass_sp_*_ts and the denominator.
 
-        df:               pandas.DataFrame, DataFrame containing denominator and mass_sp/perc_sp columns.
-                            perc_sp columns are recomputed in the returned copy.
-        mass_unit:        str, Mass unit token (without brackets), e.g. "g", "mg", "ug".
-                            Used to map "mass_sp_*_ts [{mass_unit}]" columns.
-        denom_base:       str, Base name for denominator (default "mass_actual_ts").
-                            Denominator column is f"{denom_base} [{mass_unit}]" unless denom_base already has brackets.
-                            Percent rule matches generator semantics:
-                              den_safe = where(den > 0, den, nan)
-                              perc = nan_to_num((mass_sp/den_safe)*100, nan=0)
-        normalize_to_100: bool, If True, renormalize computed perc_sp columns so row-wise sum is exactly 100
-                            (only when denom>0 and row-sum>0). Useful to remove tiny FP drift.
-        exclude_keys:     tuple[str,...], Species keys to skip (default includes "sed_buried").
+        Parameters
+        ----------
+        df : object
+            pandas.DataFrame, DataFrame containing denominator and mass_sp/perc_sp
+            columns. perc_sp columns are recomputed in the returned copy.
 
-        Returns:
-            pandas.DataFrame, Copy of df with recomputed perc_sp_*_ts [%] columns.
-        '''
+        mass_unit : str
+            Mass unit token (without brackets), e.g. "g", "mg", "ug". Used to map
+            "mass_sp_*_ts [{mass_unit}]" columns.
+
+        denom_base : str, default='mass_actual_ts'
+            Base name for denominator (default "mass_actual_ts"). Denominator column is
+            f"{denom_base} [{mass_unit}]" unless denom_base already has brackets.
+
+        normalize_to_100 : bool, default=False
+            If True, renormalize computed perc_sp columns so row-wise sum is exactly 100
+            (only when denom>0 and row-sum>0). Useful to remove tiny FP drift.
+
+        exclude_keys : object, default=('sed_buried',)
+            tuple[str,...], Species keys to skip (default includes "sed_buried").
+
+        Returns
+        -------
+        result : pandas.DataFrame
+            Updated species percentages from aligned mass columns.
+        """
         import numpy as np
         import pandas as pd
         import re
@@ -25119,33 +26893,40 @@ to physically wet regions. This writer exports data; it does not seed.
 
     @staticmethod
     def _recompute_perc_elim(
-        df,
-        mass_unit,
-        *,
+        df, mass_unit, *,
         perc_cols=None,
         denom_terms=("mass_degraded_ts", "mass_volatilized_ts",
                      "mass_adv_out_ts", "mass_stranded_ts", "mass_buried_ts"),
     ):
-        '''
-    Recompute perc_elim_* [%] from the corresponding mass_*_ts and a chosen elimination denominator.
+        """Recompute perc_elim_* [%] from the corresponding mass_*_ts and a chosen elimination denominator.
 
-    df:            pandas.DataFrame, DataFrame containing elimination mass time-series columns and perc_elim columns.
-                      perc_elim columns are recomputed in the returned copy.
-    mass_unit:     str, Mass unit token (without brackets), e.g. "g", "mg", "ug".
-                      Used to build the unit tag "[{mass_unit}]" when mapping perc_elim columns
-                      to their corresponding mass columns and when building the denominator.
-    perc_cols:     list[str]|None, List of perc_elim columns to recompute.
-                      If None, recomputes all columns in df matching:
-                        startswith("perc_elim_") and endswith("[%]").
-    denom_terms:   tuple[str,...], Base names (without unit tag) of elimination mass terms used
-                      to form the denominator, e.g.: ("mass_degraded_ts", "mass_volatilized_ts",
-                         "mass_adv_out_ts", "mass_stranded_ts", "mass_buried_ts")
-                      The denominator is computed row-wise as:
-                        den = sum( df[f"{term} [{mass_unit}]"] )   (missing terms treated as 0)
+        Parameters
+        ----------
+        df : object
+            pandas.DataFrame, DataFrame containing elimination mass time-series columns
+            and perc_elim columns. perc_elim columns are recomputed in the returned
+            copy.
 
-    Returns:
-        pandas.DataFrame, Copy of df with recomputed perc_elim_* [%] columns.
-    '''
+        mass_unit : str
+            Mass unit token (without brackets), e.g. "g", "mg", "ug". Used to build the
+            unit tag "[{mass_unit}]" when mapping perc_elim columns to their
+            corresponding mass columns and when building the denominator.
+
+        perc_cols : object, optional, default=None
+            list[str]|None, List of perc_elim columns to recompute. If None, recomputes
+            all columns in df matching: startswith("perc_elim_") and endswith("[%]").
+
+        denom_terms : object, default=('mass_degraded_ts', 'mass_volatilize...
+            tuple[str,...], Base names (without unit tag) of elimination mass terms used
+            to form the denominator, e.g.: ("mass_degraded_ts",
+            "mass_volatilized_ts", "mass_adv_out_ts", "mass_stranded_ts",
+            "mass_buried_ts") The denominator is computed row-wise as: den = sum(.
+
+        Returns
+        -------
+        result : pandas.DataFrame
+            Updated elimination percentages from aligned mass columns.
+        """
         import numpy as np
         import pandas as pd
 
@@ -25184,53 +26965,105 @@ to physically wet regions. This writer exports data; it does not seed.
         normalize_perc_to_100=False, timeseries_file_path=None,
         output_format="csv", save_files=False, strict_metadata=True,
     ):
-        '''Combine ChemicalDrift summary time series on a common time axis.
+        """Align and combine ChemicalDrift summary time series.
 
-        df_list:             list[pandas.DataFrame], Input summary DataFrames to align and sum.
-                             Each DF is converted to common units using convert_units().
-                             Percent columns (perc_*) are dropped before summation and recomputed after.
-        target_mass_unit:    str, Mass unit for outputs. Allowed (per your converter): 'kg','g','mg','ug','µg'.
-        target_time_unit:    str, Time unit for output bookkeeping / optional rebuilt numeric time column.
-                             Allowed: 's','m','hr'/'h','d' (per your converter).
-        date_col:            str, Name of datetime column used as time axis when present in all inputs.
-                             If present in all DFs, it is used as the alignment index.
-        time_col:            str|None, Explicit numeric time column name to use.
-                             If None, convert_units() auto-detects a column like "time [..]".
-                             When date_col is used as index, any numeric "time [..]" columns are dropped
-                             to prevent summing time values across runs.
-        align_mode:          str, Time alignment mode for reindexing. Allowed: "pad"|"nearest"|"exact".
-        nearest_tol_time:    np.timedelta64|pandas.Timedelta|str|None, Tolerance for align_mode="nearest".
-                             Strings like "3h" are supported.
-        clip_to_original:    bool, If True, masks values outside each run's original time range after reindexing.
-        start_date,end_date: np.datetime64|pandas.Timestamp|float|int|None, Start/end bounds for the target grid.
-                             If None, inferred from the input series.
-        freq_time:           np.timedelta64|pandas.Timedelta|str|float|int|None, Target timestep.
-                             If None, inferred; if not inferable, uses union of timestamps.
-                             Must be timedelta-like when aligning on date_col; numeric when aligning on numeric time.
-        rebuild_time_from_date: bool, If True and using date_col axis, rebuild a numeric "time [target_time_unit]" column
-                             measured from the first timestamp.
-        verbose:             bool, Print progress/inference information.
-        qc_check:            bool, If True, run _speciation_qc_check after recomputing perc_sp.
-        add_qc_columns:      bool, If True, append QC diagnostic columns to the output.
-                             Default False (QC runs but output schema is unchanged).
-        qc_on_fail:          str, QC failure behavior. Allowed: "warn"|"raise"|"ignore".
-        return_qc_report:    bool, If True, return a QC report dict in addition to the output DataFrame.
-        normalize_perc_to_100: bool, If True, renormalize perc_sp columns to sum exactly to 100 when denom>0.
+        Parameters
+        ----------
+        df_list : object
+            list[pandas.DataFrame], Input summary DataFrames to align and sum. Each DF is
+            converted to common units using convert_units(). Percent columns (perc_*)
+            are dropped before summation and recomputed after.
 
-        Temporal harmonization is variable-aware:
-        - continuous snapshots are linearly interpolated in time;
-        - ordinary means interpolate mean*n_valid and n_valid, then reconstruct;
-        - circular means interpolate sum_sin/sum_cos/n_valid, then reconstruct;
-        - cumulative process/event masses are interpolated as cumulative curves;
-        - per-timestep process/event masses are regenerated by differencing the
-          harmonized cumulative curves;
-        - derived percentages are recomputed after combination.
+        target_mass_unit : str or path-like, default='g'
+            Mass unit for outputs. Allowed (per your converter): 'kg','g','mg','ug','µg'.
 
-        ``align_mode='interpolate'`` is the recommended/default behavior.
-        ``exact``, ``pad`` and ``nearest`` remain available for compatibility,
-        but cumulative quantities are still treated through their cumulative
-        representation before per-timestep increments are regenerated.
-        '''
+        target_time_unit : str or path-like, default='hr'
+            Time unit for output bookkeeping / optional rebuilt numeric time column.
+
+        date_col : str, default='date_of_timestep'
+            Name of datetime column used as time axis when present in all inputs. If
+            present in all DFs, it is used as the alignment index.
+
+        time_col : object, optional, default=None
+            str|None, Explicit numeric time column name to use. If None, convert_units()
+            auto-detects a column like "time [..]". When date_col is used as index,
+            any numeric "time [..]" columns are dropped to prevent summing time
+            values across runs.
+
+        align_mode : str, default='interpolate'
+            Time alignment mode for reindexing. Allowed: "pad"|"nearest"|"exact".
+
+        nearest_tol_time : timedelta-like, optional, default=None
+            np.timedelta64|pandas.Timedelta|str|None, Tolerance for align_mode="nearest".
+            Strings like "3h" are supported.
+
+        clip_to_original : bool, default=True
+            If True, masks values outside each run's original time range after
+            reindexing.
+
+        start_date : datetime-like, optional, default=None
+            Start date used to filter or align output records.
+
+        end_date : datetime-like, optional, default=None
+            End date used to filter or align output records.
+
+        freq_time : timedelta-like, optional, default=None
+            np.timedelta64|pandas.Timedelta|str|float|int|None, Target timestep. If None,
+            inferred. if not inferable, uses union of timestamps. Must be timedelta-
+            like when aligning on date_col. numeric when aligning on numeric time.
+
+        rebuild_time_from_date : bool, default=True
+            If True and using date_col axis, rebuild a numeric "time [target_time_unit]"
+            column measured from the first timestamp.
+
+        verbose : bool, default=False
+            Print progress/inference information.
+
+        qc_check : bool, default=True
+            If True, run _speciation_qc_check after recomputing perc_sp.
+
+        add_qc_columns : bool, default=False
+            If True, append QC diagnostic columns to the output. Default False (QC runs
+            but output schema is unchanged).
+
+        qc_on_fail : str, default='warn'
+            QC failure behavior. Allowed: "warn"|"raise"|"ignore".
+
+        return_qc_report : bool, default=False
+            If True, return a QC report dict in addition to the output DataFrame.
+
+        normalize_perc_to_100 : bool, default=False
+            If True, renormalize perc_sp columns to sum exactly to 100 when denom>0.
+
+        timeseries_file_path : str or path-like, optional, default=None
+            Destination path when saving the combined series.
+
+        output_format : str, default='csv'
+            Select NetCDF or CSV output format.
+
+        save_files : bool, default=False
+            Save the combined series to the requested path.
+
+        strict_metadata : bool, default=True
+            Reject incompatible source metadata when enabled.
+
+        Returns
+        -------
+        result : pandas.DataFrame, tuple, or None
+            Combined time series. Include a QC report when requested. File-output
+            behavior follows save_files.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+
+        Notes
+        -----
+        - Align source series before combining mass quantities.
+        - Recompute percentages from combined masses.
+        - Rebuild increments from cumulative curves after time alignment.
+        """
         import json
         import os
         import re
@@ -26015,18 +27848,40 @@ to physically wet regions. This writer exports data; it does not seed.
     def _reindex_da(
         DataArray,
         time_name, target_time,
-        nearest_tol_time=None,
-        align_mode="pad",
+        nearest_tol_time=None, align_mode="pad",
         clip_to_original=True):
-        """
-        Reindex xr.DataArray along "time_name" dimension using target_time array.
+        """Reindex xr.DataArray along "time_name" dimension using target_time array.
 
-        DataArray:        xarray DataArray
-        time_name:        string, name of time dimension of all DataArray present in DataArray_ls
-        target_time:      np.array of np.datetime64[ns]
-        nearest_tol_time: np.timedelta64, max distance for "nearest" (e.g., np.timedelta64(3,'h'))
-        align_mode:       string, mode of selecting timestamp in reconstructed sum ("pad"|"nearest"|"exact")
-        clip_to_original: bool, select if contribution of DataArray before the start and after the end of that array is set to 0
+        Parameters
+        ----------
+        DataArray : object
+            xarray DataArray
+
+        time_name : str or path-like
+            name of time dimension of all DataArray present in DataArray_ls
+
+        target_time : object
+            np.array of np.datetime64[ns]
+
+        nearest_tol_time : timedelta-like, optional, default=None
+            np.timedelta64, max distance for "nearest" (e.g., np.timedelta64(3,'h'))
+
+        align_mode : str, default='pad'
+            mode of selecting timestamp in reconstructed sum ("pad"|"nearest"|"exact")
+
+        clip_to_original : bool, default=True
+            select if contribution of DataArray before the start and after the end of
+            that array is set to 0
+
+        Returns
+        -------
+        result : xarray.DataArray
+            DataArray aligned on the requested time axis.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
         """
         valid_modes = {"pad", "nearest", "exact"}
         if align_mode not in valid_modes:
@@ -26076,10 +27931,34 @@ to physically wet regions. This writer exports data; it does not seed.
     def build_regular_series(self, *,
         first_value, res, length,
         direction, decimals) :
-        """
-        Round the first_value to the desired decimals (derived from |res| if None),
-        then create: first_rounded + step * i  for i = 0..length-1,
-        where step = +|res| for ascending, -|res| for descending.
+        """Build a rounded, evenly spaced numeric coordinate.
+
+        Parameters
+        ----------
+        first_value : float
+            Starting value before rounding.
+
+        res : float
+            Absolute spacing between generated coordinates.
+
+        length : positive int
+            Number of coordinates.
+
+        direction : str
+            Select ascending or descending coordinate order.
+
+        decimals : int, optional
+            Decimal places used to round the initial value.
+
+        Returns
+        -------
+        result : numpy.ndarray
+            Equally spaced coordinate values of length length.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
         """
         import numpy as np
 
@@ -26271,17 +28150,28 @@ to physically wet regions. This writer exports data; it does not seed.
 
     @staticmethod
     def _normalize_depth_and_specie(DataArray_ls):
-        """
-        Normalize 'depth' and 'specie' across a list of DataArrays.
+        """Normalize 'depth' and 'specie' across a list of DataArrays.
 
-        - 'specie' is always removed (dim and/or coord).
-        - If a common single-valued depth exists, it is kept as a SCALAR coordinate
-          (0-D), NOT a dimension.
-        - If depth is multi-valued (len > 1), we keep it as-is (dimension/coord).
-        - If depth is multi-valued (length > 1), every DataArray must already have
-          'depth' present, and all must match; they are left multi-depth but their
-          depth coord is set to the common reference.
-        - Time-like dimensions ('time', 'avg_time', 'time_avg') are never removed.
+        Parameters
+        ----------
+        DataArray_ls : object
+            Provide DataArray ls for this operation.
+
+        Returns
+        -------
+        result : xarray.DataArray
+            Input normalized to the shared depth/species axes.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+
+        Notes
+        -----
+        Remove the specie dimension/coordinate. Keep a common
+        single depth as a scalar coordinate, not a dimension. Keep matching
+        multiple depth levels as a dimension. Never remove time, avg_time or time_avg.
         """
         import numpy as np
         import xarray as xr
@@ -26568,12 +28458,34 @@ to physically wet regions. This writer exports data; it does not seed.
 
     @staticmethod
     def _cell_areas_on_common_rect_footprint(src_lat, src_lon, dst_lat, dst_lon, R=6371000.0):
-        """Independent spherical intersection areas of source cells with destination extent.
+        """Compute cell areas on the shared rectilinear footprint.
 
-        Both grids must have finite, strictly monotonic 1-D latitude/longitude
-        centers, and must use one non-wrapping longitude frame.  Fail closed
-        on unsupported geometry rather than approving a potentially false
-        conservation result.  xESMF weights are NOT consulted by this check.
+        Parameters
+        ----------
+        src_lat : object
+            Provide src lat for this operation.
+
+        src_lon : object
+            Provide src lon for this operation.
+
+        dst_lat : object
+            Provide dst lat for this operation.
+
+        dst_lon : object
+            Provide dst lon for this operation.
+
+        R : float, default=6371000.0
+            Provide R for this operation.
+
+        Returns
+        -------
+        result : xarray.DataArray
+            WGS84 horizontal cell area in square metres, on (latitude, longitude).
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
         """
         import numpy as np
         import xarray as xr
@@ -26785,16 +28697,32 @@ to physically wet regions. This writer exports data; it does not seed.
         return out
 
     def _build_common_cell_volume(self, da_ref, topo_ref):
-        """
-        Build cell volume/thickness on the common aligned grid.
+        """Build shared cell-volume geometry for aligned DataArrays.
 
-        3D: da_ref has 'depth' as a dimension, interpreted as layer tops.
-                cell_volume = dz * area
-            Scalar depth coord:
-                da_ref has 'depth' as a scalar coord but not a dimension.
-                cell_volume = (topo - depth) * area
-        2D: no depth present.
-            cell_volume = topo * area
+        Parameters
+        ----------
+        da_ref : object
+            Provide da ref for this operation.
+
+        topo_ref : object
+            Provide topo ref for this operation.
+
+        Returns
+        -------
+        result : numpy.ndarray
+            Common cell-volume array built from the shared grid geometry.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+
+        Notes
+        -----
+        The depth coordinate sets how the function calculates water volume.
+        - For a 3-D layer-top axis, volume equals layer thickness times cell area.
+        - For a scalar depth coordinate, volume equals (topo - depth) times cell area.
+        - For 2-D data without depth, volume equals topo times cell area.
         """
         import numpy as np
         import xarray as xr
@@ -26975,43 +28903,82 @@ to physically wet regions. This writer exports data; it does not seed.
         return int(estimate)
 
     def sum_DataArray_list(
-        self,
-        DataArray_dict,
-        DataArray_ls=None,
-        variable=None,
-        start_date=None,
-        end_date=None,
-        freq_time=None,
-        time_name="time",
-        align_mode="pad",
-        nearest_tol_time=None,
-        dim_res_dict=None,
-        coord_tolerance_dict=None,
-        snap_mode="median",
-        mask_mode="input0",
-        sim_description=None,
-        Verbose=True,
-        max_working_memory_bytes=None,
+        self, DataArray_dict, DataArray_ls=None,
+        variable=None, start_date=None, end_date=None,
+        freq_time=None, time_name="time", align_mode="pad",
+        nearest_tol_time=None, dim_res_dict=None, coord_tolerance_dict=None,
+        snap_mode="median", mask_mode="input0", sim_description=None,
+        Verbose=True, max_working_memory_bytes=None,
     ):
-        """
-        Sum a list of xarray DataArrays, with the same or different time step.
-        If start_date, end_date, or freq_time are specified time dimension is reconstructed.
+        """Align and sum spatial DataArrays on a common time axis.
 
-        DataArray_dict:      dictionary of {idx: {"topo": ..., "variable": ...}, ...}
-        variable:            string, name of variable to be used as key for DataArray_dict
-        DataArray_ls:        list of xarray DataArray
-        start_date:          np.datetime64, start of reconstructed time dimension
-        end_date:            np.datetime64, end of reconstructed time dimension
-        freq_time:           np.timedelta64, frequency of reconstructed time dimension
-        time_name:           string, name of time dimension of all DataArray present in DataArray_ls
-        align_mode:          string, mode of selecting timestamp in reconstructed sum ("pad"|"nearest"|"exact")
-        nearest_tol_time:    np.timedelta64, max distance for "nearest" (e.g., np.timedelta64(3,'h'))
-        dim_res_dict:        dict {"dim": float32} resolution of each dimension. Will be inferred if None or {}
-        mask_mode:           string, spatial any-over-time mask mode ("input0"|"union"|"intersection").
-                             NaNs in this aggregation path mean spatial invalidity or zero contribution,
-                             not transient missing observations.
-        sim_description:     string, explicit value overrides inherited common metadata
-        max_working_memory_bytes: optional integer byte budget checked before target-time reindexing
+        Parameters
+        ----------
+        DataArray_dict : object
+            dictionary of {idx: {"topo": ..., "variable": ...}, ...}
+
+        DataArray_ls : object, optional, default=None
+            list of xarray DataArray
+
+        variable : str, default=None
+            name of variable to be used as key for DataArray_dict
+
+        start_date : datetime-like, optional, default=None
+            np.datetime64, start of reconstructed time dimension
+
+        end_date : datetime-like, optional, default=None
+            np.datetime64, end of reconstructed time dimension
+
+        freq_time : timedelta-like, optional, default=None
+            np.timedelta64, frequency of reconstructed time dimension
+
+        time_name : str or path-like, default='time'
+            name of time dimension of all DataArray present in DataArray_ls
+
+        align_mode : str, default='pad'
+            mode of selecting timestamp in reconstructed sum ("pad"|"nearest"|"exact")
+
+        nearest_tol_time : timedelta-like, optional, default=None
+            np.timedelta64, max distance for "nearest" (e.g., np.timedelta64(3,'h'))
+
+        dim_res_dict : object, optional, default=None
+            dict {"dim": float32} resolution of each dimension. Will be inferred if None
+            or {}
+
+        coord_tolerance_dict : mapping, optional, default=None
+            Per-coordinate equality tolerances.
+
+        snap_mode : str, default='median'
+            How to select the canonical coordinate when inputs differ slightly.
+
+        mask_mode : str or path-like, default='input0'
+            spatial any-over-time mask mode ("input0"|"union"|"intersection"). NaNs in
+            this aggregation path mean spatial invalidity or zero contribution, not
+            transient missing observations.
+
+        sim_description : str, optional, default=None
+            explicit value overrides inherited common metadata
+
+        Verbose : bool, default=True
+            Print progress messages when enabled.
+
+        max_working_memory_bytes : object, optional, default=None
+            optional integer byte budget checked before target-time reindexing
+
+        Returns
+        -------
+        result : tuple
+            Return the combined DataArray and its associated canonical support field.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+
+        Notes
+        -----
+        - Preserve the selected horizontal geometry and coordinate conventions.
+        - The mask_mode setting controls how source spatial validity masks combine.
         """
         import hashlib
         import os
@@ -27308,18 +29275,10 @@ to physically wet regions. This writer exports data; it does not seed.
                 return self._topography_equal(left, right, compare_coords=False)
 
             def regrid3d_conservative_with_topo(
-                da,
-                topo_src,
-                lat_can,
-                lon_can,
-                depth_top_can,
-                need_horizontal_interp,
-                need_vertical_interp,
-                *,
-                depth_dim="depth",
-                weights_dir=None,
-                idx=None,
-                idx_tot=None,
+                da, topo_src, lat_can,
+                lon_can, depth_top_can, need_horizontal_interp,
+                need_vertical_interp, *, depth_dim="depth",
+                weights_dir=None, idx=None, idx_tot=None,
                 Verbose=True,
             ):
                 """Conservatively remap concentration through areal mass density.
@@ -27766,14 +29725,24 @@ to physically wet regions. This writer exports data; it does not seed.
 
     @staticmethod
     def _normalize_vertical_depth_axis(depth_coord):
-        """Validate and normalize layer-top depth coordinates without reindexing data.
+        """Validate and normalize the positive-down depth axis.
+
+        Parameters
+        ----------
+        depth_coord : object
+            Provide depth coord for this operation.
 
         Returns
         -------
-        physical_depth_top : np.ndarray
-            Positive-down layer-top depths ordered from surface to deepest layer.
-        source_indices : np.ndarray
-            Integer indices selecting the corresponding source depth slices in that order.
+        result : tuple
+            Normalized depth coordinates and layer geometry.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        TypeError
+            An input has an unsupported type.
         """
         depth = np.asarray(depth_coord)
         if depth.ndim != 1 or depth.size == 0:
@@ -27819,7 +29788,28 @@ to physically wet regions. This writer exports data; it does not seed.
 
     @staticmethod
     def _align_vertical_mean_inputs(Conc_DA, Bathymetry_DA):
-        """Align bathymetry to concentration without changing native horizontal topology."""
+        """Align bathymetry to concentration without changing native horizontal topology.
+
+        Parameters
+        ----------
+        Conc_DA : object
+            Provide Conc DA for this operation.
+
+        Bathymetry_DA : object
+            Provide Bathymetry DA for this operation.
+
+        Returns
+        -------
+        result : tuple of xarray.DataArray
+            Aligned concentration and bathymetry DataArrays.
+
+        Raises
+        ------
+        TypeError
+            An input has an unsupported type.
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        """
         import xarray as xr
 
         if not isinstance(Conc_DA, xr.DataArray) or not isinstance(Bathymetry_DA, xr.DataArray):
@@ -27897,13 +29887,31 @@ to physically wet regions. This writer exports data; it does not seed.
         return (wet_thickness > 0.0) & (~np.isfinite(concentration_slice))
 
     def _bounded_vertical_depth_mean(self, Conc_DA, Bathymetry_DA, depth_tops, source_indices):
-        """Reduce depth one layer at a time without a depth-sized weight cube.
+        """Calculate wet-thickness-weighted means in a vertical column.
 
-        This helper is intentionally expressed as a sequence of non-depth-sized
-        xarray operations. NumPy-backed inputs therefore have a working set bounded
-        by output-sized intermediates rather than ``depth * output`` weights/products.
-        Dask-backed inputs remain lazy because the helper performs no scalar truth
-        evaluation and never accesses the concentration data through ``.values``.
+        Parameters
+        ----------
+        Conc_DA : object
+            Provide Conc DA for this operation.
+
+        Bathymetry_DA : object
+            Provide Bathymetry DA for this operation.
+
+        depth_tops : object
+            Provide depth tops for this operation.
+
+        source_indices : object
+            Source indices used by the operation.
+
+        Returns
+        -------
+        result : numpy.ndarray
+            Wet-thickness-weighted column means.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
         """
         depth_tops = np.asarray(depth_tops, dtype=np.float64)
         source_indices = np.asarray(source_indices, dtype=np.intp)
@@ -27954,33 +29962,53 @@ to physically wet regions. This writer exports data; it does not seed.
         return result
 
     def vertical_depth_mean(self,
-                            Dataset,
-                            Topograpy_DA = None,
-                            variable_name = None,
-                            topograpy_name = None,
-                            save_file = True,
+                            Dataset, Topograpy_DA = None, variable_name = None,
+                            topograpy_name = None, save_file = True,
                             file_output_path = None,
                             file_output_name = None
                             ):
-        """Calculate a bathymetry-weighted vertical mean over layer-top depths.
+        """Calculate a bathymetry-weighted mean over represented depth layers.
 
-        The concentration variable must contain a one-dimensional ``depth``
-        coordinate whose values identify the top of each represented layer.
-        Depth may use positive-down values or one legacy negative-down sign
-        convention, but it must contain exactly one surface value at 0 and be
-        monotonic in physical depth. The deepest represented layer extends to
-        local bathymetry.
+        Parameters
+        ----------
+        Dataset : xarray.Dataset
+            Dataset that contains the vertically resolved field.
 
-        Horizontal topology is preserved. Rectilinear geographic, projected
-        x/y, curvilinear y/x with auxiliary lon/lat, and unstructured face
-        dimensions are accepted when concentration and bathymetry coordinates
-        align exactly. Only historical lat/latitude and lon/longitude bathymetry
-        aliases may be normalized internally.
+        Topograpy_DA : xarray.DataArray, optional, default=None
+            Aligned positive-down bathymetry.
 
-        Missing concentration in a layer with positive physical thickness
-        invalidates that column/time mean. Missing values in layers with zero
-        physical support do not. Bathymetry must be finite and strictly positive;
-        invalid bathymetry returns NaN.
+        variable_name : str, optional, default=None
+            Name of the field to average.
+
+        topograpy_name : str, optional, default=None
+            Name of the bathymetry variable.
+
+        save_file : bool, default=True
+            Write the result to NetCDF when enabled.
+
+        file_output_path : str or path-like, optional, default=None
+            Destination directory for output files.
+
+        file_output_name : str, optional, default=None
+            Name of the saved output file.
+
+        Returns
+        -------
+        result : xarray.DataArray
+            Wet-thickness-weighted vertical mean. The optional file save has a separate
+            side effect.
+
+        Raises
+        ------
+        TypeError
+            An input has an unsupported type.
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+
+        Notes
+        -----
+        - Depth values identify the top of each layer, in positive-down metres.
+        - Do not treat a missing value in a wet layer as zero concentration.
         """
         import xarray as xr
 
@@ -28223,18 +30251,31 @@ to physically wet regions. This writer exports data; it does not seed.
 
     @staticmethod
     def _resolve_concat_variables_for_dataset(ds, variables_to_keep):
-        """
-        Resolve requested concat variables against the actual Dataset names.
-        The request list may contain either:
-          - actual NetCDF variable names, e.g. "lat", "lon"
-          - CF-style names, e.g. "latitude", "longitude"
-          - values matching a variable's standard_name attribute
-        Example:
-          requested "latitude"  -> keeps "lat" if lat.standard_name == "latitude"
-          requested "longitude" -> keeps "lon" if lon.standard_name == "longitude"
-        Returns:
-            keep: list of dataset variable/coordinate names to keep
-            missing: list of requested names that could not be resolved
+        """Resolve requested concat variables against the actual Dataset names.
+
+        Parameters
+        ----------
+        ds : object
+            Provide ds for this operation.
+
+        variables_to_keep : object
+            Provide variables to keep for this operation.
+
+        Returns
+        -------
+        result : tuple
+            Variables to retain and any missing requested variables.
+
+        Notes
+        -----
+        Accept direct NetCDF variable names,
+        CF-style names or matching standard_name attributes.
+
+        Examples
+        --------
+        If lat.standard_name == 'latitude' and lon.standard_name ==
+        'longitude', requested names 'latitude' and 'longitude' select
+        the existing variables 'lat' and 'lon'.
         """
         if variables_to_keep is None:
             return None, []
@@ -28572,10 +30613,23 @@ to physically wet regions. This writer exports data; it does not seed.
     def _concat_merge_nontrajectory_dataarray(name, arrays):
         """Merge copies of one non-trajectory data variable without broadcasting.
 
-        Values must agree wherever two sources both contain non-missing data.
-        Missing regions introduced by prefix reindexing may be filled from another
-        source. Variable attributes are retained only when identical across all
-        contributing copies.
+        Parameters
+        ----------
+        name : object
+            Provide name for this operation.
+
+        arrays : object
+            Provide arrays for this operation.
+
+        Returns
+        -------
+        result : xarray.DataArray
+            Merged nontrajectory variable with compatible dimensions.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
         """
         import numpy as np
         import xarray as xr
@@ -28619,13 +30673,24 @@ to physically wet regions. This writer exports data; it does not seed.
         return merged
 
     def _concat_one_global_id_range(job):
-        """
-        Worker process.
+        """Worker process.
 
-        Opens files relevant to this global trajectory range, selects local
-        trajectory positions, pads prefix-compatible shorter time axes to the
-        job target time axis, concatenates along trajectory, and rewrites the
-        trajectory coordinate to the new global trajectory IDs.
+        Parameters
+        ----------
+        job : object
+            Provide job for this operation.
+
+        Returns
+        -------
+        result : str or None
+            Output path after concatenation, or None if no output was created.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        RuntimeError
+            The required operation or model state is not available.
         """
         from pathlib import Path
         import os
@@ -29169,39 +31234,73 @@ to physically wet regions. This writer exports data; it does not seed.
 
 
     def concat_simulation(
-        self,
-        sim_file_list,
-        simoutputpath,
-        sim_name="sim",
-        max_size_GB=16,
-        zip_files=True,
-        max_workers=None,
-        delete_original_nc=True,
-        compression_level=6,
-        variables_to_keep=None,
-        verbose=False,
+        self, sim_file_list, simoutputpath,
+        sim_name="sim", max_size_GB=16, zip_files=True,
+        max_workers=None, delete_original_nc=True, compression_level=6,
+        variables_to_keep=None, verbose=False,
     ):
-        """
-        Parallel concatenation of simulation slices.
+        """Concatenate trajectory files with unique global particle indices.
 
-        This function is designed for files where local trajectory IDs restart
-        from 0 in each file. It assigns a new global trajectory coordinate in
-        file order.
+        Parameters
+        ----------
+        sim_file_list : object
+            list of str, List of .nc files or .zip archives.
 
-        sim_file_list:      list of str, List of .nc files or .zip archives.
-        simoutputpath:      str, Folder containing files to concatenate.
-        sim_name:           str, Name prefix for output files.
-        max_size_GB:        float32, Approximate maximum logical size per concatenated output file; not a RAM cap.
-        zip_files:          boolean, If True, final concatenated files are placed in one zip archive.
-        max_workers:        int, Number of worker processes. Default 1 is the limited-memory-safe policy; explicit values >1 can multiply RAM use.
-        delete_original_nc: boolean, If True, source .nc files are deleted after all concatenations succeed.
-        compression_level:  int, NetCDF gzip compression level for output files.
-        variables_to_keep:  list/tuple of str, Optional list/tuple of variables to keep in the concatenated output.
-                Default None keeps all variables and preserves the previous behavior.
-                Use variables_to_keep="default" or
-                variables_to_keep=self.DEFAULT_CONCAT_VARIABLES to keep only:
-                mass, specie, z, latitude, longitude, time, origin_marker, and status.
-                The max_size_GB partitioning is based on the filtered dataset size.
+        simoutputpath : object
+            Folder containing files to concatenate.
+
+        sim_name : str or path-like, default='sim'
+            Name prefix for output files.
+
+        max_size_GB : int, default=16
+            Approximate maximum logical size per concatenated output file. not a RAM cap.
+
+        zip_files : bool, default=True
+            If True, final concatenated files are placed in one zip archive.
+
+        max_workers : object, optional, default=None
+            Number of worker processes. Default 1 is the limited-memory-safe policy.
+            explicit values >1 can multiply RAM use.
+
+        delete_original_nc : bool, default=True
+            If True, source .nc files are deleted after all concatenations succeed.
+
+        compression_level : int, default=6
+            NetCDF gzip compression level for output files.
+
+        variables_to_keep : object, optional, default=None
+            list/tuple of str, Optional list/tuple of variables to keep in the
+            concatenated output. Default None keeps all variables and preserves the
+            previous behavior.
+
+        verbose : bool, default=False
+            Print concatenation progress and diagnostics.
+
+        Returns
+        -------
+        result : list
+            Information about the generated concatenated artifacts.
+
+        Raises
+        ------
+        ValueError
+            A validated input has an unsupported value, shape or combination.
+        FileNotFoundError
+            A required input file does not exist.
+        RuntimeError
+            The required operation or model state is not available.
+
+        Notes
+        -----
+        - Input files can reuse local trajectory IDs. Assign unique global trajectory IDs.
+        - Only delete source files after successful concatenation.
+
+        Examples
+        --------
+        Keep source files while testing concatenation.
+
+        >>> result = model.concat_simulation(
+        ...     ['run1.nc', 'run2.nc'], 'outputs', delete_original_nc=False)
         """
         import os
         import math
