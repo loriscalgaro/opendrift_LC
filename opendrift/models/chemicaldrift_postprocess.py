@@ -517,6 +517,7 @@ class ChemicalDriftPostProcessMixin:
 
     def _normalize_output_grid(self, output_grid, density_proj=None):
         """
+
         Recommended `output_grid` layouts for `write_netcdf_chemical_density_map()`
         General rules
         -------------
@@ -680,6 +681,26 @@ class ChemicalDriftPostProcessMixin:
                )
            This is the recommended layout for unstructured triangular meshes. Connectivity
            must define triangles, i.e. 3 node indices per face.
+
+Parameters / return contract
+----------------------------
+output_grid : xarray.Dataset or mapping, or None
+    Spatial-only centers/nodes/corners. The calling writer also accepts a
+    NetCDF filename and opens it before passing it here. A normalized
+    dictionary marked _normalized_output_grid is returned unchanged.
+density_proj : pyproj-compatible CRS or None
+    Required when only projected coordinates are available; may be inferred
+    from an otherwise complete grid. Geographic lon/lat are in degrees.
+Returns : dict or None
+    None when output_grid=None; otherwise normalized topology, cell shape,
+    lon/lat centers and polygon corners, output CRS, and for triangular
+    topology node positions, connectivity, face coordinates and areas.
+    Regular grid field arrays use the internal (x,y) order; exported NetCDF
+    structured spatial variables use (y,x). Triangles use (face,) order.
+Raises : ValueError / TypeError
+    Missing/inconsistent coordinate or corner arrays, invalid triangles,
+    unsupported topologies or CRS, and time-bearing specifications are
+    rejected. This routine defines geometry but does not remap fields.
         """
         from pyproj import CRS, Proj, Geod
 
@@ -2704,26 +2725,37 @@ class ChemicalDriftPostProcessMixin:
         return h, area, active_sediment_layer_thickness, bathy_invalid_mask
 
     ### Additional writer / derived-output helpers
-    def get_pixel_mean_depth(self, lons, lats,
-                             is_moll, is_latlon,
-                             lat_resol, lon_resol,
-                             output_grid=None,
-                             *,
-                             bathymetry_remap='interpolate',
-                             bathymetry_source=None,
-                             bathymetry_var='sea_floor_depth_below_sea_level',
-                             active_sediment_source=None,
-                             active_sediment_var='active_sediment_layer_thickness',
-                             z_array=None,
-                             source_crs=None,
-                             remap_crs=None,
-                             return_metadata=False,
-                             min_wet_fraction=0.0,
-                             conservative_backend='auto',
-                             conservative_weights=None,
-                             large_domain_backend='scrip',
-                             collect_tidal_links=False):
+    def get_pixel_mean_depth(
+        self,
+        # Output-cell positions and grid geometry
+        lons,
+        lats,
+        is_moll,
+        is_latlon,
+        lat_resol,
+        lon_resol,
+        output_grid=None,
+        *,
+        # Bathymetry remapping mode and environmental sources
+        bathymetry_remap='interpolate',
+        bathymetry_source=None,
+        bathymetry_var='sea_floor_depth_below_sea_level',
+        active_sediment_source=None,
+        active_sediment_var='active_sediment_layer_thickness',
+        # Vertical layers and source/target coordinate systems
+        z_array=None,
+        source_crs=None,
+        remap_crs=None,
+        # Output details, coverage checks and conservative backend
+        return_metadata=False,
+        min_wet_fraction=0.0,
+        conservative_backend='auto',
+        conservative_weights=None,
+        large_domain_backend='scrip',
+        collect_tidal_links=False,
+    ):
         """
+
         Return output-grid bathymetry, cell area, optional active sediment layer
         thickness, and an invalid-domain mask for write_netcdf_chemical_density_map().
 
@@ -3265,6 +3297,27 @@ class ChemicalDriftPostProcessMixin:
         Explicit dateline-crossing target cells are not supported by the Shapely backend.
         For dateline-spanning, basin-scale, or global grids, use precomputed
         SCRIP/ESMF/xESMF conservative weights.
+
+Tidal overlap collection and return contract
+-------------------------------------------
+collect_tidal_links : bool (default False)
+    Only for qualified direct/Shapely geometry. When True, return_metadata
+    must be used by the calling writer to obtain metadata key
+    tidal_overlap_links: row (flattened target x,y), col (flattened
+    source y,x), area (physical intersection m2), source_shape and backend.
+    Links are computed once; not a user-supplied argument, a second
+    remapping algorithm, or time-dependent data. SCRIP/ESMF area weights
+    are not qualified for tidal physical-volume calculation.
+Returns : (depth, area, sediment_thickness, invalid_mask[, metadata])
+    All spatial arrays follow the internal target (x,y) or (face,) order.
+    Depth is representative fixed bathymetry (m, positive down); area is
+    horizontal m2 where available; sediment thickness is metres or None;
+    invalid_mask is boolean. Optional metadata includes wet_fraction
+    (valid source support, not time-dependent wetting), conservative
+    layer_volume (m3), source_valid_area (m2), backend and overlap links.
+Raises : ValueError / NotImplementedError
+    Invalid source/target geometry or source-cell ordering; unsupported
+    conservative weight-area convention when overlap links are requested.
         """
         from dataclasses import dataclass
         from typing import Any, Iterable, Optional
@@ -3381,6 +3434,30 @@ class ChemicalDriftPostProcessMixin:
             return np.stack((ng[:-1, :-1], ng[1:, :-1], ng[1:, 1:], ng[:-1, 1:]), axis=-1)
 
         def _normalize_triangle_connectivity(conn: Any, obj: Any = None, name: str = "face_node_connectivity") -> np.ndarray:
+            """
+            Convert CF/UGRID triangle connectivity to internal zero-based indices.
+
+            Parameters
+            ----------
+            conn : array-like (face,3) or (3,face)
+                Triangle vertex indices, one face per three nodes.
+            obj : xarray.DataArray-like or None
+                Optional original variable; dims and CF start_index attribute decide
+                orientation and whether stored indices are zero- or one-based.
+            name : str
+                Variable name included in validation error messages.
+
+            Returns
+            -------
+            int64 ndarray (face,3)
+                Zero-based face-node connectivity in original face order.
+
+            Raises
+            ------
+            ValueError
+                Non-triangular or multi-dimensional layout, malformed node indices,
+                invalid orientation or negative indices after start_index adjustment.
+            """
             tri = np.asarray(conn)
             if tri.ndim != 2:
                 raise ValueError(f"{name} must be 2D, got shape {tri.shape}.")
@@ -3425,6 +3502,29 @@ class ChemicalDriftPostProcessMixin:
             return np.asarray(out.transpose(*wanted_dims).values)
 
         def _quad_bounds_to_yx4(bounds: Any, ny: int, nx: int, *, name: str) -> np.ndarray:
+            """
+            Normalize structured quadrilateral bounds to source (y,x,vertex) order.
+
+            Parameters
+            ----------
+            bounds : array-like or xarray.DataArray
+                2D node grid (ny+1,nx+1), or 3D explicit 4-vertex cell bounds.
+            ny, nx : int
+                Source grid cell counts in y and x directions.
+            name : str
+                Source variable identifier for diagnostics.
+
+            Returns
+            -------
+            float64 ndarray (ny,nx,4)
+                Four polygon vertices for each cell, same coordinate units as input.
+                Caller associates lon and lat separately for physical intersections.
+
+            Raises
+            ------
+            ValueError
+                Incompatible shape, wrong number of corners or ambiguous layout.
+            """
             b = _as_array(bounds).astype(np.float64, copy=False)
             dims = tuple(str(d).lower() for d in getattr(bounds, "dims", ()))
             if b.ndim == 2:
@@ -3462,12 +3562,35 @@ class ChemicalDriftPostProcessMixin:
             allow_rectilinear_bounds_inference: bool = True,
         ) -> _CellSet:
             """
-            Extract source bathymetry cells from an xarray Dataset.
+Convert an environmental NetCDF Dataset to source cell polygons.
 
-            Supported source layouts:
-              - rectilinear lon/lat: 1D lon + 1D lat, bounds optional
-              - curvilinear lon/lat: 2D lon + 2D lat, corner/node bounds required
-              - triangular unstructured: face_node_connectivity + node_lon/node_lat or node_x/node_y
+Parameters
+----------
+ds : xarray.Dataset
+    Bathymetry or auxiliary source with structured coordinates or a
+    triangular connectivity array. This helper does not own the Dataset.
+variable : str
+    Name or unambiguous CF standard_name of a source cell field.
+source_crs : pyproj-compatible CRS or None
+    Explicit source CRS if coordinates are projected and geographic
+    polygon vertices cannot otherwise be inferred.
+allow_rectilinear_bounds_inference : bool, default True
+    Permit bounds inference for regular 1D longitude/latitude centers.
+    Curvilinear and triangular grids require sufficient explicit geometry.
+
+Returns
+-------
+_CellSet
+    Cell polygons in degrees_east/degrees_north, source values in original
+    flatten order and original source shape. Structured flatten convention
+    is (y,x); triangular cells are (face,). Values are bathymetry metres
+    when called with the bathymetry variable.
+
+Raises
+------
+ValueError
+    Missing or ambiguous field, unusable bounds/connectivity/coordinates,
+    incompatible shapes or CRS. No tide is interpolated here.
             """
             from pyproj import CRS, Transformer
 
@@ -3622,15 +3745,46 @@ class ChemicalDriftPostProcessMixin:
         # Target-grid extraction
 
         def _target_cells_from_output_grid(
+            # Explicit grid or generated target-cell centers
             output_grid: Optional[dict[str, Any]],
             lons: np.ndarray,
             lats: np.ndarray,
             *,
+            # Generated geographic-grid coordinates and resolution
             is_latlon: bool,
             lat_resol: Optional[float],
             lon_resol: Optional[float],
         ) -> _CellSet:
-            """Build target polygons from a normalized output_grid, or legacy geographic rectilinear centers."""
+            """
+Construct destination polygons for the existing conservative remapper.
+
+Parameters
+----------
+output_grid : normalized dict or None
+    Use lon_corners_4/lat_corners_4 or lon_nodes/lat_nodes for structured
+    targets, or face_node_connectivity and node coordinates for triangles.
+lons, lats : ndarray
+    Target center longitudes and latitudes in degrees, in internal (x,y)
+    order or (face,) for triangles. Used for legacy generated grids.
+is_latlon : bool
+    Whether the legacy target is geographic rather than projected.
+lat_resol, lon_resol : float or None
+    Latitude/longitude spacing in degrees for a generated geographic
+    rectilinear grid. Projected geometry requires explicit normalized
+    polygon corners rather than guessing from centers.
+
+Returns
+-------
+_CellSet
+    Ordered target polygons, area metadata if present, and target shape;
+    flattened structured target rows use the internal (x,y) convention.
+
+Raises
+------
+ValueError
+    No usable corners/nodes, mismatched polygon dimensions or attempts
+    to derive unsupported projected polygon geometry.
+            """
             lons = np.asarray(lons, dtype=np.float64)
             lats = np.asarray(lats, dtype=np.float64)
 
@@ -3855,6 +4009,34 @@ class ChemicalDriftPostProcessMixin:
             repair_invalid: bool = True,
             max_segment_degrees: Optional[float] = 0.25,
         ) -> tuple[list[Any], np.ndarray]:
+            """
+            Project geographic source/target cell vertices for equal-area intersections.
+
+            Parameters
+            ----------
+            cellset : _CellSet
+                Geographic cell polygons (lon/lat in degrees).
+            remap_crs : str
+                Equal-area projected coordinate system for physical intersection
+                calculations; area output is in squared CRS linear units (m2 for the
+                qualified metre-based equal-area CRS chosen by the caller).
+            repair_invalid : bool, default True
+                Attempt a standard polygon validity repair for invalid rings.
+            max_segment_degrees : float or None, default 0.25
+                Geographic ring densification increment in degrees before projection.
+
+            Returns
+            -------
+            (polygons, areas)
+                polygons : list of Shapely polygons or None for invalid cells;
+                areas : float64 ndarray (ncell,) in m2 on metre-based projection.
+
+            Raises
+            ------
+            ValueError
+                Dateline-spanning (>180-degree) cell or invalid CRS/geometry. The
+                caller handles cells that become empty polygons after projection.
+            """
             from shapely.geometry import Polygon
             from pyproj import CRS, Transformer
 
@@ -3907,6 +4089,30 @@ class ChemicalDriftPostProcessMixin:
             return out
 
         def _layer_thickness_from_depth(depth_m: float, z_array: np.ndarray, *, min_thickness_m: float = 0.1) -> np.ndarray:
+            """
+            Clip a static water column against fixed layer boundaries.
+
+            Parameters
+            ----------
+            depth_m : float
+                Positive-down bathymetric depth from the local surface in metres;
+                dry/nonfinite depth returns all-zero layer thicknesses.
+            z_array : 1D array of floats (nlayer+1,)
+                Strictly increasing model-z boundaries from bottom to surface (m).
+            min_thickness_m : float, default 0.1
+                Legacy threshold below which an individual clipped layer is zeroed.
+
+            Returns
+            -------
+            float64 ndarray (nlayer,)
+                Nonnegative local wet-layer thicknesses in metres, deepest first.
+                This is the static helper; tidal volumes use separate exact wet clipping.
+
+            Raises
+            ------
+            ValueError
+                Missing/nonmonotonic layer bounds.
+            """
             z = np.asarray(z_array, dtype=np.float64)
             if z.ndim != 1 or z.size < 2:
                 raise ValueError("z_array must be a 1D array with at least two edges.")
@@ -3986,7 +4192,41 @@ class ChemicalDriftPostProcessMixin:
             direct_match_decimals: int = 8,
             collect_tidal_links: bool = False,
         ) -> Optional[ConservativeBathymetryResult]:
-            """Direct same-grid/subset bathymetry transfer, or None if not applicable."""
+            """
+Transfer bathymetry without interpolation when every target cell matches.
+
+Parameters
+----------
+source, target : _CellSet
+    Geographic polygon cell sets with compatible cell ordering/vertices;
+    the source may be a larger grid containing the target subset.
+z_array : 1D float array or None
+    Ascending negative-down model-z edges ending at the water surface 0.
+source_aux : _CellSet or None
+    Optional active-sediment thickness cells aligned with source.
+min_wet_fraction, min_layer_thickness_m : float
+    Coverage threshold and legacy minimum layer thickness (m).
+extent_class : str or None
+    Region class for output provenance.
+direct_match_decimals : int, default 8
+    Decimal places for geographic polygon-vertex matching to identify
+    unchanged source/target cells. This is not spatial interpolation.
+require_direct, collect_tidal_links : bool
+    Require exact mapping or allow dispatcher fallback; optionally expose
+    physical source-target cell area links to the tidal volume helper.
+
+Returns
+-------
+ConservativeBathymetryResult or None
+    Same-cell depth, area (m2), optional layer volumes (m3), masks and
+    optional direct links. Returns None on mismatch when not required.
+
+Raises
+------
+ValueError
+    Incompatible source/target cells when require_direct=True, and invalid
+    source/area/auxiliary geometry. No spatial averaging is performed.
+            """
             mapping, reason = _build_direct_source_mapping(
                 source,
                 target,
@@ -4107,6 +4347,32 @@ class ChemicalDriftPostProcessMixin:
             return None
 
         def _weights_from_scrip_dataset(ds: Any, *, n_source: Optional[int] = None, n_target: Optional[int] = None, source: Optional[str] = None) -> ConservativeWeightMatrix:
+            """
+            Parse SCRIP/ESMF/xESMF sparse conservative weights from a dataset.
+
+            Parameters
+            ----------
+            ds : xarray.Dataset-like or dict
+                Must contain row/col/S or equivalent destination/source addresses and
+                weights; optional target_area (m2) and normalization metadata.
+            n_source, n_target : int or None
+                Known source/target cell counts for later validation.
+            source : str or None
+                Weight-file provenance identifier.
+
+            Returns
+            -------
+            ConservativeWeightMatrix
+                Sparse row/col/weight vector with input index_base='auto',
+                normalization and optional target_area; downstream validation resolves
+                index origin and physical area convention.
+
+            Raises
+            ------
+            ValueError
+                Missing address arrays or nonmatching sparse vector lengths.
+                These weights are NOT automatically qualified for tidal integration.
+            """
             row_obj = _first_existing_var(ds, ["row", "dst_address", "dst_add", "dst_index"])
             col_obj = _first_existing_var(ds, ["col", "src_address", "src_add", "src_index"])
             w_obj = _first_existing_var(ds, ["S", "weights", "weight", "remap_matrix"])
@@ -4140,6 +4406,29 @@ class ChemicalDriftPostProcessMixin:
             )
 
         def _normalize_precomputed_weights(weights: Any, *, n_source: int, n_target: int) -> ConservativeWeightMatrix:
+            """
+            Validate precomputed static conservative weights and index conventions.
+
+            Parameters
+            ----------
+            weights : mapping, sparse matrix, xarray.Dataset, NetCDF filename or wrapper
+                SCRIP/ESMF-style sparse source-to-target mapping. A row identifies a
+                target cell, a col identifies a source cell; 0/1-based indices and
+                destination-area normalization are resolved from the input contract.
+            n_source, n_target : int
+                Flattened source and target cell counts required for validation.
+
+            Returns
+            -------
+            ConservativeWeightMatrix
+                Validated sparse weights, normalization and provenance. This is for
+                non-tidal static conservative fields, not physical tidal_overlap_links.
+
+            Raises
+            ------
+            ValueError / TypeError
+                Invalid indices, dimensions, weight signs, normalization or format.
+            """
             from pathlib import Path
 
             if weights is None:
@@ -4264,12 +4553,14 @@ class ChemicalDriftPostProcessMixin:
 
         def _finalize_conservative_result(
             *,
+            # Accumulated target-cell source overlaps and wet volumes
             total_volume: np.ndarray,
             valid_overlap_area: np.ndarray,
             target_area: np.ndarray,
             target_shape: tuple[int, ...],
             layer_volume: Optional[np.ndarray] = None,
             aux_volume: Optional[np.ndarray] = None,
+            # Coverage thresholds and remapping provenance
             min_wet_fraction: float = 0.0,
             remap_crs: Optional[str] = None,
             backend: Optional[str] = None,
@@ -4277,6 +4568,44 @@ class ChemicalDriftPostProcessMixin:
             weights_source: Optional[str] = None,
             tidal_overlap_links: Optional[dict] = None,
         ) -> ConservativeBathymetryResult:
+            """
+            Normalize/mask conservative aggregate arrays into the writer's grid shape.
+
+            Parameters
+            ----------
+            total_volume : ndarray (n_target,)
+                Static volume integral of source bathymetry depth times overlap area
+                (m3), before division by target area.
+            valid_overlap_area : ndarray (n_target,)
+                Target-area portion covered by valid bathymetry source cells (m2).
+            target_area : ndarray (n_target,)
+                Physical target cell area (m2), matching the selected backend.
+            target_shape : tuple of ints
+                Internal output spatial shape, (x,y) or (face,).
+            layer_volume : ndarray (nlayer,n_target) or None
+                Optional static conservative per-layer water volume in m3.
+            aux_volume : ndarray (n_target,) or None
+                Optional sediment-layer thickness times area, m3.
+            min_wet_fraction : float
+                Mask target cells with coverage <= this threshold.
+            remap_crs, backend, extent_class, weights_source : str or None
+                Remapping provenance identifiers.
+            tidal_overlap_links : dict or None
+                Optional internal direct/Shapely source-target physical-area links.
+
+            Returns
+            -------
+            ConservativeBathymetryResult
+                effective_depth=total_volume/target_area (m), wet_mean_depth=
+                total_volume/valid_overlap_area (m), static wet_fraction=covered area
+                / target area, area (m2), masks, optional layer volumes (m3), sediment
+                thickness (m) and optional overlap metadata, reshaped to target_shape.
+
+            Raises
+            ------
+            ValueError
+                Target size mismatch or incorrect (nlayer,n_target) layer volume.
+            """
             target_area = np.asarray(target_area, dtype=np.float64).reshape(-1)
             total_volume = np.asarray(total_volume, dtype=np.float64).reshape(-1)
             valid_overlap_area = np.asarray(valid_overlap_area, dtype=np.float64).reshape(-1)
@@ -4337,21 +4666,72 @@ class ChemicalDriftPostProcessMixin:
             )
 
         def _conservative_overlap_core_shapely(
+            # Source and target polygon geometry
             source: _CellSet,
             target: _CellSet,
             *,
+            # Vertical layer integration and ancillary source fields
             z_array: Optional[np.ndarray] = None,
             source_aux: Optional[_CellSet] = None,
+            # Equal-area geometry, wet coverage and numerical thresholds
             remap_crs: Any = None,
             min_wet_fraction: float = 0.0,
             min_overlap_area_m2: float = 0.0,
             min_layer_thickness_m: float = 0.1,
+            # Spatial extent and bounded source-cell selection
             extent_class: Optional[str] = None,
             target_metrics: Optional[dict[str, float]] = None,
             crop_source_to_target_bbox: bool = True,
             source_bbox_padding_degrees: float = 1.0,
+            # Optional internal physical-overlap links for tide
             collect_tidal_links: bool = False,
         ) -> ConservativeBathymetryResult:
+            """
+            Aggregate source bathymetry on target cells using physical polygon areas.
+
+            Parameters
+            ----------
+            source, target : _CellSet
+                Source values and target polygons with lon/lat vertices in degrees.
+            z_array : 1D array or None
+                Ascending surface-relative model-z edges (m) for per-layer volumes.
+            source_aux : _CellSet or None
+                Optional source-aligned sediment-layer thickness.
+            remap_crs : CRS or None
+                Equal-area projected geometry CRS; None chooses from target extent.
+            min_wet_fraction : float
+                Target support threshold; cells at/below it are masked.
+            min_overlap_area_m2 : float
+                Reject tiny polygon intersections below this physical-area threshold.
+            min_layer_thickness_m : float
+                Legacy minimum effective water-layer thickness threshold (m).
+            extent_class : str or None
+                Geographic extent category for provenance.
+            target_metrics : dict or None
+                Precomputed target bounds/extent classification metadata.
+            crop_source_to_target_bbox : bool
+                Whether to crop the candidate source set to the target extent.
+            source_bbox_padding_degrees : float
+                Padding in geographic degrees for source preselection.
+            collect_tidal_links : bool
+                If True record the exact Shapely physical intersections as internal
+                row/col/area arrays. These are reused by the existing tidal kernel and
+                are not written as precomputed overlaps into NetCDF.
+
+            Returns
+            -------
+            ConservativeBathymetryResult
+                Representative target depth (m), coverage fraction, area (m2), invalid
+                masks, optional layer volumes (m3), optional sediment thickness and
+                tidal_overlap_links. Source clipping with tide is done downstream,
+                before summing each link's wet layer volume.
+
+            Raises
+            ------
+            ValueError
+                Missing source values, invalid/collapsed geometry, inconsistent
+                auxiliary field or unsupported intersections.
+            """
             from shapely.strtree import STRtree
 
             if source.values is None:
@@ -4467,16 +4847,52 @@ class ChemicalDriftPostProcessMixin:
             )
 
         def _conservative_overlap_core_weights(
+            # Source and target grid geometry
             source: _CellSet,
             target: _CellSet,
             *,
+            # User-provided static conservative weights
             precomputed_weights: Any,
+            # Layer integration, environmental fields and wet masks
             z_array: Optional[np.ndarray] = None,
             source_aux: Optional[_CellSet] = None,
             min_wet_fraction: float = 0.0,
             min_layer_thickness_m: float = 0.1,
             extent_class: Optional[str] = None,
         ) -> ConservativeBathymetryResult:
+            """
+            Map static bathymetry using qualified SCRIP/ESMF conservative weights.
+
+            Parameters
+            ----------
+            source, target : _CellSet
+                Source bathymetry values and target geographic cell polygons.
+            precomputed_weights : sparse weights or supported weight container
+                Validated source-to-target static weights. The SCRIP destination-area
+                convention uses spherical great-circle target polygons and compatible
+                physical target area, not an arbitrary planar area factor.
+            z_array : 1D array or None
+                Surface-relative model-z layer edges in metres.
+            source_aux : _CellSet or None
+                Optional aligned sediment thickness source cells.
+            min_wet_fraction : float
+                Required valid-source coverage fraction threshold.
+            min_layer_thickness_m : float
+                Legacy minimum layer thickness in metres.
+            extent_class : str or None
+                Geographic scope for provenance.
+
+            Returns
+            -------
+            ConservativeBathymetryResult
+                Static conservative depth/area/coverage/layer-volume fields and masks.
+                Does NOT return qualified tidal polygon areas.
+
+            Raises
+            ------
+            ValueError / TypeError
+                Absent/malformed weight matrix, mismatched cell counts or geometry.
+            """
             if source.values is None:
                 raise ValueError("Source depth values are required for conservative bathymetry remapping.")
             if source_aux is not None and source_aux.values is not None and len(source_aux.values) != len(source.values):
@@ -4619,12 +5035,41 @@ class ChemicalDriftPostProcessMixin:
             )
 
         def _select_conservative_backend(
+            # Target geometry and backend selection
             target: _CellSet,
             *,
             backend: str = "auto",
             large_domain_backend: str = "scrip",
+            # Optional precomputed conservative weight source
             precomputed_weights: Any = None,
         ) -> tuple[str, str, dict[str, float]]:
+            """
+            Select direct/Shapely/static SCRIP remapping for the target extent.
+
+            Parameters
+            ----------
+            target : _CellSet
+                Target polygon geometry, used to classify local/regional/basin/global
+                extent independently from trajectory particle positions.
+            backend : str, default 'auto'
+                'direct', 'shapely', 'scrip' or supported aliases, or 'auto'.
+            large_domain_backend : str, default 'scrip'
+                Backend used by auto for basin/global targets.
+            precomputed_weights : supported sparse weight source or None
+                Mandatory when the selected static backend is SCRIP.
+
+            Returns
+            -------
+            (selected_backend, extent_class, target_metrics)
+                Normalized method name, extent category and geographic extent metadata.
+                The subsequent dispatcher still tries direct same-cell matching first.
+
+            Raises
+            ------
+            ValueError
+                Unsupported backend or large-domain setting, or missing static
+                SCRIP weights for a nonlocal map. No tidal weights are validated here.
+            """
             extent_class, metrics = _classify_target_extent(target)
             b = str(backend or "auto").lower()
             aliases = {
@@ -4662,25 +5107,63 @@ class ChemicalDriftPostProcessMixin:
             return b, extent_class, metrics
 
         def _conservative_overlap_core(
+            # Source and target cells
             source: _CellSet,
             target: _CellSet,
             *,
+            # Layer geometry and supplementary environmental fields
             z_array: Optional[np.ndarray] = None,
             source_aux: Optional[_CellSet] = None,
+            # Projection and wet-layer thresholds
             remap_crs: Any = None,
             min_wet_fraction: float = 0.0,
             min_overlap_area_m2: float = 0.0,
             min_layer_thickness_m: float = 0.1,
+            # Backend strategy and optional static weights
             backend: str = "auto",
             precomputed_weights: Any = None,
             large_domain_backend: str = "scrip",
+            # Optional physical-area links for tidal integration
             collect_tidal_links: bool = False,
         ) -> ConservativeBathymetryResult:
-            """Conservative bathymetry remap dispatcher.
+            """
+Select direct same-cell, Shapely or static SCRIP conservative remapping.
 
-            backend='auto' uses Shapely/STRtree for local and regional target maps. For
-            basin-scale or global target maps it switches to the precomputed weights
-            branch, which accepts SCRIP/ESMF/xESMF conservative weights.
+Parameters
+----------
+source, target : _CellSet
+    Original source bathymetry cells and requested output grid polygons.
+z_array : 1D array or None
+    Negative-down model-z layer boundaries in metres, ending at 0.
+source_aux : _CellSet or None
+    Optional source-matched active-sediment thickness.
+remap_crs : CRS or None
+    Equal-area CRS used by Shapely where needed.
+min_wet_fraction, min_overlap_area_m2 : float
+    Minimum valid target support fraction and physical intersection area.
+min_layer_thickness_m : float, default 0.1
+    Legacy minimum clipped layer thickness for static remapping (m).
+backend : str
+    Auto/direct/Shapely/SCRIP-family algorithm selector.
+precomputed_weights : supported sparse weight source or None
+    Used only by static SCRIP-family route when direct is impossible.
+large_domain_backend : str
+    Backend selected for basin/global domains in auto mode.
+collect_tidal_links : bool
+    Require physically qualified direct/Shapely overlap areas as internal
+    row/col/area links for a later source-clipped tidal-volume calculation.
+
+Returns
+-------
+ConservativeBathymetryResult
+    Source-derived target depth/area/coverage, optional layer volumes
+    and overlap geometry metadata, without resampling tidal water level.
+
+Raises
+------
+ValueError / NotImplementedError
+    Direct matching failed when forced, invalid weights, or attempted
+    tidal link collection with an unqualified SCRIP/ESMF area convention.
             """
             selected_backend, extent_class, target_metrics = _select_conservative_backend(
                 target,
@@ -4739,8 +5222,10 @@ class ChemicalDriftPostProcessMixin:
             )
 
         def conservative_bathymetry_from_files(
+            # Bathymetry dataset to regrid
             bathymetry_nc: str,
             *,
+            # Source bathymetry variable and target geometry
             bathymetry_var: str = "sea_floor_depth_below_sea_level",
             output_grid: Optional[dict[str, Any]],
             lons: np.ndarray,
@@ -4748,19 +5233,72 @@ class ChemicalDriftPostProcessMixin:
             is_latlon: bool,
             lat_resol: Optional[float],
             lon_resol: Optional[float],
+            # Vertical-layer edges and active sediment-layer inputs
             z_array: Optional[np.ndarray] = None,
             active_sediment_nc: Optional[str] = None,
             active_sediment_var: str = "active_sediment_layer_thickness",
+            # CRS and conservative overlap quality thresholds
             source_crs: Any = None,
             remap_crs: Any = None,
             min_wet_fraction: float = 0.0,
             min_overlap_area_m2: float = 0.0,
+            # Conservative backend and optional sparse weights
             conservative_backend: str = "auto",
             conservative_weights: Any = None,
             large_domain_backend: str = "scrip",
+            # Optional tidal source-to-target overlap collection
             collect_tidal_links: bool = False,
         ) -> ConservativeBathymetryResult:
-            """High-level conservative bathymetry remap from NetCDF file(s)."""
+            """
+Read source cell geometry and perform the existing conservative remap.
+
+Parameters
+----------
+bathymetry_nc : NetCDF path or xarray.Dataset
+    Fixed bathymetry source; path-owned files are closed after use.
+bathymetry_var : str
+    Source variable name/unique CF standard_name for bathymetry in metres.
+output_grid : normalized dict or None
+    Explicit target cell geometry; required for non-geographic generated
+    targets and for triangular/curvilinear output.
+lons, lats : ndarray
+    Target cell centers in degrees (x,y) or (face,).
+is_latlon : bool
+    Whether the generated target is geographic.
+lat_resol, lon_resol : float or None
+    Geographic target spacing in degrees when target is generated.
+z_array : 1D ndarray or None
+    Ascending negative-down model-z edges ending at zero (m).
+active_sediment_nc : path or None
+    Optional sediment thickness source with matching bathymetry geometry.
+active_sediment_var : str
+    Sediment thickness variable name or unique CF standard_name.
+source_crs, remap_crs : CRS or None
+    Source projected CRS and/or Shapely equal-area overlap CRS.
+min_wet_fraction : float
+    Valid source coverage cutoff (dimensionless).
+min_overlap_area_m2 : float
+    Shapely physical intersection cutoff in square metres.
+conservative_backend : str
+    Direct/Shapely/weighted backend, or auto decision.
+conservative_weights : supported weight source or None
+    Optional SCRIP-family static weights, NOT tidal overlap links.
+large_domain_backend : str
+    Weighted backend used for basin/global automatic remapping.
+collect_tidal_links : bool
+    Request reusable direct/Shapely physical polygon links.
+
+Returns
+-------
+ConservativeBathymetryResult
+    Mapped target bathymetry, cell areas, masks and physical-volume metadata.
+
+Raises
+------
+ValueError / NotImplementedError
+    Invalid bathymetry, source/auxiliary misalignment, missing target
+    corners, direct-grid mismatch or unqualified tidal sparse weights.
+            """
             import xarray as xr
 
             with self._open_density_map_dataset(bathymetry_nc) as ds:
@@ -4796,6 +5334,7 @@ class ChemicalDriftPostProcessMixin:
         # Integration helper
         def get_pixel_mean_depth_with_conservative_option(
             self,
+            # Output-cell positions and grid geometry
             lons,
             lats,
             is_moll,
@@ -4804,14 +5343,17 @@ class ChemicalDriftPostProcessMixin:
             lon_resol,
             output_grid=None,
             *,
+            # Bathymetry remapping mode and environmental sources
             bathymetry_remap="interpolate",
             bathymetry_source=None,
             bathymetry_var="sea_floor_depth_below_sea_level",
             active_sediment_source=None,
             active_sediment_var="active_sediment_layer_thickness",
+            # Vertical layers and source/target coordinate systems
             z_array=None,
             source_crs=None,
             remap_crs=None,
+            # Output details, coverage checks and conservative backend
             return_metadata=False,
             min_wet_fraction=0.0,
             conservative_backend="auto",
@@ -4821,12 +5363,59 @@ class ChemicalDriftPostProcessMixin:
         ):
 
             """
-            Internal dispatcher selecting legacy interpolation or conservative remapping.
+Dispatch the public bathymetry query to unchanged geometry kernels.
 
-            This nested helper normalizes bathymetry_remap aliases, routes interpolate-like
-            modes to _get_pixel_mean_depth_interpolated(), routes conservative modes to
-            conservative_bathymetry_from_files(), and optionally appends the metadata
-            dictionary expected by write_netcdf_chemical_density_map().
+Parameters
+----------
+self : ChemicalDriftPostProcessMixin
+    Writer instance; this is a local integration helper.
+lons, lats : ndarray
+    Output center coordinates in degrees, shape (x,y) or (face,).
+is_moll, is_latlon : bool
+    Legacy generated-grid type flags.
+lat_resol, lon_resol : float or None
+    Legacy geographic cell spacings in degrees.
+output_grid : normalized dict or None
+    Explicit geometry if provided.
+bathymetry_remap : str
+    Interpolate/direct/conservative/Shapely/SCRIP mode.
+bathymetry_source : NetCDF path or xarray.Dataset
+    Required source bathymetry for direct/conservative modes.
+bathymetry_var : str
+    Bathymetry variable to read in metres.
+active_sediment_source : source path or None
+    Optional bathymetry-aligned sediment-layer thickness source.
+active_sediment_var : str
+    Sediment thickness variable name.
+z_array : 1D array or None
+    Model-z layer edges (m), deepest to 0.
+source_crs, remap_crs : CRS or None
+    Source and conservative equal-area geometry definitions.
+return_metadata : bool
+    Append diagnostic/source-overlap metadata when True.
+min_wet_fraction : float
+    Valid source coverage threshold.
+conservative_backend : str
+    Backend selection for conservative modes.
+conservative_weights : sparse weights or None
+    Optional static SCRIP-family weights.
+large_domain_backend : str
+    Basin/global automatic backend.
+collect_tidal_links : bool
+    Request direct/Shapely physical-area links for the existing tidal kernel.
+
+Returns
+-------
+tuple
+    (representative_depth_m, area_m2, sediment_thickness_m, invalid_mask),
+    optionally followed by a metadata dict containing wet_fraction,
+    source_valid_area, layer_volume and tidal_overlap_links.
+
+Raises
+------
+ValueError / NotImplementedError
+    Invalid mode, incompatible grids, missing source or unqualified
+    physical tidal overlap backend.
             """
 
             mode = str(bathymetry_remap).lower()
@@ -5663,11 +6252,28 @@ class ChemicalDriftPostProcessMixin:
     # MANDATORY_FIRST_READ: MANDATORY_FIRST_READ_TIDAL_FORCING_CF_TIME_AND_BOUNDED_IO_20261113.md
     # SHA256: 81650003bb70476901a0811de03dbf417159d65adbdb68292f26bc5ec6f55e8d
     def _resolve_saved_tidal_elevation_mode(result, current_setting, requested):
-        """Resolve tidal mode solely from saved simulation metadata; reject disagreements.
+        """
+Resolve the writer's tidal mode from authenticated trajectory metadata.
 
-        Parameters: result is the opened trajectory Dataset; current_setting is
-        the live model's get_config value; requested is None, True or False.
-        Returns: verified boolean saved stretching setting.
+Parameters
+----------
+result : xarray.Dataset-like trajectory
+    Must contain config_drift:water_column_stretching in global attrs.
+current_setting : bool-like or None
+    Live get_config("drift:water_column_stretching") setting, if known.
+requested : bool-like or None
+    Explicit writer tidal_elevation_enabled value; None inherits saved.
+
+Returns
+-------
+bool
+    Exactly the saved stretching state. No fallback to eta=0 or False.
+
+Raises
+------
+ValueError
+    Missing/ambiguous boolean, disagreement between saved/live/requested
+    settings. The purpose is to prevent scientifically inconsistent output.
         """
         def parse(value, label):
             if isinstance(value, (bool, np.bool_)):
@@ -5692,11 +6298,29 @@ class ChemicalDriftPostProcessMixin:
 
     @staticmethod
     def _match_native_spatial_subset(source_geometry, target_geometry, *, node_coordinates=False):
-        """Return exact source positions for each target cell/node (no remapping).
+        """
+Find exact source positions for each target cell/node without remapping.
 
-        Inputs are normalized grids from ``_normalize_output_grid``.  Only a
-        unique full-cell/full-node identity counts as a native subset.  The
-        returned integer positions follow the target's original ordering.
+Parameters
+----------
+source_geometry, target_geometry : normalized grid dict
+    From _normalize_output_grid. Cell mode requires same structured
+    topology, coordinate type and unambiguous centers/corners; node mode
+    requires exact geographic (and applicable projected) node positions.
+node_coordinates : bool, default False
+    True compares nodes rather than horizontal structured cell polygons.
+
+Returns
+-------
+ndarray of int64, shape (n_target_cells_or_nodes,)
+    For each target index, the corresponding source position. Preserves
+    target ordering even when source covers a larger spatial domain.
+
+Raises
+------
+ValueError
+    Missing/different coordinates, CRS/order ambiguities, duplicates or
+    absence of an exact match. Different-resolution grids are not fused.
         """
         if node_coordinates:
             source_lon = np.asarray(source_geometry['node_lon'], dtype='float64')
@@ -5777,13 +6401,51 @@ class ChemicalDriftPostProcessMixin:
                                           source_spatial_shape, target_shape,
                                           record_type='instantaneous', mean_interval=None,
                                           time_reference=None, time_chunk_size=50):
-        """Validate CF time semantics and read only required source records/cells.
+        """
+Read time-aligned tidal elevations at a selected set of native cells/nodes.
 
-        All observations remain on the native source cells/nodes; no horizontal
-        interpolation. For instant records interpolate two bracketing samples;
-        for mean records use their valid CF-bounded half-open interval.  This
-        function does not load an entire source (time,space) forcing variable.
-        Returns a time-major array in the requested output cell/node order.
+Parameters
+----------
+dataset : xarray.Dataset
+    Elevation source with one-dimensional CF time coordinate and valid
+    units/calendar; the caller owns the Dataset.
+elevation : xarray.DataArray
+    Sea-surface elevation, units metres and positive upward, with
+    dimensions (time, spatial dims), no horizontal interpolation.
+filtered_times : sequence of datetime-like
+    Concentration snapshot times in the compatible source calendar.
+source_spatial_dims : tuple of 1 or 2 strings
+    Node dimension or the ordered native structured spatial dimensions.
+source_flat_indices : integer ndarray
+    Selected source positions flattened in source_spatial_shape order;
+    may reorder/subset source to destination order.
+source_spatial_shape : tuple of ints
+    Spatial shape before indexed selection (node,) or structured 2D.
+target_shape : tuple of ints
+    Shape of the requested elevation array after spatial selection.
+record_type : {'instantaneous', 'mean'}, default 'instantaneous'
+    Instant records are linearly interpolated between bracketing source
+    times. Mean records select the CF-bounded half-open time interval.
+mean_interval : duration str or None
+    Required with time_reference for mean records without usable CF bounds.
+time_reference : {'start','center','end'} or None
+    Timestamp anchor accompanying mean_interval.
+time_chunk_size : positive int, default 50
+    Size of snapshot read batches; only required records/cells are loaded.
+
+Returns
+-------
+tuple (eta, counts)
+    eta : float64 array (n_snapshot, *target_shape), metres, positive up;
+    counts : dict with records_read, source_time_records,
+    selected_output_cells and spatial read strategy, for I/O provenance.
+
+Raises
+------
+ValueError
+    Invalid CF calendar/time units, mean/instant semantics, nonmonotonic
+    timestamps, missing interval, out-of-range time, spatial index or NaN.
+    Never invents missing tidal data or silently substitutes zero.
         """
         import re
         import pandas as pd
@@ -5980,7 +6642,29 @@ class ChemicalDriftPostProcessMixin:
 
     @staticmethod
     def _open_density_map_dataset(source, *, decode_times=True):
-        """Context manager: close path-opened datasets; never close caller-owned datasets."""
+        """
+Return an ownership-safe context manager for a NetCDF source Dataset.
+
+Parameters
+----------
+source : str, os.PathLike or xarray.Dataset
+    Filename/path is opened by xarray and closed when leaving the context;
+    a caller-owned Dataset is borrowed via nullcontext, never closed.
+decode_times : bool, default True
+    Passed to xarray.open_dataset for path-owned inputs only.
+
+Returns
+-------
+context manager yielding xarray.Dataset
+    The same Dataset object when provided by the caller.
+
+Raises
+------
+TypeError
+    Unsupported source type (for example, a bare dict).
+OSError / backend read exception
+    Invalid or inaccessible NetCDF input when entering the context.
+        """
         from contextlib import nullcontext
         import os
         import xarray as xr
@@ -5990,17 +6674,78 @@ class ChemicalDriftPostProcessMixin:
             return xr.open_dataset(source, decode_times=decode_times)
         raise TypeError('Density-map input must be a NetCDF path or xarray.Dataset')
 
-    def _structured_grid_tidal_water_volumes(self, *, bathymetry_path, elevation_path,
-                                 bathymetry_variable, filtered_times, z_array,
-                                 output_lon, output_lat, pixel_mean_depth, pixel_area,
-                                 grid_spec=None, water_level_record_type='instantaneous',
-                                 water_level_mean_interval=None,
-                                 water_level_time_reference=None, time_chunk_size=50):
-        """Conservative native-cell tidal volumes; read only needed source times/cells.
+    def _structured_grid_tidal_water_volumes(
+        self,
+        *,
+        # Direct-aligned bathymetry and tidal-elevation sources
+        bathymetry_path,
+        elevation_path,
+        # Bathymetry field and selected snapshot times
+        bathymetry_variable,
+        filtered_times,
+        # Vertical-layer boundaries and target-cell positions
+        z_array,
+        output_lon,
+        output_lat,
+        # Direct-cell physical bathymetry and areas
+        pixel_mean_depth,
+        pixel_area,
+        grid_spec=None,
+        # CF water-level temporal semantics and chunking
+        water_level_record_type='instantaneous',
+        water_level_mean_interval=None,
+        water_level_time_reference=None,
+        time_chunk_size=50,
+        # Optional aligned source-geometry capture
+        capture_reseeding_source=False,
+    ):
+        """
+Compute source-aligned tidal wet volumes for direct structured cells.
 
-        The bathymetry grid must equal the output grid. Elevation may cover a
-        larger (but exactly matching) native grid, including a longer time span.
-        No spatial interpolation or unqualified source-cell remapping occurs.
+Parameters
+----------
+bathymetry_path, elevation_path : NetCDF path or xarray.Dataset
+    Separate datasets with matching source-cell geometry and physical
+    CRS. Elevation may contain a larger exact matching subset/time range.
+bathymetry_variable : str
+    Fixed datum-referenced source cell depth variable, in metres.
+filtered_times : datetime array, shape (snapshot,)
+    Selected model trajectory snapshot times.
+z_array : 1D float array (nlayer+1,)
+    Ascending model-z bounds in metres, deepest to surface 0; clipped
+    against local bottom at -[bathymetry + sea_surface_height].
+output_lon, output_lat : float arrays (x,y)
+    Geographic target cell centers (degrees), in native writer order.
+pixel_mean_depth : float array (x,y)
+    Verified direct-matched fixed depth in metres, positive down.
+pixel_area : float array (x,y)
+    Qualified target horizontal cell areas in square metres.
+grid_spec : normalized structured dict or None
+    Explicit spatial grid geometry; if None read from bathymetry source.
+water_level_record_type : {'instantaneous','mean'}
+    CF input record semantics, not inferred from sampling frequency.
+water_level_mean_interval, water_level_time_reference : str or None
+    Required paired fallback when mean CF bounds are missing.
+time_chunk_size : positive int
+    Number of records per I/O chunk.
+capture_reseeding_source : bool, default False
+    When True also return actual selected source wet-geometry payload;
+    no change to volume calculations.
+
+Returns
+-------
+float32 array (snapshot, layer, x, y)
+    Wet volume per source-matched target cell and layer in m3.
+(volume, dict) if capture_reseeding_source=True
+    Same exact volume and a structured payload containing bathymetry,
+    aligned elevations and source 4-corner lon/lat geometry.
+
+Raises
+------
+ValueError
+    Missing/ambiguous fields, nonmatching cells/CRS, non-metre units,
+    invalid areas, bad timestamps or vertical layer edges. No horizontal
+    interpolation of elevation or bathymetry is performed.
         """
         import xarray as xr
         from pyproj import CRS
@@ -6102,17 +6847,96 @@ class ChemicalDriftPostProcessMixin:
             raise ValueError('Expected bottom-to-surface z edges ending at zero')
         thickness = np.maximum(0., np.minimum(edges[1:][None, :, None, None], 0.) -
                                np.maximum(edges[:-1][None, :, None, None], -depth[:, None, :, :]))
-        return (thickness * area[None, None, :, :]).astype('float32')
+        volumes = (thickness * area[None, None, :, :]).astype('float32')
+        if not capture_reseeding_source:
+            return volumes
+        # Normalized corners have (x,y,4) order; source fields are stored
+        # as (y,x) and indexed row-major for consistency with overlap links.
+        source = dict(
+            kind='structured', method='direct',
+            bathymetry=np.asarray(H.T, dtype=np.float64).reshape(-1),
+            water_level=np.asarray(eta.transpose(0, 2, 1), dtype=np.float64).reshape(len(filtered_times), -1),
+            source_lon_bounds=np.asarray(bg['lon_corners_4'], dtype=np.float64).transpose(1, 0, 2).reshape(-1, 4),
+            source_lat_bounds=np.asarray(bg['lat_corners_4'], dtype=np.float64).transpose(1, 0, 2).reshape(-1, 4),
+            source_flat_index=np.arange(H.size, dtype=np.int64),
+            source_shape_yx=(H.shape[1], H.shape[0]),
+            source_crs=str(bg['density_proj_str']),
+            vertical_datum=str(bds.attrs.get('vertical_datum', hb.attrs.get('vertical_datum', 'unspecified'))),
+        )
+        return volumes, source
 
-    def _structured_conservative_tidal_water_volumes(self, *, bathymetry_path, elevation_path,
-            bathymetry_variable, filtered_times, z_array, tidal_links, target_shape,
-            water_level_record_type, water_level_mean_interval, water_level_time_reference,
-            time_chunk_size):
-        """Source-clipped tidal wet volumes on existing conservative bathymetry overlap links.
+    def _structured_conservative_tidal_water_volumes(
+        self,
+        *,
+        # Structured source bathymetry and tidal elevation
+        bathymetry_path,
+        elevation_path,
+        # Field selection and instantaneous snapshot times
+        bathymetry_variable,
+        filtered_times,
+        # Vertical layers and existing source-to-target overlap geometry
+        z_array,
+        tidal_links,
+        target_shape,
+        # CF-time record semantics and chunk size
+        water_level_record_type,
+        water_level_mean_interval,
+        water_level_time_reference,
+        time_chunk_size,
+        # Optional self-contained source capture
+        capture_reseeding_source=False,
+    ):
+        """
+Accumulate source-clipped tidal water volumes on existing polygon links.
 
-        Link col indexes follow the existing _source_cells_from_xarray flattened (y,x)
-        convention, while row indexes follow the existing target (x,y) convention.
-        Each time record reads only overlapping source cells, and geometry is never rebuilt.
+Parameters
+----------
+bathymetry_path, elevation_path : NetCDF path or xarray.Dataset
+    Source bathymetry and water-level fields on the same structured cell
+    topology, ordering, CRS and fixed vertical datum.
+bathymetry_variable : str
+    Positive-down signed datum-referenced fixed depth in metres.
+filtered_times : datetime array, shape (snapshot,)
+    Target concentration snapshot times for tidal time alignment.
+z_array : 1D float array (nlayer+1,)
+    Strictly increasing negative-down layer edges ending at z=0 (m).
+tidal_links : dict
+    Internal output of existing direct/Shapely conservative remapper:
+    row : flattened target index in (x,y) order;
+    col : flattened source index in (y,x) order;
+    area : physical source-target intersection area in m2;
+    source_shape : original source grid shape;
+    backend : 'direct' or 'shapely'.
+    It is calculated internally, not passed by the end user. Sparse SCRIP
+    weights without qualified physical overlap areas are not accepted.
+target_shape : tuple (nx,ny)
+    Target spatial histogram shape (x,y) before NetCDF transposition.
+water_level_record_type : {'instantaneous','mean'}
+    Source CF time semantics used by _read_cf_time_aligned_elevation.
+water_level_mean_interval, water_level_time_reference : str or None
+    Fallback interval/reference pair for source mean time records.
+time_chunk_size : positive int
+    Number of snapshots processed in a bounded I/O batch.
+capture_reseeding_source : bool, default False
+    Also return contributing source geometry and aligned tidal levels,
+    WITHOUT changing the conservative layer volume or storing links.
+
+Returns
+-------
+float32 array (snapshot, layer, x, y)
+    Sum_i physical_overlap_area(i,j) * wet_layer_thickness(i,t,k) in m3,
+    with source H_i(t)=h_i+eta_i(t) clipped before target aggregation.
+(volume, dict) if capture_reseeding_source=True
+    Same volume array plus contributing-source bathymetry (m), aligned
+    water levels (m), polygon corner coordinates (degrees), indices,
+    shape, CRS, vertical datum and overlap CRS for reseeding export.
+
+Raises
+------
+ValueError / NotImplementedError
+    Missing qualified links, invalid source alignment/CRS/datum/units,
+    invalid time/space samples or nonphysical overlap area. This kernel
+    is not another remapper and does not compute new intersections.
         """
         import xarray as xr
         from pyproj import CRS
@@ -6196,12 +7020,37 @@ class ChemicalDriftPostProcessMixin:
                 for k in range(edges.size - 1):
                     thick = np.maximum(0., min(edges[k + 1], 0.) - np.maximum(edges[k], -wet))
                     np.add.at(out[t, k], row, area * thick[inverse])
-        return out.reshape((len(filtered_times), edges.size - 1) + tuple(target_shape))
+        volumes = out.reshape((len(filtered_times), edges.size - 1) + tuple(target_shape))
+        if not capture_reseeding_source:
+            return volumes
+        # The same normalized source-cell polygons and source indices used to
+        # qualify conservative overlap links are retained for later rebuilding.
+        source = dict(
+            kind='structured', method='conservative',
+            bathymetry=H[unique_col], water_level=eta,
+            source_lon_bounds=np.asarray(bg['lon_corners_4'], dtype=np.float64)
+                .transpose(1, 0, 2).reshape(-1, 4)[unique_col],
+            source_lat_bounds=np.asarray(bg['lat_corners_4'], dtype=np.float64)
+                .transpose(1, 0, 2).reshape(-1, 4)[unique_col],
+            source_flat_index=unique_col,
+            source_shape_yx=tuple(tidal_links['source_shape']),
+            source_crs=str(bg['density_proj_str']),
+            vertical_datum=str(bds.attrs.get('vertical_datum', hb.attrs.get('vertical_datum', 'unspecified'))),
+        )
+        return volumes, source
 
     @staticmethod
-    def _triangular_mesh_tidal_water_volumes(*, mesh, node_bathymetry,
-                                           node_water_level, z_array):
-        """Integrate time-dependent wet layer volumes on ANY normalized triangle mesh.
+    def _triangular_mesh_tidal_water_volumes(
+        *,
+        # Triangular mesh topology and nodal bathymetry
+        mesh,
+        node_bathymetry,
+        # Time-dependent nodal sea surface and layer boundaries
+        node_water_level,
+        z_array,
+    ):
+        """
+Integrate time-dependent wet layer volumes on ANY normalized triangle mesh.
 
         Parameters
         ----------
@@ -6229,6 +7078,13 @@ class ChemicalDriftPostProcessMixin:
         This numerical kernel has no file names, model identifiers, CRS or
         SHYFEM-specific conventions. Source validation and temporal interpolation
         happen in ``_read_native_nodal_tidal_fields``.
+
+Raises
+------
+ValueError
+    Non-triangular mesh, bad node/face indices, invalid areas, non-finite
+    bathymetry/tide or invalid vertical edges. Returns no source payload;
+    native source export uses separately validated nodal arrays.
         """
         if mesh is None or mesh.get('topology') != 'triangular_unstructured':
             raise ValueError('Expected normalized triangular unstructured mesh')
@@ -6283,17 +7139,58 @@ class ChemicalDriftPostProcessMixin:
             raise ValueError('Unqualified triangular-mesh wet volume')
         return volume.astype(np.float32), np.mean(h[conn], axis=1)
 
-    def _read_native_nodal_tidal_fields(self, *, bathymetry_path, elevation_path,
-                                       bathymetry_variable, filtered_times, mesh,
-                                       water_level_record_type='instantaneous',
-                                       water_level_mean_interval=None,
-                                       water_level_time_reference=None,
-                                       time_chunk_size=50):
-        """Read validated h[node] and eta[time,node] from an exact native mesh subset.
+    def _read_native_nodal_tidal_fields(
+        self,
+        *,
+        # Native mesh bathymetry and elevation sources
+        bathymetry_path,
+        elevation_path,
+        # Source field, snapshot times and target mesh
+        bathymetry_variable,
+        filtered_times,
+        mesh,
+        # CF-time interpretation and I/O chunking
+        water_level_record_type='instantaneous',
+        water_level_mean_interval=None,
+        water_level_time_reference=None,
+        time_chunk_size=50,
+    ):
+        """
+Read validated nodal h and eta from separate native triangular sources.
 
-        SHYFEM requires no special code: the same mapping/CF time logic applies
-        to any compatible geographic or projected triangular mesh. This is an
-        input adapter, not a second integration or remapping kernel.
+Parameters
+----------
+bathymetry_path, elevation_path : NetCDF path or xarray.Dataset
+    Fixed nodal depth and time-dependent nodal tidal elevations in metres.
+    Source node coordinates must match the normalized output mesh exactly;
+    the tide dataset may cover a compatible larger native node set.
+bathymetry_variable : str
+    Source depth variable name, positive down from common fixed datum.
+filtered_times : sequence of datetimes (snapshot,)
+    Requested trajectory timestamps for CF time alignment.
+mesh : normalized triangular output dict
+    From _normalize_output_grid: topology, node_lon/node_lat, optional
+    node_x/node_y, nnode, face_node_connectivity and face area.
+water_level_record_type : {'instantaneous','mean'}
+    Mandatory semantics for source records; not guessed from timestamps.
+water_level_mean_interval, water_level_time_reference : str or None
+    Paired mean interval/reference fallback when CF bounds are absent.
+time_chunk_size : positive int
+    Bounded source-record read batch size.
+
+Returns
+-------
+(h, eta)
+    h : float64 array (node,), fixed bathymetry m positive down;
+    eta : float64 array (snapshot,node), elevation m positive up.
+    Both follow the target output node order and share vertical datum.
+
+Raises
+------
+ValueError
+    Nontriangular mesh, nonmatching nodes/CRS/datum, incorrect units,
+    incomplete time axis, absent/multiple elevation fields or NaN values.
+    Does not interpolate between different spatial grids.
         """
         import xarray as xr
         from pyproj import CRS
@@ -6366,282 +7263,525 @@ class ChemicalDriftPostProcessMixin:
 
 
 
-    def write_netcdf_chemical_density_map(self, filename, pixelsize_m='auto', zlevels=None,
-                                          lat_resol=None, lon_resol=None,
-                                          deltat=None,
-                                          density_proj=None,
-                                          llcrnrlon=None, llcrnrlat=None,
-                                          urcrnrlon=None, urcrnrlat=None,
-                                          mass_unit=None,
-                                          time_avg_conc=False,
-                                          time_start=None,
-                                          time_end=None,
-                                          time_chunk_size=50,
-                                          horizontal_smoothing=False,
-                                          smoothing_cells=0,
-                                          reader_sea_depth=None,
-                                          reader_active_sediment_layer_thickness=None,
-                                          landmask_shapefile=None,
-                                          landmask_bathymetry_thr=None,
-                                          origin_marker=None,
-                                          elements_density=False,
-                                          active_status=False,
-                                          weight=None,
-                                          sim_description=None,
-                                          timestep_values=False,
-                                          compress_species=False,
-                                          weight_mode='extensive',
-                                          weight_unit=None,
-                                          output_grid=None,
-                                          bathymetry_remap='interpolate',
-                                          bathymetry_remap_crs=None,
-                                          bathymetry_source_crs=None,
-                                          bathymetry_min_wet_fraction=0.0,
-                                          bathymetry_conservative_backend='auto',
-                                          bathymetry_conservative_weights=None,
-                                          bathymetry_large_domain_backend='scrip',
-                                          memory_budget_mb=None,
-                                          memory_auto_fraction=0.50,
-                                          memory_auto_reserve_mb=1024,
-                                          memory_auto_reserve_fraction=0.20,
-                                          reader_sea_surface_height=None,
-                                          tidal_elevation_enabled=None,
-                                          bathymetry_variable='sea_floor_depth_below_sea_level',
-                                          water_level_record_type='instantaneous',
-                                          water_level_mean_interval=None,
-                                          water_level_time_reference=None,
-                                          mesh_file=None):
+    @staticmethod
+    def _write_reseeding_source_group(
+        # Destination NetCDF4 file
+        nc,
+        *,
+        # Captured source geometry and aligned forcing snapshots
+        payload,
+        times,
+        # Target geometry required for structured output
+        target_grid=None,
+        # Tidal time record and averaging semantics
+        water_level_record_type='instantaneous',
+        water_level_mean_interval=None,
+        water_level_time_reference=None,
+    ):
+        """
+Write version-1 self-contained environmental geometry for future reseeding.
+
+Parameters
+----------
+nc : open netCDF4.Dataset in write mode
+    Destination concentration file. Must already contain root output
+    geometry, authoritative volume, depth bounds and species coordinates.
+payload : dict
+    Validated data from the SAME direct/Shapely/native tidal volume
+    calculation. Keys include kind, method, bathymetry (m), water_level
+    (m, time-major), vertical_datum. Structured payload additionally
+    requires source_lon_bounds/source_lat_bounds (source_cell,4),
+    source_flat_index (source_cell,), source_shape_yx, source_crs and
+    overlap_crs. Triangular payload uses the existing root UGRID topology.
+times : sequence of datetimes, shape (snapshot,)
+    Saved instantaneous concentration timestamps used to align elevations.
+target_grid : normalized dict or None
+    Mandatory structured target geometry with lon_corners_4/lat_corners_4
+    in (x,y,4) order and target CRS; unused for native triangles.
+water_level_record_type : str, default 'instantaneous'
+    CF source time semantics recorded as provenance.
+water_level_mean_interval, water_level_time_reference : str or None
+    Mean-record interval/reference, recorded as provenance if provided.
+
+Returns
+-------
+None
+    Creates /reseeding_source group and sets root attribute
+    reseeding_source_group=/reseeding_source; does not modify root volume.
+
+Raises
+------
+ValueError
+    Invalid payload kind, shape, nonfinite polygon bounds or mismatched
+    time counts; invalid/missing structured target corners.
+
+Group format (version 1)
+------------------------
+Common: snapshot_time(snapshot), source_bathymetry(source_cell or
+source_node), source_sea_surface_height(snapshot,source_cell or
+source_node). Depth is positive downward, elevation positive upward,
+both referenced to the same datum; model depth_bounds are relative to
+instantaneous water surface.
+
+Structured: source_lon_bounds/source_lat_bounds(source_cell,vertex=4),
+target_lon_bounds/target_lat_bounds(target_cell,vertex=4),
+source_flat_index(source_cell), source_ny/nx and target_nx/ny attributes,
+source_flatten_order='y_then_x', target_flatten_order='x_then_y', and
+source_crs/target_crs/overlap_crs. Longitude/latitude bounds are degrees.
+Native triangle: source_node index is identical to root /node; use
+/mesh and /face_node_connectivity, /node_lon and /node_lat in the root.
+
+Neither a mass variable nor time-dependent polygon-overlap arrays are
+stored. A future reseeder reconstructs the wet source overlaps, checks
+their summed volumes against /volume and allocates each target-cell mass
+to physically wet regions. This writer exports data; it does not seed.
+        """
+        from netCDF4 import date2num
+        g = nc.createGroup('reseeding_source')
+        g.format_version = '1'
+        g.kind = payload['kind']
+        g.method = payload['method']
+        g.vertical_datum = str(payload.get('vertical_datum', 'user_attested_common_datum'))
+        g.water_level_record_type = str(water_level_record_type)
+        g.water_level_mean_interval = str(water_level_mean_interval)
+        g.water_level_time_reference = str(water_level_time_reference)
+        g.volume_reference = '/volume'
+        g.layer_bounds_reference = '/depth_bounds'
+        g.vertical_convention = ('bathymetry positive downward, sea_surface_height '
+                                 'positive upward, common fixed datum; layer bounds '
+                                 'positive downward from instantaneous surface')
+        g.earth_coordinates = 'longitude and latitude in degrees'
+        g.createDimension('snapshot', len(times))
+        tv = g.createVariable('snapshot_time', 'f8', ('snapshot',))
+        tv[:] = date2num(list(times), 'seconds since 1970-01-01 00:00:00')
+        tv.units = 'seconds since 1970-01-01 00:00:00'
+        tv.calendar = 'standard'
+        tv.standard_name = 'time'
+
+        if payload['kind'] == 'triangular_unstructured':
+            h = np.asarray(payload['bathymetry'], dtype=np.float64)
+            eta = np.asarray(payload['water_level'], dtype=np.float64)
+            if h.ndim != 1 or eta.shape != (len(times), len(h)):
+                raise ValueError('Inconsistent native reseeding bathymetry/sea-surface dimensions')
+            g.createDimension('source_node', h.size)
+            g.createVariable('source_bathymetry', 'f8', ('source_node',))[:] = h
+            v = g.createVariable('source_sea_surface_height', 'f8',
+                                 ('snapshot', 'source_node'), zlib=True, complevel=2)
+            v[:] = eta
+            g.mesh_reference = '/mesh'
+            g.connectivity_reference = '/face_node_connectivity'
+            g.node_coordinate_reference = '/node_lon /node_lat'
+        elif payload['kind'] == 'structured':
+            h = np.asarray(payload['bathymetry'], dtype=np.float64)
+            eta = np.asarray(payload['water_level'], dtype=np.float64)
+            sb_lon = np.asarray(payload['source_lon_bounds'], dtype=np.float64)
+            sb_lat = np.asarray(payload['source_lat_bounds'], dtype=np.float64)
+            idx = np.asarray(payload['source_flat_index'], dtype=np.int64)
+            if (h.ndim != 1 or eta.shape != (len(times), h.size) or
+                    sb_lon.shape != (h.size, 4) or sb_lat.shape != (h.size, 4) or
+                    idx.shape != h.shape or not np.all(np.isfinite(sb_lon) & np.isfinite(sb_lat))):
+                raise ValueError('Inconsistent structured reseeding source geometry')
+            if target_grid is None or target_grid.get('topology') != 'structured':
+                raise ValueError('Structured reseeding export requires normalized target geometry')
+            target_lon = np.asarray(target_grid['lon_corners_4'], dtype=np.float64).reshape(-1, 4)
+            target_lat = np.asarray(target_grid['lat_corners_4'], dtype=np.float64).reshape(-1, 4)
+            if (target_lon.shape != target_lat.shape or
+                    not np.all(np.isfinite(target_lon) & np.isfinite(target_lat))):
+                raise ValueError('Invalid target-cell bounds for reseeding')
+            g.createDimension('source_cell', h.size)
+            g.createDimension('target_cell', target_lon.shape[0])
+            g.createDimension('vertex', 4)
+            for name, values in (
+                ('source_lon_bounds', sb_lon), ('source_lat_bounds', sb_lat),
+                ('target_lon_bounds', target_lon), ('target_lat_bounds', target_lat)):
+                v = g.createVariable(name, 'f8',
+                                     ('source_cell' if name.startswith('source') else 'target_cell', 'vertex'))
+                v[:] = values
+                v.units = 'degrees_east' if 'lon' in name else 'degrees_north'
+            g.createVariable('source_flat_index', 'i8', ('source_cell',))[:] = idx
+            g.createVariable('source_bathymetry', 'f8', ('source_cell',))[:] = h
+            g.createVariable('source_sea_surface_height', 'f8',
+                             ('snapshot', 'source_cell'), zlib=True, complevel=2)[:] = eta
+            sy, sx = (int(v) for v in payload['source_shape_yx'])
+            g.source_ny = sy
+            g.source_nx = sx
+            g.target_nx, g.target_ny = (int(v) for v in target_grid['shape'])
+            g.source_flatten_order = 'y_then_x'
+            g.target_flatten_order = 'x_then_y'
+            g.source_crs = str(payload['source_crs'])
+            g.target_crs = str(target_grid['density_proj_str'])
+            g.overlap_crs = str(payload['overlap_crs'])
+        else:
+            raise ValueError('Unsupported reseeding source topology')
+        g.variables['source_bathymetry'].units = 'm'
+        g.variables['source_bathymetry'].positive = 'down'
+        g.variables['source_sea_surface_height'].units = 'm'
+        g.variables['source_sea_surface_height'].positive = 'up'
+        nc.reseeding_source_group = '/reseeding_source'
+
+
+
+    def write_netcdf_chemical_density_map(
+        self,
+        # Output file and generated-grid resolution / vertical layers
+        filename,
+        pixelsize_m='auto',
+        zlevels=None,
+        lat_resol=None,
+        lon_resol=None,
+        # Averaging interval and output coordinate reference system
+        deltat=None,
+        density_proj=None,
+        # Geographic bounds for a generated output grid
+        llcrnrlon=None,
+        llcrnrlat=None,
+        urcrnrlon=None,
+        urcrnrlat=None,
+        # Mass units and snapshot time selection
+        mass_unit=None,
+        time_avg_conc=False,
+        time_start=None,
+        time_end=None,
+        time_chunk_size=50,
+        # Optional spatial smoothing
+        horizontal_smoothing=False,
+        smoothing_cells=0,
+        # Environmental source files and land masking
+        reader_sea_depth=None,
+        reader_active_sediment_layer_thickness=None,
+        landmask_shapefile=None,
+        landmask_bathymetry_thr=None,
+        # Particle selection, chemical quantities and output fields
+        origin_marker=None,
+        elements_density=False,
+        active_status=False,
+        weight=None,
+        sim_description=None,
+        timestep_values=False,
+        compress_species=False,
+        weight_mode='extensive',
+        weight_unit=None,
+        # Explicit output grid and bathymetry remapping
+        output_grid=None,
+        bathymetry_remap='interpolate',
+        bathymetry_remap_crs=None,
+        bathymetry_source_crs=None,
+        bathymetry_min_wet_fraction=0.0,
+        bathymetry_conservative_backend='auto',
+        bathymetry_conservative_weights=None,
+        bathymetry_large_domain_backend='scrip',
+        # Memory budget and automatic RAM reserves
+        memory_budget_mb=None,
+        memory_auto_fraction=0.50,
+        memory_auto_reserve_mb=1024,
+        memory_auto_reserve_fraction=0.20,
+        # Tidal forcing, time semantics and vertical datum
+        reader_sea_surface_height=None,
+        tidal_elevation_enabled=None,
+        bathymetry_variable='sea_floor_depth_below_sea_level',
+        water_level_record_type='instantaneous',
+        water_level_mean_interval=None,
+        water_level_time_reference=None,
+        # Native triangular mesh connectivity
+        mesh_file=None,
+        # Self-contained reseeding-source export
+        save_reseeding_source=False,
+        # Optional combined instantaneous and averaged output
+        include_instantaneous_when_averaging=False,
+    ):
         '''
-        write_netcdf_chemical_density_map
+
+        Write particle-density, concentration and property fields to NetCDF.
+
+        save_reseeding_source=True embeds time-aligned source wet geometry and
+        bathymetry in a NetCDF4 group, without storing overlap matrices.
+        include_instantaneous_when_averaging=True keeps the existing averaged
+        output and additionally writes instantaneous concentration at each
+        snapshot; use only together with time_avg_conc=True and extensive mass.
 
         Path-based source datasets are opened/closed by this writer. Caller-owned
         xarray.Dataset inputs are borrowed, not closed or modified. For legacy
         CF-reader interpolation an object is serialized to a temporary NetCDF
         and fed through the existing reader without changing its algorithm.
 
-        Arguments:
-            pixelsize_m:           float32 or 'auto', length of grid cells in m for the
-                                   default projected/Mollweide output mode. Cannot be used
-                                   together with output_grid.
+        Architecture / scientific contract
+        ----------------------------------
+        1. Read saved ChemicalDrift particle trajectories and select snapshots,
+           species, statuses, origins, weight and spatial/vertical bins.
+        2. Construct the output grid from corners/resolution, output_grid or
+           mesh_file. The output grid can be coarser/finer than environmental
+           input; for internal projected metre pixels the supported tested
+           construction uses the default Mollweide projection.
+        3. Obtain fixed bathymetry and grid-cell areas. For conservative output,
+           reuse the existing direct same-cell test or Shapely polygon overlaps;
+           static SCRIP weights are a separate non-tidal option.
+        4. When stretching is recorded in the trajectory, read source tidal
+           elevations with validated CF time semantics. Bathymetry and elevation
+           must share compatible physical source cells/nodes and datum; they
+           may be supplied as separate files or caller-owned Datasets. For each
+           source wet region, clip water-column height h + eta BEFORE summing
+           overlap contributions into target wet-layer volumes. A target-cell
+           mean topo value is NOT the source wet geometry.
+        5. Form per-species particle histograms. Divide extensive water-like
+           mass sums by the authoritative wet-layer ``volume`` (m3), and
+           sediment-like mass sums by dry sediment mass; mean-property mode
+           divides by particle counts. Masks and existing physics are unchanged.
+        6. Optionally form discrete snapshot-block averages, optionally retain
+           simultaneous instantaneous concentrations and optionally embed the
+           source environmental geometry for a future volume-conserving reseed.
+           Write CF-style NetCDF dimensions, variables and provenance.
 
-            lat_resol:             float32, latitude resolution of grid cells in degrees
-                                   using EPSG:4326. Used for legacy geographic rectilinear
-                                   outputs when output_grid is not supplied. Cannot be used
-                                   together with output_grid.
+        The internal ``tidal_overlap_links`` is *not* a public argument. The
+        existing conservative bathymetry remapper creates it automatically:
+        row=flattened target index (x,y), col=source index (y,x), area=m2,
+        source_shape=original source grid shape, backend=direct/Shapely.
+        It is not persisted by default, and must not be confused with public
+        ``bathymetry_conservative_weights`` (static sparse SCRIP weights).
 
-            lon_resol:             float32, longitude resolution of grid cells in degrees
-                                   using EPSG:4326. Used for legacy geographic rectilinear
-                                   outputs when output_grid is not supplied. Cannot be used
-                                   together with output_grid.
+        Parameters
+        ----------
+        filename : str or os.PathLike (required)
+            Output NetCDF4 file path. Existing destination may be replaced; this method
+            writes the file and returns None.
 
-            zlevels:               list of float32, depth levels at which concentration will
-                                   be calculated. Values must be negative and ordered from
-                                   the lowest depth, e.g. [-50., -10., -5.].
-                                   Internally, model z is positive upward with surface at 0
-                                   and depth levels are negative downward.
-                                   In the saved NetCDF, `depth` is written positive downward
-                                   and indicates the top of each vertical slice.
+        pixelsize_m : positive float, "auto", or None (default='auto')
+            Generated projected (default Mollweide) output-cell size in metres. Use with
+            geographic corners; default "auto" chooses legacy automatic spacing. Must be
+            None or "auto" when degree-resolution arguments or output_grid are supplied.
 
-            density_proj:          None: use default equal-area projection
-                                   '+proj=moll +ellps=WGS84 +lon_0=0.0'.
-                                   <proj4_string>: user-defined projection.
-                                   int, e.g. 4326, to indicate EPSG:4326.
-                                   Required when output_grid is defined only in projected
-                                   x/y coordinates.
+        zlevels : sequence of negative floats or None (default=None)
+            Model-coordinate vertical edges supplied below the surface (metres, negative
+            downward), strictly ordered from deepest to shallowest; the algorithm adds/uses
+            the surface at z=0. None selects existing automatic layering. Use depth_bounds
+            in the file for the saved positive-down layer intervals.
 
-            llcrnrlon:             float32, minimum longitude of legacy output grid in
-                                   degrees using EPSG:4326.
-            llcrnrlat:             float32, minimum latitude of legacy output grid in
-                                   degrees using EPSG:4326.
-            urcrnrlon:             float32, maximum longitude of legacy output grid in
-                                   degrees using EPSG:4326.
-            urcrnrlat:             float32, maximum latitude of legacy output grid in
-                                   degrees using EPSG:4326.
+        lat_resol : positive float or None (default=None)
+            Generated geographic output-cell latitude spacing in degrees. Supply together
+            with lon_resol and four corners; cannot be combined with explicit output_grid
+            or explicit metric pixelsize_m.
 
-            mass_unit:             string, mass unit of input used for output concentration
-                                   labels in weight_mode='extensive', e.g. ug, mg, g, kg.
-                                   This writer does not perform unit conversion; mass_unit
-                                   must match the source weight units when source units are
-                                   available.
+        lon_resol : positive float or None (default=None)
+            Generated geographic output-cell longitude spacing in degrees. Supply with
+            lat_resol; same restrictions.
 
-            time_avg_conc:         boolean, calculate block-averaged concentration or
-                                   property fields over windows of length deltat.
+        deltat : positive float (hours) or None (default=None)
+            Requested snapshot-block averaging period when time_avg_conc=True. The
+            implementation groups ceil(deltat / model_snapshot_dt) records; None gives one
+            snapshot per block. Only regularly spaced model snapshots support averaging.
 
-            deltat:                float, averaging-window length in hours when
-                                   time_avg_conc=True.
+        density_proj : pyproj-compatible CRS (int, str, CRS) or None (default=None)
+            Output coordinate reference system. None selects the existing equal-area
+            Mollweide projection. Use EPSG:4326 (or 4326) for generated degree-resolution
+            geographic outputs; projected output_grid definitions require an appropriate
+            CRS.
 
-            time_start:            string, datetime64[ns]-compatible string for start time
-                                   of concentration map.
+        llcrnrlon : float (degrees east) or None (default=None)
+            Minimum longitude of an internally generated output grid; range [-180, 180].
+            Supply all four corners unless output_grid/mesh_file defines the grid.
 
-            time_end:              string, datetime64[ns]-compatible string for end time
-                                   of concentration map.
+        llcrnrlat : float (degrees north) or None (default=None)
+            Minimum latitude of the generated output grid; supply with other corners.
 
-            time_chunk_size:       int, number of timesteps computed per chunk.
+        urcrnrlon : float (degrees east) or None (default=None)
+            Maximum longitude of the generated output grid; non-crossing limits within
+            [-180, 180].
 
-            memory_budget_mb:      None, a positive numeric MiB value, or 'auto'. A numeric
-                                   value remains a hard limit for the minimum primary H/H_count
-                                   allocation. 'auto' detects current effective memory, applies
-                                   reserve/headroom policy, models known large writer arrays,
-                                   and resolves a numeric primary-histogram budget before allocation.
-                                   Auto mode is a conservative guard, not an OOM guarantee.
+        urcrnrlat : float (degrees north) or None (default=None)
+            Maximum latitude of the generated output grid; supply with other corners.
 
-            memory_auto_fraction:  float in (0, 1], default 0.50. Fraction of usable memory
-                                   available to the modeled known writer working set in auto mode.
-            memory_auto_reserve_mb: non-negative float, default 1024 MiB. Absolute reserve.
-            memory_auto_reserve_fraction: float in [0, 1), default 0.20. Fractional reserve.
-                                   Auto mode uses the larger absolute/fractional reserve.
+        mass_unit : str or None (default=None)
+            Unit label for extensive mass-like weights (for example "ug"). Required when
+            the input weight variable has no units attribute; if units exist the label must
+            match. No unit conversion occurs.
 
-            horizontal_smoothing:  boolean, smooth concentration horizontally.
+        time_avg_conc : bool (default=False)
+            False: write per-snapshot concentration or mean-property fields. True: write
+            snapshot-block averages; compatible with include_instantaneous_when_averaging
+            for extensive mass.
 
-            smoothing_cells:       int, number of cells for horizontal smoothing.
+        time_start : datetime-like string, datetime, or None (default=None)
+            Inclusive first saved model snapshot. None uses the first available trajectory
+            timestamp.
 
-            reader_sea_depth:      string, path of bathymetry NetCDF file containing
-                                   sea_floor_depth_below_sea_level, or a variable with this
-                                   CF standard_name. Required.
+        time_end : datetime-like string, datetime, or None (default=None)
+            Inclusive last saved model snapshot. None uses the last available trajectory
+            timestamp.
 
-            reader_sea_surface_height: NetCDF path with source-cell sea-surface
-                                   elevation, mandatory when saved stretching is enabled.
-            tidal_elevation_enabled: None (inherit saved drift:water_column_stretching),
-                                   or the same explicit boolean; disagreement raises.
-            bathymetry_variable:   bathymetry variable name; default unchanged.
-                                   The verified SHYFEM 'total_depth' uses the same datum
-                                   as 'water_level' despite its incorrect standard_name.
-                                   This correction is USER ATTESTED, not derived from CF metadata.
+        time_chunk_size : positive int (default=50)
+            Number of snapshots processed per input/forcing I/O chunk; does not change
+            physical calculations or snapshot timestamps.
 
-            water_level_record_type: 'instantaneous' (default) or 'mean'. Mandatory
-                                   explicit meaning: records cannot be classified
-                                   from time spacing or a variable name.
-            water_level_mean_interval: Optional fixed duration (e.g. '1h', '1D').
-                                   Mean records without standard CF time bounds
-                                   require this and the timestamp anchor together.
-            water_level_time_reference: 'start', 'center', or 'end', paired with
-                                   water_level_mean_interval for the fallback.
-                                   CF mean bounds are used when available.
-                                   Time/space selection reads only the required
-                                   elevation source records and native cells.
+        horizontal_smoothing : bool (default=False)
+            Write additional horizontally smoothed concentration/property fields when True.
+            These should not replace raw instantaneous concentration for mass-conserving
+            reseeding.
 
-            reader_active_sediment_layer_thickness:
-                                   string, path of NetCDF file containing variable
-                                   active_sediment_layer_thickness, or a variable with this
-                                   CF standard_name. If not provided,
-                                   chemical:sediment:mixing_depth is used where needed.
+        smoothing_cells : nonnegative int (default=0)
+            Horizontal smoothing stencil size, relevant when horizontal_smoothing=True; not
+            a replacement for bathymetry remapping.
 
-            landmask_shapefile:    string, path of bathymetry/landmask shapefile.
+        reader_sea_depth : NetCDF path (str/PathLike) or xarray.Dataset (default=None)
+            Mandatory bathymetry source. In conservative tidal mode, fixed datum-referenced
+            source depths must align cell-for-cell/nodally with the water-level source.
+            Path files are opened/closed here; caller-owned Datasets remain open.
 
-            landmask_bathymetry_thr:
-                                   float32, if set, the value is the threshold used to
-                                   extract landmask from reader_sea_depth.
+        reader_active_sediment_layer_thickness : NetCDF path, xarray.Dataset, or None (default=None)
+            Optional active sediment-layer thickness source. Conservative/direct layouts
+            must match the bathymetry source grid; interpolation mode uses the existing
+            reader. Native tidal-face output rejects unqualified nodal-to-face sediment
+            thickness.
 
-            elements_density:      boolean, add number of elements present in each grid cell
-                                   to output.
+        landmask_shapefile : str/path or None (default=None)
+            Optional shapefile for the existing landmask reader. When absent, a configured
+            bathymetry threshold or OpenDrift global landmask is used.
 
-            origin_marker:         int/list/tuple/np.ndarray, only elements with these values
-                                   of origin_marker are considered.
+        landmask_bathymetry_thr : float (metres) or None (default=None)
+            If specified, define landmask from bathymetry relative to this threshold. A
+            zero threshold under tidal conservative geometry does not permanently mask
+            cells that flood during selected snapshots.
 
-            active_status:         boolean, if True only active elements are considered.
+        origin_marker : int, sequence of ints, ndarray, or None (default=None)
+            Optional particle origin-marker filter. None accepts all origins; filtering
+            occurs before spatial binning.
 
-            weight:                string, element property to be extracted to produce maps.
+        elements_density : bool (default=False)
+            Write additional number-of-elements-in-cell output when True; does not change
+            the mass denominator.
 
-            sim_description:       string, description of simulation to be included in
-                                   NetCDF attributes.
+        active_status : bool (default=False)
+            If True include only particles with active status at each snapshot; otherwise
+            use the current default selection.
 
-            timestep_values:       boolean, if True, interpret supported cumulative mass-like
-                                   weights as cumulative values and convert them to
-                                   per-timestep increments before binning. Only valid with
-                                   weight_mode='extensive'.
+        weight : str (default=None)
+            Required name of a saved trajectory particle variable. For extensive mode it
+            must be mass-like (the name contains "mass"); for mean mode it is the property
+            to average.
 
-            compress_species:      boolean, if True only species present in self.result after
-                                   filtering are used to construct the NetCDF file.
+        sim_description : str or None (default=None)
+            Optional free-text simulation provenance description stored in output
+            attributes.
 
-            weight_mode:           string, one of:
-                                     - 'extensive': histogram is interpreted as an extensive
-                                       mass-like sum and converted to concentration
-                                     - 'mean': histogram is interpreted as sum(property) and
-                                       divided by particle count per cell
+        timestep_values : bool (default=False)
+            For supported cumulative extensive quantities, transform cumulative records to
+            timestep increments before binning. Requires weight_mode="extensive" and is not
+            valid for plain weight="mass".
 
-            weight_unit:           string, output unit label for weight_mode='mean'. This
-                                   writer does not infer or convert units in mean mode.
+        compress_species : bool (default=False)
+            If True retain only species present after trajectory filtering and save
+            specie_original_id to recover their original indices.
 
-            output_grid:           NetCDF path, xarray.Dataset, dict, or None. Explicit spatial output
-                                   grid passed to _normalize_output_grid(). Supported layouts:
-                                     - 1D lon/lat regular geographic grid
-                                     - 2D lon/lat curvilinear geographic grid
-                                     - 1D x/y regular projected grid
-                                     - 2D x_center/y_center projected curvilinear grid
-                                     - triangular unstructured mesh with face-node connectivity
-                                   output_grid is spatial only and must not include time.
-                                   Cannot be combined with pixelsize_m, lat_resol/lon_resol,
-                                   or llcrnrlon/llcrnrlat/urcrnrlon/urcrnrlat.
+        weight_mode : {"extensive", "mean"} (default='extensive')
+            "extensive" divides water-like particle-mass sums by wet volume and
+            sediment-like sums by sediment dry mass; "mean" divides property sums by
+            particle counts. Combined instant+average concentration requires "extensive".
 
-            bathymetry_remap:      string, one of:
-                                     - 'interpolate'
-                                     - 'conservative'
-                                     - 'conservative_shapely'
-                                     - 'scrip'
-                                     - 'direct'
+        weight_unit : str or None (default=None)
+            Mandatory explicit unit label for weight_mode="mean"; if source variable has
+            units, the label must agree. Unused for extensive mode.
 
-                                   'interpolate' uses the legacy non-conservative auxiliary
-                                   reader branch.
+        output_grid : NetCDF path, xarray.Dataset, mapping, or None (default=None)
+            Explicit spatial grid (regular/curvilinear geographic, projected, or
+            triangular). Time dimensions are forbidden. Do not supply mesh_file or
+            geographic corners/resolutions together with it; default pixelsize_m="auto" is
+            allowed but ignored.
 
-                                   'conservative' first attempts automatic direct same-cell
-                                   transfer. If no valid direct match is found, it falls back
-                                   to conservative remapping using bathymetry_conservative_backend.
+        bathymetry_remap : {"interpolate", "conservative", "conservative_shapely", "scrip", "direct"} (default='interpolate')
+            "interpolate" uses legacy nonconservative CF reader; "direct" requires
+            same-cell geometry; "conservative" attempts direct then selected conservative
+            backend; "conservative_shapely" prefers direct else physical Shapely
+            intersections; "scrip" uses qualified static sparse weights if not direct.
+            Tidal volumes require direct/Shapely; SCRIP/interpolate are not
+            tidal-qualified.
 
-                                   'conservative_shapely' first attempts automatic direct
-                                   same-cell transfer. If no valid direct match is found, it
-                                   forces Shapely/STRtree polygon-overlap remapping.
+        bathymetry_remap_crs : pyproj-compatible CRS or None (default=None)
+            Optional equal-area CRS for Shapely polygon overlaps. None selects
+            automatically from target extent. Does not change output CRS.
 
-                                   'scrip' first attempts automatic direct same-cell transfer.
-                                   If no valid direct match is found, it forces precomputed
-                                   SCRIP/ESMF/xESMF sparse weights.
+        bathymetry_source_crs : pyproj-compatible CRS or None (default=None)
+            Source geometry CRS when source bathymetry or sediment grids have only
+            projected x/y coordinates. Not needed when geographic lon/lat geometry is fully
+            provided.
 
-                                   'direct' requires a valid same-cell relationship between
-                                   the source bathymetry grid and target output grid. If the
-                                   source grid is not the same grid or a larger grid containing
-                                   the output grid as a cell subset, an error is raised and no
-                                   fallback remapping is used.
+        bathymetry_min_wet_fraction : float in [0,1] (default=0.0)
+            Static valid-source-bathymetry area coverage threshold; target cells at or
+            below threshold are masked. This is not the time-dependent wet fraction of a
+            tidal vertical layer.
 
-            bathymetry_remap_crs:  CRS definition or None. Optional equal-area CRS used by
-                                   the Shapely conservative backend. If None, an equal-area
-                                   CRS is chosen automatically from the target extent. Not
-                                   used when direct same-cell transfer is applied.
+        bathymetry_conservative_backend : {"auto", "direct", "shapely", "scrip", "xesmf", "esmf", "weights"} (default='auto')
+            Backend for "conservative" remapping after the initial exact same-cell check.
+            Auto selects Shapely locally or a weights backend on large domains; tidal
+            volumes accept only qualified direct/Shapely overlap areas.
 
-            bathymetry_source_crs: CRS definition or None. Required when bathymetry or active
-                                   sediment source grids are supplied only in projected
-                                   node_x/node_y coordinates.
+        bathymetry_conservative_weights : weight dict, sparse matrix, SCRIP/ESMF file, xarray.Dataset, or None (default=None)
+            Optional precomputed sparse conservative weights for static SCRIP/ESMF/xESMF
+            remapping. These are not tidal_overlap_links; arbitrary sparse weights do not
+            qualify as physical tidal overlap areas.
 
-            bathymetry_min_wet_fraction:
-                                   float, minimum fraction of target cell area that must be
-                                   covered by valid source bathymetry in conservative remap.
-                                   Cells with wet_fraction <= this value are masked. In direct
-                                   mode, valid matched cells have wet_fraction=1.
+        bathymetry_large_domain_backend : str (default='scrip')
+            Backend used by automatic conservative remapping for basin/global target
+            domains; "scrip" is currently the supported choice.
 
-            bathymetry_conservative_backend:
-                                   string, one of:
-                                     - 'auto'
-                                     - 'direct'
-                                     - 'shapely'
-                                     - 'scrip'
-                                     - 'xesmf'
-                                     - 'esmf'
-                                     - 'weights'
+        memory_budget_mb : positive float (MiB), "auto", or None (default=None)
+            Budget for the main concentration histogram allocation. Auto derives a
+            conservative host-aware bound; this is a capacity guard, not proof that memory
+            exhaustion is impossible.
 
-                                   In 'auto' mode, direct same-cell transfer is attempted first.
-                                   If direct transfer fails, local/regional grids use Shapely
-                                   polygon overlap and basin/global grids use SCRIP/weights.
+        memory_auto_fraction : float in (0,1] (default=0.5)
+            Fraction of estimated usable memory allocated to the known large writer working
+            set when memory_budget_mb="auto".
 
-                                   In 'direct' mode, the same-cell check is strict. If source
-                                   and target grids are not compatible, an error is raised.
+        memory_auto_reserve_mb : nonnegative float (MiB) (default=1024)
+            Absolute memory reserve for automatic budgeting; compared with the fractional
+            reserve.
 
-            bathymetry_conservative_weights:
-                                   object, path, xarray.Dataset, dict, scipy sparse matrix, or
-                                   ConservativeWeightMatrix-like object containing conservative
-                                   remapping weights. Required for SCRIP/ESMF/xESMF remapping
-                                   when direct transfer is not possible.
+        memory_auto_reserve_fraction : float in [0,1) (default=0.2)
+            Fractional memory reserve for auto budgeting; the larger absolute/fractional
+            reserve is used.
 
-            bathymetry_large_domain_backend:
-                                   string, backend used by auto mode for basin/global target
-                                   domains. Currently only 'scrip' is supported.
+        reader_sea_surface_height : NetCDF path (str/PathLike) or xarray.Dataset, or None (default=None)
+            Mandatory with saved tidal stretching. Contains source-centred or source-nodal
+            sea-surface elevation (metres, positive up), on compatible bathymetry geometry
+            and common vertical datum. The writer time-aligns it to selected snapshots.
+
+        tidal_elevation_enabled : bool or None (default=None)
+            None inherits the saved trajectory config_drift:water_column_stretching
+            setting. Explicit True/False must agree with that saved setting and live
+            configuration; cannot silently change simulation physics.
+
+        bathymetry_variable : str (default='sea_floor_depth_below_sea_level')
+            Name of the source bathymetry variable (default CF
+            sea_floor_depth_below_sea_level). SHYFEM total_depth may be explicitly selected
+            when its shared datum with water level is independently known.
+
+        water_level_record_type : {"instantaneous", "mean"} (default='instantaneous')
+            Declare physical time semantics of source tidal records; never inferred solely
+            from filenames or record spacing. Instant records interpolate linearly in time;
+            mean records use CF bounds or an explicit interval/reference.
+
+        water_level_mean_interval : duration str, e.g. "1h", or None (default=None)
+            Required together with water_level_time_reference for mean records lacking
+            usable CF time bounds; unused with instantaneous records.
+
+        water_level_time_reference : {"start", "center", "end"} or None (default=None)
+            Timestamp anchor for interval-mean records with missing CF bounds; must be
+            supplied together with water_level_mean_interval.
+
+        mesh_file : NetCDF path (str/PathLike), xarray.Dataset, or None (default=None)
+            Optional native triangular CF/UGRID topology input (face-node connectivity plus
+            node lon/lat). The bathymetry and elevations are independent files on aligned
+            nodes. Cannot be combined with output_grid or generated corners/resolutions;
+            native tidal mode requires bathymetry_remap="direct".
+
+        save_reseeding_source : bool (default=False)
+            If True, embed contributing source geometry, fixed bathymetry and time-aligned
+            source elevation in NetCDF4 /reseeding_source. Requires active tidal volumes
+            and qualified direct/Shapely structured mapping or direct triangular output.
+            Does not store mass or overlap links.
+
+        include_instantaneous_when_averaging : bool (default=False)
+            If True and time_avg_conc=True with weight_mode="extensive", write
+            instantaneous concentration/density as well as averaged fields. False preserves
+            original mutually exclusive instantaneous-only and averaged-only output modes.
 
         Supported output modes
         ----------------------
@@ -6830,6 +7970,143 @@ class ChemicalDriftPostProcessMixin:
         One variable stores both water-like and sediment-like species.
         Use units_water, units_sediment and specie_phase for machine-readable interpretation.
         mass_unit and weight_unit are labels only here. No unit conversion is performed.
+
+        NetCDF output schema and axes
+        -----------------------------
+        For a structured output, ``cell`` means (y,x); for native triangles
+        it means (face). The source and target flatten orders differ, and
+        are recorded in the optional reseeding group.
+
+        Instantaneous extensive mode (time_avg_conc=False):
+            concentration(time,specie,depth,cell); optional density with the
+            same dimensions; time-dependent volume(time,depth,cell) if tidal,
+            else static volume(depth,cell).
+        Averaged extensive mode (time_avg_conc=True):
+            concentration_avg(avg_time,specie,depth,cell);
+            avg_time/time_bounds describe discrete snapshot blocks. Tidal
+            volume remains instantaneous on snapshot_time,depth,cell, not
+            averaged over the blocks.
+        Combined extensive mode (time_avg_conc=True and
+        include_instantaneous_when_averaging=True):
+            both concentration(time,specie,depth,cell) and
+            concentration_avg(avg_time,specie,depth,cell), with tidal
+            volume(time,depth,cell), plus independent avg_time bounds.
+        Mean-property mode:
+            property_mean or property_mean_avg replaces concentration fields;
+            it is not a mass source for reseeding.
+
+        ``depth`` and ``depth_bounds(depth,2)`` are positive down from the
+        instantaneous sea surface. ``depth_model_top`` and
+        ``depth_model_bounds`` preserve original negative-down model z.
+        ``topo`` stores ONE representative fixed depth per target cell/face;
+        it does not reproduce subcell conservative wet geometry. ``area``
+        (where available) is horizontal target area (m2). ``wet_fraction`` is
+        static valid source
+        coverage, NOT tidal layer wet fraction. ``land`` and
+        ``domain_invalid`` record the independent masks. Species compression
+        is reversible through ``specie_original_id`` and ``specie_phase``;
+        sediment-like concentration uses dry sediment mass rather than volume.
+        Tidal volume is the authoritative mass-reconstruction denominator.
+
+        Optional NetCDF4 group ``/reseeding_source`` (v1):
+            - attributes: kind, method, vertical_datum,
+              water_level_record_type/mean_interval/time_reference,
+              volume_reference=/volume, layer_bounds_reference=/depth_bounds;
+            - snapshot_time(snapshot): CF seconds since 1970-01-01, aligned
+              exactly to the forcing values used for the written snapshots;
+            - source_bathymetry(source_cell or source_node): m, positive down;
+            - source_sea_surface_height(snapshot,source_cell or source_node):
+              m, positive up, common vertical datum;
+            - structured: source_lon_bounds(source_cell,vertex=4),
+              source_lat_bounds, target_lon_bounds(target_cell,vertex=4),
+              target_lat_bounds, source_flat_index(source_cell), and source/
+              target shape, flatten-order and CRS attributes; only source cells
+              contributing to output are included;
+            - triangular: source_node aligns with the root /node coordinate,
+              /mesh topology and /face_node_connectivity (no second mesh).
+        Geographic bounds are longitude/latitude degrees; reconstructed overlap
+        geometry must use the recorded equal-area CRS and exact cell bounds.
+        No overlap matrices and no separate mass variable are exported.
+        To reseed water-phase mass, use unsmoothed instantaneous
+        concentration * same-snapshot volume with weight_mode='extensive';
+        do NOT multiply concentration_avg by a snapshot's volume. Sample
+        contributing wet regions proportional to source-overlap wet volume,
+        check reconstructed volume against root volume, and conserve assigned
+        particle weights. Unrecoverable mass in dry/zero-volume cells must be
+        reported, not silently dropped. The exporter does not itself reseed.
+
+        Raises / returns
+        ----------------
+        Returns None after writing filename; if no requested trajectory times
+        remain, returns early with a warning. Raises ValueError or TypeError
+        for invalid inputs, incompatible dimensions/datum/time coordinates,
+        missing required geometry, invalid CRS/weight units and contradictory
+        saved stretching flags; raises NotImplementedError for unqualified
+        tidal SCRIP/interpolation or unsupported native tidal configurations.
+        The writer does NOT interpolate between bathymetry and elevation grids
+        of differing resolution or topology. Input paths are opened and closed;
+        caller-owned xarray.Dataset inputs remain open.
+
+        Minimal usage examples (``model`` is an opened ChemicalDrift result)
+        -------------------------------------------------------------------
+        Each example assumes the saved trajectory records its actual stretching
+        setting; bathymetry and water-level data use matching source geometry,
+        compatible time semantics and a common vertical datum. Other optional
+        filters are omitted intentionally. A typical existing postprocessing
+        setup is:
+            import opendrift
+            from opendrift.models.basemodel import Mode
+            model = opendrift.open("trajectory.nc")
+            model.mode = Mode.Config
+            model.init_species()
+            model.init_transfer_rates()
+
+        1. Generated geographic grid, 0.01-degree cells (tidal):
+            model.write_netcdf_chemical_density_map(
+                filename='map_deg.nc', pixelsize_m=None, density_proj=4326,
+                llcrnrlon=13.44, llcrnrlat=44.64,
+                urcrnrlon=13.48, urcrnrlat=44.70,
+                lon_resol=0.01, lat_resol=0.01,
+                reader_sea_depth='bathy.nc',
+                reader_sea_surface_height='tide.nc',
+                bathymetry_variable='total_depth',
+                bathymetry_remap='conservative_shapely',
+                weight='mass', mass_unit='ug')
+
+        2. Generated projected 500-m grid in default Mollweide CRS:
+            model.write_netcdf_chemical_density_map(
+                filename='map_500m.nc', pixelsize_m=500,
+                llcrnrlon=13.30, llcrnrlat=44.62,
+                urcrnrlon=13.60, urcrnrlat=44.72,
+                reader_sea_depth='bathy.nc',
+                reader_sea_surface_height='tide.nc',
+                bathymetry_variable='total_depth',
+                bathymetry_remap='conservative_shapely',
+                weight='mass', mass_unit='ug')
+
+        3. Supplied native triangular mesh, independent source files:
+            model.write_netcdf_chemical_density_map(
+                filename='native.nc', mesh_file='mesh_ugrid.nc',
+                reader_sea_depth='nodal_bathy.nc',
+                reader_sea_surface_height='nodal_tide.nc',
+                bathymetry_variable='total_depth',
+                bathymetry_remap='direct', weight='mass', mass_unit='ug')
+
+        4. Self-contained output with instantaneous AND 24-h means:
+            model.write_netcdf_chemical_density_map(
+                filename='restart_ready.nc', pixelsize_m=None,
+                density_proj=4326,
+                llcrnrlon=13.44, llcrnrlat=44.64,
+                urcrnrlon=13.48, urcrnrlat=44.70,
+                lon_resol=0.01, lat_resol=0.01,
+                reader_sea_depth='bathy.nc',
+                reader_sea_surface_height='tide.nc',
+                bathymetry_variable='total_depth',
+                bathymetry_remap='conservative_shapely',
+                time_avg_conc=True, deltat=24,
+                include_instantaneous_when_averaging=True,
+                save_reseeding_source=True,
+                weight='mass', weight_mode='extensive', mass_unit='ug')
         '''
 
         import numpy as np
@@ -7023,6 +8300,31 @@ class ChemicalDriftPostProcessMixin:
             return sediment_ids, particle_ids
 
         def _make_cf_depth_axis(z_edges_model):
+            """
+            Convert ascending model-z bin edges to CF positive-down layer metadata.
+
+            Parameters
+            ----------
+            z_edges_model : 1D array (nlayer+1,)
+                Strictly ascending model-z edges in metres; negative downward,
+                last edge is the instantaneous model surface at 0.
+
+            Returns
+            -------
+            tuple (depth_order, depth, depth_bounds, depth_model_top,
+                   depth_model_bounds)
+                depth_order : indices mapping bottom-first model layers to top-first
+                output (depth) order; depth : positive-down CF top of layer (nlayer,);
+                depth_bounds : positive-down limits (nlayer,2) in metres;
+                depth_model_top : original negative model-z top (nlayer,);
+                depth_model_bounds : original model-z top/bottom (nlayer,2).
+
+            Raises
+            ------
+            ValueError
+                Fewer than two input edges. The upstream caller validates the other
+                z-ordering requirements; this helper does not change physical volume.
+            """
             z_edges_model = np.asarray(z_edges_model, dtype=np.float64)
             nlay = z_edges_model.size - 1
             if nlay <= 0:
@@ -7073,6 +8375,7 @@ class ChemicalDriftPostProcessMixin:
         Hcount_sm_out = mean_dens_sm_out = None
 
         pixel_volume = pixel_volume_out = pixel_volume_time = None
+        reseeding_payload = None
         tidal_active = False
         pixel_sed_mass = None
 
@@ -7176,6 +8479,8 @@ class ChemicalDriftPostProcessMixin:
                 raise ValueError("weight_mode must be one of: 'extensive', 'mean'")
             if weight is None:
                 raise ValueError('weight must be specified explicitly for both weight modes.')
+            if include_instantaneous_when_averaging and (not time_avg_conc or weight_mode != 'extensive'):
+                raise ValueError('Combined instantaneous/averaged output requires time_avg_conc=True and extensive mass')
             if weight_mode == 'extensive' and 'mass' not in str(weight).lower():
                 raise ValueError(f"weight_mode='extensive' currently supports only mass-like weights. Got weight={weight!r}.")
             if timestep_values and weight_mode != 'extensive':
@@ -7186,6 +8491,8 @@ class ChemicalDriftPostProcessMixin:
             tidal_active = self._resolve_saved_tidal_elevation_mode(
                 self.result, self.get_config('drift:water_column_stretching'),
                 tidal_elevation_enabled)
+            if save_reseeding_source and not tidal_active:
+                raise ValueError('Self-contained reseeding source export currently requires active tidal volumes')
             if tidal_active:
                 if not reader_sea_surface_height:
                     raise ValueError('Tidal correction enabled by saved stretching: supplied sea-surface-height reader is mandatory')
@@ -7479,6 +8786,10 @@ class ChemicalDriftPostProcessMixin:
                     water_level_mean_interval=water_level_mean_interval,
                     water_level_time_reference=water_level_time_reference,
                     time_chunk_size=time_chunk_size)
+                if save_reseeding_source:
+                    reseeding_payload = dict(kind='triangular_unstructured', method='native_affine',
+                                             bathymetry=node_h, water_level=node_eta,
+                                             vertical_datum='user_attested_common_fixed_datum')
                 mesh_tidal_volumes, face_h = self._triangular_mesh_tidal_water_volumes(
                     mesh=explicit_grid, node_bathymetry=node_h,
                     node_water_level=node_eta, z_array=z_array)
@@ -7614,7 +8925,7 @@ class ChemicalDriftPostProcessMixin:
                     np.copyto(pixel_volume_time, np.nan, where=invalid_volume)
                     del invalid_volume
                 else:
-                    pixel_volume_time = (self._structured_conservative_tidal_water_volumes(
+                    structured_result = (self._structured_conservative_tidal_water_volumes(
                         bathymetry_path=reader_sea_depth, elevation_path=reader_sea_surface_height,
                         bathymetry_variable=bathymetry_variable, filtered_times=filtered_times,
                         z_array=z_array, tidal_links=bathy_meta.get("tidal_overlap_links"),
@@ -7622,7 +8933,8 @@ class ChemicalDriftPostProcessMixin:
                         water_level_record_type=water_level_record_type,
                         water_level_mean_interval=water_level_mean_interval,
                         water_level_time_reference=water_level_time_reference,
-                        time_chunk_size=time_chunk_size)
+                        time_chunk_size=time_chunk_size,
+                        capture_reseeding_source=save_reseeding_source)
                         if bathymetry_remap != "direct" else self._structured_grid_tidal_water_volumes(
                         bathymetry_path=reader_sea_depth,
                         elevation_path=reader_sea_surface_height,
@@ -7636,7 +8948,13 @@ class ChemicalDriftPostProcessMixin:
                         water_level_mean_interval=water_level_mean_interval,
                         water_level_time_reference=water_level_time_reference,
                         time_chunk_size=time_chunk_size,
+                        capture_reseeding_source=save_reseeding_source,
                     ))
+                    if save_reseeding_source:
+                        pixel_volume_time, reseeding_payload = structured_result
+                        reseeding_payload['overlap_crs'] = bathy_meta.get('remap_crs')
+                    else:
+                        pixel_volume_time = structured_result
                     if pixel_volume_time.shape != (H.shape[0], len(z_array)-1) + tuple(pixel_area.shape):
                         raise ValueError('Time-varying direct volumes are not aligned with the native concentration histogram')
                     invalid_volume = combined_mask[None, None, :, :] | ~(pixel_volume_time > 0)
@@ -8184,14 +9502,14 @@ class ChemicalDriftPostProcessMixin:
                     nc.createDimension('specie', nspecies_out)
                     nc.species_axis_compressed = int(bool(compress_species))
 
-                    if not time_avg_conc:
+                    if not time_avg_conc or include_instantaneous_when_averaging:
                         nc.createDimension('time', H_out.shape[0])
                         tvar = nc.createVariable('time', 'f8', ('time',))
                         tvar[:] = date2num(filtered_times, 'seconds since 1970-01-01 00:00:00')
                         tvar.units = 'seconds since 1970-01-01 00:00:00'
                         tvar.standard_name = 'time'
                         tvar.calendar = 'standard'
-                    else:
+                    if time_avg_conc:
                         nc.createDimension('avg_time', mean_field_out.shape[0])
                         nc.createDimension('time_bounds_dim', 2)
                         tvar = nc.createVariable('avg_time', 'f8', ('avg_time',))
@@ -8316,8 +9634,8 @@ class ChemicalDriftPostProcessMixin:
                         face_y.axis = 'Y'
 
                     if tidal_active:
-                        vdim='time' if not time_avg_conc else 'snapshot_time'
-                        if time_avg_conc:
+                        vdim='time' if (not time_avg_conc or include_instantaneous_when_averaging) else 'snapshot_time'
+                        if time_avg_conc and not include_instantaneous_when_averaging:
                             nc.createDimension('snapshot_time',len(filtered_times))
                             vt=_create_f8(nc,'snapshot_time',('snapshot_time',))
                             vt[:]=date2num(filtered_times.tolist(),'seconds since 1970-01-01 00:00:00')
@@ -8411,6 +9729,12 @@ class ChemicalDriftPostProcessMixin:
                             _set_time_mean_attrs(cname)
                         _set_mixed_phase_units_attrs(cname)
                         cname.mesh = 'mesh'; cname.location = 'face'; cname.grid_mapping = 'crs'; cname.coordinates = 'face_lon face_lat'
+                        if include_instantaneous_when_averaging:
+                            now = _create_f8(nc, 'concentration', ('time', 'specie', 'depth', 'face'))
+                            _write_masked_4d(now, H_out, combined_mask_face, FILL_F8)
+                            now.long_name = f'{compound} instantaneous concentration from weight={weight}'
+                            _set_mixed_phase_units_attrs(now)
+                            now.mesh = 'mesh'; now.location = 'face'; now.grid_mapping = 'crs'; now.coordinates = 'face_lon face_lat'
                     else:
                         if not time_avg_conc:
                             pname = _create_f8(nc, 'property_mean', ('time', 'specie', 'depth', 'face'))
@@ -8423,6 +9747,12 @@ class ChemicalDriftPostProcessMixin:
                         if time_avg_conc:
                             _set_time_mean_attrs(pname)
 
+                    if save_reseeding_source:
+                        self._write_reseeding_source_group(
+                            nc, payload=reseeding_payload, times=filtered_times,
+                            water_level_record_type=water_level_record_type,
+                            water_level_mean_interval=water_level_mean_interval,
+                            water_level_time_reference=water_level_time_reference)
                     _normalize_unstructured_cf_coordinate_metadata(nc)
                 logger.info('Wrote to %s', filename)
                 return
@@ -8481,13 +9811,13 @@ class ChemicalDriftPostProcessMixin:
                 specie_name_bytes = np.array([list(s.ljust(maxlen)) for s in name_species_out], dtype='S1')
                 specie_name_var[:] = specie_name_bytes
                 timestr = 'seconds since 1970-01-01 00:00:00'
-                if not time_avg_conc:
+                if not time_avg_conc or include_instantaneous_when_averaging:
                     nc.createDimension('time', H_out.shape[0])
                     nc.createVariable('time', 'f8', ('time',))[:] = date2num(filtered_times, timestr)
                     nc.variables['time'].units = timestr
                     nc.variables['time'].standard_name = 'time'
                     nc.variables['time'].calendar = 'standard'
-                else:
+                if time_avg_conc:
                     nc.createDimension('avg_time', mean_field_out.shape[0])
                     nc.createDimension('time_bounds_dim', 2)
                     nc.createVariable('avg_time', 'f8', ('avg_time',))[:] = date2num(avg_times, timestr)
@@ -8698,6 +10028,12 @@ class ChemicalDriftPostProcessMixin:
                             long_name=f'{compound} snapshot-block mean concentration from weight={weight}; specie {species_str}',
                         )
                         _set_time_mean_attrs(nc.variables['concentration_avg'])
+                        if include_instantaneous_when_averaging:
+                            now = _create_f8(nc, 'concentration', ('time', 'specie', 'depth', 'y', 'x'))
+                            _write_masked_5d(now, H_out, mask_yx=combined_mask_yx, fill_value=FILL_F8)
+                            _set_mixed_phase_units_attrs(now)
+                            _set_structured_spatial_attrs(
+                                now, long_name=f'{compound} instantaneous concentration from weight={weight}')
                 else:
                     if not time_avg_conc:
                         _create_f8(nc, 'property_mean', ('time', 'specie', 'depth', 'y', 'x'))
@@ -8765,8 +10101,8 @@ class ChemicalDriftPostProcessMixin:
 
 
                 if tidal_active:
-                    volume_time_dim = 'time' if not time_avg_conc else 'snapshot_time'
-                    if time_avg_conc:
+                    volume_time_dim = 'time' if (not time_avg_conc or include_instantaneous_when_averaging) else 'snapshot_time'
+                    if time_avg_conc and not include_instantaneous_when_averaging:
                         nc.createDimension('snapshot_time', len(filtered_times))
                         vt = _create_f8(nc, 'snapshot_time', ('snapshot_time',))
                         vt[:] = date2num(filtered_times.tolist(), 'seconds since 1970-01-01 00:00:00')
@@ -8863,6 +10199,27 @@ class ChemicalDriftPostProcessMixin:
                     flag_meanings='valid invalid',
                     coordinates='lon lat',
                 )
+                if save_reseeding_source:
+                    source_target_grid = overlap_output_grid
+                    if source_target_grid is None:
+                        # Legacy geographic output: the established cell centers
+                        # and resolutions determine its same output polygons.
+                        if not is_latlon:
+                            raise ValueError('Self-contained projected source export requires qualified overlap target geometry')
+                        # Exact legacy conservative-cell boundaries (not midpoint inference).
+                        source_lon_edges = np.concatenate(([x_centers[0] - lon_resol/2.0], x_centers + lon_resol/2.0))
+                        source_lat_edges = np.concatenate(([y_centers[0] - lat_resol/2.0], y_centers + lat_resol/2.0))
+                        source_target_grid = self._normalize_output_grid(dict(
+                            lon=x_centers, lat=y_centers,
+                            lon_bounds=np.column_stack((source_lon_edges[:-1],source_lon_edges[1:])),
+                            lat_bounds=np.column_stack((source_lat_edges[:-1],source_lat_edges[1:])),
+                        ), density_proj='EPSG:4326')
+                    self._write_reseeding_source_group(
+                        nc, payload=reseeding_payload, times=filtered_times,
+                        target_grid=source_target_grid,
+                        water_level_record_type=water_level_record_type,
+                        water_level_mean_interval=water_level_mean_interval,
+                        water_level_time_reference=water_level_time_reference)
                 _normalize_structured_cf_coordinate_metadata(nc)
                 logger.info('Wrote to %s', filename)
         finally:
