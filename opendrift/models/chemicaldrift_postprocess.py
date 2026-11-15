@@ -2170,6 +2170,11 @@ class ChemicalDriftPostProcessMixin:
         - Return arrays in internal (time, species, depth, x, y) order for structured grids.
         - Use longitudes in [-180, 180]. Do not cross the date line.
         - Use timestep_values only for supported cumulative extensive quantities.
+
+
+        For a supplied ``output_grid``, use one of the six constructors in
+        ``_normalize_output_grid()``. The grid contains spatial coordinates
+        only. ``self.result.time`` supplies the simulation times.
         """
         import pandas as pd
         from pyproj import Transformer, Proj
@@ -2934,6 +2939,7 @@ class ChemicalDriftPostProcessMixin:
         return_metadata=False, min_wet_fraction=0.0, conservative_backend='auto',
         conservative_weights=None, large_domain_backend='scrip',
         collect_tidal_links=False,
+        _collect_sum_overlap_links=False,
     ):
         """
 
@@ -3558,6 +3564,7 @@ Raises : ValueError / NotImplementedError
             extent_class: Optional[str] = None
             weights_source: Optional[str] = None
             tidal_overlap_links: Optional[dict] = None
+            sum_overlap_links: Optional[dict] = None
 
         @dataclass
         class _CellSet:
@@ -4617,7 +4624,7 @@ ValueError
                 n_target=n_target,
                 normalization=normalization,
                 target_area=target_area,
-                index_base="auto",
+                index_base=attrs.get('index_base', 'auto') if isinstance(attrs, dict) else 'auto',
                 source=source,
             )
 
@@ -4783,6 +4790,7 @@ ValueError
             extent_class: Optional[str] = None,
             weights_source: Optional[str] = None,
             tidal_overlap_links: Optional[dict] = None,
+            sum_overlap_links: Optional[dict] = None,
         ) -> ConservativeBathymetryResult:
             """
             Normalize/mask conservative aggregate arrays into the writer's grid shape.
@@ -4808,6 +4816,9 @@ ValueError
                 Remapping provenance identifiers.
             tidal_overlap_links : dict or None
                 Optional internal direct/Shapely source-target physical-area links.
+            sum_overlap_links : dict or None
+                SUM-only static normalized SCRIP/ESMF physical overlaps, never
+                passed to the concentration writer as tidal overlaps.
 
             Returns
             -------
@@ -4879,6 +4890,7 @@ ValueError
                 extent_class=extent_class,
                 weights_source=weights_source,
                 tidal_overlap_links=tidal_overlap_links,
+                sum_overlap_links=sum_overlap_links,
             )
 
         def _conservative_overlap_core_shapely(
@@ -5008,6 +5020,14 @@ ValueError
             if aux_values is not None:
                 aux_volume = np.zeros(n_target, dtype=np.float64)
 
+            # Reuse these physical source-polygon areas when applying collected
+            # overlaps to extensive mass. They are in the SAME equal-area CRS
+            # as intersection areas (unlike geodesic metadata cell areas).
+            source_projected_area = np.full(len(source.values), np.nan, dtype=np.float64)
+            source_projected_area[src_idx] = np.array(
+                [float(poly.area) if poly is not None else np.nan for poly in src_polys_all],
+                dtype=np.float64,
+            )
             link_rows, link_cols, link_areas = [], [], []
             for j, tpoly in enumerate(tgt_polys):
                 if tpoly is None or not np.isfinite(target_area[j]) or target_area[j] <= 0.0:
@@ -5058,7 +5078,9 @@ ValueError
                 tidal_overlap_links=(dict(row=np.asarray(link_rows, dtype=np.int64),
                                           col=np.asarray(link_cols, dtype=np.int64),
                                           area=np.asarray(link_areas, dtype=np.float64),
-                                          source_shape=source.shape, backend="shapely")
+                                          source_shape=source.shape, backend="shapely",
+                                          source_projected_area_m2=source_projected_area,
+                                          target_projected_area_m2=np.asarray(tgt_area_geom, dtype=np.float64))
                                      if collect_tidal_links else None),
             )
 
@@ -5075,6 +5097,7 @@ ValueError
             min_wet_fraction: float = 0.0,
             min_layer_thickness_m: float = 0.1,
             extent_class: Optional[str] = None,
+            collect_sum_overlap_links: bool = False,
         ) -> ConservativeBathymetryResult:
             """
             Map static bathymetry using qualified SCRIP/ESMF conservative weights.
@@ -5102,7 +5125,9 @@ ValueError
             -------
             ConservativeBathymetryResult
                 Static conservative depth/area/coverage/layer-volume fields and masks.
-                Does NOT return qualified tidal polygon areas.
+                With collect_sum_overlap_links=True, also returns separately
+                normalized SCRIP links for same-family SUM only. The mapper's
+                tidal-volume calculation remains restricted to direct/Shapely.
 
             Raises
             ------
@@ -5158,6 +5183,23 @@ ValueError
                         f"{area_origin}: Target areas must be finite and positive "
                         "for the weights backend."
                     )
+                # SUM retains independently saved physical WGS84 wet volumes.
+                # ESMF's sparse fractions are defined on a 6371-km sphere:
+                # check the output-grid metadata against its own WGS84 geometry
+                # rather than rejecting a legitimate ellipsoid/sphere difference.
+                # The ordinary STATIC mapper path keeps its original strict
+                # ESMF spherical-area assertion unchanged.
+                if collect_sum_overlap_links and area_origin == 'output grid cell_area':
+                    wgs84 = Geod(ellps='WGS84')
+                    actual_geod_area = np.array([
+                        abs(wgs84.polygon_area_perimeter(
+                            np.asarray(xv, dtype=np.float64),
+                            np.asarray(yv, dtype=np.float64))[0])
+                        for xv, yv in zip(target.lon_vertices, target.lat_vertices)
+                    ], dtype=np.float64)
+                    if np.any(np.abs(supplied_area - actual_geod_area) > 1e-6 * actual_geod_area):
+                        raise ValueError('SCRIP SUM output cell_area disagrees with WGS84 polygon geometry')
+                    continue
                 rel_error = np.abs(supplied_area - esmf_area) / esmf_area
                 if np.any(rel_error > 3e-9):
                     raise ValueError(
@@ -5236,6 +5278,44 @@ ValueError
                 else:
                     aux_volume = np.zeros(n_target, dtype=np.float64)
 
+            # SUM may use already-qualified STATIC ESMF weights as physical
+            # overlap links. This does NOT authorize SCRIP tidal wet-layer
+            # remapping in the concentration writer: that still uses only
+            # direct/Shapely source-clipped tidal integration.
+            sum_links = None
+            if collect_sum_overlap_links:
+                from pyproj import Geod
+                sphere = Geod(a=6371000.0, b=6371000.0)
+                source_area = np.empty(n_source, dtype=np.float64)
+                for i, (xv, yv) in enumerate(zip(source.lon_vertices, source.lat_vertices)):
+                    xx = np.asarray(xv, dtype=np.float64).reshape(-1)
+                    yy = np.asarray(yv, dtype=np.float64).reshape(-1)
+                    finite = np.isfinite(xx) & np.isfinite(yy)
+                    if finite.sum() < 3:
+                        raise ValueError('SCRIP SUM requires finite source polygon vertices')
+                    spherical_area, _ = sphere.polygon_area_perimeter(xx[finite], yy[finite])
+                    source_area[i] = abs(float(spherical_area))
+                if np.any(~np.isfinite(source_area) | (source_area <= 0)):
+                    raise ValueError('SCRIP SUM requires positive spherical source cell areas')
+                # First-order dstarea = overlap_area / target_area, whereas
+                # overlap_area-normalized matrices already carry physical m2.
+                physical_area = (wm.weight * target_area[wm.row] if
+                                 wm.normalization == 'dstarea' else wm.weight)
+                if np.any(~np.isfinite(physical_area) | (physical_area < 0)):
+                    raise ValueError('SCRIP SUM weights must imply finite nonnegative overlap m2')
+                source_covered = np.bincount(wm.col, weights=physical_area, minlength=n_source)
+                target_covered = np.bincount(wm.row, weights=physical_area, minlength=n_target)
+                if (np.any(source_covered > source_area * (1 + 1e-6)) or
+                        np.any(target_covered > target_area * (1 + 1e-6))):
+                    raise ValueError('SCRIP SUM overlap exceeds source/target spherical physical cell area')
+                positive = physical_area > 0
+                sum_links = dict(row=np.asarray(wm.row[positive], dtype=np.int64),
+                                 col=np.asarray(wm.col[positive], dtype=np.int64),
+                                 area=np.asarray(physical_area[positive], dtype=np.float64),
+                                 source_shape=source.shape, backend='scrip',
+                                 source_spherical_area_m2=source_area,
+                                 target_spherical_area_m2=target_area)
+
             return _finalize_conservative_result(
                 total_volume=total_volume,
                 valid_overlap_area=valid_overlap_area,
@@ -5248,6 +5328,7 @@ ValueError
                 backend="scrip",
                 extent_class=extent_class,
                 weights_source=wm.source,
+                sum_overlap_links=sum_links,
             )
 
         def _select_conservative_backend(
@@ -5341,6 +5422,7 @@ ValueError
             large_domain_backend: str = "scrip",
             # Optional physical-area links for tidal integration
             collect_tidal_links: bool = False,
+            collect_sum_overlap_links: bool = False,
         ) -> ConservativeBathymetryResult:
             """
 Select direct same-cell, Shapely or static SCRIP conservative remapping.
@@ -5368,6 +5450,9 @@ large_domain_backend : str
 collect_tidal_links : bool
     Require physically qualified direct/Shapely overlap areas as internal
     row/col/area links for a later source-clipped tidal-volume calculation.
+collect_sum_overlap_links : bool, default False
+    Only for static SCRIP source/target polygons in SUM. Does not enable
+    SCRIP tidal/wet-layer integration in the mapper.
 
 Returns
 -------
@@ -5435,6 +5520,7 @@ ValueError / NotImplementedError
                 min_wet_fraction=min_wet_fraction,
                 min_layer_thickness_m=min_layer_thickness_m,
                 extent_class=extent_class,
+                collect_sum_overlap_links=collect_sum_overlap_links,
             )
 
         def conservative_bathymetry_from_files(
@@ -5464,6 +5550,7 @@ ValueError / NotImplementedError
             large_domain_backend: str = "scrip",
             # Optional tidal source-to-target overlap collection
             collect_tidal_links: bool = False,
+            collect_sum_overlap_links: bool = False,
         ) -> ConservativeBathymetryResult:
             """
 Read source cell geometry and perform the existing conservative remap.
@@ -5545,6 +5632,7 @@ ValueError / NotImplementedError
                 precomputed_weights=conservative_weights,
                 large_domain_backend=large_domain_backend,
                 collect_tidal_links=collect_tidal_links,
+                collect_sum_overlap_links=collect_sum_overlap_links,
             )
 
         # Integration helper
@@ -5565,6 +5653,7 @@ ValueError / NotImplementedError
             return_metadata=False, min_wet_fraction=0.0, conservative_backend="auto",
             conservative_weights=None, large_domain_backend="scrip",
             collect_tidal_links=False,
+            _collect_sum_overlap_links=False,
         ):
 
             """
@@ -5663,6 +5752,7 @@ ValueError / NotImplementedError
                 conservative_weights=conservative_weights,
                 large_domain_backend=large_domain_backend,
                 collect_tidal_links=collect_tidal_links,
+                collect_sum_overlap_links=_collect_sum_overlap_links,
             )
             meta = {
                 "bathymetry_remap": "direct" if cons.backend == "direct" else "conservative",
@@ -5678,6 +5768,7 @@ ValueError / NotImplementedError
                 "source_valid_area": cons.source_valid_area,
                 "active_sediment_layer_volume": cons.active_sediment_layer_volume,
                 "tidal_overlap_links": cons.tidal_overlap_links,
+                "sum_overlap_links": cons.sum_overlap_links,
             }
             result4 = (
                 cons.effective_depth,
@@ -5709,6 +5800,7 @@ ValueError / NotImplementedError
             conservative_weights=conservative_weights,
             large_domain_backend=large_domain_backend,
             collect_tidal_links=collect_tidal_links,
+            _collect_sum_overlap_links=_collect_sum_overlap_links,
         )
 
     @staticmethod
@@ -6450,6 +6542,21 @@ ValueError / NotImplementedError
         ------
         ValueError
             A validated input has an unsupported value, shape or combination.
+
+
+        Examples
+        --------
+        Open a writer-produced concentration dataset. Use its existing
+        spatial coordinates and CF metadata; do not construct another grid.
+
+        >>> import xarray as xr
+        >>> with xr.open_dataset('map.nc') as ds:
+        ...     field = ds['concentration'].sum(dim='specie')
+        ...     prepared = model.prepare_derived_output_da(
+        ...         field, ds, spatial_mode='auto')
+
+        ``map.nc`` is a placeholder path. Select the variables and species
+        dimensions present in the source file.
         """
         spatial_mode = str(spatial_mode).lower()
         if spatial_mode not in {"auto", "rectilinear", "curvilinear"}:
@@ -8377,6 +8484,60 @@ to physically wet regions. This writer exports data. it does not seed.
                 include_instantaneous_when_averaging=True,
                 save_reseeding_source=True,
                 weight='mass', weight_mode='extensive', mass_unit='ug')
+
+
+        5. Cell-centered structured bathymetry and instantaneous water level:
+
+             bathy: <xarray.Dataset>       Dimensions: (lat: NY, lon: NX)
+             Coordinates: lat (lat) ..., lon (lon) ...
+             Data variables:
+                 sea_floor_depth_below_sea_level (lat, lon) float64 ...
+
+             tide: <xarray.Dataset>        Dimensions: (time: NT, lat: NY, lon: NX)
+             Coordinates: time (time) ..., lat (lat) ..., lon (lon) ...
+             Data variables:
+                 water_level (time, lat, lon) float64 ...
+
+           Latitude and longitude are geographic cell centers in degrees.
+           Set ``bathy`` depth to positive-down metres and ``tide`` elevation
+           to positive-up metres, relative to the same fixed vertical datum.
+           Declare a compatible source CRS. For numeric CF-time, set time
+           ``units`` (for example ``hours since ...``) and ``calendar``.
+           Instantaneous levels use ``cell_methods='time: point'``. Records
+           must cover the selected trajectory snapshots.
+
+           Pass the datasets via ``reader_sea_depth`` and
+           ``reader_sea_surface_height``. Reuse the geographic output-grid
+           constructor in ``_normalize_output_grid()``. Direct remapping
+           requires identical source and target cells and qualified saved
+           vertical stretching. For interval-mean water levels, use CF time
+           bounds with ``water_level_record_type='mean'``. Without bounds,
+           set both ``water_level_mean_interval`` and
+           ``water_level_time_reference``.
+
+        6. Independent native triangular UGRID mesh and nodal forcing:
+
+             mesh: <xarray.Dataset> Dimensions: (face: NF, node: NN, nmax_face_nodes: 3)
+             Data variables:
+                 face_node_connectivity (face, nmax_face_nodes) int64 ...
+                 node_lon, node_lat      (node) float64 ...
+
+             node_bathy: <xarray.Dataset> Dimensions: (node: NN)
+             Data variables:
+                 sea_floor_depth_below_sea_level (node) float64 ...
+
+             node_tide: <xarray.Dataset> Dimensions: (time: NT, node: NN)
+             Coordinates: time (time) ...
+             Data variables:
+                 water_level (time, node) float64 ...
+
+           Reuse the triangular mesh constructor in
+           ``_normalize_output_grid()``. ``mesh_file`` supplies connectivity
+           and node coordinates (degrees east/north); ``start_index`` sets
+           the UGRID connectivity convention. All source datasets must use
+           matching node order. Apply the metre, vertical-datum, CF-time
+           coverage and tidal-stretching requirements from example 5.
+           These layouts do not represent observed forcing values.
         """
 
         import numpy as np
@@ -9961,6 +10122,15 @@ to physically wet regions. This writer exports data. it does not seed.
                         area[:] = area_ma
                         area.long_name = 'Horizontal area of face'; area.standard_name = 'cell_area'; area.units = 'm2'; area.mesh = 'mesh'; area.location = 'face'; area.grid_mapping = 'crs'; area.coordinates = 'face_lon face_lat'
 
+                    if weight_mode == 'extensive':
+                        dry = _create_f8(nc, 'sediment_dry_mass', ('face',))
+                        dry_mask = combined_mask_face | ~np.isfinite(pixel_sed_mass) | (pixel_sed_mass <= 0)
+                        dry[:] = np.ma.array(pixel_sed_mass, mask=dry_mask, fill_value=FILL_F8)
+                        dry.long_name = 'Dry sediment mass used as concentration denominator'
+                        dry.units = 'kg'; dry.mesh = 'mesh'; dry.location = 'face'
+                        dry.grid_mapping = 'crs'; dry.coordinates = 'face_lon face_lat'
+                        dry.comment = 'Writer-calculated sediment cell mass from physical area, active mixing thickness, density and porosity; do not recompute during SUM.'
+
                     land = nc.createVariable('land', 'i4', ('face',), fill_value=-1)
                     land[:] = landmask_face.astype('i4', copy=False)
                     land.long_name = 'Land mask'; land.flag_values = np.array([0, 1], dtype='i4'); land.flag_meanings = 'water land'; land.units = '1'; land.mesh = 'mesh'; land.location = 'face'; land.grid_mapping = 'crs'; land.coordinates = 'face_lon face_lat'
@@ -10453,6 +10623,16 @@ to physically wet regions. This writer exports data. it does not seed.
                         units='m2',
                         standard_name='cell_area',
                     )
+                if weight_mode == 'extensive':
+                    dry = _create_f8(nc, 'sediment_dry_mass', ('y', 'x'))
+                    dry_mask = combined_mask_yx | ~np.isfinite(pixel_sed_mass.T) | (pixel_sed_mass.T <= 0)
+                    dry_ma = np.ma.array(pixel_sed_mass.T, mask=dry_mask, copy=False)
+                    dry_ma.set_fill_value(FILL_F8)
+                    dry[:] = dry_ma
+                    _set_structured_spatial_attrs(
+                        dry, long_name='Dry sediment mass used as concentration denominator',
+                        units='kg')
+                    dry.comment = 'Writer-calculated dry sediment mass; preserve unchanged for conservative sediment SUM.'
                 land_var = nc.createVariable('land', 'i4', ('y', 'x'), fill_value=-1)
                 land_var[:] = landmask_yx.astype('i4', copy=False)
                 _set_integer_mask_attrs(
@@ -10772,6 +10952,18 @@ to physically wet regions. This writer exports data. it does not seed.
         ------
         ValueError
             A validated input has an unsupported value, shape or combination.
+
+
+        Examples
+        --------
+        Read the species coordinate from a writer-produced NetCDF product.
+
+        >>> import xarray as xr
+        >>> with xr.open_dataset('map.nc') as ds:
+        ...     species_ids = model.specie_ids_num_from_ds(ds)
+
+        The source metadata must contain the species names or aliases.
+        ``map.nc`` is a placeholder path.
         """
         if legacy_alias is None:
             legacy_alias = {}
@@ -11192,6 +11384,7 @@ to physically wet regions. This writer exports data. it does not seed.
           - active_sediment_layer_thickness
           - area
           - volume
+          - sediment_dry_mass (kg, for mass-conserving sediment SUM)
           - wet_fraction
           - depth, depth_bounds, depth_model_top, depth_model_bounds
           - specie, specie_name, specie_original_id, specie_phase
@@ -11226,6 +11419,21 @@ to physically wet regions. This writer exports data. it does not seed.
           - for which_conc='sediment': returns (None, DS_sed_fin)
 
         If Return_datasets=False, the function writes files only and returns None.
+
+
+        Examples
+        --------
+        Open a species-resolved product from the concentration writer.
+        The source must retain its time, species, depth and spatial axes.
+        ``map.nc`` and the compound name are placeholders.
+
+        >>> import xarray as xr
+        >>> with xr.open_dataset('map.nc') as source:
+        ...     water, sediment = model.calculate_water_sediment_conc(
+        ...         File_Path='', File_Name='', File_Path_out='',
+        ...         Chemical_name='Copper', Origin_marker_name='all',
+        ...         Concentration_file=source, Save_files=False,
+        ...         Return_datasets=True, which_conc='both')
         """
         from pathlib import Path
         import time
@@ -11553,6 +11761,13 @@ to physically wet regions. This writer exports data. it does not seed.
                     'bathymetry_remap',
                     'bathymetry_conservative_backend',
                     'bathymetry_extent_class',
+                    # Physical forcing/provenance needed to validate conservative SUM.
+                    'tidal_elevation_enabled',
+                    'tidal_vertical_datum_assumption',
+                    'tidal_water_volume_method',
+                    'tidal_elevation_source',
+                    'tidal_bathymetry_source',
+                    'tidal_bathymetry_variable',
 
                     'explicit_output_grid',
                     'output_grid_mode',
@@ -11592,7 +11807,7 @@ to physically wet regions. This writer exports data. it does not seed.
                     # Bathymetry / masks / geometry
                     'topo', 'land', 'domain_invalid',
                     'active_sediment_layer_thickness',
-                    'area', 'volume', 'wet_fraction',
+                    'area', 'volume', 'sediment_dry_mass', 'wet_fraction',
 
                     # Depth metadata
                     'depth', 'depth_bounds', 'depth_model_top', 'depth_model_bounds',
@@ -11640,40 +11855,47 @@ to physically wet regions. This writer exports data. it does not seed.
                         dst_ds[name] = raw_var
 
             def _rebuild_derived_time_metadata(dst_ds, src_ds):
+                """Retain CF time bounds only for the matching derived time axis."""
                 dst_ds.attrs.pop('time_coverage_start', None)
                 dst_ds.attrs.pop('time_coverage_end', None)
                 if 'time' not in dst_ds.coords:
                     return dst_ds
 
+                # Combined instantaneous/averaged writer products can contain
+                # both time and avg_time. Select by actual coordinate equality,
+                # not by variable-name precedence or matching length alone.
+                derived_time = np.asarray(dst_ds['time'].values)
                 src_time_name = None
                 for candidate in ('time', 'avg_time', 'time_avg'):
-                    if candidate in src_ds.coords or candidate in src_ds.dims:
+                    if candidate not in src_ds.coords and candidate not in src_ds.dims:
+                        continue
+                    src_times = np.asarray(src_ds[candidate].values)
+                    if src_times.shape == derived_time.shape and np.array_equal(src_times, derived_time):
                         src_time_name = candidate
                         break
 
-                bounds_name = None
-                if src_time_name is not None and src_time_name in src_ds:
-                    bounds_name = src_ds[src_time_name].attrs.get('bounds', None)
-                if not bounds_name and 'time_bounds' in src_ds.variables:
-                    bounds_name = 'time_bounds'
-
                 coverage_values = None
-                if bounds_name and bounds_name in src_ds.variables and src_time_name is not None:
-                    bounds = src_ds[bounds_name]
-                    if src_time_name in bounds.dims and bounds.sizes.get(src_time_name) == dst_ds.sizes.get('time'):
-                        if src_time_name != 'time':
-                            bounds = bounds.rename({src_time_name: 'time'})
-                        dst_ds[bounds_name] = bounds
-                        dst_ds['time'].attrs['bounds'] = str(bounds_name)
-                        bvals = np.asarray(bounds.values)
-                        if bvals.ndim >= 2 and bvals.shape[-1] >= 2:
-                            coverage_values = (bvals.reshape((-1, bvals.shape[-1]))[0, 0],
-                                               bvals.reshape((-1, bvals.shape[-1]))[-1, 1])
+                if src_time_name is not None:
+                    attr_name = src_ds[src_time_name].attrs.get('bounds', None)
+                    bounds_name = (attr_name if attr_name in src_ds.variables else
+                                   'time_bounds' if 'time_bounds' in src_ds.variables else None)
+                    if bounds_name is not None:
+                        bounds = src_ds[bounds_name]
+                        other_dims = [dim for dim in bounds.dims if dim != src_time_name]
+                        if (src_time_name in bounds.dims and len(other_dims) == 1 and
+                                bounds.sizes.get(src_time_name) == dst_ds.sizes['time'] and
+                                bounds.sizes[other_dims[0]] == 2):
+                            if src_time_name != 'time':
+                                bounds = bounds.rename({src_time_name: 'time'})
+                            # Variable-only attachment avoids importing a competing
+                            # source time coordinate from combined writer products.
+                            dst_ds[bounds_name] = bounds.variable.copy(deep=False)
+                            dst_ds['time'].attrs['bounds'] = str(bounds_name)
+                            bvals = np.asarray(bounds.values)
+                            coverage_values = (bvals[0, 0], bvals[-1, 1])
 
-                if coverage_values is None:
-                    tvals = np.asarray(dst_ds['time'].values)
-                    if tvals.size:
-                        coverage_values = (tvals.reshape(-1)[0], tvals.reshape(-1)[-1])
+                if coverage_values is None and derived_time.size:
+                    coverage_values = (derived_time.reshape(-1)[0], derived_time.reshape(-1)[-1])
 
                 def _format_time(value):
                     arr = np.asarray(value)
@@ -12505,6 +12727,26 @@ to physically wet regions. This writer exports data. it does not seed.
 
             kwargs : mapping
                 Additional keyword arguments forwarded to particle seeding.
+
+
+            Examples
+            --------
+            Expected geographic scrubber-water discharge input:
+
+                <xarray.DataArray 'scrubber_discharge'
+                  (time: NT, latitude: NY, longitude: NX)>
+                Coordinates:
+                  * time      (time) datetime64[ns] ...
+                  * latitude  (latitude) float64 ...  # degrees_north
+                  * longitude (longitude) float64 ... # degrees_east
+                Attributes:
+                    units: L
+
+            Values give scrubber-water volume in litres per source record.
+            Use the exact dimension order (time, latitude, longitude).
+            ``scrubber_type`` and ``chemical_compound`` select the emission
+            factor that converts water volume to chemical mass. Supply actual
+            discharge records and UTC times. Seeding changes model state.
             """
 
             if chemical_compound is None:
@@ -14183,6 +14425,55 @@ to physically wet regions. This writer exports data. it does not seed.
         - For sediment concentration seeding, use the local active
         sediment thickness. When the thickness is missing or invalid, use
         chemical:sediment:mixing_depth from the model configuration.
+
+
+        Examples
+        --------
+        Expected geographic DataArray structures (not measured data):
+
+        1. Water concentration, ``mode='water_conc'``:
+
+             <xarray.DataArray (time: NT, depth: NZ, latitude: NY, longitude: NX)>
+             Coordinates: time (time) datetime64[ns] ...
+                          depth (depth) float64 ...   # positive-down metres
+                          latitude (latitude) ..., longitude (longitude) ...
+             Attributes: units = 'ug/L'
+
+           Specify ``depth_layer_convention='top'`` or ``'bottom'`` to match
+           the layer-depth coordinates. Supply ``Bathimetry_data`` for wet
+           layer volumes and ``Bathimetry_seed_data`` for seeding checks.
+
+        2. Direct discharge, ``mode='emission'``:
+
+             <xarray.DataArray (time: NT, latitude: NY, longitude: NX)>
+             Coordinates: time (time) datetime64[ns] ...
+                          latitude (latitude) ..., longitude (longitude) ...
+             Attributes: units = 'kg'  # chemical mass per source record
+
+           ``emission_coordinate_mode='source'`` keeps stored locations.
+           ``emission_placement`` controls release depth. Follow the
+           depth-placement contract for ``mode='emission_depth'``.
+
+        3. Sediment concentration, ``mode='sed_conc'``:
+
+             <xarray.DataArray (time: NT, latitude: NY, longitude: NX)>
+             Coordinates: time (time) datetime64[ns] ...
+                          latitude (latitude) ..., longitude (longitude) ...
+             Attributes: units = 'ug/kg'  # dry sediment mass
+
+           Supply ``Bathimetry_seed_data``. Optionally supply active
+           sediment thickness in metres on the same horizontal grid.
+
+        Shared bathymetry input (no time dimension):
+
+             <xarray.DataArray (latitude: NY, longitude: NX)>
+             Coordinates: latitude (latitude) ..., longitude (longitude) ...
+             Attributes: units = 'm', positive = 'down'
+
+        Geographic coordinates are cell centers in degrees east/north where
+        ``concentration_coordinate_mode='center'``. The legacy mode shifts
+        coordinates by half a grid cell. Source bathymetry must cover the
+        concentration grid. Use ``dry_run=True`` to validate without seeding.
         """
         import opendrift
         from datetime import datetime, timezone
@@ -17649,6 +17940,20 @@ to physically wet regions. This writer exports data. it does not seed.
         Use this helper within regrid_conc for output from
         write_netcdf_chemical_density_map (mode='chemical_density_map') or
         calculate_water_sediment_conc (mode='wat_sed_map').
+
+
+        Examples
+        --------
+        This internal helper consumes the ``xarray.Dataset`` and source
+        coordinate arrays prepared by ``regrid_conc()``. The selected
+        variable must have the expected spatial and time dimensions.
+
+        >>> import xarray as xr
+        >>> with xr.open_dataset('map.nc') as ds:
+        ...     field = ds['concentration']
+
+        This opens an existing source field; it is not a complete call to
+        ``regrid_dataarray()``. Use ``regrid_conc()`` for file conversion.
         """
         import xarray as xr
 
@@ -17800,6 +18105,18 @@ to physically wet regions. This writer exports data. it does not seed.
         >>> model.regrid_conc('map.nc', 'map_regular.nc',
         ...                   latmin=44.0, latmax=45.0, latstep=0.01,
         ...                   lonmin=12.0, lonmax=13.0, lonstep=0.01)
+
+
+        Use an already-opened structured concentration dataset instead of
+        a filename. Native triangular UGRID inputs are not supported.
+
+        >>> import xarray as xr
+        >>> with xr.open_dataset('map.nc') as source:
+        ...     model.regrid_conc(
+        ...         filename=None, filename_regridded='map_regular.nc',
+        ...         latmin=44.0, latmax=45.0, latstep=0.01,
+        ...         lonmin=12.0, lonmax=13.0, lonstep=0.01,
+        ...         concfile=source)
         """
         import os
         import tempfile
@@ -19222,6 +19539,20 @@ to physically wet regions. This writer exports data. it does not seed.
         Mask an already-loaded xarray DataArray.
 
         >>> result = model.mask_netcdf_map('coast_mask.shp', DataArray=field)
+
+
+        Input DataArray layout for a geographic field:
+
+            <xarray.DataArray 'concentration' (latitude: NY, longitude: NX)>
+            Coordinates:
+              * latitude  (latitude) float64 ...   # degrees_north
+              * longitude (longitude) float64 ...  # degrees_east
+            Attributes:
+                units: ug/L
+
+        Use a polygon in a compatible CRS, such as EPSG:4326, or specify
+        the polygon and raster CRS for correct transformation. Values and
+        polygon filenames are placeholders. Keep CF/UGRID topology metadata.
         """
         import os
         import geopandas as gpd
@@ -20300,6 +20631,20 @@ to physically wet regions. This writer exports data. it does not seed.
             A required input file does not exist.
         RuntimeError
             The required operation or model state is not available.
+
+
+        Examples
+        --------
+        Open an existing concentration NetCDF product. Keep its time,
+        species, depth and spatial coordinates. Select a variable available
+        in the file; do not reconstruct the output grid.
+
+        >>> import xarray as xr
+        >>> with xr.open_dataset('map.nc') as ds:
+        ...     field = ds['concentration']
+
+        ``map.nc`` is a placeholder path. Set ``Conc_Dataset=ds`` and
+        ``variable_name='concentration'`` when calling the renderer.
         """
         import gc
         import os
@@ -28902,6 +29247,414 @@ to physically wet regions. This writer exports data. it does not seed.
         estimate = reindexed_bytes + 2 * max_payload + nt * spatial_elements_max + 2 * spatial_elements_max
         return int(estimate)
 
+    def _sum_remap_same_family(self, arrays, grid_info, family, *, time_name,
+                               weights_by_input=None):
+        """Conservatively align one mapper grid family using existing LC overlaps.
+
+        This narrow adapter uses get_pixel_mean_depth's existing conservative
+        geometry dispatcher: direct/Shapely or authenticated static SCRIP
+        overlaps. One mass/volume normalization is shared by both backends;
+        no tidal-volume or remapping engine is duplicated.
+
+        Parameters
+        ----------
+        arrays : sequence of xarray.DataArray
+            Compatible water or dry-sediment concentrations. The first grid is the target.
+        grid_info : sequence of tuple
+            Authenticated SUM geometry/CRS/support tuples in the same order.
+        family : str
+            One of the six existing mapper grid-family identifiers.
+        time_name : str
+            Saved time dimension. Different source/target times are rejected.
+        weights_by_input : sequence, optional
+            Existing mapper-compatible conservative SCRIP weights, with an
+            explicit row/col order and matching source/target geometry-pair
+            SHA-256 attestation. SCRIP SUM requires independently qualified ESMF grid or mesh weights
+            with exact geometry and index-order attestation.
+
+        Returns
+        -------
+        list of xarray.DataArray
+            Fields on the first grid, with input time, depth and species axes.
+
+        Raises
+        ------
+        ValueError
+            Incompatible geometry, CRS, phases, units, masks or wet volumes.
+        NotImplementedError
+            Missing qualified physical area/volume/dry-mass support or unsupported
+            fractional-subcell bathymetry conventions.
+
+        Notes
+        -----
+        Use writer-saved wet volume (m3) or sediment dry mass (kg), and cell area (m2). Remap mass
+        through physically measured source-to-target overlaps before division
+        by the first grid's corresponding physical denominator. No vertical or temporal interpolation is made.
+        ESMF dstarea weights use a spherical 6371-km area for overlap fractions;
+        original WGS84 writer cell areas and wet volumes are not overwritten.
+        """
+        import numpy as np
+        import xarray as xr
+
+        target = arrays[0]
+        target_geometry = grid_info[0][1]
+        target_source = grid_info[0][4]
+        target_vol = target_source.get("volume") if hasattr(target_source, "get") else None
+        sediment_mass_basis = ('kg' in str(target.attrs.get('units', '')).lower())
+        if sediment_mass_basis:
+            if str(target.attrs.get('mass_basis', 'dry_weight')) not in ('dry_weight',):
+                raise ValueError('SUM sediment concentration requires dry-weight mass basis')
+            target_vol = target_source.get('sediment_dry_mass') if hasattr(target_source, 'get') else None
+            if target_vol is None:
+                raise NotImplementedError('NOT_QUALIFIED: sediment SUM requires writer-saved sediment_dry_mass (kg)')
+            if str(target_vol.attrs.get('units', '')) != 'kg':
+                raise ValueError('SUM target sediment dry-mass denominator must have units kg')
+        else:
+            if target_vol is None:
+                raise NotImplementedError('NOT_QUALIFIED: same-family concentration remap requires writer-saved target wet volume(time,depth,cell)')
+            if str(target_vol.attrs.get('units', '')) not in ('m3', 'm^3'):
+                raise ValueError('SUM target wet volume units must be m3')
+        if any(not np.array_equal(da[time_name], target[time_name]) for da in arrays[1:]):
+            raise ValueError("SUM time axes differ; no qualified temporal volume remap")
+        for da in arrays[1:]:
+            for dim in ('depth', 'specie', 'species', 'z'):
+                if (dim in da.dims) != (dim in target.dims) or (dim in da.dims and
+                        not np.array_equal(da[dim], target[dim])):
+                    raise ValueError(f"SUM {dim} definitions differ; no vertical/species remap")
+
+        # Mapper uses (X,Y) internal cell order; its bathymetry source parser
+        # uses (Y,X). Adapt only dimension order and corners, not geometry.
+        def _proxy(geom):
+            if geom['topology'] == 'triangular_unstructured':
+                conn = xr.DataArray(np.asarray(geom['face_node_connectivity'], dtype=np.int64),
+                                    dims=('face', 'nmax_face_nodes'),
+                                    attrs={'start_index': 0, 'cf_role': 'face_node_connectivity'})
+                return xr.Dataset(data_vars={
+                    'topo': (('face',), np.ones(geom['nface'], dtype=np.float64)),
+                    'face_node_connectivity': conn,
+                    'node_lon': (('node',), geom['node_lon']),
+                    'node_lat': (('node',), geom['node_lat']),
+                })
+            lon4 = np.asarray(geom['lon_corners_4'], dtype=np.float64)
+            lat4 = np.asarray(geom['lat_corners_4'], dtype=np.float64)
+            if lon4.shape != lat4.shape or lon4.ndim != 3 or lon4.shape[-1] != 4:
+                raise ValueError("SUM mapper output grid lacks valid four-corner bounds")
+            lon2 = np.asarray(geom['lon_center_2d'], dtype=np.float64).T
+            lat2 = np.asarray(geom['lat_center_2d'], dtype=np.float64).T
+            ds = xr.Dataset({
+                'topo': (('sum_y', 'sum_x'), np.ones(lon2.shape)),
+                'lon': (('sum_y', 'sum_x'), lon2),
+                'lat': (('sum_y', 'sum_x'), lat2),
+                'lon_bounds': (('sum_y', 'sum_x', 'nv'), lon4.transpose(1, 0, 2)),
+                'lat_bounds': (('sum_y', 'sum_x', 'nv'), lat4.transpose(1, 0, 2)),
+            })
+            ds['lon'].attrs['bounds'] = 'lon_bounds'
+            ds['lat'].attrs['bounds'] = 'lat_bounds'
+            return ds
+
+        def _to_flat(da, geom):
+            spatial = ('face',) if geom['topology'] == 'triangular_unstructured' else (
+                ('longitude', 'latitude') if 'longitude' in da.dims else ('x', 'y'))
+            if not all(dim in da.dims for dim in spatial):
+                raise ValueError("SUM concentration dimensions are inconsistent with mapper grid")
+            lead = [d for d in da.dims if d not in spatial]
+            data = da.transpose(*lead, *spatial)
+            return np.asarray(data.values, dtype=np.float64).reshape((*[da.sizes[d] for d in lead], -1)), lead, spatial
+
+        def _invalid_support(ds, geom):
+            # An unknown subcell-validity polygon cannot be reconstructed from
+            # wet_fraction alone. Do not claim its overlap is conservative.
+            mask = None
+            for key in ('land', 'domain_invalid', 'wet_fraction'):
+                field = ds.get(key) if hasattr(ds, 'get') else None
+                if field is None:
+                    continue
+                values, dims, _ = _to_flat(field, geom)
+                if dims:
+                    raise ValueError(f'SUM {key} mask dimensions differ from spatial support')
+                values = values.reshape(-1)
+                if np.any(~np.isfinite(values)):
+                    raise ValueError(f'SUM {key} mask has invalid values')
+                if key == 'wet_fraction':
+                    if np.any((values > 0) & (values < 1-1e-8)):
+                        raise NotImplementedError('NOT_QUALIFIED: partial bathymetry support requires subcell polygons')
+                    invalid = (values <= 0)
+                else:
+                    if np.any((values != 0) & (values != 1)):
+                        raise ValueError(f'SUM {key} mask must contain 0 or 1')
+                    invalid = (values == 1)
+                mask = invalid if mask is None else (mask | invalid)
+            if mask is None:
+                shape = geom['nface'] if geom['topology']=='triangular_unstructured' else int(np.prod(geom['shape']))
+                mask = np.zeros(shape, dtype=bool)
+            return mask
+
+        target_flat, lead, target_spatial = _to_flat(target, target_geometry)
+        target_invalid = _invalid_support(target_source, target_geometry)
+        target_shape = (target_geometry['nface'],) if target_geometry['topology'] == 'triangular_unstructured' else target_geometry['shape']
+        if 'depth' not in target.dims and 'depth' in target_vol.dims and target_vol.sizes['depth'] == 1:
+            target_vol = target_vol.isel(depth=0, drop=True)
+        if sediment_mass_basis:
+            target_vol = target_vol.broadcast_like(target).transpose(*target.dims)
+        target_vol_flat, vol_lead, _ = _to_flat(target_vol, target_geometry)
+        if tuple(lead) != tuple(vol_lead) or target_vol_flat.shape != target_flat.shape:
+            raise ValueError("SUM target physical denominator dimensions do not match concentration")
+        if any(d in target.coords and d in target_vol.coords and
+               not np.array_equal(target[d], target_vol[d]) for d in lead):
+            raise ValueError("SUM target saved wet-volume time/depth coordinates differ")
+        if np.any(np.isinf(target_vol_flat) | (target_vol_flat < 0)):
+            raise ValueError("SUM target wet volumes contain infinite or negative values")
+
+        result = [target]
+        for i, da in enumerate(arrays[1:], 1):
+            geom = grid_info[i][1]
+            src = grid_info[i][4]
+            vol = src.get('sediment_dry_mass' if sediment_mass_basis else 'volume') if hasattr(src, 'get') else None
+            if vol is None:
+                raise NotImplementedError('NOT_QUALIFIED: source requires saved sediment_dry_mass (kg)' if
+                                          sediment_mass_basis else 'NOT_QUALIFIED: source wet volume(time,depth,cell) in m3 is required')
+            if str(vol.attrs.get('units', '')) not in (('kg',) if sediment_mass_basis else ('m3', 'm^3')):
+                raise ValueError('SUM source physical denominator units do not match phase')
+            if sediment_mass_basis:
+                vol = vol.broadcast_like(da).transpose(*da.dims)
+            if 'depth' not in da.dims and 'depth' in vol.dims and vol.sizes['depth'] == 1:
+                vol = vol.isel(depth=0, drop=True)
+            vals, src_lead, _ = _to_flat(da, geom)
+            vols, vl, _ = _to_flat(vol, geom)
+            if src_lead != lead or vl != lead or vals.shape != vols.shape:
+                raise ValueError("SUM source concentration and volume dimension/shape mismatch")
+            if any(d in da.coords and d in vol.coords and
+                   not np.array_equal(da[d], vol[d]) for d in lead):
+                raise ValueError("SUM source saved physical denominator time/depth coordinates differ")
+            if np.any(np.isinf(vols) | (vols < 0)):
+                raise ValueError("SUM source wet volumes contain infinite or negative values")
+            source_invalid = _invalid_support(src, geom)
+            if np.any(np.isfinite(vals[..., source_invalid]) &
+                      (vals[..., source_invalid] != 0) &
+                      np.isfinite(vols[..., source_invalid]) &
+                      (vols[..., source_invalid] > 0)):
+                raise ValueError('SUM nonzero source concentration is assigned to invalid spatial support')
+            # When a source is already ON the explicit target geometry, use
+            # the existing direct path. The mapper direct backend quite
+            # correctly does not manufacture polygon overlap links. Confirm
+            # equal wet/dry physical support before accepting the identity.
+            weights = (None if weights_by_input is None else weights_by_input[i])
+            geo_keys = (('face_node_connectivity', 'node_lon', 'node_lat')
+                        if family.startswith('triangular') else
+                        ('lon_corners_4', 'lat_corners_4'))
+            identity = all(np.array_equal(np.asarray(geom[key]),
+                                          np.asarray(target_geometry[key]), equal_nan=True)
+                           for key in geo_keys)
+            identity = identity and all(
+                np.array_equal(np.asarray(da[d]), np.asarray(target[d]))
+                for d in target_spatial)
+            if identity:
+                if weights is not None:
+                    raise ValueError('SUM identity source must not supply unused SCRIP weights')
+                for name in ('area', 'volume' if not sediment_mass_basis else 'sediment_dry_mass',
+                             'topo', 'land', 'domain_invalid', 'wet_fraction'):
+                    ref = target_source.get(name) if hasattr(target_source, 'get') else None
+                    candidate = src.get(name) if hasattr(src, 'get') else None
+                    if (ref is None) != (candidate is None):
+                        raise ValueError(f'SUM identity spatial support {name} missing')
+                    if ref is not None:
+                        try:
+                            xr.testing.assert_equal(ref, candidate)
+                        except AssertionError as exc:
+                            raise ValueError(f'SUM identity spatial support {name} differs') from exc
+                result.append(da.transpose(*target.dims))
+                continue
+            use_scrip = weights is not None
+            if use_scrip:
+                if family.startswith('triangular') and (
+                        geom['topology'] != 'triangular_unstructured' or
+                        target_geometry['topology'] != 'triangular_unstructured'):
+                    raise ValueError('SCRIP mesh weights require two authenticated triangular UGRID grids')
+                if src.attrs.get('_sum_static_no_tide'):
+                    raise NotImplementedError('NOT_QUALIFIED: static no-tide SCRIP SUM volume/area convention not independently qualified')
+                # SCRIP's row/col numbering is not self-describing. Demand
+                # explicit mapper-order attestation to prevent silent y/x
+                # permutations (source y,x; target x,y).
+                from pathlib import Path
+                if isinstance(weights, (str, Path)):
+                    with xr.open_dataset(weights) as wds:
+                        weight_meta = dict(wds.attrs)
+                elif isinstance(weights, xr.Dataset):
+                    weight_meta = dict(weights.attrs)
+                elif isinstance(weights, dict):
+                    weight_meta = weights
+                else:
+                    raise ValueError('SCRIP SUM weights require explicit grid-order and geometry metadata')
+                expected_order = ('source_face_target_face' if family.startswith('triangular')
+                                  else 'source_yx_target_xy')
+                if weight_meta.get('sum_grid_order') != expected_order:
+                    raise ValueError(f'SCRIP SUM requires explicit sum_grid_order={expected_order} weight mapping')
+                if str(weight_meta.get('index_base')) not in ('0', '1'):
+                    raise ValueError('SCRIP SUM requires explicit index_base=0 or index_base=1')
+                # One geometry-pair checksum prevents using otherwise
+                # plausible weights for a different grid or cell order.
+                import hashlib
+                fingerprint = hashlib.sha256()
+                for grid in (geom, target_geometry):
+                    if family.startswith('triangular'):
+                        keys = ('face_node_connectivity', 'node_lon', 'node_lat')
+                    else:
+                        keys = ('lon_corners_4', 'lat_corners_4')
+                    for name in keys:
+                        dt = '<i8' if name == 'face_node_connectivity' else '<f8'
+                        arr = np.ascontiguousarray(grid[name], dtype=dt)
+                        fingerprint.update(np.asarray(arr.shape, dtype='<i8').tobytes())
+                        fingerprint.update(arr.tobytes())
+                if weight_meta.get('sum_grid_signature') != fingerprint.hexdigest():
+                    raise ValueError('SCRIP SUM weights do not attest the exact source/target grid geometry')
+            _, _, _, _, meta = self.get_pixel_mean_depth(
+                target_geometry['face_lon_center'] if target_spatial == ('face',) else target_geometry['lon_center_2d'],
+                target_geometry['face_lat_center'] if target_spatial == ('face',) else target_geometry['lat_center_2d'],
+                False, family.endswith('geographic'), None, None,
+                output_grid=target_geometry,
+                bathymetry_remap=('scrip' if use_scrip else 'conservative'),
+                bathymetry_source=_proxy(geom), bathymetry_var='topo',
+                conservative_weights=weights,
+                return_metadata=True, collect_tidal_links=not use_scrip,
+                _collect_sum_overlap_links=use_scrip,
+            )
+            # Basins with authenticated SCRIP weights have an independent
+            # large-span great-circle oracle. Global/datelined SUM weights
+            # do not yet have that scientific qualification.
+            if use_scrip and meta.get('extent_class') == 'global':
+                raise NotImplementedError('NOT_QUALIFIED: global SCRIP SUM geometry requires independent qualification')
+            links = meta.get('sum_overlap_links' if use_scrip else 'tidal_overlap_links')
+            if links is None:
+                raise NotImplementedError("NOT_QUALIFIED: mapper did not provide physical overlap links")
+            row = np.asarray(links['row'], dtype=np.int64)
+            col = np.asarray(links['col'], dtype=np.int64)
+            # The mapper source-file parser flattens (y,x), whereas SUM and
+            # normalized output geometry flatten (x,y). Convert the existing
+            # link indices once; do not rebuild or reinterpret the polygons.
+            if geom['topology'] != 'triangular_unstructured':
+                nx, ny = geom['shape']
+                col = (col % nx) * ny + (col // nx)
+            area = np.asarray(links['area'], dtype=np.float64)
+            # For the explicit no-tide rectilinear fallback, use the same
+            # spherical area metric as the LC's existing static volumes.
+            # Mapper/Shapely links select candidate intersecting cell pairs;
+            # their projected straight-edge areas are not exact spherical
+            # lat/lon rectangle intersections (the original xESMF oracle).
+            if src.attrs.get('_sum_static_no_tide'):
+                def _bounds(grid):
+                    lon = np.asarray(grid['lon_corners_4']).reshape(-1, 4)
+                    lat = np.asarray(grid['lat_corners_4']).reshape(-1, 4)
+                    return lon.min(axis=1), lon.max(axis=1), lat.min(axis=1), lat.max(axis=1)
+                sl, sr, sb, st = _bounds(geom)
+                dl, dr, db, dt = _bounds(target_geometry)
+                west = np.maximum(sl[col], dl[row])
+                east = np.minimum(sr[col], dr[row])
+                south = np.maximum(sb[col], db[row])
+                north = np.minimum(st[col], dt[row])
+                area = (6371000.0**2 * np.deg2rad(np.maximum(east-west, 0.0)) *
+                        np.maximum(np.sin(np.deg2rad(north)) -
+                                   np.sin(np.deg2rad(south)), 0.0))
+                good = area > 0.0
+                row, col, area = row[good], col[good], area[good]
+            if np.any(area <= 0) or np.any(~np.isfinite(area)):
+                raise ValueError('SUM overlap link area is invalid')
+            if src.attrs.get('_sum_static_no_tide'):
+                source_area = np.asarray(src['area'].transpose('longitude', 'latitude'),
+                                         dtype=np.float64).reshape(-1)
+            elif links['backend'] in ('shapely', 'scrip'):
+                source_area = np.asarray(links['source_projected_area_m2'] if
+                                         links['backend'] == 'shapely' else
+                                         links['source_spherical_area_m2'], dtype=np.float64)
+                if geom['topology'] != 'triangular_unstructured':
+                    source_area = source_area.reshape(ny, nx).T.reshape(-1)
+            else:
+                source_area = np.asarray(geom['cell_area'], dtype=np.float64).reshape(-1)
+                if geom['topology'] != 'triangular_unstructured':
+                    source_area = source_area.reshape(geom['shape']).T.reshape(-1)
+            if source_area.size != vals.shape[-1] or (col.size and col.max() >= source_area.size):
+                raise ValueError('SUM overlap source indexes/geometry do not match data')
+            if np.any(~np.isfinite(source_area[col]) | (source_area[col] <= 0)):
+                raise ValueError('SUM overlap has invalid source cell areas')
+            # Same-family grids must describe the same wet column wherever
+            # their polygons overlap. Compare already saved wet volumes/areas;
+            # do NOT recompute bathymetry/tides inside SUM.
+            source_physical_area = src.get('area') if hasattr(src, 'get') else None
+            target_physical_area = target_source.get('area') if hasattr(target_source, 'get') else None
+            if source_physical_area is None or target_physical_area is None:
+                raise NotImplementedError('NOT_QUALIFIED: saved physical cell areas required for wet-volume compatibility')
+            if (source_physical_area.attrs.get('units') not in ('m2', 'm^2') or
+                    target_physical_area.attrs.get('units') not in ('m2', 'm^2')):
+                raise ValueError('SUM saved cell-area units must be m2')
+            a_src, _, _ = _to_flat(source_physical_area, geom)
+            a_dst, _, _ = _to_flat(target_physical_area, target_geometry)
+            a_src = a_src.reshape(-1)
+            a_dst = a_dst.reshape(-1)
+            if (a_src.size != vals.shape[-1] or a_dst.size != target_flat.shape[-1] or
+                    np.any(~np.isfinite(a_src) | (a_src <= 0)) or
+                    np.any(~np.isfinite(a_dst) | (a_dst <= 0))):
+                raise ValueError('SUM saved physical cell areas invalid')
+            wet_src = vols.reshape((-1, vols.shape[-1])) / a_src
+            wet_dst = target_vol_flat.reshape((-1, target_vol_flat.shape[-1])) / a_dst
+            # Compare average wet thickness only on FULLY covered target cells.
+            # The wet thickness of different-sized individual source/target
+            # cells need not be equal when genuine bathymetry varies in space.
+            target_projected_area = (a_dst if src.attrs.get('_sum_static_no_tide') else
+                                     np.asarray(links['target_spherical_area_m2'] if use_scrip else
+                                                links['target_projected_area_m2'], dtype=np.float64))
+            if target_projected_area.size != a_dst.size or np.any(target_projected_area <= 0):
+                raise ValueError('SUM target overlap polygon area is invalid')
+            overlap_area = np.bincount(row, weights=area, minlength=a_dst.size)
+            fully_covered = ((overlap_area > 0) &
+                             (np.abs(overlap_area-target_projected_area) <=
+                              1e-6*target_projected_area))
+            if np.any(fully_covered):
+                mapped_thickness = np.zeros((wet_src.shape[0], a_dst.size), dtype=np.float64)
+                for k in range(wet_src.shape[0]):
+                    np.add.at(mapped_thickness[k], row, wet_src[k, col]*area)
+                mapped_thickness[:, fully_covered] /= overlap_area[fully_covered]
+                if not np.allclose(mapped_thickness[:, fully_covered],
+                                   wet_dst[:, fully_covered], rtol=1e-5, atol=1e-6,
+                                   equal_nan=True):
+                    raise ValueError('SUM inconsistent wet volumes on fully covered overlapping grid support')
+            fraction = area/source_area[col]
+            if np.any(fraction < -1e-12) or np.any(fraction > 1+1e-6):
+                raise ValueError('SUM invalid source overlap fractions')
+            outmass = np.zeros_like(target_vol_flat, dtype=np.float64)
+            v = vals.reshape((-1, vals.shape[-1]))
+            volume = vols.reshape((-1, vols.shape[-1]))
+            mass = outmass.reshape((-1, outmass.shape[-1]))
+            covered = np.zeros_like(mass, dtype=np.float64)
+            for k in range(v.shape[0]):
+                invalid_destination = (target_invalid[row] & ~source_invalid[col] &
+                                       np.isfinite(v[k, col]) & (v[k, col] != 0) &
+                                       np.isfinite(volume[k, col]) & (volume[k, col] > 0))
+                if np.any(invalid_destination):
+                    raise ValueError('SUM positive source mass intersects invalid target spatial support')
+                valid = (~source_invalid[col] & ~target_invalid[row] &
+                         np.isfinite(v[k, col]) & np.isfinite(volume[k, col]) &
+                         (volume[k, col] > 0))
+                np.add.at(mass[k], row[valid], v[k, col[valid]]*volume[k, col[valid]]*fraction[valid])
+                np.add.at(covered[k], row[valid], area[valid])
+            vt = target_vol_flat.reshape(mass.shape)
+            if np.any((mass != 0) & ~(vt > 0)):
+                raise ValueError("SUM source mass overlaps dry/invalid target wet volume")
+            if np.any((mass != 0) & target_invalid[np.newaxis, :]):
+                raise ValueError('SUM mass overlaps invalid target spatial support')
+            dest = np.full_like(mass, np.nan, dtype=np.float64)
+            np.divide(mass, vt, out=dest, where=(vt > 0) & (covered > 0))
+            # In spatially uncovered target cells, remain invalid rather than
+            # turning NaN into a new concentration.
+            dest = dest.reshape((*target_flat.shape[:-1], *target_shape))
+            gridcoords = {dim: target[dim] for dim in target_spatial}
+            coords = {dim: target[dim] for dim in lead}
+            coords.update(gridcoords)
+            aligned = xr.DataArray(dest, dims=(*lead, *target_spatial), coords=coords,
+                                   name=target.name, attrs=dict(da.attrs))
+            aligned.attrs['regrid_note'] = ('conservative mass/physical wet-volume remap from existing LC '
+                                           + ('SCRIP/ESMF sparse overlaps' if use_scrip else 'polygon overlaps'))
+            result.append(aligned.transpose(*target.dims))
+        return result
+
     def sum_DataArray_list(
         self, DataArray_dict, DataArray_ls=None,
         variable=None, start_date=None, end_date=None,
@@ -28909,13 +29662,41 @@ to physically wet regions. This writer exports data. it does not seed.
         nearest_tol_time=None, dim_res_dict=None, coord_tolerance_dict=None,
         snap_mode="median", mask_mode="input0", sim_description=None,
         Verbose=True, max_working_memory_bytes=None,
+        target_grid_dataset=None, conservative_weights_by_input=None,
     ):
         """Align and sum spatial DataArrays on a common time axis.
 
         Parameters
         ----------
         DataArray_dict : object
-            dictionary of {idx: {"topo": ..., "variable": ...}, ...}
+            Mapping of {idx: {"topo": DataArray, "variable": DataArray}, ...}.
+            For UGRID or bounded grids, an entry may additionally include
+            "grid_dataset": the source writer Dataset with connectivity,
+            nodes, bounds and CRS. For differently gridded geographic
+            rectilinear inputs, a source entry can additionally supply
+            "conservative_weights" as a SCRIP NetCDF path, xarray Dataset or
+            sparse-weight dict. It must contain explicit index_base (0/1),
+            sum_grid_order='source_yx_target_xy', and sum_grid_signature
+            (SHA-256 of the normalized source and target lon/lat 4-corners).
+            The original dictionary/tuple return convention is retained.
+
+        target_grid_dataset : xarray.Dataset, optional
+            Concentration-free xarray Dataset containing the canonical grid
+            geometry, CRS, cell area and physically authoritative support:
+            saved water volume (m3), or sediment dry mass (kg). For qualified
+            uniform-bathymetry/no-tide geographic rectilinear inputs, existing
+            LC static-volume physics may derive volume from target topography.
+            Concentration variables are never required and, if supplied as
+            part of an existing mapper output, are ignored (not added to SUM).
+            Required when input grid geometries differ; if omitted, all
+            input grids must be identical (direct SUM only).
+
+        conservative_weights_by_input : mapping, optional
+            Exact input-key -> precomputed SCRIP/ESMF weights for the explicit
+            target. Every source key must be present. The existing mapper
+            authenticates each source/target pair signature and ordering.
+            Omit to generate qualified regional Shapely overlaps internally;
+            basin SCRIP still requires independently authenticated weights.
 
         DataArray_ls : object, optional, default=None
             list of xarray DataArray
@@ -28949,7 +29730,9 @@ to physically wet regions. This writer exports data. it does not seed.
             Per-coordinate equality tolerances.
 
         snap_mode : str, default='median'
-            How to select the canonical coordinate when inputs differ slightly.
+            Select coordinate values within the existing tiny-tolerance
+            snapping path only. This NEVER selects an output grid. Different
+            grid geometries require target_grid_dataset explicitly.
 
         mask_mode : str or path-like, default='input0'
             spatial any-over-time mask mode ("input0"|"union"|"intersection"). NaNs in
@@ -28977,13 +29760,52 @@ to physically wet regions. This writer exports data. it does not seed.
 
         Notes
         -----
+        - Output-grid rule: without target_grid_dataset every source grid must
+          have identical authenticated geometry. Otherwise the explicitly
+          supplied target is the ONLY canonical grid. There is no automatic
+          first-input/median-grid selection and no intermediate-grid chaining.
         - Preserve the selected horizontal geometry and coordinate conventions.
         - The mask_mode setting controls how source spatial validity masks combine.
-        """
-        import hashlib
-        import os
-        import tempfile
+        - Direct SUM accepts the six verified identical mapper grid families.
+        - Different grids of one family use the mapper's single conservative
+          geometry dispatcher: Shapely for local/regional products, or SCRIP
+          for independently tested same-family structured or triangular local/basin
+          products with explicit ESMF grid/mesh weight ordering and exact
+          source-target geometry attestation. Full global/dateline geometry
+          and mapper SCRIP tidal-volume integration remain NOT_QUALIFIED.
+          Actual writer-saved wet volumes or dry sediment mass, and cell area,
+          must be preserved in source and target reduced files. No-tide
+          geographic rectilinear inputs with uniform, compatible bathymetry
+          may use LC's existing static cell-volume calculation with
+          authenticated no-tide metadata instead. For this fallback, spherical rectangle overlap areas share the
+          static volume metric; ambiguous tidal/heterogeneous inputs fail.
+        - Changed-grid dry-sediment sums conserve mass using the writer's
+          saved sediment_dry_mass (kg); missing/inconsistent dry mass,
+          fractional-subcell wet support, mixed-family and cross-CRS
+          remapping fail explicitly. No tidal-volume calculations occur in SUM.
+        - Precomputed SCRIP weight input uses the existing mapper loader and
+          normalization; there is no additional SCRIP SUM mass algorithm.
 
+
+        Examples
+        --------
+        Each source provides matching geographic fields:
+
+            concentration: <xarray.DataArray
+              (time: NT, latitude: NY, longitude: NX)>
+            Coordinates: time (time) datetime64[ns] ...
+                         latitude (latitude) ..., longitude (longitude) ...
+            Attributes: units = 'ug/L'
+
+            topo: <xarray.DataArray (latitude: NY, longitude: NX)>
+            Attributes: units = 'm', positive = 'down'
+
+        Use ``DataArray_dict={id: {'concentration': field, 'topo': topo}}``
+        and ``variable='concentration'``. Alternatively, supply aligned
+        fields through ``DataArray_ls``. Coordinates use degrees east/north.
+        Keep concentration units consistent, and align times as requested.
+        Shapes and data values are placeholders.
+        """
         import numpy as np
         import xarray as xr
 
@@ -29008,6 +29830,247 @@ to physically wet regions. This writer exports data. it does not seed.
             for i, da in enumerate(DataArray_ls):
                 print(i, da.name, da.dims)
 
+        # Explicit-target mode: a zero-valued reference field supplies the
+        # canonical grid, never a source mass contribution. The mapper's
+        # existing geometry/volume and SUM methods do all physical work.
+        input_keys = list(index_keys) if index_keys is not None else None
+        if conservative_weights_by_input is not None and target_grid_dataset is None:
+            raise ValueError('SUM source-to-target weight dictionary requires an explicit target_grid_dataset')
+        if target_grid_dataset is not None:
+            if DataArray_dict is None or input_keys is None:
+                raise ValueError('SUM explicit target requires DataArray_dict with source grid_dataset metadata')
+            if not isinstance(target_grid_dataset, xr.Dataset):
+                raise TypeError('SUM target_grid_dataset must be an xarray.Dataset with physical support')
+            if 'area' not in target_grid_dataset:
+                raise ValueError('SUM explicit target requires writer-saved area (m2)')
+            if target_grid_dataset['area'].attrs.get('units') not in ('m2', 'm^2'):
+                raise ValueError('SUM explicit target area must have units m2')
+            if conservative_weights_by_input is not None:
+                if not isinstance(conservative_weights_by_input, dict) or (
+                    set(conservative_weights_by_input) != set(input_keys)):
+                    raise ValueError('SUM weight dictionary keys must exactly match all input keys')
+                if any(DataArray_dict[k].get('conservative_weights') is not None for k in input_keys):
+                    raise ValueError('SUM cannot combine per-source and top-level weight specifications')
+            sediment = 'kg' in str(DataArray_ls[0].attrs.get('units', '')).lower()
+            denominator = 'sediment_dry_mass' if sediment else 'volume'
+            if denominator in target_grid_dataset:
+                physical = target_grid_dataset[denominator]
+                if physical.attrs.get('units') not in (('kg',) if sediment else ('m3', 'm^3')):
+                    raise ValueError('SUM explicit target denominator has invalid physical units')
+            elif not sediment and target_grid_dataset.get('topo') is not None:
+                # A strict no-tide exception: use topography only to construct
+                # the target spatial validity mask here. The existing LC
+                # _build_common_cell_volume path below checks all source/target
+                # no-tide attestations and creates the physical volumes.
+                # This is NOT permitted for tidal or sediment concentration.
+                physical = target_grid_dataset['topo']
+            else:
+                raise NotImplementedError('NOT_QUALIFIED: explicit target requires writer-saved '+denominator)
+            spatial = tuple(d for d in DataArray_ls[0].dims
+                            if d in ('face', 'x', 'y', 'latitude', 'longitude', 'lat', 'lon'))
+            target_space = tuple(d for d in target_grid_dataset['area'].dims
+                                 if d in ('face', 'x', 'y', 'latitude', 'longitude', 'lat', 'lon'))
+            if set(spatial) != set(target_space):
+                raise ValueError('SUM explicit target has different horizontal dimension convention')
+            lead = DataArray_ls[0]
+            for d in spatial:
+                lead = lead.isel({d: 0}, drop=True)
+            zero, _ = xr.broadcast(xr.zeros_like(target_grid_dataset['area'], dtype=np.float64), lead)
+            zero = zero.transpose(*DataArray_ls[0].dims)
+            if time_name in physical.dims and not np.array_equal(
+                    np.asarray(physical[time_name]), np.asarray(zero[time_name])):
+                raise ValueError('SUM explicit target wet-volume time axis differs from source')
+            # Preserve the canonical target dry support; never label a dry cell zero.
+            valid = physical > 0
+            zero = zero.where(valid.broadcast_like(zero))
+            zero = zero.rename(DataArray_ls[0].name)
+            zero.attrs = dict(DataArray_ls[0].attrs)
+            sentinel = object()
+            input_dict = dict(DataArray_dict)
+            input_dict[sentinel] = {
+                variable: zero,
+                'topo': target_grid_dataset.get('topo'),
+                'grid_dataset': target_grid_dataset,
+            }
+            for key in input_keys:
+                input_dict[key] = dict(input_dict[key])
+                if conservative_weights_by_input is not None:
+                    input_dict[key]['conservative_weights'] = conservative_weights_by_input[key]
+            DataArray_dict = input_dict
+            index_keys = [sentinel] + input_keys
+            DataArray_ls = [zero] + DataArray_ls
+
+        # Check full mapper topology before xarray's dimension-only alignment.
+        # A standalone UGRID DataArray cannot carry its mesh topology: in that
+        # case the existing dictionary member may supply the parent Dataset.
+        from pyproj import CRS
+
+        grid_info = []
+        for pos, da in enumerate(DataArray_ls):
+            source = (DataArray_dict[ordered_key]["grid_dataset"]
+                      if DataArray_dict is not None
+                      and (ordered_key := index_keys[pos]) in DataArray_dict
+                      and DataArray_dict[ordered_key].get("grid_dataset") is not None
+                      else da)
+            if "face" in da.dims and not hasattr(source, "data_vars"):
+                raise ValueError(
+                    "UGRID SUM requires authenticated parent Dataset metadata "
+                    "(DataArray_dict entry 'grid_dataset': connectivity, nodes and CRS).")
+            source_crs = self._regrid_extract_crs(source)
+            declared_crs = getattr(da, "attrs", {}).get("projection")
+            if declared_crs:
+                parsed = CRS.from_user_input(declared_crs)
+                if source_crs is not None and not parsed.equals(source_crs):
+                    raise ValueError("SUM input has contradictory declared projection/CRS")
+                source_crs = parsed
+            if "face" in da.dims:
+                conn = source.get("face_node_connectivity")
+                if conn is None:
+                    raise ValueError("UGRID SUM requires face_node_connectivity")
+                start_index = conn.attrs.get("start_index")
+                if start_index not in (0, 1):
+                    raise ValueError("UGRID face_node_connectivity requires start_index 0 or 1")
+                if conn.attrs.get("cf_role", "face_node_connectivity") != "face_node_connectivity":
+                    raise ValueError("Invalid UGRID connectivity role")
+                if getattr(da, "attrs", {}).get("location", "face") != "face":
+                    raise ValueError("UGRID SUM supports face-centered data only")
+                mesh = source.get("mesh")
+                if mesh is None or mesh.attrs.get("cf_role") != "mesh_topology" or (
+                        mesh.attrs.get("topology_dimension") != 2):
+                    raise ValueError("UGRID SUM requires valid two-dimensional mesh_topology")
+                if mesh.attrs.get("face_node_connectivity") != "face_node_connectivity":
+                    raise ValueError("UGRID SUM mesh connectivity declaration is inconsistent")
+            else:
+                start_index = None
+            try:
+                density_proj = (source_crs if source_crs is not None
+                                and source_crs.is_projected else None)
+                if (hasattr(source, 'data_vars') and
+                        source.attrs.get('output_grid_mode') == 'rectilinear' and
+                        source.attrs.get('output_grid_coords') == 'geographic' and
+                        'latitude' in source.dims and 'longitude' in source.dims and
+                        'x' not in source.dims):
+                    # The existing water/sediment reducer preserves 4-corner
+                    # lon_bounds(y,x,nv) along with canonical 1-D lon/lat axes.
+                    # The mapper expects 1-D lon_bounds only in the 1-D path.
+                    # Reconstruct the original constructor and check all four
+                    # saved corners rather than discarding their geometry.
+                    geometry = self._normalize_output_grid({
+                        'lon': source['longitude'].values,
+                        'lat': source['latitude'].values,
+                    })
+                    for axis, bound in (('lon_corners_4', 'lon_bounds'),
+                                        ('lat_corners_4', 'lat_bounds')):
+                        saved = source.get(bound)
+                        if saved is not None and not np.allclose(
+                                np.asarray(saved), geometry[axis].transpose(1, 0, 2),
+                                rtol=0, atol=1e-8, equal_nan=True):
+                            raise ValueError(f'SUM reduced geographic {bound} contradicts rectilinear axes')
+                else:
+                    geometry = self._normalize_output_grid(source, density_proj=density_proj)
+                # Writer NetCDF uses two-dimensional lon/lat auxiliaries even
+                # when its actual native grid was rectilinear geographic.
+                # Trust only the writer's explicit family together with its
+                # 1-D CF longitude/latitude axes and independently matching
+                # four-corner polygons (never the metadata flag alone).
+                if (hasattr(source, 'data_vars') and
+                        source.attrs.get('output_grid_mode') == 'rectilinear' and
+                        source.attrs.get('output_grid_coords') == 'geographic' and
+                        'x' in source.dims and 'y' in source.dims):
+                    ax, ay = source.get('x'), source.get('y')
+                    if (ax is None or ay is None or
+                            ax.ndim != 1 or ay.ndim != 1 or
+                            ax.attrs.get('standard_name') != 'longitude' or
+                            ay.attrs.get('standard_name') != 'latitude'):
+                        raise ValueError('SUM writer rectilinear geographic axes lack valid CF coordinates')
+                    declared_rect = self._normalize_output_grid(
+                        {'lon': ax.values, 'lat': ay.values})
+                    for axis in ('lon_corners_4', 'lat_corners_4',
+                                 'lon_center_2d', 'lat_center_2d'):
+                        if not np.allclose(geometry[axis], declared_rect[axis],
+                                           rtol=0, atol=1e-8, equal_nan=True):
+                            raise ValueError('SUM writer rectilinear declaration contradicts stored corners/centers')
+                    geometry = declared_rect
+            except (ValueError, TypeError, KeyError) as exc:
+                raise ValueError(f"SUM input {pos} has invalid/ambiguous grid geometry: {exc}") from exc
+            is_triangle = geometry.get("topology") == "triangular_unstructured"
+            if is_triangle:
+                for name, expected in (("face_lon", "face_lon_center"),
+                                       ("face_lat", "face_lat_center"),
+                                       ("face_x", "face_x_center"),
+                                       ("face_y", "face_y_center")):
+                    actual = source.get(name)
+                    predicted = geometry.get(expected)
+                    if actual is not None and (predicted is None or
+                            not np.allclose(np.asarray(actual), predicted, rtol=0,
+                                            atol=1e-6, equal_nan=True)):
+                        raise ValueError(f"UGRID SUM {name} disagrees with mesh connectivity/nodes")
+            if is_triangle != ("face" in da.dims):
+                raise ValueError("SUM data staggering does not match mesh/structured topology")
+            family = ("triangular" if is_triangle else geometry["binning_mode"])
+            family += "_" + geometry["binning_coords"]
+            spatial_dims = ("face",) if is_triangle else tuple(
+                d for d in da.dims if d in ("latitude", "longitude", "lat", "lon", "x", "y"))
+            if len(spatial_dims) != (1 if is_triangle else 2):
+                raise ValueError(f"SUM input {pos}: ambiguous spatial dimensions {da.dims}")
+            for dim in spatial_dims:
+                if dim not in da.coords:
+                    raise ValueError(f"SUM input {pos} lacks spatial coordinate {dim!r}")
+            if is_triangle and da.sizes["face"] != geometry["nface"]:
+                raise ValueError("UGRID face count differs from concentration face dimension")
+            if not is_triangle and tuple(sorted(da.sizes[d] for d in spatial_dims)) != tuple(
+                    sorted(geometry["shape"])):
+                raise ValueError("SUM structured coordinate shape differs from grid geometry")
+            grid_info.append((family, geometry, source_crs, start_index, source, spatial_dims))
+
+        first_family, first_geom, first_crs, first_index, first_source, first_dims = grid_info[0]
+        if any(info[0] != first_family for info in grid_info[1:]):
+            raise ValueError("SUM rejects mixed grid families: " +
+                             ", ".join(info[0] for info in grid_info))
+        same_grid = True
+        for pos, (family, geometry, crs, start_index, source, spatial_dims) in enumerate(grid_info[1:], 1):
+            if (first_crs is None) != (crs is None) or (
+                    first_crs is not None and not first_crs.equals(crs)):
+                raise ValueError(f"SUM grid CRS mismatch in input {pos}")
+            if first_index != start_index:
+                raise ValueError("SUM UGRID start_index mismatch")
+            # Compare actual cell polygons/bounds and connectivity, not shape or
+            # face-center values alone. _normalize_output_grid already computes
+            # these geometries using the mapper's approved constructors.
+            keys = (["face_node_connectivity", "node_lon", "node_lat", "node_x", "node_y"]
+                    if first_family.startswith("triangular") else
+                    ["bin_x_corners_4", "bin_y_corners_4"])
+            for key in keys:
+                a, b = first_geom.get(key), geometry.get(key)
+                if (a is None) != (b is None) or (a is not None and
+                        not np.array_equal(np.asarray(a), np.asarray(b), equal_nan=True)):
+                    same_grid = False
+                    break
+            if spatial_dims != first_dims:
+                raise ValueError("SUM spatial dimension/staggering mismatch")
+            for dim in spatial_dims:
+                if not np.array_equal(np.asarray(DataArray_ls[0][dim]), np.asarray(DataArray_ls[pos][dim])):
+                    same_grid = False
+            for support_name in (("depth_bounds", "time_bounds") if not same_grid else
+                                 ("depth_bounds", "time_bounds", "land", "domain_invalid",
+                                  "topo", "area", "wet_fraction")):
+                left = first_source.get(support_name) if hasattr(first_source, "get") else None
+                right = source.get(support_name) if hasattr(source, "get") else None
+                if (left is None) != (right is None):
+                    raise ValueError(f"SUM input {pos} has inconsistent {support_name} support")
+                if left is not None and not np.array_equal(
+                        np.asarray(left), np.asarray(right), equal_nan=True):
+                    raise ValueError(f"SUM input {pos} has incompatible {support_name} support")
+        for attr in ("weight_name", "weight_mode", "phase_units_metadata_mode",
+                     "tidal_vertical_datum_assumption", "tidal_elevation_enabled"):
+            vals = [source.attrs.get(attr) for _, _, _, _, source, _ in grid_info]
+            if any(val != vals[0] for val in vals[1:]):
+                raise ValueError(f"SUM inputs have incompatible {attr} dataset metadata")
+        for attr in ("source_variable", "weight_mode", "sediment_mass_basis", "cell_methods"):
+            vals = [da.attrs.get(attr) for da in DataArray_ls]
+            if any(val != vals[0] for val in vals[1:]):
+                raise ValueError(f"SUM inputs have incompatible {attr} metadata: {vals}")
+
         DataArray_ls = self._normalize_depth_and_specie(DataArray_ls)
 
         if Verbose:
@@ -29015,7 +30078,8 @@ to physically wet regions. This writer exports data. it does not seed.
             for i, da in enumerate(DataArray_ls):
                 print(i, da.name, da.dims)
 
-        DataArray_ls = [self._standardize_horizontal_names(da, allow_xy=False) for da in DataArray_ls]
+        if first_family == "rectilinear_geographic":
+            DataArray_ls = [self._standardize_horizontal_names(da, allow_xy=False) for da in DataArray_ls]
 
         if Verbose:
             print("DEBUG after _standardize_horizontal_names:")
@@ -29030,15 +30094,13 @@ to physically wet regions. This writer exports data. it does not seed.
             for key, da_norm in zip(ordered_keys, DataArray_ls):
                 inner = dict(DataArray_dict[key])
                 inner[variable] = da_norm
-                if inner.get("topo") is not None:
+                if inner.get("topo") is not None and first_family == "rectilinear_geographic":
                     inner["topo"] = self._standardize_horizontal_names(inner["topo"], allow_xy=False)
                 DataArray_dict_work[key] = inner
 
         if not all(time_name in da.dims for da in DataArray_ls):
             missing = [i for i, da in enumerate(DataArray_ls) if time_name not in da.dims]
             raise ValueError(f'All DataArrays must contain time dimension "{time_name}". Missing in indexes: {missing}')
-
-        nan_counts_inputs = None
 
         if len(DataArray_ls) < 1:
             raise ValueError("Empty DataArray_ls")
@@ -29071,6 +30133,95 @@ to physically wet regions. This writer exports data. it does not seed.
         nontime_dims = set.union(*all_dims_per_da)
         nontime_dims.discard(time_name)
 
+        # An implicit output-grid choice is acceptable ONLY when all actual
+        # source grids are geometrically identical. Any changed-grid sum must
+        # explicitly identify its target, even when a single pair of SCRIP
+        # weights happens to be supplied in an input dictionary.
+        if target_grid_dataset is None and not same_grid:
+            raise ValueError('SUM differing input grids require explicit target_grid_dataset; first-input target selection is disabled')
+        if target_grid_dataset is None and conservative_weights_by_input is not None:
+            raise ValueError('SUM no external weights are used for direct identical-grid arithmetic')
+
+        # Differing geometries reuse the mapper's qualified overlap links.
+        # For legacy no-tide geographic grids, obtain V=A*dz using the LC's
+        # existing static bathymetry volume calculation (not new tidal physics).
+        same_family_remapped = not same_grid
+        if same_family_remapped:
+            self._validate_sum_units(DataArray_ls)
+            sediment_basis = 'kg' in str(DataArray_ls[0].attrs.get('units', '')).lower()
+            volumes = [info[4].get('sediment_dry_mass' if sediment_basis else 'volume')
+                       if hasattr(info[4], 'get') else None for info in grid_info]
+            if all(v is None for v in volumes):
+                if sediment_basis:
+                    raise NotImplementedError('NOT_QUALIFIED: changed-grid sediment SUM requires writer-saved sediment_dry_mass (kg)')
+                if first_family != 'rectilinear_geographic' or DataArray_dict_work is None:
+                    raise NotImplementedError(
+                        'NOT_QUALIFIED: differing grids need writer-saved wet volume; '
+                        'only geographic rectilinear no-tide bathymetry fallback is qualified')
+                # A legacy topography-only input denotes static/no-tide volume;
+                # contradiction with any saved stretching/tidal metadata fails.
+                no_tide_grid_info = []
+                common_depth = None
+                for key, da, info in zip(ordered_keys, DataArray_ls, grid_info):
+                    src = info[4]
+                    markers = (src.attrs.get('tidal_elevation_enabled'),
+                               src.attrs.get('config_drift:water_column_stretching'),
+                               da.attrs.get('tidal_elevation_enabled'))
+                    modes = [str(flag).strip().lower() for flag in markers if flag is not None]
+                    if not modes or any(mode not in ('true','1','yes','false','0','no') for mode in modes):
+                        raise NotImplementedError('NOT_QUALIFIED: static no-tide volume requires authenticated saved no-tide metadata')
+                    if any(mode in ('true', '1', 'yes') for mode in modes):
+                        raise ValueError('SUM no-tide static volume conflicts with saved tidal/stretching metadata')
+                    topo = DataArray_dict_work[key].get('topo')
+                    if topo is None:
+                        raise NotImplementedError('NOT_QUALIFIED: static no-tide remap requires explicit bathymetry for each grid')
+                    if topo.attrs.get('units') != 'm' or topo.attrs.get('positive') != 'down':
+                        raise ValueError('SUM no-tide bathymetry must declare units=m and positive=down')
+                    h = np.asarray(topo, dtype=np.float64)
+                    if h.size == 0 or np.any(~np.isfinite(h)) or np.any(h <= 0):
+                        raise NotImplementedError('NOT_QUALIFIED: static no-tide bathymetry must be finite and positive')
+                    if not np.allclose(h, h.flat[0], rtol=0, atol=1e-10):
+                        raise NotImplementedError('NOT_QUALIFIED: heterogeneous static bathymetry requires overlap-specific wet-volume support')
+                    if common_depth is None:
+                        common_depth = float(h.flat[0])
+                    elif not np.isclose(h.flat[0], common_depth, rtol=0, atol=1e-10):
+                        raise ValueError('SUM incompatible no-tide bathymetry depth between grids')
+                    if 'depth' in da.dims:
+                        depth = np.asarray(da['depth'], dtype=np.float64)
+                        if not np.all(np.isfinite(depth)) or np.any(depth < 0) or np.any(np.diff(depth) <= 0):
+                            raise ValueError('SUM no-tide depth layers must be nonnegative strictly increasing tops')
+                    area = self._cell_areas_from_1d(da['latitude'], da['longitude'])
+                    saved_area = src.get('area') if hasattr(src, 'get') else None
+                    if saved_area is not None:
+                        if saved_area.attrs.get('units') not in ('m2', 'm^2'):
+                            raise ValueError('SUM no-tide saved cell area must be in m2')
+                        if (set(saved_area.dims) != set(area.dims) or
+                                not np.allclose(np.asarray(saved_area.transpose(*area.dims)),
+                                                np.asarray(area), rtol=1e-6, atol=0)):
+                            raise ValueError('SUM no-tide target/source area contradicts LC static-volume geometry')
+                    volume = self._build_common_cell_volume(da, topo)
+                    volume = volume.broadcast_like(da).transpose(*da.dims)
+                    area.attrs['units'] = 'm2'
+                    volume.attrs['units'] = 'm3'
+                    augmented = (src.copy(deep=False) if hasattr(src, 'data_vars')
+                                 else da.to_dataset(name=da.name))
+                    augmented = augmented.assign(area=area, volume=volume)
+                    augmented.attrs['_sum_static_no_tide'] = 'uniform_bathymetry'
+                    no_tide_grid_info.append((*info[:4], augmented, info[5]))
+                grid_info = no_tide_grid_info
+            elif any(v is None for v in volumes):
+                raise NotImplementedError('NOT_QUALIFIED: cannot combine a saved phase denominator with missing writer-saved volume or sediment_dry_mass')
+            weights_by_input = ([(DataArray_dict_work[k].get('conservative_weights')
+                                  if DataArray_dict_work is not None else None)
+                                 for k in ordered_keys])
+            DataArray_ls = self._sum_remap_same_family(
+                DataArray_ls, grid_info, first_family, time_name=time_name,
+                weights_by_input=weights_by_input,
+            )
+            if DataArray_dict_work is not None:
+                for key, da in zip(ordered_keys, DataArray_ls):
+                    DataArray_dict_work[key][variable] = da
+
         # check equality of dimensions within tolerance
         canonical_dims_dict, need_interpolation = self._canonical_nontime_dims(
             DataArray_ls=DataArray_ls,
@@ -29084,387 +30235,41 @@ to physically wet regions. This writer exports data. it does not seed.
         self._validate_sum_units(DataArray_ls)
         common_attrs = self._common_attrs_safe(DataArray_ls)
 
-        H_can_out = None
-        nan_counts_interp = None
+        H_can_out = (DataArray_dict_work[ordered_keys[0]].get("topo")
+                     if same_family_remapped and DataArray_dict_work is not None else None)
         common_topo_for_mass = None
 
-        # No-interpolation path: a supplied topography must be common across inputs.
-        if not any(need_interpolation.values()) and DataArray_dict_work is not None:
-            common_topo_for_mass = self._extract_common_topo_from_dict(DataArray_dict_work)
+        # The old static-topography mass oracle is valid only for regular
+        # geographic grids. Other families use actual writer wet volumes when
+        # available; never reinterpret projected/UGRID topo as 1-D lon/lat.
+        common_volume_for_mass = None
+        if not any(need_interpolation.values()) and DataArray_dict_work is not None and not same_family_remapped:
+            # A saved wet V(t), if present, has priority over any static topo
+            # approximation. Sediment dry-mass concentrations have no V(t) oracle.
+            if "kg" not in str(DataArray_ls[0].attrs.get("units", "")).lower():
+                volumes = [source.get("volume") if hasattr(source, "get") else None
+                           for _, _, _, _, source, _ in grid_info]
+                if all(vol is not None for vol in volumes):
+                    if any(str(vol.attrs.get("units")) not in ("m3", "m^3") for vol in volumes):
+                        raise ValueError("SUM wet volume must have units m3")
+                    for vol in volumes[1:]:
+                        try:
+                            xr.testing.assert_equal(volumes[0], vol)
+                        except AssertionError as exc:
+                            raise ValueError("SUM source wet-volume support differs on an identical grid") from exc
+                    common_volume_for_mass = volumes[0]
+                elif any(vol is not None for vol in volumes):
+                    raise ValueError("SUM input wet-volume support is inconsistent")
+                elif first_family == "rectilinear_geographic":
+                    # Existing qualified no-tide, regular-grid fallback only.
+                    common_topo_for_mass = self._extract_common_topo_from_dict(DataArray_dict_work)
 
-        ### Interpolation path
+        # All changed geometries have already been remapped through the
+        # mapper's existing polygon-overlap links. No second xESMF SUM backend.
         if any(need_interpolation.values()):
-            import xesmf as xe
-            if DataArray_dict_work is None:
-                raise ValueError("DataArray_dict {idx: {'var','topo'}, ...} must be specified for interpolation")
+            raise ValueError('SUM unsupported coordinate changes after conservative remapping')
 
-            nan_counts_inputs = {
-                key: self._lazy_scalar_int(DataArray_dict_work[key][variable].isnull().sum())
-                for key in ordered_keys
-            }
-
-            if "latitude" not in canonical_dims_dict or "longitude" not in canonical_dims_dict:
-                raise ValueError("Interpolation requires canonical 'latitude' and 'longitude' dimensions")
-
-            lat_can = canonical_dims_dict["latitude"]
-            lon_can = canonical_dims_dict["longitude"]
-
-            need_horizontal_interp = any(
-                bool(need_interpolation.get(k, False)) for k in ("latitude", "longitude"))
-            depth_top_can = canonical_dims_dict.get("depth", None)
-            need_vertical_interp = bool(need_interpolation.get("depth", False)) if depth_top_can is not None else False
-
-            unsupported_interp_dims = {
-                dim for dim, needed in need_interpolation.items()
-                if needed and dim not in {"latitude", "longitude", "depth"}}
-            if unsupported_interp_dims:
-                raise ValueError(
-                    f"Interpolation is only supported for latitude/longitude "
-                    f"(and depth is reserved for future vertical remap). "
-                    f"Unsupported dims requiring interpolation: {sorted(unsupported_interp_dims)}")
-
-            ### Conservative horizontal regridding helpers
-            def _maybe_depth_dim(da, candidates=("depth", "z", "lev", "level")):
-                for nm in candidates:
-                    if nm in da.dims:
-                        return nm
-                return None
-
-            def _centers_to_edges_1d(c):
-                c = np.asarray(c, dtype=np.float64)
-                if c.size < 2:
-                    half = 0.5 * (c[0] if c[0] != 0 else 1.0)
-                    return np.array([c[0] - half, c[0] + half], dtype=np.float64)
-                mid = 0.5 * (c[:-1] + c[1:])
-                first = c[0] - (mid[0] - c[0])
-                last = c[-1] + (c[-1] - mid[-1])
-                return np.concatenate([[first], mid, [last]])
-
-            def _hash_grid(lon_in, lat_in, lon_out, lat_out, method):
-                h = hashlib.sha1()
-                for arr in (lon_in, lat_in, lon_out, lat_out):
-                    a = np.asarray(arr, dtype=np.float64)
-                    h.update(a.tobytes())
-                h.update(method.encode())
-                return h.hexdigest()[:10]
-
-            def _make_rect_grid(lon, lat):
-                lon = np.asarray(lon, dtype=np.float64)
-                lat = np.asarray(lat, dtype=np.float64)
-                return xr.Dataset(coords=dict(
-                    lon=(("lon",), lon),
-                    lat=(("lat",), lat),
-                    lon_b=(("lon_b",), _centers_to_edges_1d(lon)),
-                    lat_b=(("lat_b",), _centers_to_edges_1d(lat)),
-                ))
-
-            def get_regridder(
-                src_lon, src_lat, dst_lon, dst_lat, *, method, weights_dir=None, prefix="weights"
-            ):
-                """Create/reuse one xESMF conservative weight file.
-
-                Conservative methods do not use the misleading ``periodic=True`` option.
-                Passing ``filename`` to xESMF is the single serialization path; do not
-                call ``to_netcdf`` again after construction.
-                """
-                src_grid = _make_rect_grid(src_lon, src_lat)
-                dst_grid = _make_rect_grid(dst_lon, dst_lat)
-                weights_path = None
-                reuse = False
-                if weights_dir:
-                    os.makedirs(weights_dir, exist_ok=True)
-                    cache_id = _hash_grid(src_lon, src_lat, dst_lon, dst_lat, method)
-                    weights_path = os.path.join(weights_dir, f"{prefix}_{method}_{cache_id}.nc")
-                    reuse = os.path.exists(weights_path)
-                R = xe.Regridder(
-                    src_grid,
-                    dst_grid,
-                    method=method,
-                    filename=weights_path,
-                    reuse_weights=reuse,
-                )
-                return R, weights_path
-
-            def _regrid_intensive(field_src, lon_out, lat_out, *, method, weights_dir=None, prefix="field"):
-                """Conservatively remap an intensive field and preserve leading dimensions lazily."""
-                if "latitude" not in field_src.dims or "longitude" not in field_src.dims:
-                    raise ValueError("Conservative regridding requires latitude/longitude dimensions")
-                lead = [d for d in field_src.dims if d not in ("latitude", "longitude")]
-                src_lon = np.asarray(field_src["longitude"].values, dtype=np.float64)
-                src_lat = np.asarray(field_src["latitude"].values, dtype=np.float64)
-                lon_out = np.asarray(lon_out, dtype=np.float64)
-                lat_out = np.asarray(lat_out, dtype=np.float64)
-                R, _ = get_regridder(
-                    src_lon, src_lat, lon_out, lat_out,
-                    method=method, weights_dir=weights_dir, prefix=prefix,
-                )
-                work = field_src.transpose(*lead, "latitude", "longitude", missing_dims="ignore")
-                work = work.rename({"latitude": "lat", "longitude": "lon"})
-                out = R(work, keep_attrs=False)
-                rename_map = {}
-                if "lat" in out.dims:
-                    rename_map["lat"] = "latitude"
-                if "lon" in out.dims:
-                    rename_map["lon"] = "longitude"
-                if rename_map:
-                    out = out.rename(rename_map)
-                out = out.assign_coords(
-                    latitude=("latitude", lat_out),
-                    longitude=("longitude", lon_out),
-                )
-                out = out.transpose(*lead, "latitude", "longitude", missing_dims="ignore")
-                scalar_coords = {
-                    c: field_src.coords[c]
-                    for c in field_src.coords
-                    if c not in field_src.dims and c not in out.coords
-                }
-                if scalar_coords:
-                    out = out.assign_coords(scalar_coords)
-                return out
-
-            def _topography_attrs(attrs):
-                allow = ("units", "standard_name", "long_name", "positive", "source", "comment")
-                return {k: attrs[k] for k in allow if k in attrs}
-
-            def regrid_topography_conservative_normed(H_src, lat_out, lon_out, *, weights_dir=None):
-                """Remap intensive bathymetry without partial-overlap attenuation."""
-                attrs = _topography_attrs(H_src.attrs)
-                out = _regrid_intensive(
-                    H_src.astype(np.float64).clip(min=0.0),
-                    lon_out, lat_out,
-                    method="conservative_normed",
-                    weights_dir=weights_dir,
-                    prefix="topo",
-                )
-                out.attrs.update(attrs)
-                out.attrs["regrid_method"] = "conservative_normed"
-                out.encoding = {}
-                return out
-
-            def _safe_assign_depth(da, depth_dim, coord_vals):
-                coord_vals = np.asarray(coord_vals)
-                if da.sizes[depth_dim] != coord_vals.size:
-                    raise ValueError(
-                        f"conflicting sizes for '{depth_dim}': data={da.sizes[depth_dim]} vs coord={coord_vals.size}"
-                    )
-                return da.assign_coords({depth_dim: (depth_dim, coord_vals)})
-
-            def _layer_thickness(da, topo_src, depth_dim="depth"):
-                """Return water-column/layer thickness as an intensive geometry field."""
-                topo = topo_src.astype(np.float64).clip(min=0.0)
-                if depth_dim in da.dims:
-                    depth_top = np.asarray(da[depth_dim].values, dtype=np.float64)
-                    z_top = xr.DataArray(
-                        depth_top,
-                        dims=(depth_dim,),
-                        coords={depth_dim: np.arange(depth_top.size)},
-                    ).broadcast_like(topo)
-                    z_bottom = topo.expand_dims({depth_dim: [depth_top.size]})
-                    z_edges = xr.concat([z_top, z_bottom], dim=depth_dim)
-                    z_edges = z_edges.rename({depth_dim: "depth_edge"}).transpose(
-                        "depth_edge", "latitude", "longitude"
-                    )
-                    dz = z_edges.diff("depth_edge").rename({"depth_edge": depth_dim}).clip(min=0.0)
-                    return _safe_assign_depth(dz, depth_dim, da[depth_dim].values)
-                if "depth" in da.coords:
-                    depth0 = float(np.ravel(da["depth"].values)[0])
-                    return (topo - depth0).clip(min=0.0)
-                return topo
-
-            def _topography_values_equal(left, right):
-                return self._topography_equal(left, right, compare_coords=False)
-
-            def regrid3d_conservative_with_topo(
-                da, topo_src, lat_can,
-                lon_can, depth_top_can, need_horizontal_interp,
-                need_vertical_interp, *, depth_dim="depth",
-                weights_dir=None, idx=None, idx_tot=None,
-                Verbose=True,
-            ):
-                """Conservatively remap concentration through areal mass density.
-
-                ``q = concentration * thickness`` is an intensive areal mass density.
-                Ordinary conservative regridding preserves the area integral of q.
-                Thickness is remapped with ``conservative_normed`` so partial overlap
-                does not attenuate an otherwise constant bathymetry/thickness field.
-                Destination concentration is reconstructed as ``q_out / thickness_out``.
-                """
-                if Verbose:
-                    print(f"Interpolating array {idx} out of {idx_tot - 1}")
-                if topo_src is None:
-                    raise ValueError("topo_src not specified")
-                if need_vertical_interp:
-                    raise ValueError("Vertical interpolation not yet supported")
-                if not need_horizontal_interp:
-                    return da
-
-                dd = depth_dim if depth_dim in da.dims else None
-                thickness_src = _layer_thickness(da, topo_src, depth_dim=depth_dim)
-                payload_dtype = da.dtype if np.issubdtype(da.dtype, np.floating) else np.dtype(np.float64)
-                thickness_payload = thickness_src.astype(payload_dtype)
-                areal_mass_src = da.fillna(0).astype(payload_dtype) * thickness_payload
-
-                areal_mass_out = _regrid_intensive(
-                    areal_mass_src,
-                    lon_can, lat_can,
-                    method="conservative",
-                    weights_dir=weights_dir,
-                    prefix="areal_mass",
-                )
-                thickness_out = _regrid_intensive(
-                    thickness_src,
-                    lon_can, lat_can,
-                    method="conservative_normed",
-                    weights_dir=weights_dir,
-                    prefix="thickness",
-                ).clip(min=0.0)
-
-                if dd is not None:
-                    areal_mass_out = _safe_assign_depth(areal_mass_out, dd, da[dd].values)
-                    thickness_out = _safe_assign_depth(thickness_out, dd, da[dd].values)
-
-                # Independent physical conservation check: integrate areal mass density
-                # using source and destination cell areas, not the regridding operator itself.
-                A_src = self._cell_areas_from_1d(
-                    da["latitude"].values, da["longitude"].values,
-                    lat_name="latitude", lon_name="longitude",
-                ).astype(payload_dtype)
-                A_dst = self._cell_areas_from_1d(
-                    lat_can, lon_can,
-                    lat_name="latitude", lon_name="longitude",
-                ).astype(payload_dtype)
-                spatial_dims = [d for d in areal_mass_src.dims if d in ("depth", "latitude", "longitude")]
-                # A different destination footprint cannot conserve the mass
-                # outside its coverage.  Compare only the actual common-domain
-                # mass, using independent spherical cell intersections, not
-                # xESMF weights or a relaxed numerical tolerance.
-                A_common = self._cell_areas_on_common_rect_footprint(
-                    da["latitude"].values, da["longitude"].values,
-                    lat_can, lon_can,
-                ).astype(payload_dtype)
-                m_in_common = (areal_mass_src * A_common).sum(
-                    dim=spatial_dims, skipna=True, dtype=np.float64,
-                )
-                m_out = (areal_mass_out * A_dst).sum(dim=spatial_dims, skipna=True, dtype=np.float64)
-                xr.testing.assert_allclose(m_out, m_in_common, rtol=1e-6, atol=1e-12)
-
-                thickness_for_payload = thickness_out.astype(payload_dtype)
-                conc_out = (areal_mass_out / thickness_for_payload.where(thickness_for_payload > 0)).where(
-                    thickness_for_payload > 0
-                )
-                if np.issubdtype(da.dtype, np.floating):
-                    conc_out = conc_out.astype(da.dtype)
-
-                lead = [d for d in da.dims if d not in ("latitude", "longitude") and (dd is None or d != dd)]
-                if dd is not None:
-                    conc_out = conc_out.transpose(*lead, dd, "latitude", "longitude", missing_dims="ignore")
-                else:
-                    conc_out = conc_out.transpose(*lead, "latitude", "longitude", missing_dims="ignore")
-                conc_out.name = da.name
-                conc_out.attrs.update(da.attrs)
-                conc_out.attrs["regrid_note"] = (
-                    "mass-conserving horizontal remap of areal mass density; "
-                    "thickness uses conservative_normed; vertical remap not implemented"
-                )
-                return conc_out
-
-            # A single common bathymetry is required for the aggregate. Coordinate
-            # labels can differ within the accepted interpolation tolerance, but the
-            # underlying topography values must be equivalent.
-            first_idx = ordered_keys[0]
-            topo_ref = DataArray_dict_work[first_idx].get("topo")
-            if topo_ref is None:
-                raise ValueError("Interpolation requires topography for every input")
-            for key in ordered_keys[1:]:
-                topo_other = DataArray_dict_work[key].get("topo")
-                if topo_other is None or not _topography_values_equal(topo_ref, topo_other):
-                    raise ValueError(
-                        f"Interpolation requires equivalent topography across inputs; key {key} differs from {first_idx}"
-                    )
-
-            with tempfile.TemporaryDirectory() as tmpdir:
-                DataArray_ls = [
-                    regrid3d_conservative_with_topo(
-                        da=DataArray_dict_work[key][variable],
-                        topo_src=DataArray_dict_work[key]["topo"],
-                        lat_can=lat_can,
-                        lon_can=lon_can,
-                        depth_top_can=depth_top_can,
-                        need_horizontal_interp=need_horizontal_interp,
-                        need_vertical_interp=need_vertical_interp,
-                        depth_dim="depth",
-                        weights_dir=tmpdir,
-                        idx=key,
-                        idx_tot=len(ordered_keys),
-                        Verbose=Verbose,)
-                    for key in ordered_keys]
-
-                nan_counts_interp = {
-                    key: self._lazy_scalar_int(da.isnull().sum())
-                    for key, da in zip(ordered_keys, DataArray_ls)
-                }
-
-                H_can_out = regrid_topography_conservative_normed(
-                    H_src=topo_ref,
-                    lat_out=lat_can,
-                    lon_out=lon_can,
-                    weights_dir=tmpdir,
-                ).where(lambda x: x > 0, 0.0)
-                common_topo_for_mass = H_can_out
-
-        else:
-            if Verbose:
-                print("No interpolation needed")
-
-        ### NaN-count consistency after interpolation
-        if nan_counts_interp is not None:
-            import math
-
-            def report_interp_nan_changes(nan_counts_before, nan_counts_after, threshold_pct=10.0, emit=False):
-                if emit:
-                    print("Index | NaN before interp -> after interp | d(after-before) | % change")
-                    print("-" * 84)
-                offenders = []
-
-                all_keys = sorted(set(nan_counts_before) | set(nan_counts_after))
-                for k in all_keys:
-                    before = nan_counts_before.get(k, 0)
-                    after = nan_counts_after.get(k, 0)
-                    delta = after - before
-
-                    # % change with explicit sign; handle before==0
-                    if before == 0:
-                        if after == 0:
-                            pct = 0.0
-                            pct_str = f"{pct:+.2f}%"
-                        else:
-                            pct = math.inf
-                            pct_str = "+inf%"
-                    else:
-                        pct = (delta / before) * 100.0
-                        pct_str = f"{pct:+.2f}%"
-
-                    if emit:
-                        print(f"{k:5} | {before:18} -> {after:<18} | {delta:16} | {pct_str:>8}")
-
-                    if math.isinf(pct) or abs(pct) > threshold_pct:
-                        offenders.append((k, before, after, pct))
-
-                if offenders:
-                    details = ", ".join(
-                        f"idx={k} (before={b}, after={a}, change="
-                        f"{'+' if (math.isinf(p) or p >= 0) else ''}"
-                        f"{'inf' if math.isinf(p) else f'{p:.2f}%'}"
-                        f")"
-                        for k, b, a, p in offenders)
-                    raise ValueError(
-                        f"Interpolation NaN count changed by more than {threshold_pct:.1f}% for: {details}")
-
-            report_interp_nan_changes(
-                nan_counts_inputs, nan_counts_interp, emit=Verbose
-            )
-
-        ### Re-check canonical non-time dims after interpolation
+        ### Re-check canonical non-time dimensions after overlap remapping
         canonical_dims_dict, need_interpolation = self._canonical_nontime_dims(
             DataArray_ls=DataArray_ls,
             nontime_dims=nontime_dims,
@@ -29555,14 +30360,15 @@ to physically wet regions. This writer exports data. it does not seed.
         if Final_sum is None:
             raise ValueError("Final_sum is None")
 
-        # Mass-based conservation check before masking
-        if common_topo_for_mass is None:
+        # Mass-based conservation check before masking, using saved wet volumes
+        # where their units, geometry, phase and time support are verified.
+        if common_topo_for_mass is None and common_volume_for_mass is None:
             if Verbose:
-                print("Skipping mass-based conservation check: no common topography available.")
+                print("Skipping mass-based conservation check: no qualified volume measure available.")
         else:
-            cell_volume_common = self._build_common_cell_volume(
-                da_ref=aligned[0],
-                topo_ref=common_topo_for_mass,)
+            cell_volume_common = (common_volume_for_mass if common_volume_for_mass is not None
+                                  else self._build_common_cell_volume(
+                                      da_ref=aligned[0], topo_ref=common_topo_for_mass))
 
             mass_aligned_parts = None
             for da in aligned:
@@ -29628,6 +30434,28 @@ to physically wet regions. This writer exports data. it does not seed.
         if bool(self._lazy_scalar_value(invalid_added)):
             raise AssertionError("Masking created NaNs where final_mask is True")
 
+        # Preserve the writer's physical support after masking: a dry water
+        # cell (m3) or a zero dry-sediment-mass cell (kg) is undefined, not zero.
+        if same_family_remapped:
+            sediment_basis = 'kg' in str(DataArray_ls[0].attrs.get('units', '')).lower()
+            denom = grid_info[0][4].get('sediment_dry_mass' if sediment_basis else 'volume')
+            if denom is None:
+                raise ValueError('SUM canonical grid lacks the writer-saved phase denominator')
+            if first_family == 'rectilinear_geographic':
+                denom = self._standardize_horizontal_names(denom, allow_xy=False)
+            if 'depth' in denom.dims and 'depth' not in Final_sum.dims and denom.sizes['depth'] == 1:
+                denom = denom.isel(depth=0, drop=True)
+            if sediment_basis:
+                # Static dry mass is saved once per horizontal cell, not at every time.
+                if not set(denom.dims).issubset(set(Final_sum.dims)):
+                    raise ValueError('SUM sediment dry-mass denominator has incompatible dimensions')
+                denom = denom.broadcast_like(Final_sum)
+            if set(denom.dims) != set(Final_sum.dims) or not np.array_equal(
+                    denom[time_name], Final_sum[time_name]):
+                raise ValueError('SUM output axes cannot be matched to the saved phase denominator')
+            denom = denom.transpose(*Final_sum.dims)
+            Final_sum = Final_sum.where(denom > 0)
+
         Final_sum.attrs = dict(common_attrs)
         if sim_description is not None:
             Final_sum.attrs["sim_description"] = str(sim_description)
@@ -29652,13 +30480,14 @@ to physically wet regions. This writer exports data. it does not seed.
         if Verbose:
             print(f"Sum_time (h:min:s): {sum_time}")
 
-        # Pure consistency check only: do not modify Final_sum or H_can_out
+        # The returned bathymetry must be on the exact canonical spatial grid,
+        # including projected, curvilinear and native face dimensions.
         if H_can_out is not None:
-            for dim in ("latitude", "longitude"):
-                if dim not in Final_sum.coords or dim not in H_can_out.coords:
-                    raise ValueError(f"Missing coordinate '{dim}' in Final_sum or H_can_out")
-                if not Final_sum[dim].equals(H_can_out[dim]):
-                    raise ValueError(f"Coordinate '{dim}' differs between Final_sum and H_can_out")
+            for dim in H_can_out.dims:
+                if dim not in Final_sum.dims or dim not in Final_sum.coords or dim not in H_can_out.coords:
+                    raise ValueError(f"SUM topography support has missing spatial coordinate {dim!r}")
+                if not np.array_equal(Final_sum[dim].values, H_can_out[dim].values):
+                    raise ValueError(f"SUM topography coordinate {dim!r} differs from canonical SUM")
 
         return Final_sum, H_can_out
 
@@ -30009,6 +30838,27 @@ to physically wet regions. This writer exports data. it does not seed.
         -----
         - Depth values identify the top of each layer, in positive-down metres.
         - Do not treat a missing value in a wet layer as zero concentration.
+
+
+        Examples
+        --------
+        Expected vertically resolved concentration and bathymetry dataset:
+
+            <xarray.Dataset>
+            Dimensions: (time: NT, depth: NZ, latitude: NY, longitude: NX)
+            Coordinates: time (time) datetime64[ns] ...
+                         depth (depth) float64 ...   # layer top, m down
+                         latitude (latitude) ..., longitude (longitude) ...
+            Data variables:
+                concentration (time, depth, latitude, longitude) float64 ...
+                topo          (latitude, longitude) float64 ...
+
+        Set concentration units (for example ``ug/L``). Set ``topo`` units
+        to ``m`` and positive direction to ``down``. Pass
+        ``variable_name='concentration'``, ``topograpy_name='topo'``, or
+        provide aligned ``Topograpy_DA``. Geographic coordinates use degrees
+        east/north. Missing wet-layer values are not zero concentration.
+        Dimensions and values are placeholders.
         """
         import xarray as xr
 
