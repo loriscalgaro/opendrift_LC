@@ -25,7 +25,7 @@ The initial version is based on Radionuclides module by Magne Simonsen
 import numpy as np
 import logging; logger = logging.getLogger(__name__)
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 
 class ChemicalDriftPostProcessMixin:
@@ -4587,7 +4587,7 @@ ValueError
             -------
             ConservativeWeightMatrix
                 Sparse row/col/weight vector with input index_base='auto',
-                normalization and optional target_area; downstream validation resolves
+                normalization and optional target_area; weight validation resolves
                 index origin and physical area convention.
 
             Raises
@@ -4951,8 +4951,8 @@ ValueError
             ConservativeBathymetryResult
                 Representative target depth (m), coverage fraction, area (m2), invalid
                 masks, optional layer volumes (m3), optional sediment thickness and
-                tidal_overlap_links. Source clipping with tide is done downstream,
-                before summing each link's wet layer volume.
+                tidal_overlap_links. The tidal wet-layer clipping step precedes
+                summation of each link's wet-layer volume.
 
             Raises
             ------
@@ -5934,10 +5934,9 @@ ValueError / NotImplementedError
         """
         Normalize common dimension names used by derived concentration outputs.
 
-        If time_name='avg_time', rename the avg_time dimension to time so downstream
-        summation can use a common time axis. The function is defensive against
-        arrays that already carry a scalar/auxiliary coordinate named time, which
-        would otherwise conflict with renaming avg_time -> time.
+        If time_name='avg_time', rename that dimension to time for summation
+        on a common time axis. Scalar or auxiliary coordinates named time
+        are handled before renaming to prevent coordinate-name conflicts.
         """
         out = da.copy(deep=False)
 
@@ -8210,8 +8209,16 @@ to physically wet regions. This writer exports data. it does not seed.
           multiple of the model output interval.
         - Blocks are formed with ndt = ceil(deltat / model_dt).
         - The final block may be shorter.
-        - No synthetic or shifted timestamps are introduced.
-        - avg_time stores the timestamp of the last snapshot included in each block.
+        - No synthetic model samples are introduced. Each instantaneous field
+          represents the subsequent model-output sampling interval for aggregation.
+        - With verified sampling cadence, time_bounds covers [first snapshot,
+          last snapshot + sampling interval), including the next-day 00:00 endpoint
+          for a complete 24-snapshot hourly daily average. A trailing partial block
+          retains its actual shorter interval, never a full-day label.
+        - If a dataset has only one snapshot and cadence cannot be established,
+          zero-width bounds are preserved rather than inventing a duration.
+        - avg_time remains the timestamp of the last included snapshot (within
+          the interval), identifying the final contributing snapshot.
 
         Depth coordinate in the saved NetCDF
         ------------------------------------
@@ -8715,8 +8722,16 @@ to physically wet regions. This writer exports data. it does not seed.
                 s0 = ii * ndt
                 s1 = min((ii + 1) * ndt, Tsnap)
                 avg_time_bounds[ii, 0] = times[s0]
-                avg_time_bounds[ii, 1] = times[s1 - 1]
-            avg_times = avg_time_bounds[:, 1].copy()
+                # Half-open support: each model snapshot represents the following
+                # sampling interval. Do not interpret last-snapshot time as its end.
+                # A one-snapshot dataset has no independently known cadence.
+                avg_time_bounds[ii, 1] = (
+                    times[s1 - 1] + timedelta(seconds=float(dt_seconds[0]))
+                    if Tsnap > 1 else times[s1 - 1]
+                )
+            # Keep existing representative coordinates; only CF bounds change.
+            avg_times = np.array([times[min((i + 1) * ndt, Tsnap) - 1]
+                                  for i in range(odt)], dtype=object)
             return ndt, odt, avg_times, avg_time_bounds
 
         def _species_category_ids():
@@ -9576,6 +9591,12 @@ to physically wet regions. This writer exports data. it does not seed.
                     if time_bounds is not None and len(time_bounds) > 0:
                         nc.time_coverage_start = str(time_bounds[0, 0])
                         nc.time_coverage_end = str(time_bounds[-1, 1])
+                        nc.time_aggregation_convention = (
+                            'Arithmetic mean of equally spaced instantaneous snapshots; '
+                            'each sample represents its following model-output interval. '
+                            'Bounds are half-open when sampling cadence is known; '
+                            'a cadence-unknown singleton has zero-width bounds.'
+                        )
                     else:
                         nc.time_coverage_start = str(times[0])
                         nc.time_coverage_end = str(times[-1])
@@ -9698,7 +9719,7 @@ to physically wet regions. This writer exports data. it does not seed.
                     return
 
                 # Prefer projected face coordinates first when present, but always
-                # include geographic lon/lat for geospatial consumers.
+                # include geographic lon/lat as auxiliary grid coordinates.
                 face_coords = []
                 if have_xy_face:
                     face_coords.extend(["face_x", "face_y"])
@@ -9953,6 +9974,8 @@ to physically wet regions. This writer exports data. it does not seed.
                         tb[:] = np.asarray(date2num(avg_time_bounds.ravel().tolist(), tvar.units)).reshape(avg_time_bounds.shape)
                         tb.units = tvar.units
                         tb.calendar = 'standard'
+                        tb.comment = 'Half-open aggregation interval based on model snapshot cadence.'
+                        tvar.comment = 'Time of last sampled field; time_bounds defines full support.'
 
                     _crs_obj, _ = _write_cf_crs_variable(nc, density_proj_str)
 
@@ -10270,6 +10293,12 @@ to physically wet regions. This writer exports data. it does not seed.
                     ).reshape(avg_time_bounds.shape)
                     nc.variables['time_bounds'].units = timestr
                     nc.variables['time_bounds'].calendar = 'standard'
+                    nc.variables['time_bounds'].comment = (
+                        'Half-open aggregation interval based on model snapshot cadence.'
+                    )
+                    nc.variables['avg_time'].comment = (
+                        'Time of last sampled field; time_bounds defines full support.'
+                    )
                 _crs_obj, _ = _write_cf_crs_variable(nc, density_proj_str)
                 x_is_index = bool(explicit_grid['x_is_index']) if explicit_grid is not None else False
                 y_is_index = bool(explicit_grid['y_is_index']) if explicit_grid is not None else False
@@ -11397,7 +11426,7 @@ to physically wet regions. This writer exports data. it does not seed.
         Float outputs are saved with NaN _FillValue metadata when Save_files=True.
         This preserves the NaN-based missing-value convention used by the latest
         write_netcdf_chemical_density_map implementation and avoids propagating large
-        numerical fill values into diagnostic plots or downstream averages.
+        numerical fill values into diagnostic plots or later averages.
 
         Output files
         ------------
@@ -17467,7 +17496,7 @@ to physically wet regions. This writer exports data. it does not seed.
         return 'density' + name[len('property_mean'):]
 
     def _classify_regrid_variable(self, name, da, ds):
-        """Classify spatial remap semantics from the current writer/downstream contract.
+        """Classify spatial remap semantics for concentration grid variables.
 
         Parameters
         ----------
@@ -29836,6 +29865,7 @@ to physically wet regions. This writer exports data. it does not seed.
         input_keys = list(index_keys) if index_keys is not None else None
         if conservative_weights_by_input is not None and target_grid_dataset is None:
             raise ValueError('SUM source-to-target weight dictionary requires an explicit target_grid_dataset')
+        averaged_snapshot_volume_target = False
         if target_grid_dataset is not None:
             if DataArray_dict is None or input_keys is None:
                 raise ValueError('SUM explicit target requires DataArray_dict with source grid_dataset metadata')
@@ -29877,11 +29907,36 @@ to physically wet regions. This writer exports data. it does not seed.
                 lead = lead.isel({d: 0}, drop=True)
             zero, _ = xr.broadcast(xr.zeros_like(target_grid_dataset['area'], dtype=np.float64), lead)
             zero = zero.transpose(*DataArray_ls[0].dims)
+            # The existing SUM normalizer removes a singleton depth axis after the first increment. 
+            # Match the physical denominator to the concentration dimensions
+			# when the target contains a single depth layer.
+			# Preserve the original target dataset and its depth metadata.
+			# Reject multilayer denominators and incompatible depth coordinates.
+            if 'depth' in physical.dims and 'depth' not in zero.dims:
+                if physical.sizes['depth'] != 1:
+                    raise ValueError('SUM cannot discard a multi-layer target denominator')
+                if 'depth' in zero.coords and 'depth' in physical.coords and not np.isclose(
+                        float(zero['depth']), float(physical['depth'].values[0])):
+                    raise ValueError('SUM target physical depth differs from concentration depth')
+                physical = physical.isel(depth=0, drop=True)
             if time_name in physical.dims and not np.array_equal(
                     np.asarray(physical[time_name]), np.asarray(zero[time_name])):
                 raise ValueError('SUM explicit target wet-volume time axis differs from source')
-            # Preserve the canonical target dry support; never label a dry cell zero.
-            valid = physical > 0
+            # Writer averages C(t) after instantaneous tidal normalization.
+            # Its snapshot_time V(t) cannot be interpreted as V(avg_time).
+            # For identical-grid arithmetic only, use whether a cell/layer was
+            # ever wet; subsequently retain the source's actual NaN mask.
+            extra_physical_dims = set(physical.dims) - set(zero.dims)
+            if extra_physical_dims:
+                if (denominator != 'volume' or extra_physical_dims != {'snapshot_time'}
+                        or DataArray_ls[0].attrs.get('cell_methods') != 'time: mean'
+                        or DataArray_ls[0].attrs.get('source_time_coordinate') != 'avg_time'):
+                    raise NotImplementedError(
+                        'NOT_QUALIFIED: target physical denominator time axes do not match concentration')
+                averaged_snapshot_volume_target = True
+                valid = (physical > 0).any(dim='snapshot_time')
+            else:
+                valid = physical > 0
             zero = zero.where(valid.broadcast_like(zero))
             zero = zero.rename(DataArray_ls[0].name)
             zero.attrs = dict(DataArray_ls[0].attrs)
@@ -30061,6 +30116,16 @@ to physically wet regions. This writer exports data. it does not seed.
                 if left is not None and not np.array_equal(
                         np.asarray(left), np.asarray(right), equal_nan=True):
                     raise ValueError(f"SUM input {pos} has incompatible {support_name} support")
+        if averaged_snapshot_volume_target:
+            if not same_grid:
+                raise NotImplementedError(
+                    'NOT_QUALIFIED: changed-grid averaged water concentration requires '
+                    'physical volumes on the averaged time axis; snapshot-time '
+                    'volumes cannot be relabelled as averaged volumes')
+            # The first *real* source supplies the appropriate averaged-field
+            # validity, rather than manufacturing a wet mask from snapshot V(t).
+            DataArray_ls[0] = DataArray_ls[0].where(DataArray_ls[1].notnull())
+
         for attr in ("weight_name", "weight_mode", "phase_units_metadata_mode",
                      "tidal_vertical_datum_assumption", "tidal_elevation_enabled"):
             vals = [source.attrs.get(attr) for _, _, _, _, source, _ in grid_info]
@@ -30257,7 +30322,20 @@ to physically wet regions. This writer exports data. it does not seed.
                             xr.testing.assert_equal(volumes[0], vol)
                         except AssertionError as exc:
                             raise ValueError("SUM source wet-volume support differs on an identical grid") from exc
-                    common_volume_for_mass = volumes[0]
+                    # A writer's snapshot-time V(t) is not an averaged-field
+                    # physical denominator. Direct summation is linear in
+                    # concentration and needs no invented average V.
+                    volume_other_times = set(volumes[0].dims) & {
+                        'snapshot_time', 'time', 'avg_time', 'time_avg'} - {time_name}
+                    if volume_other_times:
+                        if (volume_other_times != {'snapshot_time'} or
+                                not all(da.attrs.get('cell_methods') == 'time: mean'
+                                        and da.attrs.get('source_time_coordinate') == 'avg_time'
+                                        for da in DataArray_ls)):
+                            raise ValueError('SUM saved wet-volume times are incompatible with concentration times')
+                        common_volume_for_mass = None
+                    else:
+                        common_volume_for_mass = volumes[0]
                 elif any(vol is not None for vol in volumes):
                     raise ValueError("SUM input wet-volume support is inconsistent")
                 elif first_family == "rectilinear_geographic":
@@ -31007,16 +31085,11 @@ to physically wet regions. This writer exports data. it does not seed.
     @staticmethod
     def _safe_process_pool_context(max_workers):
         """
-        Return a multiprocessing context that is safe to use without requiring
-        the caller script to be protected by:
+        Return a fork-based multiprocessing context when one is available.
 
-            if __name__ == "__main__":
-
-        On Linux/macOS where 'fork' is available, use it. This avoids the
-        spawn/forkserver re-import problem seen in IDE script cells.
-
-        If 'fork' is not available, return None and the caller should fall
-        back to serial execution.
+        A fork context avoids module re-import during worker startup,
+        including interactive Python execution. If fork is not supported
+        or only one worker is requested, return None for serial execution.
         """
         import multiprocessing as mp
         import warnings
