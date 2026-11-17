@@ -131,6 +131,15 @@ class Reader(UnstructuredReader):
             self._initialize_native_barycentric_mesh()
         self.timer_end("open dataset")
 
+    def lonlat_bounds(self):
+        """Return geographic bounds as (lon_min, lat_min, lon_max, lat_max).
+
+        SHYFEM x and y are longitude and latitude in degrees; these extrema
+        are computed when the native mesh is initialized.
+        """
+        return (float(self.xmin), float(self.ymin),
+                float(self.xmax), float(self.ymax))
+
     def _init_time_coordinates(self):
         """Initialize time coordinates, allowing fully static node files."""
         if 'time' in self.dataset.variables:

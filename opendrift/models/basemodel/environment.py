@@ -519,8 +519,17 @@ class Environment(Timeable, Configurable):
                         'Simulation has no simulation_extent, cannot check reader coverage'
                     )
                     return False
-                # NOTE: A better overlap test has been implemented
-                bbox = reader.lonlat_bounds()
+                # Use reader-native geographic bounds when available. Some
+                # installed readers implement only the shared xy2lonlat API.
+                bounds_method = getattr(reader, 'lonlat_bounds', None)
+                if callable(bounds_method):
+                    bbox = bounds_method()
+                else:
+                    corners = reader.xy2lonlat(
+                        [reader.xmin, reader.xmin, reader.xmax, reader.xmax],
+                        [reader.ymax, reader.ymin, reader.ymax, reader.ymin])
+                    bbox = (np.min(corners[0]), np.min(corners[1]),
+                            np.max(corners[0]), np.max(corners[1]))
                 rlonmin = bbox[0]
                 rlonmax = bbox[2]
                 rlatmin = bbox[1]
