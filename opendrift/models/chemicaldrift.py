@@ -15643,6 +15643,51 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         self._temporary_dry_coastline_last = detail
         return kept
 
+    def _postadvection_outside_hydrodynamic_coverage(self, lon, lat):
+        """Identify exits proven outside every available horizontal-current reader.
+
+        Ordinary covers_positions() checks may cover a reader bounding box only;
+        when native triangular connectivity is supplied, use its exact footprint.
+        Missing time coverage or uncertain spatial coverage is not proof of a
+        domain exit and must retain the existing fail-closed validation.
+        """
+        outside = np.ones(len(lon), dtype=bool)
+        for name in ('x_sea_water_velocity', 'y_sea_water_velocity'):
+            readers = tuple(self.env.priority_list.get(name, ()))
+            if not readers:
+                return np.zeros(len(lon), dtype=bool)
+            covered = np.zeros(len(lon), dtype=bool)
+            for rid in readers:
+                reader = self.env.readers.get(rid)
+                if reader is None:
+                    raise RuntimeError(f'Unregistered hydrodynamic reader {rid}')
+                if not reader.covers_time(self.time):
+                    return np.zeros(len(lon), dtype=bool)
+                positions = reader.covers_positions(lon, lat)
+                indices = positions[0] if isinstance(positions, tuple) else positions
+                indices = np.asarray(indices)
+                in_reader = np.zeros(len(lon), dtype=bool)
+                if indices.dtype == bool:
+                    if indices.shape != (len(lon),):
+                        raise RuntimeError('Invalid hydrodynamic reader coverage mask')
+                    in_reader = indices
+                else:
+                    if (indices.ndim != 1 or
+                        not np.issubdtype(indices.dtype, np.integer) or
+                        np.any((indices < 0) | (indices >= len(lon)))):
+                        raise RuntimeError('Invalid hydrodynamic reader coverage indices')
+                    in_reader[indices] = True
+                finder = getattr(reader, '_barycentric_trifinder', None)
+                if finder is not None:
+                    x, y = reader.lonlat2xy(lon, lat)
+                    faces = np.asarray(finder(x, y))
+                    if faces.shape != (len(lon),):
+                        raise RuntimeError('Invalid native-mesh footprint shape')
+                    in_reader &= (faces >= 0)
+                covered |= in_reader
+            outside &= ~covered
+        return outside
+
     def _refresh_postadvection_geometry_at_new_position(self, lon_before, lat_before):
         """Refresh only independently sourced 2D bed/eta after actual movement.
 
@@ -15686,6 +15731,41 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         if not fields:
             return 0
         idx = np.flatnonzero(moved)
+        # Remove only independently proven reader-domain exits. A geometry
+        # fallback within coverage remains a hard error, as before. Filtering
+        # first also prevents a strict native-mesh reader from rejecting an
+        # otherwise valid mixed in/out batch during the geometry lookup.
+        outside_moved = self._postadvection_outside_hydrodynamic_coverage(
+            lon[idx], lat[idx])
+        if np.any(outside_moved):
+            outside = np.zeros(n, dtype=bool)
+            outside[idx[outside_moved]] = True
+            ids = np.asarray(self.elements.ID, dtype=np.int64).copy()
+            previous_env = getattr(self, 'environment_previous', None)
+            if previous_env is not None:
+                if (int(previous_env.sizes.get('trajectory', -1)) != n or
+                    not np.array_equal(np.asarray(
+                        previous_env.coords['trajectory'].values, dtype=np.int64), ids)):
+                    raise RuntimeError('Previous environmental history IDs differ before domain exit')
+            self.deactivate_elements(outside, reason='missing_data')
+            self.remove_deactivated_elements()
+            keep = ~outside
+            if previous_env is not None:
+                self.environment_previous = previous_env.isel(
+                    trajectory=np.flatnonzero(keep)).copy(deep=True)
+            if self.num_elements_active() == 0:
+                return 0
+            # Preserve original positions for the surviving moved particles.
+            lon_before, lat_before = old_lon[keep], old_lat[keep]
+            lon = np.asarray(self.elements.lon, dtype=float)
+            lat = np.asarray(self.elements.lat, dtype=float)
+            z = np.asarray(self.elements.z, dtype=float)
+            n = len(lon)
+            idx = np.flatnonzero(
+                (np.abs(lon - lon_before) > 1e-10) |
+                (np.abs(lat - lat_before) > 1e-10))
+            if not len(idx):
+                return 0
         attrs = ('last_environment_provenance',
                  'last_environment_profile_provenance',
                  'last_environment_provenance_sources',
@@ -15862,6 +15942,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             return  # All elements stranded; none may undergo wet-only geometry.
         self._refresh_postadvection_geometry_at_new_position(
             lon_before_advection, lat_before_advection)
+        if self.num_elements_active() == 0:
+            return  # All particles exited the hydrodynamic reader coverage.
         # OpenDrift normally applies the configured seafloor contact action
         # before horizontal transport, not after movement to a new location.
         # Reapply its existing *lift_to_seafloor* semantics solely when the
