@@ -736,7 +736,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             # Update previous environment
             if self.newly_seeded_IDs is not None:
                 for var in self._environment_previous:
-                    self._environment_previous[var][newly_seeded_rel_indices] = self.environment[var][newly_seeded_rel_indices]
+                    # Previous-environment buffer is indexed by particle ID, not active position.
+                    self._environment_previous[var][self.elements.ID[newly_seeded_rel_indices]] = self.environment[var][newly_seeded_rel_indices]
             self.environment_previous = self._environment_previous.isel(trajectory=self.elements.ID)
             # Store present environment variables
             for var in self._environment_previous:
@@ -747,7 +748,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             # Update previous elements
             if self.newly_seeded_IDs is not None:  # For new elements there is no previous, so using present
                 for var in self._elements_previous:
-                    self._elements_previous[var][newly_seeded_rel_indices] = getattr(self.elements, var)[newly_seeded_rel_indices]
+                    self._elements_previous[var][self.elements.ID[newly_seeded_rel_indices]] = getattr(self.elements, var)[newly_seeded_rel_indices]
             self.elements_previous = self._elements_previous.isel(trajectory=self.elements.ID)
             # Store present element properties
             for var in self._elements_previous:
