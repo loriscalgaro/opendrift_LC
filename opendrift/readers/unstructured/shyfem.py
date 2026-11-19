@@ -14,6 +14,188 @@
 #
 # Copyright 2021, Gaute Hope, MET Norway
 
+# =============================================================================
+# SHYFEM UNSTRUCTURED READER -- SCIENTIFIC CONTRACT AND USER GUIDE
+# =============================================================================
+# PURPOSE
+#   Supply SHYFEM environmental fields from an unstructured native-node NetCDF
+#   grid to OpenDrift. This reader samples forcing fields; it does not simulate
+#   particles, define chemistry/sediment physics, or produce concentration maps.
+#   Environmental fields are discovered from CF standard_name metadata, with
+#   both OpenDrift's scalar aliases and its geographic-vector CF alias
+#   table applied to canonical output keys.
+#   File-variable spelling is NOT used to infer bathymetry or water level.
+#   Mesh2_face_nodes and native dimensions are structural UGRID identifiers,
+#   not interchangeable CF environmental variables.
+#   Missing or duplicate CF matches raise an error rather than guessing.
+#   Longitude and latitude are geographic degrees; requested particle z is in
+#   metres, positive upward (0 at the instantaneous water surface).
+#
+# DEFAULT BEHAVIOUR AND INTERPOLATION CHOICES
+#   Reader(filename="hydro.nc") retains the established nearest-node mode.
+#   A node value is selected horizontally and an original SHYFEM water-column
+#   layer is selected vertically. Static node fields and depth-independent
+#   (time,node) fields do not depend on particle z. Source record values and
+#   masks remain authoritative; a missing wet observation is not invented.
+#
+#   To opt into native triangular interpolation, pass
+#   horizontal_interpolation="barycentric" AND mesh_filename="native_mesh.nc".
+#   The mesh must contain original 1-based triangular Mesh2_face_nodes
+#   (start_index=1), with CF-identified longitude, latitude and fixed-datum
+#   bathymetry arrays identical to the hydrodynamic node data. The source face is located by that native
+#   connectivity; values are weighted by its three vertex barycentric weights.
+#   All three required vertex values must be valid: masked-vertex weights are
+#   NOT renormalized and synthetic triangles/nearest-node fallback are NOT used.
+#   Barycentric interpolation can be requested without activating wet/dry;
+#   barycentric wet/dry, when supplied, must use element_depth_hysteresis.
+#
+# WATER-COLUMN GEOMETRY AND TIME
+#   SHYFEM level/levels values identify original layer BOTTOM interfaces,
+#   not a collection of vertically interpolable point samples. The reader
+#   evaluates the local wet column at each required source time using
+#       H(node,time) = total_depth(node) + water_level(node,time) [metres].
+#   total_depth is positive downward; water_level (eta) is positive upward;
+#   the two MUST refer to the same verified fixed vertical datum. Their source
+#   variable names may differ between files; recognized CF names include
+#   sea_floor_depth_below_mean_sea_level (legacy CF alias:
+#   sea_floor_depth_below_sea_level) and
+#   sea_surface_height_above_mean_sea_level (OpenDrift sea_surface_height).
+#   The physically different sea_floor_depth_below_sea_surface is NOT accepted
+#   as fixed-datum bathymetry for wet/dry calculations.
+#   Native layer
+#   selection uses the time-specific eta. No vertical interpolation between
+#   native layer values or synthesis of levels is performed. A requested
+#   water-side sample at/below the bed may use the deepest physically wet
+#   source layer; truly dry, missing, padded or out-of-domain source values
+#   remain subject to native validity masks. Profiles retain native levels.
+#   Continuous time-dependent environmental values are sampled independently
+#   at bracketing source records, then linearly blended where valid. Wet/dry
+#   categories are NEVER linearly blended (see below).
+#
+# OPTIONAL WET/DRY HYSTERESIS: SCIENTIFIC MEANING
+#   By default wet/dry hysteresis is OFF. To enable it directly, supply the
+#   complete wetdry dictionary documented below. Both available methods are
+#   reconstructed from exported SOURCE-FRAME nodal depth/water-level data:
+#     - nodal_depth_hysteresis: an OPTIONAL nearest-node proxy; NOT authentic
+#       native SHYFEM triangular element wet/dry flags.
+#     - element_depth_hysteresis: native-face reconstruction for barycentric
+#       sampling. For each original triangle, form H at its THREE vertices and
+#       let H_min be their minimum. At every source frame:
+#         H_min < hzoff  -> DRY (0)
+#         H_min > hzon   -> WET (1)
+#         otherwise     -> keep the last KNOWN element state, if available.
+#       Equality with a threshold or the interval between thresholds leaves
+#       a known previous state unchanged; without that history it is UNKNOWN.
+#       A frame with any nonfinite vertex H reports UNKNOWN (-1); source
+#       missingness never proves WET or DRY. The bounded-memory replay uses
+#       actual earlier source frames and sparse checkpoints, including when
+#       a yearly elevation series begins before the opened monthly hydro file.
+#
+#   Scientific threshold rule: 0 <= hzmin <= hzoff < hzon (all in metres).
+#   hzoff/hzon govern the actual transitions above; hzmin is a required,
+#   validated lower-bound configuration value, NOT a third transition test.
+#   href MUST be 0.0: this is the only source-verified reference convention.
+#   The numerical hzmin/hzoff/hzon values MUST come from scientific approval;
+#   this module supplies NO accepted thresholds or implicit substitutions.
+#   Reconstructed hourly source-frame states are NOT solver-internal SHYFEM
+#   sub-timestep wet/dry flags. Do not claim equivalence to such unavailable
+#   flags without independent scientific evidence.
+#
+#   Only horizontal water currents (x_sea_water_velocity and
+#   y_sea_water_velocity) are subject to the enabled dry_current="zero" rule.
+#   In barycentric element mode, DRY and UNKNOWN become effective zero-current
+#   forcing while the categorical UNKNOWN identity stays -1. These are
+#   operational overrides, NOT observed SHYFEM zeros. A genuinely missing WET
+#   current must remain invalid. Other environmental variables are not
+#   categorical-zeroed. At dry/wet time transitions the default
+#   dry_zero_time_mode="piecewise" uses the nearest source-frame effective
+#   current; explicit "linear" instead blends the valid source-frame effective
+#   currents. Both modes preserve original categorical states/provenance.
+#   Published wetdry_state is available ONLY for barycentric element mode:
+#   -1 UNKNOWN, 0 DRY, 1 WET, selected from the preceding available SOURCE
+#   frame, not a numeric time interpolation and not a vertical profile.
+#
+# FILES AND REQUIRED DATA
+#   filename: main native SHYFEM hydrodynamic NetCDF file, multi-file glob,
+#             or supported OPeNDAP URL. Expected original longitude/latitude,
+#             time for dynamic fields, node variables with standard_name,
+#             and level/levels for 3-D fields. Barycentric mode also requires
+#             matching CF-labelled fixed-datum depth in the main file and mesh_filename.
+#   name: optional OpenDrift reader name.
+#   horizontal_interpolation: "nearest" (default) or "barycentric".
+#   mesh_filename: verified native mesh; REQUIRED for barycentric mode.
+#   wetdry: None (default, disabled) or a dictionary containing ALL of:
+#       method: "element_depth_hysteresis" (barycentric) or
+#               "nodal_depth_hysteresis" (nearest-node proxy)
+#       href: 0.0; hzmin, hzoff, hzon: approved finite thresholds in metres
+#       depth_variable / water_level_variable: retained configuration keys;
+#           they are NOT dataset-variable selectors. Source fields are found
+#           by their CF standard_name or recognized OpenDrift aliases.
+#       datum: "shared_reference_datum"; dry_current: "zero"
+#       dry_zero_time_mode: optional "piecewise" (default) or "linear".
+#   Supply bathymetry/elevation for enabled wetdry in EXACTLY ONE layout:
+#       A) Original: both variables are in filename; no auxiliary filenames.
+#       B) Combined: wetdry_combined_filename holds both in one other NetCDF.
+#       C) Split: BOTH wetdry_bathymetry_filename (static depth) AND
+#          wetdry_water_level_filename (time-dependent elevation) are provided.
+#   Do not combine B and C or supply only half of C. For external inputs the
+#   reader checks native node count/order and exact CF longitude/latitude,
+#   (node,) bathymetry and (time,node) elevation, depth positive="down",
+#   elevation positive="up", metre units, fixed-datum metadata and matching
+#   source_currents_sha256 provenance. Actual CF timestamps must cover all
+#   hydrodynamic source times; row-position/time-offset guesses are rejected.
+#   A separate source is read lazily, not remapped onto a new grid. Invalid
+#   metadata, a missing timestamp, or an inconsistent datum raise an error;
+#   no fallback to unrelated fields or a different interpolation mode occurs.
+#
+# DIRECT READER USAGE (replace ALL paths/thresholds with verified inputs)
+#   from opendrift.readers.unstructured.shyfem import Reader
+#   cfg = {
+#       "method": "element_depth_hysteresis", "href": 0.0,
+#       "hzmin": approved_hzmin_m, "hzoff": approved_hzoff_m,
+#       "hzon": approved_hzon_m,
+#       "depth_variable": "sea_floor_depth_below_sea_level",
+#       "water_level_variable": "sea_surface_height",
+#       "datum": "shared_reference_datum", "dry_current": "zero",
+#   }
+#   reader = Reader("main_hydro.nc", mesh_filename="native_mesh.nc",
+#       horizontal_interpolation="barycentric", wetdry=cfg,
+#       wetdry_bathymetry_filename="fixed_bathymetry.nc",
+#       wetdry_water_level_filename="annual_water_level.nc")
+#   # For layout A remove the two wetdry_*_filename arguments above.
+#   # For layout B replace them with wetdry_combined_filename="combined.nc".
+#   # For legacy nearest-node behavior: Reader("main_hydro.nc").
+#   # The application must register the returned Reader with OpenDrift.
+#
+# READER ACTIVATION AND APPLICATION INTEGRATION
+#   This module is activated through the public Reader constructor; no
+#   application-specific configuration flag is interpreted here.
+#   Instantiate Reader with horizontal_interpolation="barycentric" and
+#   a verified mesh_filename to activate triangle-based interpolation.
+#   Add an explicit wetdry dictionary with approved numerical thresholds
+#   to reconstruct element wet/dry states. Supplying neither retains the
+#   default nearest-node reader without optional wet/dry hysteresis.
+#   Register the Reader instance with the OpenDrift simulation using
+#   its ordinary reader-registration API. Its available variables then
+#   include wetdry_state only when barycentric element hysteresis is on.
+#   An application wishing to consume wetdry_state must request that
+#   variable through its own normal environmental-variable mechanism.
+#   No additional reader-side activation switch or implicit thresholds
+#   exist. The three wet/dry file layouts change data sourcing, not the
+#   meaning of element state or the physics of interpolated currents.
+#
+# IMPORTANT LIMITS AND SEPARATION OF RESPONSIBILITIES
+#   Enabling a method changes effective transport forcing and may change
+#   particle paths; rerun simulations when changing the activation mode.
+#   The optional bathymetry/elevation inputs govern reconstruction of the
+#   forcing wet/dry state only. They are not a general-purpose bathymetry
+#   remapping or downstream field-derivation service.
+#   Unit/engineering test success alone does not approve transition values,
+#   prove equivalence to unexported native SHYFEM state flags, or qualify a
+#   full-year scientific simulation. Explicit provenance and scientific
+#   acceptance tests remain required for such claims.
+# =============================================================================
+
 import numpy as np
 from datetime import datetime, timedelta
 from collections import OrderedDict
@@ -44,18 +226,89 @@ class Reader(UnstructuredReader):
         py:mod:`opendrift.readers.basereader.unstructured`.
     """
 
+    # Preserve OpenDrift's existing scalar CF aliases and its separate
+    # east/north vector mappings. No NetCDF identifier is interpreted as a role.
     variable_aliases = {
+        **UnstructuredReader.variable_aliases,
         'eastward_sea_water_velocity': 'x_sea_water_velocity',
         'northward_sea_water_velocity': 'y_sea_water_velocity',
         'sea_floor_depth_below_sea_surface': 'sea_floor_depth_below_sea_level',
-        'water_surface_height_above_reference_datum': 'sea_surface_height'
+        'sea_floor_depth_below_mean_sea_level': 'sea_floor_depth_below_sea_level',
+        'water_surface_height_above_reference_datum': 'sea_surface_height',
     }
+
+    @classmethod
+    def _canonical_cf_variable_name(cls, source_standard_name):
+        """Use OpenDrift's established CF aliases for environmental fields.
+
+        The parent reader stores scalar synonyms in ``variable_aliases`` and
+        geographically oriented vector names in ``xy2eastnorth_mapping``.
+        Both tables refer to CF ``standard_name`` values, not NetCDF variable
+        identifiers. On this longitude/latitude grid, the latter correspond
+        to the eastward/northward forcing components exposed by OpenDrift.
+        """
+        if source_standard_name in cls.variable_aliases:
+            return cls.variable_aliases[source_standard_name]
+        for component, names in cls.xy2eastnorth_mapping.items():
+            aliases = (names,) if isinstance(names, str) else names
+            if source_standard_name in aliases:
+                return component
+        return source_standard_name
+
+    @classmethod
+    def _source_variable_by_standard_name(cls, source, role, required=True):
+        """Find an authentic CF/alias-labelled field in one NetCDF source.
+
+        Coordinates use CF standard_name (or CF axis for X/Y/T); environmental
+        fields use OpenDrift aliases to normalize CF source standard names.
+        Never guess a source from its NetCDF identifier. Duplicate matches
+        fail closed because their different values could change physics.
+        """
+        canonical = {
+            'bathymetry': 'sea_floor_depth_below_sea_level',
+            'water_level': 'sea_surface_height',
+            'longitude': 'longitude',
+            'latitude': 'latitude',
+            'time': 'time',
+        }
+        if role not in canonical:
+            raise ValueError('Unsupported SHYFEM source role: ' + str(role))
+        accepted = canonical[role]
+        selected = []
+        axes = {'longitude': 'X', 'latitude': 'Y', 'time': 'T'}
+        for name, variable in source.variables.items():
+            label = str(getattr(variable, 'standard_name', '')).strip()
+            # The surface-relative seabed depth is not fixed-datum bathymetry.
+            if role == 'bathymetry' and label == 'sea_floor_depth_below_sea_surface':
+                continue
+            canonical_label = cls._canonical_cf_variable_name(label)
+            matches_standard = canonical_label == accepted and bool(label)
+            matches_coordinate_axis = (role in axes and
+                str(getattr(variable, 'axis', '')).strip().upper() == axes[role])
+            if matches_standard or matches_coordinate_axis:
+                selected.append(str(name))
+        if len(selected) > 1:
+            raise ValueError('Ambiguous SHYFEM %s: multiple CF/alias matches %s' %
+                             (role, selected))
+        if not selected:
+            if required:
+                raise ValueError('Missing SHYFEM %s: require recognized CF '
+                                 'standard_name or OpenDrift alias, not a '
+                                 'particular NetCDF variable name' % role)
+            return None
+        return selected[0]
 
     dataset = None
     vertical_dimension_names = ('level', 'levels')
 
     def __init__(self, filename=None, name=None, *, wetdry=None,
-                 horizontal_interpolation='nearest', mesh_filename=None):
+                 horizontal_interpolation='nearest', mesh_filename=None,
+                 wetdry_combined_filename=None,
+                 wetdry_bathymetry_filename=None,
+                 wetdry_water_level_filename=None):
+        # Reject unsupported combinations before allocating NetCDF resources.
+        # Barycentric sampling requires authentic connectivity, and element
+        # hysteresis is a separate, explicit scientific choice.
         if horizontal_interpolation not in ('nearest', 'barycentric'):
             raise ValueError('horizontal_interpolation must be nearest or barycentric')
         if horizontal_interpolation == 'barycentric' and wetdry is not None and wetdry.get('method') != 'element_depth_hysteresis':
@@ -67,10 +320,21 @@ class Reader(UnstructuredReader):
         self._barycentric_geometry_cache = None
         self._barycentric_cache_hits = 0
         self._barycentric_cache_misses = 0
-        self._barycentric_wet_state_matrix = None
-        self._barycentric_element_source_depths = None
+        # Keep only one source-time wet/dry cursor and a bounded set of
+        # hysteresis checkpoints. No time-by-node or time-by-face arrays.
+        self._barycentric_wet_state_matrix = None  # retained for API compatibility; never populated
+        self._barycentric_element_source_depths = None  # never populated
+        self._barycentric_hysteresis_bathy = None
+        self._barycentric_hysteresis_last_time = -1
+        self._barycentric_hysteresis_last_known = None
+        self._barycentric_hysteresis_last_depth_row = None
+        self._barycentric_hysteresis_checkpoints = OrderedDict()
+        self._barycentric_hysteresis_checkpoint_stride = 48
+        self._barycentric_hysteresis_checkpoint_limit = 8
         self._last_dry_current_profile_provenance = {}
         self._last_barycentric_vertex_source = {}
+        # Validate wet/dry configuration once. Subsequent sampling operates
+        # on this normalized contract rather than inventing fallback values.
         self._configure_optional_wetdry(wetdry)
         if filename is None:
             raise ValueError('Filename is missing')
@@ -96,16 +360,29 @@ class Reader(UnstructuredReader):
 
         logger.info('Reading grid and coordinate variables..')
 
-        self.x, self.y = self.dataset['longitude'][:], self.dataset[
-            'latitude'][:]
+        # Coordinate fields can have arbitrary NetCDF identifiers, provided
+        # their CF metadata unambiguously identifies longitude and latitude.
+        self._longitude_name = self._source_variable_by_standard_name(
+            self.dataset, 'longitude')
+        self._latitude_name = self._source_variable_by_standard_name(
+            self.dataset, 'latitude')
+        self.x = self.dataset[self._longitude_name][:]
+        self.y = self.dataset[self._latitude_name][:]
 
+        # Establish the native source clock before binding optional auxiliary
+        # elevations: those files are matched by timestamps, never row number.
         self._init_time_coordinates()
+        self._configure_wetdry_input_files(
+            wetdry_combined_filename, wetdry_bathymetry_filename,
+            wetdry_water_level_filename)
 
         self.xmin = np.min(self.x)
         self.xmax = np.max(self.x)
         self.ymin = np.min(self.y)
         self.ymax = np.max(self.y)
 
+        # Identify native layer geometry and CF variable names independently;
+        # this also allows static or depth-collapsed SHYFEM products.
         self._init_vertical_coordinates()
         self._init_variable_mapping()
         if (self._horizontal_interpolation == 'barycentric' and
@@ -127,6 +404,8 @@ class Reader(UnstructuredReader):
         self.nodes_idx = self._build_ckdtree_(self.x, self.y)
         self.timer_end("build index")
 
+        # Construct the exact source triangulation only for explicit opt-in.
+        # Default nearest-node users incur no connectivity requirement.
         if self._horizontal_interpolation == 'barycentric':
             self._initialize_native_barycentric_mesh()
         self.timer_end("open dataset")
@@ -142,8 +421,12 @@ class Reader(UnstructuredReader):
 
     def _init_time_coordinates(self):
         """Initialize time coordinates, allowing fully static node files."""
-        if 'time' in self.dataset.variables:
-            time_var = self.dataset['time']
+        # Native records are selected using this reader's source clock.
+        # A truly static file is allowed; dynamic fields require a valid clock.
+        self._time_name = self._source_variable_by_standard_name(
+            self.dataset, 'time', required=False)
+        if self._time_name is not None:
+            time_var = self.dataset[self._time_name]
             units = getattr(time_var, 'units', '')
 
             # Expected common format: "seconds since YYYY-MM-DDTHH:MM:SS"
@@ -188,6 +471,8 @@ class Reader(UnstructuredReader):
 
     def _init_vertical_coordinates(self):
         """Initialize z coordinates, allowing depth-collapsed 2D files."""
+        # Treat 'level' and 'levels' as original layer metadata. The depth
+        # interfaces, not merely nominal midpoints, determine wet coverage.
         self.level_var_name = None
         for candidate in self.vertical_dimension_names:
             if candidate in self.dataset.variables:
@@ -233,9 +518,14 @@ class Reader(UnstructuredReader):
 
     def _init_variable_mapping(self):
         """Map standard_name to dataset variable name."""
+        # Publish only actual source fields labelled with CF standard_name;
+        # coordinate variables are metadata, not environmental forcing.
         self.variable_mapping = {}
-        coordinate_variables = set(['time', 'longitude', 'latitude', 'node'])
+        coordinate_variables = set(['time', 'longitude', 'latitude', 'node',
+                                    self._longitude_name, self._latitude_name,
+                                    self._time_name])
         coordinate_variables.update(self.vertical_dimension_names)
+        coordinate_variables.discard(None)
 
         for var_name in self.dataset.variables:
             # Skip coordinate variables.
@@ -244,8 +534,16 @@ class Reader(UnstructuredReader):
 
             var = self.dataset[var_name]
             if 'standard_name' in var.ncattrs():
-                std_name = getattr(var, 'standard_name')
-                std_name = self.variable_aliases.get(std_name, std_name)
+                original_name = str(getattr(var, 'standard_name')).strip()
+                if not original_name:
+                    continue
+                std_name = self._canonical_cf_variable_name(original_name)
+                # Do not silently overwrite an earlier CF match: choosing a
+                # different source field could change scientific forcing.
+                previous = self.variable_mapping.get(std_name)
+                if previous is not None and previous != str(var_name):
+                    raise ValueError('Ambiguous SHYFEM CF standard_name %s: '
+                                     '%s and %s' % (std_name, previous, var_name))
                 self.variable_mapping[std_name] = str(var_name)
 
         self.variables = list(self.variable_mapping.keys())
@@ -316,11 +614,202 @@ class Reader(UnstructuredReader):
             plt.xlim(corners[0],corners[1])
             plt.ylim(corners[2],corners[3])
 
+    def _configure_wetdry_input_files(self, combined, bathymetry, water_level):
+        """Bind native wet/dry inputs without modifying the hydro reader dataset.
+
+        Legacy: use depth and elevation already in ``filename``.
+        Explicit combined: both source variables in one independent file.
+        Explicit split: separate fixed bathymetry and time-dependent elevation.
+        All layouts share the existing wet/dry state calculation; no physics
+        or interpolation is duplicated. External files remain open for the
+        reader lifetime so NetCDF source-row access stays lazy.
+        """
+        self._wetdry_depth_dataset = self.dataset
+        self._wetdry_level_dataset = self.dataset
+        self._wetdry_level_indices = np.arange(len(self.times), dtype=np.int64)
+        self._wetdry_external_datasets = []
+        self._wetdry_depth_var_name = None
+        self._wetdry_level_var_name = None
+        # Exactly one source layout is admitted. Mixing layouts could silently
+        # combine water levels and bathymetry from different grids or datums.
+        supplied = (combined is not None, bathymetry is not None,
+                    water_level is not None)
+        if not any(supplied):
+            # The original, single-hydrodynamic-file layout remains valid, but
+            # an enabled wet/dry mode must never defer missing-input errors to
+            # a particle request (or silently operate without either field).
+            if self._wetdry_config is not None:
+                # Resolve the PHYSICAL roles from CF labels; the legacy
+                # configuration strings are not input-variable identifiers.
+                try:
+                    self._wetdry_depth_var_name = self._source_variable_by_standard_name(
+                        self.dataset, 'bathymetry')
+                    self._wetdry_level_var_name = self._source_variable_by_standard_name(
+                        self.dataset, 'water_level')
+                except ValueError as exc:
+                    raise ValueError('SHYFEM wetdry enabled: %s. Provide correct '
+                                     'CF metadata in the main file, or a '
+                                     'dedicated combined/split source.' % exc) from exc
+            return
+        if self._wetdry_config is None:
+            raise ValueError('Dedicated wetdry files require an enabled wetdry configuration')
+        if supplied not in ((True, False, False), (False, True, True)):
+            if combined is None and (bathymetry is None or water_level is None):
+                missing = ('wetdry_bathymetry_filename' if bathymetry is None
+                           else 'wetdry_water_level_filename')
+                raise ValueError(
+                    f'SHYFEM wetdry split-file configuration missing {missing}; '
+                    'both bathymetry and water-level filenames are required.')
+            raise ValueError('SHYFEM wetdry: choose either wetdry_combined_filename '
+                             'or both split filenames, not a mixture.')
+        if not self.has_time:
+            raise ValueError('Dedicated wetdry elevation requires native source time')
+        filenames = [combined] if combined is not None else [bathymetry, water_level]
+        if any(not str(f).strip() for f in filenames):
+            raise ValueError('Dedicated wetdry filenames must not be empty')
+        try:
+            # A combined source is opened only once. The source NetCDF is never
+            # copied into memory or into the model's native hydrodynamics.
+            sources = []
+            for filename in filenames:
+                try:
+                    sources.append(Dataset(filename, 'r'))
+                except OSError as exc:
+                    raise ValueError(
+                        f"Cannot open SHYFEM wetdry input file '{filename}': {exc}") from exc
+                self._wetdry_external_datasets = sources
+            depth_source = sources[0]
+            level_source = sources[0] if combined is not None else sources[1]
+            depth_name = str(combined if combined is not None else bathymetry)
+            level_name = str(combined if combined is not None else water_level)
+            # Do not rely on 'total_depth' or 'water_level' variable spelling:
+            # annual and split files may use any valid CF-labelled identifier.
+            dv = self._source_variable_by_standard_name(depth_source, 'bathymetry')
+            ev = self._source_variable_by_standard_name(level_source, 'water_level')
+            dvar, evar = depth_source[dv], level_source[ev]
+            if (dvar.dimensions not in (('node',), ('nMesh2_node',)) or
+                    evar.dimensions not in (('time','node'), ('time','nMesh2_node')) or
+                    dvar.dimensions[0] != evar.dimensions[1]):
+                raise ValueError(
+                    f"SHYFEM wetdry grid mismatch between '{depth_name}' and "
+                    f"'{level_name}': bathymetry '{dv}' dimensions={dvar.dimensions}; "
+                    f"water-level '{ev}' dimensions={evar.dimensions}. "
+                    'Expected (node,) and (time,node) using the same node dimension.')
+            if len(dvar) != evar.shape[1]:
+                raise ValueError(
+                    f"SHYFEM wetdry grid mismatch between '{depth_name}' and "
+                    f"'{level_name}': bathymetry nodes={len(dvar)} versus "
+                    f'water-level nodes={evar.shape[1]}.')
+            if len(dvar) != len(self.x):
+                raise ValueError(
+                    f"SHYFEM wetdry grid mismatch with hydrodynamic file '{self.name}': "
+                    f"'{depth_name}' has {len(dvar)} nodes; hydrodynamics has {len(self.x)}.")
+            # Compare the two independent grids FIRST, before checking their
+            # common grid against the hydrodynamic reader. No remapping occurs.
+            # A matching node count is insufficient: connectivity-based
+            # sampling depends on the original node order and coordinates.
+            for coordinate, expected in (('longitude', self.x), ('latitude', self.y)):
+                dcoord_name = self._source_variable_by_standard_name(depth_source, coordinate)
+                lcoord_name = self._source_variable_by_standard_name(level_source, coordinate)
+                dcoord = np.asarray(depth_source[dcoord_name][:])
+                lcoord = np.asarray(level_source[lcoord_name][:])
+                if not np.array_equal(dcoord, lcoord):
+                    mismatch = ('different shapes: bathymetry '
+                                f'{dcoord.shape}, water level {lcoord.shape}')
+                    if dcoord.shape == lcoord.shape:
+                        diff = np.flatnonzero(~np.equal(dcoord, lcoord))
+                        if diff.size:
+                            i = int(diff[0])
+                            mismatch = (f'first different node {i}: '
+                                        f'bathymetry={dcoord.flat[i]!r}, '
+                                        f'water level={lcoord.flat[i]!r}')
+                    raise ValueError(
+                        f"SHYFEM wetdry grid mismatch between bathymetry '{depth_name}' "
+                        f"and water-level '{level_name}': {coordinate} {mismatch}. "
+                        'Both files must contain identical native node coordinates and ordering.')
+                if not np.array_equal(dcoord, np.asarray(expected)):
+                    raise ValueError(
+                        f"SHYFEM wetdry grid mismatch with hydrodynamics '{self.name}': "
+                        f"'{coordinate}' coordinates in '{depth_name}' do not match "
+                        'the hydrodynamic native node grid.')
+            # Reject unverified vertical references and provenance before
+            # combining h and eta; an unrecognized datum makes H meaningless.
+            for source in (depth_source, level_source):
+                datum = str(getattr(source, 'vertical_datum_status', '')).lower()
+                if not ('fixed' in datum and 'datum' in datum):
+                    raise ValueError('Dedicated wetdry source must declare verified fixed-datum provenance')
+            depth_prov = str(getattr(depth_source, 'source_currents_sha256', ''))
+            level_prov = str(getattr(level_source, 'source_currents_sha256', ''))
+            if not depth_prov or not level_prov or depth_prov != level_prov:
+                raise ValueError('Dedicated wetdry sources require matching source-current SHA256 provenance')
+            if (str(getattr(dvar, 'units', '')).lower() not in ('m', 'meter', 'metre', 'meters', 'metres') or
+                    str(getattr(evar, 'units', '')).lower() not in ('m', 'meter', 'metre', 'meters', 'metres')):
+                raise ValueError('Dedicated wetdry depth and elevation must have meter units')
+            if str(getattr(dvar, 'positive', '')).lower() != 'down':
+                raise ValueError('Dedicated bathymetry must be positive down')
+            if str(getattr(evar, 'positive', '')).lower() != 'up':
+                raise ValueError('Dedicated water level must be positive up')
+            # Wet/dry must use the same native seabed as the transport reader.
+            # Comparing just coordinate arrays would not detect a shifted or
+            # otherwise incompatible fixed-datum depth field.
+            native_depth = self._source_variable_by_standard_name(
+                self.dataset, 'bathymetry')
+            if not np.array_equal(
+                    np.asarray(dvar[:]), np.asarray(self.dataset[native_depth][:])):
+                raise ValueError('Dedicated wetdry fixed bathymetry disagrees with native hydrodynamics')
+            time_name = self._source_variable_by_standard_name(level_source, 'time')
+            tvar = level_source[time_name]
+            if (tvar.dimensions != ('time',) or len(tvar) != len(evar) or
+                    not getattr(tvar, 'units', None)):
+                raise ValueError('Dedicated wetdry time coordinate shape/units are invalid')
+            # Compare actual timestamps rather than numeric positions: the
+            # external file may cover an entire year while the hydro reader
+            # is open on a monthly subset. Earlier external frames are retained
+            # as genuine hysteresis history, not discarded as a guessed state.
+            from netCDF4 import date2num
+            calendar = getattr(tvar, 'calendar', 'standard')
+            source_ticks = np.asarray(tvar[:], dtype=np.float64)
+            if (source_ticks.ndim != 1 or not np.all(np.isfinite(source_ticks)) or
+                    not np.all(np.diff(source_ticks) > 0)):
+                raise ValueError('Dedicated wetdry source timestamps must be finite and increasing')
+            reader_ticks = np.asarray(date2num(
+                self.times.tolist(), units=tvar.units, calendar=calendar),
+                dtype=np.float64)
+            if not np.all(np.isfinite(reader_ticks)):
+                raise ValueError('Reader source timestamps are not finite')
+            # Retain the original source-row index in the auxiliary timeline.
+            # Its earlier records remain available for hysteresis replay.
+            mapping = np.searchsorted(source_ticks, reader_ticks)
+            if np.any(mapping >= len(source_ticks)) or not np.allclose(
+                    source_ticks[np.minimum(mapping, len(source_ticks)-1)],
+                    reader_ticks, rtol=0, atol=0.001):
+                raise ValueError('Dedicated wetdry water level does not cover exact hydrodynamic source timestamps')
+            self._wetdry_depth_dataset = depth_source
+            self._wetdry_level_dataset = level_source
+            self._wetdry_depth_var_name = dv
+            self._wetdry_level_var_name = ev
+            self._wetdry_level_indices = mapping.astype(np.int64)
+        except Exception:
+            for source in self._wetdry_external_datasets:
+                source.close()
+            self._wetdry_external_datasets = []
+            raise
+
+    def close(self):
+        """Close source NetCDF handles, including optional wet/dry files."""
+        for source in getattr(self, '_wetdry_external_datasets', []):
+            source.close()
+        self._wetdry_external_datasets = []
+        if getattr(self, 'dataset', None) is not None:
+            self.dataset.close()
+
     @staticmethod
     def _validate_wetdry(config):
         """Explicit opt-in. No run-specific defaults or undocumented href conversion."""
         if config is None:
             return None
+        # No guessed physical thresholds: all required values and the known
+        # datum convention must be explicit before wet/dry is enabled.
         required = {'method', 'href', 'hzmin', 'hzoff', 'hzon',
                     'depth_variable', 'water_level_variable', 'datum',
                     'dry_current'}
@@ -354,6 +843,8 @@ class Reader(UnstructuredReader):
         return result
 
     def _configure_optional_wetdry(self, config):
+        # Store validated settings and separate observation/provenance caches.
+        # Turning the option off leaves ordinary source sampling unchanged.
         self._wetdry_config = self._validate_wetdry(config)
         self._wetdry_states = {}
         self._wetdry_depths = {}
@@ -369,20 +860,27 @@ class Reader(UnstructuredReader):
         cfg = self._wetdry_config
         if cfg is None:
             raise RuntimeError('Optional wetdry not configured')
-        dv, ev = cfg['depth_variable'], cfg['water_level_variable']
-        if dv not in self.dataset.variables or ev not in self.dataset.variables:
+        dv, ev = self._wetdry_depth_var_name, self._wetdry_level_var_name
+        depth_source = getattr(self, '_wetdry_depth_dataset', self.dataset)
+        level_source = getattr(self, '_wetdry_level_dataset', self.dataset)
+        indices = getattr(self, '_wetdry_level_indices', np.arange(len(self.times)))
+        if dv not in depth_source.variables or ev not in level_source.variables:
             raise ValueError('Configured wetdry source variable is missing')
-        if (self.dataset[dv].dimensions != ('node',) or
-                self.dataset[ev].dimensions != ('time','node')):
+        if (depth_source[dv].dimensions not in (('node',), ('nMesh2_node',)) or
+                level_source[ev].dimensions not in (('time','node'), ('time','nMesh2_node')) or
+                depth_source[dv].dimensions[0] != level_source[ev].dimensions[1]):
             raise ValueError('Unqualified wetdry nodal depth / source-time water-level dimensions')
-        if len(self.dataset[ev]) != len(self.times):
-            raise ValueError('wetdry state-time dimension does not match the reader source timestamps')
+        if len(indices) != len(self.times) or np.any(indices >= len(level_source[ev])):
+            raise ValueError('wetdry state-time source mapping does not cover reader timestamps')
+        # The nodal proxy is reconstructed in chronological source order for
+        # each requested node, then cached with a bounded node count. It does
+        # not substitute for native triangular-element hysteresis.
         result = np.full(len(nodes), -1, dtype=np.int8)
         for i,node in enumerate(np.asarray(nodes,dtype=int)):
             node = int(node)
             if node not in self._wetdry_states:
-                bathy = np.ma.filled(np.ma.asarray(self.dataset[dv][node]), np.nan)
-                eta = np.ma.filled(np.ma.asarray(self.dataset[ev][:, node]), np.nan)
+                bathy = np.ma.filled(np.ma.asarray(depth_source[dv][node]), np.nan)
+                eta = np.ma.filled(np.ma.asarray(level_source[ev][:, node]), np.nan)
                 H = np.asarray(eta, dtype=float) + float(bathy)
                 states = np.full(len(H), -1, dtype=np.int8)
                 previous = -1
@@ -400,9 +898,11 @@ class Reader(UnstructuredReader):
                     oldest = next(iter(self._wetdry_states))
                     self._wetdry_states.pop(oldest)
                     self._wetdry_depths.pop(oldest, None)
-                self._wetdry_states[node] = states
-                self._wetdry_depths[node] = H
-            if 0 <= nearest_time_index < len(self._wetdry_states[node]):
+                # Retain only frames visible to this reader. The full source
+                # chronology above establishes the correct hysteresis history.
+                self._wetdry_states[node] = states[indices]
+                self._wetdry_depths[node] = H[indices]
+            if 0 <= nearest_time_index < len(indices):
                 result[i] = self._wetdry_states[node][nearest_time_index]
         return result
 
@@ -432,49 +932,116 @@ class Reader(UnstructuredReader):
         ti = int(time_index)
         if ti < 0 or ti >= len(self.times):
             raise ValueError('D19 time index out of range')
-        if self._barycentric_wet_state_matrix is None:
-            dv, ev = cfg['depth_variable'], cfg['water_level_variable']
-            if dv not in self.dataset.variables or ev not in self.dataset.variables:
-                raise ValueError('Original native nodal bathymetry and water level required')
-            dvar, evar = self.dataset[dv], self.dataset[ev]
-            if dvar.dimensions != ('node',) or evar.dimensions != ('time','node') or len(evar)!=len(self.times):
-                raise ValueError('Unqualified native source dimensions/time')
-            bathy=np.ma.filled(np.ma.asarray(dvar[:]).astype(float),np.nan)
-            eta=np.ma.filled(np.ma.asarray(evar[:]).astype(float),np.nan)
-            H=eta+bathy[None,:]
-            if H.shape != (len(self.times),len(self.x)):
-                raise ValueError('Invalid native water depth array geometry')
-            faces=self._barycentric_faces
-            states=np.full((len(self.times),len(faces)),-1,dtype=np.int8)
-            previous=np.full(len(faces),-1,dtype=np.int8)
-            # Vectorized over native original ELEMENTS. Iterate in source time
-            # only; cache is independent of the order in which particles query.
-            for it in range(len(self.times)):
-                H3=H[it,faces]
-                finite=np.all(np.isfinite(H3),axis=1)
-                hmin=np.min(np.where(np.isfinite(H3),H3,np.inf),axis=1)
-                dry=finite & (hmin < cfg['hzoff'])
-                wet=finite & (hmin > cfg['hzon'])
-                previous=np.where(dry,0,np.where(wet,1,previous)).astype(np.int8)
-                # Missing present-frame nodal depths make PRESENT state unknown.
-                # They do not fabricate or delete the earlier KNOWN hysteresis state.
-                states[it]=np.where(finite,previous,-1)
-            self._barycentric_wet_state_matrix=states
-            self._barycentric_element_source_depths=H
+        dv, ev = self._wetdry_depth_var_name, self._wetdry_level_var_name
+        depth_source = getattr(self, '_wetdry_depth_dataset', self.dataset)
+        level_source = getattr(self, '_wetdry_level_dataset', self.dataset)
+        indices = getattr(self, '_wetdry_level_indices', np.arange(len(self.times)))
+        if dv not in depth_source.variables or ev not in level_source.variables:
+            raise ValueError('Original native nodal bathymetry and water level required')
+        dvar, evar = depth_source[dv], level_source[ev]
+        if (dvar.dimensions not in (('node',), ('nMesh2_node',)) or
+                evar.dimensions not in (('time', 'node'), ('time', 'nMesh2_node')) or
+                dvar.dimensions[0] != evar.dimensions[1] or
+                len(indices) != len(self.times) or
+                np.any(indices >= len(evar))):
+            raise ValueError('Unqualified native source dimensions/time')
+        # Auxiliary annual time indices may differ from main hydro indices;
+        # the state cursor always uses the true elevation source chronology.
+        source_ti = int(indices[ti])
+        faces = self._barycentric_faces
         if face_ids is None:
-            face_ids=np.fromiter((self._barycentric_face_index_by_vertices.get(
-                  tuple(sorted(map(int, row))),-1) for row in vertices),dtype=np.int64,count=len(vertices))
-        face_ids=np.asarray(face_ids,dtype=np.int64)
-        if face_ids.shape!=(len(vertices),) or np.any((face_ids<0)|(face_ids>=len(self._barycentric_faces))):
+            face_ids = np.fromiter((self._barycentric_face_index_by_vertices.get(
+                tuple(sorted(map(int, row))), -1) for row in vertices),
+                dtype=np.int64, count=len(vertices))
+        face_ids = np.asarray(face_ids, dtype=np.int64)
+        if (face_ids.shape != (len(vertices),) or
+                np.any((face_ids < 0) | (face_ids >= len(faces)))):
             raise ValueError('Barycentric vertices must map to authenticated native faces')
-        if not np.array_equal(np.sort(self._barycentric_faces[face_ids],axis=1),np.sort(vertices,axis=1)):
+        if not np.array_equal(np.sort(faces[face_ids], axis=1),
+                              np.sort(vertices, axis=1)):
             raise ValueError('Barycentric native element/vertex identity mismatch')
-        states = self._barycentric_wet_state_matrix[ti,face_ids].copy()
+
+        # Bathymetry is invariant. Retain a single native-node vector and
+        # read one source water-level row at a time, as elsewhere in SHYFEM.
+        # In particular, never load evar[:] or build H(time,node).
+        if self._barycentric_hysteresis_bathy is None:
+            bathy = np.ma.filled(np.ma.asarray(dvar[:]).astype(float), np.nan)
+            if bathy.shape != (len(self.x),):
+                raise ValueError('Invalid native bathymetry geometry')
+            self._barycentric_hysteresis_bathy = bathy
+        bathy = self._barycentric_hysteresis_bathy
+
+        def depth_row(index):
+            eta = np.ma.filled(np.ma.asarray(evar[int(index), :]).astype(float),
+                               np.nan)
+            if eta.shape != bathy.shape:
+                raise ValueError('Invalid native water-level row geometry')
+            return eta + bathy
+
+        # The stored state is the most recent KNOWN element state, including
+        # across missing source frames. A missing CURRENT frame is reported
+        # UNKNOWN without destroying that prior known state.
+        last_time = self._barycentric_hysteresis_last_time
+        last_known = self._barycentric_hysteresis_last_known
+        start_time = last_time
+        previous = last_known
+        if previous is None or source_ti < start_time:
+            start_time = -1
+            previous = np.full(len(faces), -1, dtype=np.int8)
+            # Out-of-order lookup: replay only from the newest retained
+            # checkpoint at or before the requested frame. Checkpoints store
+            # KNOWN state, not the potentially UNKNOWN observed frame.
+            for checkpoint_time, known in self._barycentric_hysteresis_checkpoints.items():
+                if start_time < checkpoint_time <= source_ti:
+                    start_time = checkpoint_time
+                    previous = known.copy()
+        current_row = (self._barycentric_hysteresis_last_depth_row
+                       if start_time == source_ti and
+                       start_time == self._barycentric_hysteresis_last_time
+                       else None)
+        # Advance one real source frame at a time. For each face, all three
+        # node depths must be finite; minimum depth controls the two strict
+        # transition inequalities, while the band preserves prior known state.
+        current_state = None
+        for it in range(start_time + 1, source_ti + 1):
+            H = depth_row(it)
+            H3 = H[faces]
+            finite = np.all(np.isfinite(H3), axis=1)
+            hmin = np.min(np.where(np.isfinite(H3), H3, np.inf), axis=1)
+            dry = finite & (hmin < cfg['hzoff'])
+            wet = finite & (hmin > cfg['hzon'])
+            previous = np.where(dry, 0, np.where(wet, 1, previous)).astype(np.int8)
+            if it == source_ti:
+                current_row = H
+                current_state = np.where(finite, previous, -1)
+            if it % self._barycentric_hysteresis_checkpoint_stride == 0:
+                checkpoints = self._barycentric_hysteresis_checkpoints
+                checkpoints[it] = previous.copy()
+                checkpoints.move_to_end(it)
+                while len(checkpoints) > self._barycentric_hysteresis_checkpoint_limit:
+                    checkpoints.popitem(last=False)
+
+        # When source frame == cursor or a checkpoint, there is no replay.
+        # Read only that single row to apply its current-frame missing mask.
+        if current_state is None:
+            if current_row is None:
+                current_row = depth_row(source_ti)
+            H3 = current_row[faces]
+            finite = np.all(np.isfinite(H3), axis=1)
+            current_state = np.where(finite, previous, -1)
+
+        self._barycentric_hysteresis_last_time = source_ti
+        self._barycentric_hysteresis_last_known = previous.copy()
+        self._barycentric_hysteresis_last_depth_row = current_row
+        states = current_state[face_ids].copy()
         if not include_depths:
             return states, None
-        return states, self._barycentric_element_source_depths[ti,vertices].copy()
+        return states, current_row[vertices].copy()
 
     def _barycentric_apply_d19_currents(self, env, time_index, vertices):
+        # Only horizontal current components receive effective zeros. Keep
+        # original categorical states and source provenance available to
+        # distinguish operational overrides from observed current values.
         if self._wetdry_config is None:
             return env
         state, source_depths = self._barycentric_vertex_states(time_index, vertices, self._last_barycentric_face_ids)
@@ -484,7 +1051,7 @@ class Reader(UnstructuredReader):
             'face_state': state.copy(),
             'status': 'SHYFEM_ELEMENT_HYSTERESIS_RECONSTRUCTED_FROM_HOURLY_OUTPUT_NOT_NATIVE_FLAGS'}
         dry, wet, unknown = state == 0, state == 1, state < 0
-        # Explicit opt-in D19 transport forcing ONLY. UNKNOWN remains a
+        # Explicit opt-in transport forcing ONLY. UNKNOWN remains a
         # physical UNKNOWN (-1); its operational zero is NOT a native dry state
         # or an observed SHYFEM zero. Do not replace genuinely missing WET
         # observations, alter noncurrent fields, or install global fallbacks.
@@ -504,6 +1071,8 @@ class Reader(UnstructuredReader):
 
     @staticmethod
     def _zero_at_masked_indices(arr, dry):
+        # Explicit zero-current forcing intentionally clears the data mask at
+        # selected dry points; all unrelated masks remain untouched.
         out = np.ma.array(arr, copy=True)
         mask = np.ma.getmaskarray(out).copy()
         vals = np.array(np.ma.getdata(out), copy=True)
@@ -518,13 +1087,10 @@ class Reader(UnstructuredReader):
         time/node indexing and the SHYFEM shared-datum convention exercised by
         the 2018 witness. Do not infer an unknown model's vertical datum.
         """
-        keys = ('sea_floor_depth_below_sea_level',
-                'water_surface_height_above_reference_datum')
-        names = [self.variable_mapping.get(keys[0]),
-                 self.variable_mapping.get(keys[1]) or
-                 self.variable_mapping.get('sea_surface_height')]
-        if None in names:
-            raise ValueError('SHYFEM local wet-depth contract requires source bathymetry and water level; 3D validity unqualified')
+        # The ordinary OpenDrift mapping already normalizes recognized CF
+        # aliases, including the newer mean-sea-level standard names.
+        names = [self._source_variable_by_standard_name(self.dataset, 'bathymetry'),
+                 self._source_variable_by_standard_name(self.dataset, 'water_level')]
         vals = []
         for name in names:
             var = self.dataset[name]
@@ -533,6 +1099,8 @@ class Reader(UnstructuredReader):
                 raise ValueError('Unqualified SHYFEM local wet-depth source dimensions: %s %s' % (name, dims))
             data = var[nodes] if dims == ('node',) else var[time_index, nodes]
             vals.append(np.ma.filled(np.ma.asarray(data).astype(float), np.nan))
+        # h (positive down) and eta (positive up) share one fixed datum.
+        # Return both components so layer lookup can use eta independently.
         h, eta = vals
         return np.asarray(h, dtype=float) + np.asarray(eta, dtype=float), h, eta
 
@@ -547,6 +1115,8 @@ class Reader(UnstructuredReader):
             conn = mesh.variables.get('Mesh2_face_nodes')
             if conn is None or int(getattr(conn, 'start_index', -1)) != 1:
                 raise ValueError('Native mesh requires 1-based UGRID Mesh2_face_nodes')
+            # Convert authentic 1-based UGRID connectivity once at import;
+            # invented triangulations would change interpolation neighbours.
             faces = np.asarray(conn[:], dtype=np.int64) - 1
             if faces.ndim != 2 or faces.shape[1] != 3 or faces.size == 0:
                 raise ValueError('Native mesh must contain 3-node triangular faces')
@@ -555,12 +1125,15 @@ class Reader(UnstructuredReader):
                 np.any(faces[:,0] == faces[:,2]) or
                 np.any(faces[:,1] == faces[:,2])):
                 raise ValueError('Mesh face index out of range or invalid')
-            for name, ref in (('longitude', self.x), ('latitude', self.y),
-                              ('total_depth', self.dataset['total_depth'][:])):
-                a = np.asarray(mesh.variables[name][:])
+            hydro_depth_name = self._source_variable_by_standard_name(
+                self.dataset, 'bathymetry')
+            for role, ref in (('longitude', self.x), ('latitude', self.y),
+                              ('bathymetry', self.dataset[hydro_depth_name][:])):
+                mesh_name = self._source_variable_by_standard_name(mesh, role)
+                a = np.asarray(mesh.variables[mesh_name][:])
                 b = np.asarray(ref)
                 if a.shape != b.shape or not np.array_equal(a, b):
-                    raise ValueError('Native mesh %s values disagree with hydrodynamics' % name)
+                    raise ValueError('Native mesh %s values disagree with hydrodynamics' % role)
             if 'source_hydro_node_index' in mesh.variables and 'source_node_index' in self.dataset.variables:
                 if not np.array_equal(mesh.variables['source_hydro_node_index'][:],
                                       self.dataset['source_node_index'][:]):
@@ -584,6 +1157,8 @@ class Reader(UnstructuredReader):
         y = np.atleast_1d(np.asarray(y, dtype=np.float64))
         if x.shape != y.shape or x.ndim != 1 or not (np.isfinite(x).all() and np.isfinite(y).all()):
             raise ValueError('Barycentric point coordinates must be finite matching 1D arrays')
+        # Reuse geometry only for bytewise-equal requested coordinates; a
+        # moving particle must get a new face and new barycentric weights.
         cache = self._barycentric_geometry_cache
         if (cache is not None and np.array_equal(cache[0], x) and
                 np.array_equal(cache[1], y)):
@@ -632,6 +1207,8 @@ class Reader(UnstructuredReader):
             groups = np.unique(levels)
         else:
             groups = [None]
+        # Group by original level and read only participating native nodes.
+        # This avoids NetCDF orthogonal fancy-indexing cross-products.
         for level in groups:
             select = np.ones(len(nodes), dtype=bool) if level is None else (levels == level)
             unique, inv = np.unique(nodes[select], return_inverse=True)
@@ -679,6 +1256,8 @@ class Reader(UnstructuredReader):
             it=0
         else:
             _,_,_,it,_,_=self.nearest_time(t)
+        # Resolve a native face once per particle position. The same three
+        # vertices are used for all environmental fields at this source time.
         face,verts,weights=self._barycentric_geometry(x,y)
         n=len(x)
         flat_nodes=verts.reshape(-1)
@@ -697,13 +1276,16 @@ class Reader(UnstructuredReader):
                 if not self.has_vertical_levels:
                     raise ValueError('Native 3D field without authenticated native levels')
                 if H_vertex is None:
+                    # Select the physically active source cell separately at
+                    # each vertex; eta and bottom coverage can differ across
+                    # one face, so one shared vertical index is not valid.
                     H_vertex,h_vertex,eta_vertex=self._native_local_wet_depth(it,flat_nodes)
                     H_vertex=np.asarray(H_vertex).reshape((n,3))
                     eta_vertex=np.asarray(eta_vertex).reshape((n,3))
                     z_vertex=np.broadcast_to(z[:,None],(n,3))
                     valid_vertex=(np.isfinite(H_vertex) & (H_vertex > 0) &
                         np.isfinite(eta_vertex) & np.isfinite(z_vertex) & (z_vertex<=0))
-                    # D18: deliberate below-bed water-side requests are
+                    # Deliberate below-bed water-side requests are
                     # limited to local terminal wet layer for EACH vertex.
                     sample_z=np.maximum(z_vertex,-H_vertex)
                     nominal_depth=-sample_z-eta_vertex
@@ -715,6 +1297,8 @@ class Reader(UnstructuredReader):
                 flat_level=native_level
             else:
                 flat_level=None
+            # Native masks remain authoritative: with one missing vertex,
+            # the entire point sample is masked, not reweighted to two nodes.
             raw=self._barycentric_read_sparse(dvar,dims,flat_nodes,flat_level,it).reshape((n,3))
             raw=np.ma.masked_invalid(np.ma.asarray(raw))
             if is_3d:
@@ -733,6 +1317,8 @@ class Reader(UnstructuredReader):
                       x=None,
                       y=None,
                       z=None):
+        # Native sampling entry point. Keep the established nearest-node path
+        # isolated from the opt-in native-triangle calculation.
         if self._horizontal_interpolation == 'barycentric':
             return self._get_variables_native_barycentric(requested_variables, time, x, y, z)
         x = np.atleast_1d(x)
@@ -815,6 +1401,8 @@ class Reader(UnstructuredReader):
 
         logger.debug("Interpolating node-variables..")
 
+        # Nearest-node sampling uses one native node per request, without
+        # creating a synthetic grid or interpolating between columns.
         nodes = self._nearest_node_(x, y)
         assert len(nodes) == len(x)
 
@@ -844,7 +1432,7 @@ class Reader(UnstructuredReader):
             if 'node' in dims:
                 node_dim_name = 'node'
             else:
-                lon_dims = getattr(self.dataset['longitude'], 'dimensions', ())
+                lon_dims = getattr(self.dataset[self._longitude_name], 'dimensions', ())
                 node_dim_name = lon_dims[0] if len(lon_dims) == 1 and lon_dims[0] in dims else None
 
             if node_dim_name is None:
@@ -863,13 +1451,13 @@ class Reader(UnstructuredReader):
                         'has no level/levels coordinate variable.' % var
                     )
 
-                # D17: native SHYFEM levels label the BOTTOM of a cell, not
+                # Native SHYFEM levels label the BOTTOM of a cell, not
                 # sampling midpoints. OpenDrift z is instantaneous-surface
                 # relative, while nominal SHYFEM levels are reference-datum
                 # depths. Convert using time-specific eta before cell lookup.
                 H_native, _h_native, eta_native = self._native_local_wet_depth(
                     indx_nearest, nodes)
-                # D18: do not mutate requested particle z. A request at or
+                # Preserve requested particle z. A request at or
                 # below the instantaneous bed samples the last physically wet
                 # layer on the WATER side; each time frame resolves its own H.
                 # This only changes where a native water-column field is read.
@@ -929,9 +1517,9 @@ class Reader(UnstructuredReader):
                 # A global native level is not evidence of local wet-domain
                 # coverage: inactive deep layers may be zero-padded. Apply
                 # the source-aware local h+eta contract for ALL 3D requests,
-                # independently of optional A5 dry-current zeroing.
+                # independently of optional dry-current zeroing.
                 H_local, _h, _eta = self._native_local_wet_depth(indx_nearest, nodes)
-                # D18: below-bed REQUESTS are valid when an active water-side
+                # Below-bed REQUESTS are valid when an active water-side
                 # layer exists; missing/dry NATIVE cells stay invalid.
                 invalid_local = (~np.isfinite(H_local) | (H_local <= 0) |
                                  ~np.isfinite(z) | (z > 0))
@@ -1018,6 +1606,8 @@ class Reader(UnstructuredReader):
         if states.shape != (len(np.atleast_1d(lon)),) or not np.all(
                 np.isin(states, (-1, 0, 1))):
             raise RuntimeError('Unqualified native wetdry_state output')
+        # Record the actual categorical source frame so callers can audit
+        # why no arithmetic interpolation of state was performed.
         self.last_wetdry_state_source = {
             'source_frame_index': frame,
             'source_time': self.times[frame],
@@ -1031,6 +1621,8 @@ class Reader(UnstructuredReader):
                                    profiles_depth=None, time=None, lon=None,
                                    lat=None, z=None, rotate_to_proj=None):
         names = [variables] if isinstance(variables, str) else list(variables)
+        # wetdry_state is derived from native face history, not a scalar
+        # NetCDF field: handle it separately from continuous CF variables.
         if 'wetdry_state' in names:
             if 'wetdry_state' not in self.variables:
                 raise ValueError('wetdry_state not available without native opt-in')
@@ -1087,6 +1679,8 @@ class Reader(UnstructuredReader):
             return super().get_variables_interpolated_xy(
                 variables, profiles=profiles, profiles_depth=profiles_depth,
                 time=time, x=x, y=y, z=z, rotate_to_proj=rotate_to_proj)
+        # The temporary surface-depth request prevents the base wrapper
+        # from discarding valid 2-D fields. Restore 3-D validity masks below.
         checked_z = np.where(out_of_depth, self.zmax, original_z)
         environment, profile_data = super().get_variables_interpolated_xy(
             variables, profiles=profiles, profiles_depth=profiles_depth,
@@ -1100,6 +1694,8 @@ class Reader(UnstructuredReader):
 
     def _native_wetdry_exact_time_snapshot(self, variables, profiles, profiles_depth,
                             time, reader_x, reader_y, z):
+        # Obtain the native source snapshot first, then attach state/current
+        # provenance. The state never acts as a global mask for all variables.
         env, profile = self._get_variables_interpolated_native_snapshot(
             variables, profiles, profiles_depth, time, reader_x, reader_y, z)
         self._last_dry_current_provenance = {}
@@ -1163,11 +1759,16 @@ class Reader(UnstructuredReader):
         alpha = (time - before).total_seconds() / (after - before).total_seconds()
         if not 0.0 < alpha < 1.0:
             raise ValueError('SHYFEM interpolation requires a valid bracketing time')
+        # Compute each bracket independently using its own water level,
+        # physical layers and source masks; only then interpolate in time.
         e0,p0 = self._get_variables_interpolated_native_snapshot(
             variables, profiles, profiles_depth, before, reader_x, reader_y, z)
         e1,p1 = self._get_variables_interpolated_native_snapshot(
             variables, profiles, profiles_depth, after, reader_x, reader_y, z)
         result = {}
+        # Source-frame states are categorical and needed only when current
+        # forcing was requested. Other continuous fields use ordinary linear
+        # blending without a fabricated dry-state correction.
         native_wetdry_bracket_states = None
         current_fields = {'x_sea_water_velocity', 'y_sea_water_velocity'} & (set(names) | set(profile_names))
         if self._wetdry_config is not None and current_fields:
@@ -1196,7 +1797,7 @@ class Reader(UnstructuredReader):
                 raise ValueError('Native source-status/current shape mismatch')
             valid0 = (~np.ma.getmaskarray(left)) & np.isfinite(np.ma.getdata(left))
             valid1 = (~np.ma.getmaskarray(right)) & np.isfinite(np.ma.getdata(right))
-            # Only the opted-in barycentric D19 policy maps UNKNOWN to an
+            # Only the opted-in barycentric policy maps UNKNOWN to an
             # EFFECTIVE zero-current bracket, without changing its state.
             is_bary = self._horizontal_interpolation == 'barycentric'
             eff0 = np.where(st0 < 0, 0, st0) if is_bary else st0
@@ -1241,6 +1842,8 @@ class Reader(UnstructuredReader):
                 'selected_source_time_index':int(after_i if selected_after else before_i),
                 'selected_provenance':origin.copy(),
                 'mode':self._wetdry_config['dry_zero_time_mode']}
+        # Profiles share the same time brackets but retain original native
+        # vertical coordinates; no vertical resampling is introduced here.
         if profiles is None:
             return result,None
         if p0 is None or p1 is None:
@@ -1307,8 +1910,8 @@ class Reader(UnstructuredReader):
         H = np.asarray(H,dtype=float).reshape(nodes.shape)
         bottoms = np.asarray(self.native_level_bottoms_m)
         uppers = np.r_[0.,bottoms[:-1]]
-        # A layer is valid in the triangular stencil ONLY if all 3 native
-        # nodal columns physically contain that layer's wet portion.
+        # Admit a native layer only where all three source columns contain
+        # a physically wet portion of it; do not synthesize missing layers.
         vertex_wet = ((np.isfinite(H) & (H>0))[:,:,None] &
                       (H[:,:,None]>uppers[None,None,:]) &
                       (uppers[None,None,:]<abs(float(profiles_depth))))
@@ -1337,7 +1940,7 @@ class Reader(UnstructuredReader):
                 out.append(np.ma.array(values,mask=bad))
             val=np.ma.vstack(out)
             if self._wetdry_config is not None and var in ('x_sea_water_velocity','y_sea_water_velocity'):
-                # Effective D19 current zeros are allowed ONLY for genuine
+                # Effective current zeros are allowed ONLY for genuine
                 # existing physically wet layer portions. Below-bed/padded
                 # source levels remain masked, even for DRY or UNKNOWN states.
                 override=(element_states!=1)[None,:] & all_wet[:,chosen].T
@@ -1360,7 +1963,7 @@ class Reader(UnstructuredReader):
         env = self.get_variables(variables, time, reader_x, reader_y, z)
         if profiles is None:
             return env, None
-        # I5: native cell means are piecewise constant over each *wet part*
+        # Native cell means are piecewise constant over each *wet part*
         # of their source layer. A nominal midpoint below the bed must not
         # erase an active terminal cell. Keep EXACT original native z values;
         # do not request midpoint point-samples (which correctly mask below-bed).
@@ -1381,6 +1984,8 @@ class Reader(UnstructuredReader):
         wet = ((np.isfinite(H) & (H > 0))[:, None] &
                (H[:, None] > uppers[None, :]) &
                (uppers[None, :] < abs(float(profiles_depth))))
+        # Select source levels by actual wet overlap, not by nominal midpoint
+        # validity. Preserve masks for dry and padded source cells.
         selected_indices = np.flatnonzero(np.any(wet, axis=0))
         if not selected_indices.size:
             # Preserve a native level and all-masked data for dry columns so
@@ -1414,7 +2019,7 @@ class Reader(UnstructuredReader):
                 values=np.ma.masked_where(~valid_state[None,:],values)
                 if (var in ('x_sea_water_velocity','y_sea_water_velocity') and
                         self._wetdry_config['dry_current']=='zero'):
-                    # Preserve A5 dry-zero only for geometrically wet cells.
+                    # Preserve dry-zero only for geometrically wet cells.
                     dry=(np.asarray(state)==0)[None,:] & ~inactive
                     values=self._zero_at_masked_indices(values,dry)
             result[var]=values
@@ -1424,6 +2029,8 @@ class Reader(UnstructuredReader):
         """
         Find nearest index of z in levels.
         """
+        # Compatibility helper for nominal midpoint indices. Native 3-D
+        # sampling above instead uses layer bottoms and time-specific eta.
         if not self.has_vertical_levels:
             raise ValueError(
                 'Cannot interpolate vertically because dataset has no '
