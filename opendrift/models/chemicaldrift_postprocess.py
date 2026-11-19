@@ -9824,30 +9824,17 @@ to physically wet regions. This writer exports data. it does not seed.
 
                 # Variables that should not receive face mesh metadata.
                 skip = {
-                    "mesh",
-                    "face",
-                    "node",
+                    "mesh", "face", "node",
                     "nmax_face_nodes",
                     "face_node_connectivity",
-                    "node_lon",
-                    "node_lat",
-                    "node_x",
-                    "node_y",
-                    "face_lon",
-                    "face_lat",
-                    "face_x",
-                    "face_y",
+                    "node_lon", "node_lat", "node_x", "node_y",
+                    "face_lon", "face_lat", "face_x",  "face_y",
                     "crs",
-                    "time",
-                    "avg_time",
-                    "depth",
-                    "depth_bounds",
-                    "depth_model_top",
-                    "depth_model_bounds",
-                    "specie",
-                    "specie_original_id",
-                    "specie_phase",
-                    "specie_name",
+                    "time", "avg_time",
+                    "depth","depth_bounds",
+                    "depth_model_top", "depth_model_bounds",
+                    "specie", "specie_original_id",
+                    "specie_phase", "specie_name",
                 }
 
                 for vname, var in nc.variables.items():
@@ -29907,7 +29894,7 @@ to physically wet regions. This writer exports data. it does not seed.
                 lead = lead.isel({d: 0}, drop=True)
             zero, _ = xr.broadcast(xr.zeros_like(target_grid_dataset['area'], dtype=np.float64), lead)
             zero = zero.transpose(*DataArray_ls[0].dims)
-            # The existing SUM normalizer removes a singleton depth axis after the first increment. 
+            # The existing SUM normalizer removes a singleton depth axis after the first increment.
             # Match the physical denominator to the concentration dimensions
 			# when the target contains a single depth layer.
 			# Preserve the original target dataset and its depth metadata.
