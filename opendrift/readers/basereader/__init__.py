@@ -82,6 +82,7 @@ class BaseReader(Variables, Combine, Filter):
         'water_surface_height_above_reference_datum': 'sea_surface_height',
         'mass_concentration_of_suspended_matter_in_sea_water': 'spm',
         'mole_concentration_of_dissolved_organic_carbon_in_sea_water': 'doc',
+        'surface_downwelling_shortwave_flux_in_air': 'solar_irradiance',
         }
 
     xy2eastnorth_mapping = {
