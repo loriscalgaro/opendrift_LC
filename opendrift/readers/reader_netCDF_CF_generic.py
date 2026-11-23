@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 import pandas as pd
 import xarray as xr
+from opendrift.errors import OutsideTemporalCoverageError
 from opendrift.readers.basereader.structured import StructuredReader
 from opendrift.readers.basereader import standard_names
 from opendrift.readers import open_dataset_opendrift, datetime_from_variable, \
@@ -845,7 +846,7 @@ class Reader(StructuredReader):
         if tdim in source.dims:
             _nearest, before, _after, _ni, before_i, _ai = self.nearest_time(time)
             if before is None or before_i is None:
-                raise ValueError('wetdry_state has no preceding CF source time')
+                raise OutsideTemporalCoverageError('wetdry_state has no preceding CF source time')
             source_index = int(before_i)
             if (source_index < 0 or source_index >= len(self.times) or
                     self.times[source_index] != before):
@@ -989,7 +990,7 @@ class Reader(StructuredReader):
         requested_z = np.broadcast_to(requested_z, (n,))
         _nearest, before, after, *_ = self.nearest_time(time)
         if before is None:
-            raise ValueError('No CF time before requested time')
+            raise OutsideTemporalCoverageError('No CF time before requested time')
         times = [before]
         if after is not None and before < time < after:
             times.append(after)
@@ -1105,8 +1106,57 @@ class Reader(StructuredReader):
             alpha * np.ma.asarray(p1[name])) for name in names}
         if profiles is None:
             return values, None
-        if pr0 is None or pr1 is None or not np.array_equal(pr0['z'], pr1['z']):
-            raise ValueError('Incompatible CF native temporal profile levels')
+        # Changing h+eta can make a *native* depth level unavailable in one
+        # bracket. Keep that level masked: never invent a vertical sample or
+        # blend a one-sided observation. A coordinate not on the certified
+        # source axis remains an incompatible-source error.
+        if pr0 is None and pr1 is None:
+            return values, None
+        if pr0 is None or pr1 is None:
+            present = pr0 if pr0 is not None else pr1
+            native_z = np.asarray(self.z, dtype=float)
+            present_z = np.asarray(present['z'], dtype=float)
+            if (native_z.ndim != 1 or present_z.ndim != 1 or
+                    not np.isfinite(native_z).all() or not np.isfinite(present_z).all() or
+                    not np.all(np.isclose(present_z[:, None], native_z[None, :],
+                        rtol=0, atol=1.e-7).any(axis=1))):
+                raise ValueError('Incompatible CF native temporal profile levels')
+            output_profiles = {'z': present_z.copy()}
+            for name in profile_names:
+                output_profiles[name] = np.ma.masked_all(
+                    np.ma.asarray(present[name]).shape, dtype=float)
+            return values, output_profiles
+        if not np.array_equal(pr0['z'], pr1['z']):
+            native_z = np.asarray(self.z, dtype=float)
+            z0 = np.asarray(pr0['z'], dtype=float)
+            z1 = np.asarray(pr1['z'], dtype=float)
+            if (native_z.ndim != 1 or not np.isfinite(native_z).all() or
+                    any(a.ndim != 1 or not np.isfinite(a).all() or
+                        (not np.all(np.isclose(a[:, None], native_z[None, :],
+                            rtol=0, atol=1.e-7).any(axis=1)))
+                        for a in (z0, z1))):
+                raise ValueError('Incompatible CF native temporal profile levels')
+            # Union of levels *already returned by a source bracket*, in
+            # native-axis order. Other levels are not synthesized.
+            included = np.isclose(native_z[:, None],
+                np.concatenate((z0, z1))[None, :], rtol=0, atol=1.e-7).any(axis=1)
+            levels = native_z[included]
+            output_profiles = {'z': levels.copy()}
+            for name in profile_names:
+                left = np.ma.masked_all((len(levels), len(reader_x)), dtype=float)
+                right = np.ma.masked_all(left.shape, dtype=float)
+                for zs, prof, target in ((z0, pr0, left), (z1, pr1, right)):
+                    src = np.ma.masked_invalid(np.ma.asarray(prof[name]))
+                    if src.shape != (len(zs), len(reader_x)):
+                        raise ValueError('Incompatible CF native temporal profile shape')
+                    for k, depth in enumerate(zs):
+                        matches = np.flatnonzero(np.isclose(levels, depth, rtol=0, atol=1.e-7))
+                        if len(matches) != 1:
+                            raise ValueError('Incompatible CF native temporal profile levels')
+                        target[int(matches[0])] = src[k]
+                output_profiles[name] = np.ma.masked_invalid(
+                    (1 - alpha) * left + alpha * right)
+            return values, output_profiles
         output_profiles = {'z': np.asarray(pr0['z']).copy()}
         for name in profile_names:
             output_profiles[name] = np.ma.masked_invalid(

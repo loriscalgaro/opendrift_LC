@@ -14282,6 +14282,26 @@ to physically wet regions. This writer exports data. it does not seed.
             stage, point_index, context
         )
 
+    @staticmethod
+    def _sample_uniform_geodesic_disk(lon, lat, diameter_m, number):
+        """Uniform-by-area WGS84 disk; diameter is metres, never Gaussian sigma.
+
+        Uses the existing NumPy global random state seeded by the R06 driver.
+        The OpenDrift ocean-only policy remains within seed_elements().
+        """
+        from pyproj import Geod
+        n = int(number)
+        diameter = float(diameter_m)
+        if n < 1 or not np.isfinite(diameter) or diameter < 0.0:
+            raise ValueError('R06 disk requires nonnegative finite diameter and positive count')
+        if diameter == 0.0:
+            return np.full(n, float(lon)), np.full(n, float(lat))
+        distances = 0.5 * diameter * np.sqrt(np.random.random(n))
+        bearings = 360.0 * np.random.random(n)
+        lons, lats, _ = Geod(ellps='WGS84').fwd(
+            np.full(n, float(lon)), np.full(n, float(lat)), bearings, distances)
+        return np.asarray(lons, dtype=float), np.asarray(lats, dtype=float)
+
     def seed_from_NETCDF(
             self, NETCDF_data, Bathimetry_data=None,
             Bathimetry_seed_data=None, mode='water_conc', lon_resol=None,
@@ -14297,6 +14317,7 @@ to physically wet regions. This writer exports data. it does not seed.
             emission_coordinate_mode="pixel_center", emission_wetcell_recovery=False,
             emission_wetcell_diagnostic_radius=2000, water_concentration_unit=None,
             concentration_coordinate_mode="legacy", dry_run=False,
+            spread_mode="uniform_disk_diameter",
     ):
         """Seed particles from water/sediment concentrations or direct emissions.
 
@@ -14338,8 +14359,10 @@ to physically wet regions. This writer exports data. it does not seed.
         higherbound : object, default=float('inf')
             elements with higher values are discarded
 
-        radius : int, default=50
-            unit: meters, elements will be created in a circular area around coordinates
+        radius : float, default=50
+            In uniform_disk_diameter mode, the DIAMETER in metres of a disk
+            sampled uniformly by AREA, not a Gaussian standard deviation.
+            In legacy_gaussian mode, forwarded unchanged to OpenDrift.
 
         mass_element_ug : float, optional, default=100000.0
             maximum mass of elements if number_of_elements is not specificed
@@ -14415,6 +14438,13 @@ to physically wet regions. This writer exports data. it does not seed.
             "legacy" or "center", used for water_conc and sed_conc. "legacy" adds half
             the grid resolution to input coordinates (default). "center" uses input
             coordinates directly, as required for writer-derived cell centres.
+
+        spread_mode : str, default="uniform_disk_diameter"
+            "uniform_disk_diameter" samples within a circle with diameter=radius
+            using WGS84 geodesics and passes radius=0 to seed_elements.
+            "legacy_gaussian" preserves previous OpenDrift spreading.
+            The existing seed:ocean_only relocation policy is unchanged;
+            final relocated positions require separate wet/mesh checks.
 
         dry_run : bool, default=False
             If True, validate and return a deterministic seeding estimate without
@@ -14500,6 +14530,16 @@ to physically wet regions. This writer exports data. it does not seed.
         if not isinstance(dry_run, (bool, np.bool_)):
             raise ValueError(f"dry_run must be boolean, got {dry_run!r}")
         dry_run = bool(dry_run)
+        if spread_mode not in ('uniform_disk_diameter', 'legacy_gaussian'):
+            raise ValueError('Unsupported spread_mode: ' + repr(spread_mode))
+        if not np.isfinite(float(radius)) or float(radius) < 0.0:
+            raise ValueError('radius must be nonnegative and finite')
+
+        def _resolve_particle_seed_coordinates(lon, lat, n):
+            if spread_mode == 'uniform_disk_diameter':
+                lo_disk, la_disk = self._sample_uniform_geodesic_disk(lon, lat, radius, n)
+                return lo_disk, la_disk, 0.0
+            return float(lon), float(lat), float(radius)
 
         def _time_repr(x):
             if x is None:
@@ -15037,6 +15077,8 @@ to physically wet regions. This writer exports data. it does not seed.
 
             return {
                 "schema_version": 2,
+                "spread_mode": str(spread_mode),
+                "seed_disk_diameter_m": float(radius) if spread_mode == 'uniform_disk_diameter' else None,
                 "execution_mode": "estimate" if dry_run else "seed",
                 "dry_run": bool(dry_run),
                 "mode": str(mode),
@@ -15762,10 +15804,12 @@ to physically wet regions. This writer exports data. it does not seed.
                             speciation=speciation_ctrl,
                             default_specie=default_specie)
 
+                        seed_lon, seed_lat, seed_radius = _resolve_particle_seed_coordinates(
+                            elem_lon, elem_lat, number)
                         kwargs_seed = dict(
-                            lon=elem_lon,
-                            lat=elem_lat,
-                            radius=radius,
+                            lon=seed_lon,
+                            lat=seed_lat,
+                            radius=seed_radius,
                             number=number,
                             time=time,
                             mass=mass_element_seed_ug,
@@ -15833,6 +15877,9 @@ to physically wet regions. This writer exports data. it does not seed.
                                     kwargs_one = dict(kwargs_seed)
                                     kwargs_one["number"] = 1
                                     kwargs_one["mass"] = mass_element_seed_ug
+                                    if spread_mode == 'uniform_disk_diameter':
+                                        kwargs_one["lon"] = float(np.asarray(seed_lon)[k])
+                                        kwargs_one["lat"] = float(np.asarray(seed_lat)[k])
 
                                     if spec_choices is not None:
                                         kwargs_one["specie"] = int(np.asarray(spec_choices).ravel()[k])
@@ -15963,10 +16010,12 @@ to physically wet regions. This writer exports data. it does not seed.
                                 speciation=speciation_ctrl,
                                 default_specie=default_specie)
 
+                            res_lon, res_lat, res_radius = _resolve_particle_seed_coordinates(
+                                elem_lon, elem_lat, 1)
                             kwargs_res = dict(
-                                lon=elem_lon,
-                                lat=elem_lat,
-                                radius=radius,
+                                lon=res_lon,
+                                lat=res_lat,
+                                radius=res_radius,
                                 number=1,
                                 time=time,
                                 mass=residual_to_seed,

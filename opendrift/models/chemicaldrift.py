@@ -878,7 +878,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             'zero_is_physical': True, 'mechanism': 'FRAMEWORK_DEFAULT',
             'warn_on_fallback': False},
         'sea_floor_depth_below_sea_level': {
-            'policy': 'DEFAULT', 'domain': 'GE_ZERO', 'fallback': 10000.0,
+            'policy': 'DEFAULT', 'domain': 'SIGNED', 'fallback': 10000.0,
             'zero_is_physical': True, 'mechanism': 'FRAMEWORK_DEFAULT',
             'resolution': 'GENERIC_DEFAULT_WAVE_SOURCE_REQUIRED',
             'warn_on_fallback': False},
@@ -1835,7 +1835,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             return self._validate_seabed_sources()
         return self._seabed_source_admission
 
-    def _sample_environment_isolated(self, names, z):
+    def _sample_environment_isolated(self, names, z, indices=None):
         """Source-time model-level sampling, with untouched manager provenance.
 
         This is an independent lookup; it never writes `elements.z` or overwrites
@@ -1843,8 +1843,13 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         """
         mgr = self.env
         n = int(self.num_elements_active())
+        indices = (np.arange(n, dtype=np.int64) if indices is None
+                   else np.asarray(indices, dtype=np.int64).ravel())
+        if (np.any(indices < 0) or np.any(indices >= n) or
+                np.unique(indices).size != indices.size):
+            raise ValueError('CD_SED_001 invalid semantic sample indices')
         z = np.asarray(z, dtype=float)
-        if z.shape != (n,) or np.any(~np.isfinite(z)):
+        if z.shape != (indices.size,) or np.any(~np.isfinite(z)):
             raise ValueError('CD_SED_001 invalid semantic sample positions')
         keys = ('last_environment_provenance',
                 'last_environment_profile_provenance',
@@ -1855,17 +1860,19 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         try:
             env, profiles, missing = mgr.get_environment(
                 list(names), self.time,
-                lon=np.asarray(self.elements.lon, dtype=float),
-                lat=np.asarray(self.elements.lat, dtype=float), z=z,
-                element_ID=np.asarray(self.elements.ID))
+                lon=np.asarray(self.elements.lon, dtype=float)[indices],
+                lat=np.asarray(self.elements.lat, dtype=float)[indices], z=z,
+                element_ID=np.asarray(self.elements.ID)[indices])
             provenance = mgr.get_last_environment_provenance(copy=True)
             result = {}
             source_provenance = {}
-            missing = np.broadcast_to(np.asarray(missing, dtype=bool), (n,))
+            missing = np.broadcast_to(np.asarray(missing, dtype=bool),
+                                      (indices.size,))
             for name in names:
                 value = np.ma.asarray(env[name], dtype=float).filled(np.nan)
                 codes = provenance.get(name)
-                if value.shape != (n,) or codes is None or np.shape(codes) != (n,):
+                if (value.shape != (indices.size,) or codes is None or
+                        np.shape(codes) != (indices.size,)):
                     raise RuntimeError(f'CD_SED_001 {name} missing sample/provenance')
                 codes = np.asarray(codes, dtype=np.uint8)
                 # Missing reader data cannot be converted into invented physical
@@ -1880,8 +1887,12 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 if only_constant:
                     good = good | (codes == mgr.PROVENANCE_CONSTANT)
                 value[~good | missing] = np.nan
-                result[name] = value
-                source_provenance[name] = codes.copy()
+                sampled = np.full(n, np.nan, dtype=float)
+                sampled[indices] = value
+                result[name] = sampled
+                full_codes = np.zeros(n, dtype=np.uint8)
+                full_codes[indices] = codes
+                source_provenance[name] = full_codes
             return result, source_provenance
         finally:
             for key, val in original.items():
@@ -1911,19 +1922,17 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         sedids = [getattr(self, attr) for attr in (
             'num_srev', 'num_ssrev', 'num_sirrev', 'num_sburied')
             if hasattr(self, attr)]
-        if not sedids or not np.any(np.isin(self.elements.specie, sedids)):
+        sediment_mask = np.isin(self.elements.specie, sedids)
+        if not np.any(sediment_mask):
             return
+        indices = np.flatnonzero(sediment_mask)
         drivers = sorted(v for v in self._SEDIMENT_BOTTOM_WATER_DRIVERS
                          if v in self.required_variables and
                          self._has_reader_variable(v))
         if not drivers:
             return
         depth = np.asarray(self._instantaneous_water_depth(
-            require_physical_bathymetry=True), dtype=float)
-        bathy = np.asarray(self._env_array(
-            'sea_floor_depth_below_sea_level'), dtype=float)
-        if bathy.shape != (n,) or np.any(~np.isfinite(bathy)):
-            raise RuntimeError('CD_SED_001 unverified seabed depth')
+            idx=indices, require_physical_bathymetry=True), dtype=float)
         # Epsilon is strictly inside the wet water column and never crosses
         # into the sediment; it is not an arbitrary source-layer index.
         dz = np.minimum(1.e-5, depth * 0.1)
@@ -1936,14 +1945,16 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         if np.any(zbottom >= 0.0):
             raise ValueError('CD_SED_001 bottom position is outside wet column')
         bottom, bottom_provenance = self._sample_environment_isolated(
-            drivers, zbottom)
-        sediment_mask = np.isin(self.elements.specie, sedids)
+            drivers, zbottom, indices=indices)
+        bad_particles = np.zeros(n, dtype=bool)
         for name, values in bottom.items():
-            if np.any(~np.isfinite(values[sediment_mask])):
-                raise RuntimeError(f'CD_SED_001 {name} invalid bottom-water '
-                                   'reader value for sediment particles')
+            if np.shape(values) != (n,):
+                raise RuntimeError(f'CD_SED_001 {name} bottom-water shape mismatch')
+            bad_particles |= sediment_mask & ~np.isfinite(values)
         self._sediment_bottom_water_values = bottom
         self._sediment_bottom_water_provenance = bottom_provenance
+        if np.any(bad_particles):
+            self._deactivate_particle_local(bad_particles, reason='missing_data')
 
     def _sediment_bottom_water_array(self, name, fallback=None, idx=None):
         """Use a separate bottom-water sample only for sediment chemistry."""
@@ -3654,23 +3665,34 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         codes = mgr.get_last_environment_provenance(copy=True)
         bad = np.broadcast_to(np.asarray(missing, dtype=bool), (n,))
         accepted = {}
+        local_missing = bad.copy()
         for name in names:
             v = np.ma.asarray(values[name], dtype=float).filled(np.nan)
             c = np.asarray(codes.get(name, ()), dtype=np.uint8)
             if v.shape != (n,) or c.shape != (n,):
                 raise RuntimeError('Final buffer geometry: invalid source shape ' + name)
-            if np.any(bad | ~np.isfinite(v) | (c != mgr.PROVENANCE_READER)):
-                raise RuntimeError('Final buffer geometry: missing or fallback source ' + name)
+            # Reader and framework CONSTANT provenance are both authenticated
+            # sources. A configured missing-data fallback is not a measurement.
+            local_missing |= ~np.isfinite(v) | ~np.isin(
+                c, (mgr.PROVENANCE_READER, mgr.PROVENANCE_CONSTANT))
             accepted[name] = v.copy()
         h = accepted['sea_floor_depth_below_sea_level']
         eta = accepted['sea_surface_height']
-        if np.any((h < 0.) | (h + eta <= 0.)):
-            raise ValueError('Final buffer geometry: physically invalid water depth')
-        # All reader and geometry checks precede mutation.
+        # Preserve valid neighbours and use the established local lifecycle.
+        invalid = (~local_missing & (h + eta <= 0.))
         for name in names:
             original = np.asarray(getattr(self.environment, name))
             if original.shape != (n,):
                 raise RuntimeError('Final buffer geometry: environment shape invalid ' + name)
+        if np.any(local_missing):
+            kept = self._deactivate_particle_local(local_missing, reason='missing_data')
+            for name in names:
+                accepted[name] = accepted[name][kept]
+            invalid = invalid[kept]
+        if np.any(invalid):
+            kept = self._deactivate_particle_local(invalid, reason='invalid_geometry')
+            for name in names:
+                accepted[name] = accepted[name][kept]
         for name in names:
             getattr(self.environment, name)[:] = accepted[name]
 
@@ -3711,19 +3733,19 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                     raise RuntimeError('Canonical active mass state changed at activation')
                 self._exact_mass_restart_expected = None
 
-            # Stranding is a *location/status* change, not an elimination sink.
-            # Previous exact ledgers summed active particles only and falsely
-            # reported stranded inventory as lost. Count the original deactivated
-            # particles that have status 'stranded', once, at each output frame.
+            # Particle-local deactivation is not a chemical sink. Include
+            # every inert category in the existing exact mass inventory.
             pools = []
             if self.num_elements_active():
                 pools.append((self.elements, None))
             deactivated = getattr(self, 'elements_deactivated', None)
             categories = tuple(getattr(self, 'status_categories', ()))
-            if deactivated is not None and 'stranded' in categories:
-                stranded = np.asarray(deactivated.status, dtype=np.int64) == categories.index('stranded')
-                if np.any(stranded):
-                    pools.append((deactivated, stranded))
+            if deactivated is not None and len(deactivated):
+                valid = np.isin(np.asarray(deactivated.status, dtype=np.int64),
+                    [categories.index(k) for k in self._INERT_PARTICLE_REASONS
+                     if k in categories])
+                if np.any(valid):
+                    pools.append((deactivated, valid))
             totals = [0.0, 0.0, 0.0]
             carried = getattr(self, '_checkpoint_carried_stranded', None)
             if carried is not None:
@@ -3733,13 +3755,13 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                     totals[i] += float(carried['fields'][name])
             for pool, mask in pools:
                 if not all(hasattr(pool, name) for name in mass_names):
-                    raise RuntimeError('Missing active or stranded chemical mass state')
+                    raise RuntimeError('Missing active or inactive chemical mass state')
                 for i, name in enumerate(mass_names):
                     vals = np.asarray(getattr(pool, name), dtype=np.float64)
                     if mask is not None:
                         vals = vals[mask]
                     if not np.all(np.isfinite(vals)):
-                        raise ValueError('Nonfinite active/stranded chemical mass ledger')
+                        raise ValueError('Nonfinite active/inactive chemical mass ledger')
                     totals[i] += float(np.sum(vals, dtype=np.float64))
             prior = getattr(self, '_checkpoint_initial_mass_ug', None)
             if prior is None:
@@ -3798,30 +3820,12 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'precision': 'float64'})
 
     _STRANDED_RESTART_FIELDS = ('mass', 'mass_degraded', 'mass_volatilized')
+    # Inactive particles retain their inventory. Removed denotes the existing
+    # chemical near-zero lifecycle and is deliberately not redefined here.
+    _INERT_PARTICLE_REASONS = frozenset((
+        'stranded', 'missing_data', 'outside', 'invalid_geometry',
+        'seafloor', 'seeded_on_land', 'retired', 'deactivated'))
 
-    @staticmethod
-    def _stranded_restart_digest(ids, generations, fields, initial, active_generation):
-        import hashlib
-        h = hashlib.sha256()
-        h.update(b'ChemicalDrift.stranded_checkpoint.v1\x00')
-        h.update(np.asarray(ids, dtype='<i8').tobytes())
-        h.update(np.asarray(generations, dtype='<i8').tobytes())
-        for name in ('mass', 'mass_degraded', 'mass_volatilized'):
-            h.update(name.encode('ascii') + b'\x00')
-            h.update(np.asarray(fields[name], dtype='<f8').tobytes())
-        h.update(np.asarray([initial], dtype='<f8').tobytes())
-        h.update(np.asarray([active_generation], dtype='<i8').tobytes())
-        return h.hexdigest()
-
-    @staticmethod
-    def _stranded_aggregate_digest(fields, initial):
-        import hashlib
-        h = hashlib.sha256(b'ChemicalDrift.stranded_checkpoint.aggregate.v2\x00')
-        for name in ('mass', 'mass_degraded', 'mass_volatilized'):
-            h.update(name.encode('ascii') + b'\x00')
-            h.update(np.asarray([fields[name]], dtype='<f8').tobytes())
-        h.update(np.asarray([initial], dtype='<f8').tobytes())
-        return h.hexdigest()
 
     @staticmethod
     def _numpy_random_digest(raw, pos, has_gauss, cached_gaussian):
@@ -3854,7 +3858,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             raw, int(pos), int(has_gauss), float(cached))
         ds.attrs['checkpoint_rng_role'] = (
             'canonical terminal checkpoint NumPy global RNG state;'
-            ' no original inactive IDs retained')
+            ' see inactive checkpoint sidecar for original inactive IDs')
 
     def _read_numpy_random_checkpoint(self, ds, trajectory_time_index):
         """Validate a complete canonical terminal RNG sidecar, or return None."""
@@ -3892,136 +3896,151 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 pos, has_gauss, cached)
 
     def _get_stranded_restart_state(self):
-        """Return the inactive chemical inventory as three float64 totals.
-
-        Previous inactive elements are NEVER reactivated or tracked by ID. New
-        stranding in this run is counted once via the native deactivated array.
-        """
+        """Return one inert inventory, retaining each inactive ID/status/sink."""
         data = {name: np.float64(0) for name in self._STRANDED_RESTART_FIELDS}
         carried = getattr(self, '_checkpoint_carried_stranded', None)
+        records = list(carried.get('records', [])) if carried is not None else []
         if carried is not None:
             for name in data:
                 data[name] += np.float64(carried['fields'][name])
         deactivated = getattr(self, 'elements_deactivated', None)
         categories = tuple(getattr(self, 'status_categories', ()))
-        if deactivated is not None and 'stranded' in categories:
-            mask = np.asarray(deactivated.status, dtype=np.int64) == categories.index('stranded')
+        generation = int(getattr(self, '_checkpoint_inactive_generation', 0))
+        if deactivated is not None and len(deactivated):
+            status = np.asarray(deactivated.status, dtype=np.int64)
+            inactive = np.isin(status, [categories.index(k) for k in
+                self._INERT_PARTICLE_REASONS if k in categories])
             for name in data:
-                data[name] += np.sum(np.asarray(getattr(deactivated, name),
-                                                dtype=np.float64)[mask], dtype=np.float64)
+                values = np.asarray(getattr(deactivated, name), dtype=np.float64)
+                data[name] += np.sum(values[inactive], dtype=np.float64)
+            # Each record preserves its original ID/status/species/mass/sinks.
+            # Standard trajectory output already contains the same status, and
+            # this annotation survives active-only canonical restarts.
+            needed = [name for name in self._CHECKPOINT_MASS_FIELDS
+                      if name in deactivated.variables]
+            for i in np.flatnonzero(inactive):
+                records.append({
+                    'generation': generation,
+                    'id': int(np.asarray(deactivated.ID)[i]),
+                    'reason': categories[int(status[i])],
+                    'specie': int(np.asarray(deactivated.specie)[i]),
+                    'fields': {k: float(np.asarray(getattr(deactivated, k),
+                                      dtype=np.float64)[i]).hex() for k in needed}})
         if any(not np.isfinite(value) or value < 0 for value in data.values()):
-            raise ValueError('Invalid aggregated stranded chemical inventory')
-        return {'fields': data}
+            raise ValueError('Invalid aggregated inactive chemical inventory')
+        return {'fields': data, 'records': records}
+
+    @staticmethod
+    def _inactive_restart_digest(fields, initial, records_json):
+        import hashlib
+        h = hashlib.sha256(b'ChemicalDrift.inactive_checkpoint.current\x00')
+        for name in ('mass', 'mass_degraded', 'mass_volatilized'):
+            h.update(name.encode('ascii') + b'\x00')
+            h.update(np.asarray([fields[name]], dtype='<f8').tobytes())
+        h.update(np.asarray([initial], dtype='<f8').tobytes())
+        h.update(records_json.encode('utf-8'))
+        return h.hexdigest()
 
     def _append_stranded_restart_sidecar(self, dataset):
-        aggregate = self._get_stranded_restart_state()['fields']
-        if not any(v != 0 for v in aggregate.values()):
-            return
+        """Write the sole current inactive-inventory checkpoint representation."""
+        state = self._get_stranded_restart_state()
+        aggregate, records = state['fields'], state['records']
         initial = float(self._checkpoint_initial_mass_ug)
         if not np.isfinite(initial) or initial < 0:
-            raise ValueError('Invalid initial inventory in stranded checkpoint')
+            raise ValueError('Invalid initial inventory in inactive checkpoint')
+        payload = json.dumps(records, sort_keys=True, separators=(',', ':'))
         for name, value in aggregate.items():
             dataset['checkpoint_stranded_aggregate_' + name + '_ug'] = (
                 (), np.float64(value))
-        dataset.attrs['checkpoint_stranded_schema_version'] = 2
+        dataset.attrs['checkpoint_stranded_schema_version'] = 3
+        dataset.attrs['checkpoint_stranded_records_json'] = payload
         dataset.attrs['checkpoint_stranded_initial_mass_ug'] = initial
-        dataset.attrs['checkpoint_stranded_sha256'] = self._stranded_aggregate_digest(
-            aggregate, initial)
+        dataset.attrs['checkpoint_stranded_sha256'] = self._inactive_restart_digest(
+            aggregate, initial, payload)
         dataset.attrs['checkpoint_stranded_role'] = (
-            'inert aggregate chemical inventory, no historical inactive particle IDs')
+            'inert chemical inventory with original IDs, statuses and sinks')
 
     def _read_stranded_restart_sidecar(self, dataset, trajectory_time_index):
-        """Read aggregate v2 or upgrade authenticated legacy per-particle v1.
-
-        No inactive trajectory ID is used to seed, reactivate or track particles.
-        """
-        present = ('checkpoint_stranded_schema_version' in dataset.attrs or
-                   any(n.startswith('checkpoint_stranded_') for n in dataset.variables))
-        if not present:
-            # Old output without a sidecar is safe only when any missing inactive
-            # inventory is below the pre-existing float32 uncertainty guard.
-            if 'mass_ledger_exact_remaining_ug' in dataset and all(
-                    n in dataset for n in ('mass','mass_degraded',
-                                           'mass_volatilized','age_seconds')):
-                nt = int(dataset.sizes['time'])
-                idx = trajectory_time_index if trajectory_time_index >= 0 else nt + trajectory_time_index
-                active = np.asarray(dataset.age_seconds.isel(time=idx).values) >= 0
-                values = [np.asarray(dataset[n].isel(time=idx).values,
-                                     dtype=np.float64)[active]
-                          for n in self._STRANDED_RESTART_FIELDS]
-                measured = sum(float(np.nansum(v)) for v in values)
-                # The ledger 'remaining' column is only live undegraded mass.
-                # A live particle also retains cumulative degraded and
-                # volatilized chemical inventory. Compare like-for-like totals.
-                ledger_fields = ('mass_ledger_exact_remaining_ug',
-                                 'mass_ledger_exact_degraded_ug',
-                                 'mass_ledger_exact_volatilized_ug')
-                if not all(k in dataset for k in ledger_fields):
-                    raise ValueError('Incomplete exact mass ledger for stranded check')
-                expected = sum(float(dataset[k].isel(time=idx).values)
-                               for k in ledger_fields)
-                precision = 8 * np.finfo(np.float32).eps * sum(
-                    float(np.nansum(np.abs(v))) for v in values)
-                if not np.isfinite(expected) or abs(expected - measured) > precision:
-                    raise ValueError('Missing authenticated stranded inventory sidecar')
+        """Read the one current inactive inventory; legacy master has no sidecar."""
+        attrs = dataset.attrs
+        has_sidecar = ('checkpoint_stranded_schema_version' in attrs or
+                       any(n.startswith('checkpoint_stranded_')
+                           for n in dataset.variables))
+        if not has_sidecar:
+            # Legacy master output has no exact checkpoint sidecars. A current
+            # canonical output missing this mandatory payload is incomplete.
+            if ('checkpoint_mass_schema_version' in attrs or
+                    'checkpoint_exact_lon64' in dataset or
+                    'chemical_element_size_state' in attrs):
+                raise ValueError('Current checkpoint missing inactive inventory sidecar')
+            if (not all(name in dataset for name in ('name_species','nspecies')) or
+                    'config_chemical:transfer_setup' not in attrs):
+                raise ValueError('Unrecognized legacy-master checkpoint representation')
             return None
         nt = int(dataset.sizes['time'])
         idx = trajectory_time_index if trajectory_time_index >= 0 else nt + trajectory_time_index
         if idx != nt - 1:
-            raise ValueError('Stranded inventory sidecar applies to terminal output only')
-        version = int(dataset.attrs.get('checkpoint_stranded_schema_version', -1))
-        initial = float(dataset.attrs['checkpoint_stranded_initial_mass_ug'])
+            raise ValueError('Inactive inventory sidecar applies to terminal output only')
+        if int(attrs.get('checkpoint_stranded_schema_version', -1)) != 3:
+            raise ValueError('Unsupported inactive inventory format (current or legacy master only)')
+        initial = float(attrs['checkpoint_stranded_initial_mass_ug'])
         if not np.isfinite(initial) or initial < 0:
-            raise ValueError('Invalid stranded original initial mass')
+            raise ValueError('Invalid inactive inventory initial mass')
         fields = {}
-        if version == 2:
-            for name in self._STRANDED_RESTART_FIELDS:
-                key = 'checkpoint_stranded_aggregate_' + name + '_ug'
-                if key not in dataset or dataset[key].dtype != np.dtype('float64'):
-                    raise ValueError('Incomplete or non-float64 stranded aggregate: ' + key)
-                item = np.asarray(dataset[key].values)
-                if item.shape != () or not np.isfinite(item.item()) or item.item() < 0:
-                    raise ValueError('Invalid stranded aggregate value: ' + key)
-                fields[name] = np.float64(item.item())
-            digest = self._stranded_aggregate_digest(fields, initial)
-        elif version == 1:
-            # Compatibility reader only; convert old per-ID sidecars once to totals.
-            ids = np.asarray(dataset['checkpoint_stranded_ID64'].values, dtype=np.int64)
-            gens = np.asarray(dataset['checkpoint_stranded_generation64'].values, dtype=np.int64)
-            if (ids.ndim != 1 or ids.size == 0 or gens.shape != ids.shape or
-                    np.any(gens < 0) or len(set(zip(gens.tolist(),ids.tolist()))) != ids.size):
-                raise ValueError('Invalid legacy stranded IDs')
-            raw = {}
-            for name in self._STRANDED_RESTART_FIELDS:
-                da = dataset['checkpoint_stranded_' + name + '64']
-                if da.dtype != np.dtype('float64'):
-                    raise ValueError('Invalid legacy stranded precision')
-                vals = np.asarray(da.values, dtype=np.float64)
-                if vals.shape != ids.shape or np.any(~np.isfinite(vals)) or np.any(vals < 0):
-                    raise ValueError('Invalid legacy stranded inventory')
-                raw[name] = vals
-                fields[name] = np.sum(vals, dtype=np.float64)
-            active_generation = int(dataset.attrs['checkpoint_stranded_active_generation'])
-            if active_generation < 0 or active_generation < int(gens.max()):
-                raise ValueError('Invalid legacy stranded generation')
-            digest = self._stranded_restart_digest(ids, gens, raw, initial, active_generation)
-        else:
-            raise ValueError('Unsupported stranded inventory schema')
-        if digest != dataset.attrs.get('checkpoint_stranded_sha256'):
-            raise ValueError('Stranded restart SHA-256 integrity mismatch')
-        if 'mass_ledger_exact_remaining_ug' not in dataset:
-            raise ValueError('Stranded checkpoint missing mass ledger verification')
+        for name in self._STRANDED_RESTART_FIELDS:
+            key = 'checkpoint_stranded_aggregate_' + name + '_ug'
+            if key not in dataset or dataset[key].dtype != np.dtype('float64'):
+                raise ValueError('Incomplete inactive inventory aggregate: ' + key)
+            item = np.asarray(dataset[key].values)
+            if item.shape != () or not np.isfinite(item.item()) or item.item() < 0:
+                raise ValueError('Invalid inactive aggregate value: ' + key)
+            fields[name] = np.float64(item.item())
+        payload = attrs.get('checkpoint_stranded_records_json')
+        if not isinstance(payload, str):
+            raise ValueError('Missing inactive checkpoint identity/status')
+        records = json.loads(payload)
+        if not isinstance(records, list):
+            raise ValueError('Invalid inactive checkpoint identity/status')
+        identities = set()
+        recorded = {name: np.float64(0) for name in self._STRANDED_RESTART_FIELDS}
+        for record in records:
+            if (not isinstance(record, dict) or
+                    record.get('reason') not in self._INERT_PARTICLE_REASONS or
+                    not isinstance(record.get('generation'), int) or
+                    not isinstance(record.get('id'), int) or
+                    not isinstance(record.get('specie'), int) or
+                    record['generation'] < 0 or record['id'] < 0 or
+                    not isinstance(record.get('fields'), dict)):
+                raise ValueError('Invalid inactive record identity/status')
+            identity = (record['generation'], record['id'])
+            if identity in identities:
+                raise ValueError('Duplicate inactive checkpoint particle ID')
+            identities.add(identity)
+            for key, encoded in record['fields'].items():
+                if key not in self._CHECKPOINT_MASS_FIELDS or not isinstance(encoded, str):
+                    raise ValueError('Invalid inactive chemical mass field')
+                value = float.fromhex(encoded)
+                if not np.isfinite(value) or value < 0:
+                    raise ValueError('Invalid inactive mass/sink value')
+                if key in recorded:
+                    recorded[key] += np.float64(value)
+            if not all(k in record['fields'] for k in self._STRANDED_RESTART_FIELDS):
+                raise ValueError('Incomplete inactive chemical mass record')
+        if any(abs(recorded[k] - fields[k]) > 1e-6 for k in recorded):
+            raise ValueError('Inactive records disagree with mass aggregate')
+        if self._inactive_restart_digest(fields, initial, payload) != attrs.get(
+                'checkpoint_stranded_sha256'):
+            raise ValueError('Inactive restart SHA-256 integrity mismatch')
         ledger_fields = ('mass_ledger_exact_remaining_ug',
                          'mass_ledger_exact_degraded_ug',
                          'mass_ledger_exact_volatilized_ug')
         if not all(k in dataset for k in ledger_fields):
-            raise ValueError('Stranded checkpoint incomplete mass ledger')
-        # Original baseline covers every chemical sink, not remaining mass alone.
+            raise ValueError('Inactive checkpoint incomplete exact mass ledger')
         expected = sum(float(dataset[k].isel(time=idx).values)
                        for k in ledger_fields)
-        if not np.isfinite(expected) or abs(expected-initial) > 1e-5:
-            raise ValueError('Stranded checkpoint and exact ledger disagree')
-        return {'fields': fields, 'initial': initial}
+        if not np.isfinite(expected) or abs(expected - initial) > 1e-5:
+            raise ValueError('Inactive checkpoint and exact ledger disagree')
+        return {'fields': fields, 'initial': initial, 'records': records}
 
     def _append_exact_restart_mass_sidecars(self, dataset):
         # Attach a versioned terminal-only canonical restart payload.
@@ -5156,6 +5175,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             # Historical stranded particles are an inert mass aggregate only.
             self._checkpoint_carried_stranded = stranded_carry
             self._checkpoint_initial_mass_ug = stranded_carry['initial']
+            self._checkpoint_inactive_generation = (
+                max((r['generation'] for r in stranded_carry.get('records', ())),
+                    default=-1) + 1)
         if restart_previous_eta is not None:
             if restart_previous_eta.size != self.num_elements_scheduled():
                 raise ValueError('Saved sea-surface elevation count differs from restarted particles')
@@ -6416,7 +6438,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         legacy geometry when the corresponding reader variables are absent.
         Callers that require physical data can set the strict flags, which
         reject missing provenance or OpenDrift fallback-used cells.
-        Non-finite, negative bathymetry and nonpositive H are rejected; dry
+        Non-finite bathymetry and nonpositive H are rejected; dry
         cells are not silently converted to wet ones. Complete wet/dry
         transitions are outside this geometry helper and require a separate
         scientifically qualified policy.
@@ -6456,8 +6478,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         bathy = _aligned('sea_floor_depth_below_sea_level', 10000.0)
         if require_physical_bathymetry:
             _require_reader_data('sea_floor_depth_below_sea_level')
-        if np.any(~np.isfinite(bathy) | (bathy < 0.0)):
-            raise ValueError('Nonfinite or negative bathymetry/depth')
+        if np.any(~np.isfinite(bathy)):
+            raise ValueError('Nonfinite bathymetry/depth')
 
         if depth_convention == 'INSTANTANEOUS':
             if require_surface_height:
@@ -6511,8 +6533,6 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         current = np.asarray(current, dtype=float).reshape(-1)
         if prev.size != n or current.size != n:
             raise ValueError('Sea-surface height history must align with active elements')
-        if np.any(~np.isfinite(prev)) or np.any(~np.isfinite(current)):
-            raise ValueError('Nonfinite previous/current sea-surface elevation')
         return prev.copy(), current.copy()
 
     # Multiply signed particle depth [m] by dimensionless water-depth ratio H_new/H_old.
@@ -6544,34 +6564,40 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 'double-counting of elevation-driven velocity')
 
         eta_old, eta_new = history
-        # Force verified reader provenance (no silent 10000m / eta=0 fallback).
+        missing = ~np.isfinite(eta_old) | ~np.isfinite(eta_new)
+        if np.any(missing):
+            keep = self._deactivate_particle_local(missing, reason='missing_data')
+            eta_old, eta_new = eta_old[keep], eta_new[keep]
+        if not self.num_elements_active():
+            return
+        # The same source-qualified H and geometry are used as before.
         h_new = self._instantaneous_water_depth(
             require_physical_bathymetry=True, require_surface_height=True)
         h_old = h_new - eta_new + eta_old
-        if np.any(~np.isfinite(h_old) | (h_old <= 0)):
-            raise ValueError('Previous instantaneous water depth is nonpositive or nonfinite')
-
         species = np.asarray(self.elements.specie, dtype=int)
         sed_species = [getattr(self, key) for key in
                        ('num_srev', 'num_ssrev', 'num_sirrev', 'num_sburied')
                        if hasattr(self, key)]
         suspended = ~np.isin(species, sed_species)
-        if not np.any(suspended):
-            return
         z_old = np.asarray(self.elements.z, dtype=float)
         if z_old.shape != h_new.shape or species.shape != z_old.shape:
             raise ValueError('Particle depth, species and water column have different shapes')
-        if np.any(~np.isfinite(z_old[suspended])):
-            raise ValueError('Suspended-particle depth is nonfinite')
-        # A tiny tolerance only accounts for floating-point roundoff; do not
-        # turn a physically dry cell into a nominally wet one.
-        tol = 1e-6 * np.maximum(h_old[suspended], 1.0)
-        if np.any(z_old[suspended] > tol) or np.any(z_old[suspended] < -h_old[suspended] - tol):
-            raise ValueError('Suspended particle is outside its previous water column')
+        # The previous source frame may become non-wet. Never divide by a
+        # nonpositive depth, nor change a valid neighbour's particle position.
+        bad = ~np.isfinite(h_old) | (h_old <= 0.)
+        tol = 1e-6 * np.maximum(h_old, 1.0)
+        bad |= suspended & (~np.isfinite(z_old) |
+                            (z_old > tol) | (z_old < -h_old - tol))
+        if np.any(bad):
+            kept = self._deactivate_particle_local(bad, reason='invalid_geometry')
+            h_old, h_new = h_old[kept], h_new[kept]
+            z_old, suspended = z_old[kept], suspended[kept]
+        if not np.any(suspended):
+            return
         updated = z_old[suspended] * (h_new[suspended] / h_old[suspended])
         if np.any(~np.isfinite(updated)):
-            raise ValueError('Nonfinite stretched particle depth')
-        # Trim only floating-point overshoots, never replace dry-column values.
+            raise ValueError('Nonfinite stretched particle depth after validated geometry')
+        # Only floating-point overshoots are trimmed, as in the prior code.
         updated = np.minimum(0.0, np.maximum(-h_new[suspended], updated))
         self.elements.z[suspended] = updated
 
@@ -6627,6 +6653,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             missing = np.broadcast_to(np.asarray(missing, dtype=bool), (n,))
             fresh_provenance = manager.get_last_environment_provenance(copy=True)
             updates = {}
+            bad_particles = np.zeros(n, dtype=bool)
             for var in fields:
                 arr = np.ma.asarray(fresh[var], dtype=float).filled(np.nan)
                 if arr.shape != (n,):
@@ -6637,19 +6664,18 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 codes = np.asarray(codes, dtype=np.uint8)
                 reject = changed & (missing | ~np.isfinite(arr) |
                     (codes != manager.PROVENANCE_READER))
-                if np.any(reject):
-                    raise RuntimeError(f'Post-stretch {var} unavailable from native 3D reader '
-                                       f'at {int(np.count_nonzero(reject))} particle(s)')
+                bad_particles |= reject
                 original = np.ma.asarray(getattr(self.environment, var), dtype=float)
                 if original.shape != (n,):
                     raise RuntimeError(f'Existing {var} does not align with particle array')
                 merged = original.copy()
-                merged[changed] = arr[changed]
+                refreshed = changed & ~reject
+                merged[refreshed] = arr[refreshed]
                 old_codes = snapshots['last_environment_provenance'].get(var)
                 if old_codes is None or np.asarray(old_codes).shape != (n,):
                     raise RuntimeError(f'Existing {var} provenance missing or misaligned')
                 merged_codes = np.asarray(old_codes, dtype=np.uint8).copy()
-                merged_codes[changed] = codes[changed]
+                merged_codes[refreshed] = codes[refreshed]
                 updates[var] = (merged, merged_codes)
             for var, (values, codes) in updates.items():
                 getattr(self.environment, var)[:] = values
@@ -6658,7 +6684,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             for key, val in snapshots.items():
                 setattr(manager, key, val)
             manager.last_environment_provenance_time = provenance_time
-        return int(np.count_nonzero(changed))
+        if np.any(bad_particles):
+            self._deactivate_particle_local(bad_particles, reason='missing_data')
+        return int(np.count_nonzero(changed & ~bad_particles))
 
     def _refresh_poststretch_native_scalar_environment(self, previous_z):
         """Refresh ONLY verified native depth-dependent scalar providers.
@@ -6735,6 +6763,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         snapshots = {key: dict(getattr(manager, key, {})) for key in attrs}
         provenance_time = getattr(manager, 'last_environment_provenance_time', None)
         updates = {}
+        bad_particles = np.zeros(n, dtype=bool)
         try:
             fresh, _profiles, missing = manager.get_environment(
                 fields, self.time,
@@ -6755,18 +6784,17 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 codes = np.asarray(codes, dtype=np.uint8)
                 reject = changed & (missing | ~np.isfinite(arr) |
                                     (codes != manager.PROVENANCE_READER))
-                if np.any(reject):
-                    raise RuntimeError(f'Post-stretch native 3D {name} invalid/fallback '
-                                       f'for {int(np.count_nonzero(reject))} particles')
+                bad_particles |= reject
                 old = np.ma.asarray(getattr(self.environment, name), dtype=float)
                 old_codes = snapshots['last_environment_provenance'].get(name)
                 if (old.shape != (n,) or old_codes is None or
                         np.asarray(old_codes).shape != (n,)):
                     raise RuntimeError(f'Original {name} values/provenance misaligned')
                 merged = old.copy()
-                merged[changed] = arr[changed]
+                refreshed = changed & ~reject
+                merged[refreshed] = arr[refreshed]
                 merged_codes = np.asarray(old_codes, dtype=np.uint8).copy()
-                merged_codes[changed] = codes[changed]
+                merged_codes[refreshed] = codes[refreshed]
                 updates[name] = (merged, merged_codes)
         finally:
             for key, val in snapshots.items():
@@ -6778,7 +6806,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             snapshots['last_environment_provenance'][name] = codes
         manager.last_environment_provenance = snapshots['last_environment_provenance']
         self._last_scalar_source_classification = dimensional_provenance
-        return len(updates) * int(np.count_nonzero(changed))
+        if np.any(bad_particles):
+            self._deactivate_particle_local(bad_particles, reason='missing_data')
+        return len(updates) * int(np.count_nonzero(changed & ~bad_particles))
 
     def _anchor_sediment_to_instantaneous_bed(self):
         """Anchor all current bed-bound states to the current instantaneous seabed.
@@ -6879,27 +6909,30 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         H = np.asarray(self._instantaneous_water_depth(
             require_physical_bathymetry=True,
             require_surface_height=True), dtype=float)
-        if H.shape != (n,) or np.any(~np.isfinite(H) | (H <= 0)):
-            raise ValueError('Dry or invalid instantaneous water column for active particle')
-        if np.any(~np.isfinite(z)):
-            raise ValueError('Nonfinite water-column particle position')
-        # Upper sea-surface allowance is a separate pre-existing policy;
-        # only the seabed rule is shared by the three physical process callers.
+        if H.shape != (n,):
+            raise ValueError('Instantaneous water-column array is misaligned')
         surface_tol = 1e-6 * np.maximum(H, 1.0)
         codes = [getattr(self, name) for name in
                  ('num_srev', 'num_ssrev', 'num_sirrev', 'num_sburied')
                  if hasattr(self, name)]
         sediment = np.isin(species, codes)
         suspended = ~sediment
-        if (not np.all(self._water_column_seabed_eligibility(
-                z[suspended], H[suspended], role='suspended'))) or \
-                np.any(z[suspended] > surface_tol[suspended]):
-            raise ValueError('Suspended particle outside current wet column')
-        if (not np.all(self._water_column_seabed_eligibility(
-                z[sediment], H[sediment], role='anchored'))) or \
-                np.any(moving[sediment] != 0):
-            raise ValueError('Sediment particle not anchored to current bed')
-        return n
+        bad = ~np.isfinite(z)
+        # Evaluate only finite particle positions, preserving the original
+        # seabed-boundary precision test and strict role-specific conditions.
+        valid_susp = suspended & ~bad
+        valid_sed = sediment & ~bad
+        if np.any(valid_susp):
+            okay = self._water_column_seabed_eligibility(
+                z[valid_susp], H[valid_susp], role='suspended')
+            bad[valid_susp] = ~okay | (z[valid_susp] > surface_tol[valid_susp])
+        if np.any(valid_sed):
+            okay = self._water_column_seabed_eligibility(
+                z[valid_sed], H[valid_sed], role='anchored')
+            bad[valid_sed] = ~okay | (moving[valid_sed] != 0)
+        if np.any(bad):
+            self._deactivate_particle_local(bad, reason='invalid_geometry')
+        return int(self.num_elements_active())
 
     def _sanitize_positive_with_fallback(self, values, fallback):
         """Return finite positive values, replacing non-finite or <=0 with fallback."""
@@ -8842,6 +8875,109 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                     'is supplied, so the optional contribution is omitted.')
         return self._other_stress_source_available
 
+    def _remove_unavailable_direct_stress_for_exchange(self, do_dep, do_res, sediment_oxygen=False):
+        """Remove only particles needing locally unavailable selected bed stress.
+
+        DIRECT current/wave and supplied signed other stress keep their strict
+        source and structural checks. Never replace unavailable stress with zero.
+        Sediment oxygen dispersion requests current stress only.
+        """
+        exchange = bool((do_dep or do_res) and not self._legacy_sediment_exchange())
+        use_current = bool(
+            (exchange or sediment_oxygen) and
+            self._current_stress_source() == 'DIRECT' and
+            getattr(self, '_direct_current_stress_reader_available', False))
+        use_wave = bool(
+            exchange and self.get_config('chemical:sediment:include_wave_stress') and
+            self._wave_stress_source() == 'DIRECT')
+        use_other = bool(
+            exchange and self.get_config('chemical:sediment:include_other_stress') and
+            getattr(self, '_other_stress_source_available', False))
+        if not (use_current or use_wave or use_other):
+            return
+        # Check only particles that would actually request bed stress this
+        # timestep. In particular, a suspended particle far above the bottom
+        # does not need bed shear stress for deposition.
+        n = int(self.num_elements_active())
+        species = np.asarray(self.elements.specie, dtype=np.int64)
+        z = np.asarray(self.elements.z, dtype=float)
+        if species.shape != (n,) or z.shape != (n,):
+            raise RuntimeError('Bed-exchange particle state and IDs misaligned')
+        eligible = np.zeros(n, dtype=bool)
+        stretching = self.get_config('drift:water_column_stretching')
+        if exchange and do_dep:
+            types = [getattr(self, k) for k in
+                     ('num_prev', 'num_psrev', 'num_pirrev') if hasattr(self, k)]
+            susp = np.flatnonzero(np.isin(species, types))
+            if susp.size:
+                if stretching:
+                    depths = self._sediment_exchange_water_depth(susp)
+                else:
+                    depths = np.asarray(self._env_array(
+                        'sea_floor_depth_below_sea_level',10000.0,idx=susp),dtype=float)
+                layer = np.asarray(self._env_array(
+                    'interaction_sediment_layer_thickness',0.0,idx=susp),dtype=float)
+                fallback_thickness = float(self.get_config('chemical:sediment:layer_thickness'))
+                depth_layer = np.minimum(np.where(layer>0.,layer,fallback_thickness),
+                                         np.maximum(depths,0.))
+                if stretching:
+                    near_bed = self._water_column_seabed_eligibility(
+                        z[susp],depths,role='deposition',
+                        interaction_thickness=depth_layer)
+                else:
+                    tol = 1e-6*np.maximum(depths,1.0)
+                    distance = z[susp]+depths
+                    near_bed = (distance>=-tol)&(distance<=np.maximum(depth_layer,1e-12))
+                eligible[susp] = near_bed
+        if exchange and do_res:
+            types = [getattr(self,k) for k in
+                     ('num_srev','num_ssrev','num_sirrev') if hasattr(self,k)]
+            bed = np.flatnonzero(np.isin(species,types))
+            if bed.size:
+                if stretching:
+                    depths = self._sediment_exchange_water_depth(bed)
+                    on_bed = self._water_column_seabed_eligibility(
+                        z[bed],depths,role='anchored')
+                else:
+                    depths = np.asarray(self._env_array(
+                        'sea_floor_depth_below_sea_level',10000.0,idx=bed),dtype=float)
+                    on_bed = z[bed]<=-depths
+                eligible[bed] = on_bed
+        if sediment_oxygen:
+            types = [getattr(self, k) for k in
+                     ('num_srev', 'num_ssrev', 'num_sirrev') if hasattr(self, k)]
+            eligible |= np.isin(species, types)
+        if not np.any(eligible):
+            return
+        invalid = np.zeros(n, dtype=bool)
+        names = []
+        if use_current:
+            names.append('sea_floor_current_stress')
+        if use_wave:
+            names.append('sea_floor_wave_stress')
+        if use_other:
+            names.extend(('x_sea_floor_other_stress', 'y_sea_floor_other_stress'))
+        for name in names:
+            raw = getattr(self.environment, name, None)
+            if raw is None:
+                raise RuntimeError(f'Resolved stress field {name!r} absent from environment')
+            values = np.ma.asarray(raw, dtype=float).filled(np.nan)
+            if values.ndim == 0 or values.size == 1:
+                tau = np.full(n, float(np.asarray(values).reshape(-1)[0]))
+            elif values.ndim == 1 and values.size == n:
+                tau = np.asarray(values, dtype=float)
+            else:
+                raise ValueError(f'{name} and active elements are misaligned')
+            tau = self._decode_policy_missing(name, tau)
+            tau = self._canonicalize_numerical_zero(
+                tau, atol=self._BED_STRESS_ZERO_ATOL_PA)
+            bad = ~np.isfinite(tau)
+            if name in ('sea_floor_current_stress', 'sea_floor_wave_stress'):
+                bad |= tau < 0.
+            invalid |= eligible & bad
+        if np.any(invalid):
+            self._deactivate_particle_local(invalid, reason='missing_data')
+
     def _direct_current_stress_array(self, idx=None):
         """Return current local DIRECT stress values selected in prepare_run().
 
@@ -8994,7 +9130,8 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         The generic ChemicalDrift/OpenDrift bathymetry fallback is retained for
         normal model operation, but it is not valid physical bathymetry for wave
         attenuation when it was inserted as a fallback. CALCULATED wave stress
-        therefore rejects missing, negative, or fallback-derived bathymetry. A
+        therefore rejects missing or fallback-derived bathymetry, but accepts
+        finite signed fixed-datum bathymetry when tide creates a wet column. A
         reader value that is numerically equal to the generic fallback is valid.
 
         A non-positive final water-column thickness after applying sea-surface
@@ -9007,7 +9144,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             idx=idx,)
         bathy = np.asarray(bathy, dtype=float)
 
-        bad = ~np.isfinite(bathy) | (bathy < 0.0)
+        bad = ~np.isfinite(bathy)
 
         # The generic 10000 m fallback remains valid for ordinary water-column
         # operation. CALCULATED wave attenuation, however, requires physical
@@ -9025,7 +9162,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             raise ValueError(
                 'CALCULATED wave stress requires valid physical bathymetry; '
                 f'{int(np.count_nonzero(bad))} element(s) contain missing, '
-                'negative, or fallback-derived sea_floor_depth_below_sea_level.')
+                'or fallback-derived sea_floor_depth_below_sea_level.')
 
         mode = self.get_config('chemical:sediment:wave_depth_convention')
 
@@ -11591,6 +11728,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         if not (has_rev or has_slow or has_irrev):
             return
 
+        self._remove_unavailable_direct_stress_for_exchange(do_dep, do_res)
+        if self.num_elements_active() == 0:
+            return
         dt = float(self.time_step.total_seconds())
         # Start-of-step snapshot.
         #
@@ -15385,6 +15525,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         prior = {key:dict(getattr(mgr,key,{})) for key in attrs}
         previous_time = getattr(mgr, 'last_environment_provenance_time', None)
         replacements = {}
+        bad_particles = np.zeros(n, dtype=bool)
         try:
             vals, _, missing = mgr.get_environment(
                 names, self.time,
@@ -15399,16 +15540,17 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 if a.shape != (idx.size,) or prov is None or np.shape(prov) != (idx.size,):
                     raise RuntimeError(f'Invalid postmix current shape/provenance: {name}')
                 prov = np.asarray(prov,dtype=np.uint8)
-                if np.any(missing | ~np.isfinite(a) | (prov != mgr.PROVENANCE_READER)):
-                    raise RuntimeError(f'Postmix native 3D {name} missing/fallback value')
+                reject = missing | ~np.isfinite(a) | (prov != mgr.PROVENANCE_READER)
+                bad_particles[idx] |= reject
                 original = np.ma.asarray(getattr(self.environment,name),dtype=float)
                 old_prov = prior['last_environment_provenance'].get(name)
                 if original.shape != (n,) or old_prov is None or np.shape(old_prov) != (n,):
                     raise RuntimeError(f'Missing old postmix current provenance: {name}')
                 replacement = original.copy()
-                replacement[idx] = a
+                good = idx[~reject]
+                replacement[good] = a[~reject]
                 merged_prov = np.asarray(old_prov,dtype=np.uint8).copy()
-                merged_prov[idx] = prov
+                merged_prov[good] = prov[~reject]
                 replacements[name] = (replacement, merged_prov)
         finally:
             for key, value in prior.items():
@@ -15419,7 +15561,80 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             getattr(self.environment,name)[:] = values
             prior['last_environment_provenance'][name] = codes
         mgr.last_environment_provenance = prior['last_environment_provenance']
-        return idx.size * len(replacements)
+        if np.any(bad_particles):
+            self._deactivate_particle_local(bad_particles, reason='missing_data')
+        return (idx.size - np.count_nonzero(bad_particles)) * len(replacements)
+
+    def _deactivate_particle_local(self, invalid, reason):
+        """Deactivate affected IDs using OpenDrift and keep live caches aligned.
+
+        This is bookkeeping for an existing lifecycle mechanism, not a new
+        fallback, status manager, geometry correction or coastline algorithm.
+        """
+        n = int(self.num_elements_active())
+        invalid = np.asarray(invalid, dtype=bool)
+        if invalid.shape != (n,):
+            raise ValueError('Local deactivation mask does not match active IDs')
+        kept = ~invalid
+        if not np.any(invalid):
+            return kept
+        ids = np.asarray(self.elements.ID, dtype=np.int64)
+        if ids.shape != (n,) or len(np.unique(ids)) != n:
+            raise RuntimeError('Invalid active particle-ID alignment')
+        old = getattr(self, 'environment_previous', None)
+        if old is not None and 'trajectory' in old.sizes:
+            if (int(old.sizes['trajectory']) != n or
+                    not np.array_equal(np.asarray(old.trajectory.values), ids)):
+                raise RuntimeError('Previous environment and active IDs misaligned')
+        logger.warning('Particle-local deactivation %s: IDs=%s',
+                       reason, ids[invalid].tolist())
+        self.deactivate_elements(invalid, reason=reason)
+        self.remove_deactivated_elements()
+        if old is not None and 'trajectory' in old.sizes:
+            self.environment_previous = old.isel(
+                trajectory=np.flatnonzero(kept)).copy(deep=True)
+        # Existing sampling caches are keyed by active element order.
+        for attr in ('_seabed_environment_values',
+                     '_seabed_environment_provenance',
+                     '_sediment_bottom_water_values',
+                     '_sediment_bottom_water_provenance'):
+            cache = getattr(self, attr, None)
+            if isinstance(cache, dict):
+                for key, value in cache.items():
+                    if np.shape(value) == (n,):
+                        cache[key] = np.asarray(value)[kept].copy()
+        return kept
+
+    def _remove_unavailable_water_column_geometry(self):
+        """Use OpenDrift missing_data for unresolved local h/eta observations.
+
+        The configured reader chain and fallback have already run. Source
+        provenance (not the numeric fallback value) establishes missingness.
+        A remaining finite but nonpositive H is a local geometry inconsistency;
+        physically confirmed DRY points must have been handled by the
+        existing temporary-coastline action first.
+        """
+        n = int(self.num_elements_active())
+        if not n:
+            return
+        missing = np.zeros(n, dtype=bool)
+        for name, fallback in (('sea_floor_depth_below_sea_level', 10000.0),
+                               ('sea_surface_height', 0.0)):
+            vals = np.asarray(self._env_array(name, fallback), dtype=float)
+            used = self._environment_fallback_used_mask(name)
+            if vals.shape != (n,) or used is None or np.shape(used) != (n,):
+                raise RuntimeError(f'Unqualified water-column geometry/provenance {name}')
+            missing |= ~np.isfinite(vals) | np.asarray(used, dtype=bool)
+        if np.any(missing):
+            self._deactivate_particle_local(missing, reason='missing_data')
+        n = int(self.num_elements_active())
+        if not n:
+            return
+        bathy = np.asarray(self._env_array('sea_floor_depth_below_sea_level', 10000.), dtype=float)
+        eta = np.asarray(self._env_array('sea_surface_height', 0.), dtype=float)
+        invalid = ~np.isfinite(bathy + eta) | ((bathy + eta) <= 0.)
+        if np.any(invalid):
+            self._deactivate_particle_local(invalid, reason='invalid_geometry')
 
     def _temporary_dry_coastline_states(self, lon, lat, z, ids, *, cached=False):
         """Common WET=1 / DRY=0 / UNKNOWN=-1 from environmental values only.
@@ -15486,8 +15701,6 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             from_source = code == mgr.PROVENANCE_READER
             valid = (~np.ma.getmaskarray(values) &
                      np.isfinite(np.ma.filled(values, np.nan)))
-            if np.any(from_source & ~valid):
-                raise RuntimeError(f'Invalid source-supplied {field} in coastline check')
             return np.ma.filled(values, np.nan).astype(float), from_source & valid
 
         published, pub_ok = verified('wetdry_state')
@@ -15497,8 +15710,6 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         state = np.full(n, -1, dtype=np.int8)
         geom_ok = h_ok & eta_ok
         if h is not None and eta is not None:
-            if np.any(geom_ok & (h < 0.0)):
-                raise RuntimeError('Negative source bathymetry at temporary coastline')
             H = h + eta
             if np.any(geom_ok & ~np.isfinite(H)):
                 raise RuntimeError('Nonfinite source water-column geometry')
@@ -15512,12 +15723,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         if land is not None:
             if np.any(land_ok & ~np.isin(land, (0., 1.))):
                 raise RuntimeError('Invalid source land_binary_mask class')
-            # Permanent land=1 is an obstacle. Its contradiction with an
-            # explicit WET observation must not be silently overwritten.
-            conflict = land_ok & (land == 1.) & pub_ok & (state == 1)
-            if np.any(conflict):
-                raise RuntimeError('Contradictory land mask and wetdry_state')
-            state[land_ok & (land == 1.) & ~pub_ok] = 0
+            # Static land is handled separately by BaseModel's normal coast
+            # action. Never override an authoritative dynamic wet/dry state.
+            state[land_ok & (land == 1.) & ~pub_ok & ~geom_ok] = 0
             # Mask=0 alone is inconclusive: never fabricate wet water.
         return state, {'source': 'environment_wetdry_state_or_geometry',
                        'explicit_verified': int(np.count_nonzero(pub_ok)),
@@ -15536,10 +15744,22 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         n = int(self.num_elements_active())
         if not n:
             return np.ones(0, dtype=bool)
+        original_ids = np.asarray(self.elements.ID, dtype=np.int64).copy()
+        lon = np.asarray(self.elements.lon, dtype=float).copy()
+        lat = np.asarray(self.elements.lat, dtype=float).copy()
+        z = np.asarray(self.elements.z, dtype=float).copy()
+        if any(v.shape != (n,) for v in (original_ids, lon, lat, z)):
+            raise RuntimeError('Temporary-coastline particle arrays are misaligned')
+        bad_geometry = ~(np.isfinite(lon) & np.isfinite(lat) & np.isfinite(z))
+        if np.any(bad_geometry):
+            self._deactivate_particle_local(bad_geometry, reason='invalid_geometry')
+            if not self.num_elements_active():
+                return np.zeros(n, dtype=bool)
         ids = np.asarray(self.elements.ID, dtype=np.int64).copy()
         lon = np.asarray(self.elements.lon, dtype=float).copy()
         lat = np.asarray(self.elements.lat, dtype=float).copy()
         z = np.asarray(self.elements.z, dtype=float).copy()
+        n = len(ids)
         states, detail = self._temporary_dry_coastline_states(
             lon, lat, z, ids, cached=cached)
         dry = states == 0
@@ -15548,7 +15768,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                        'particle_ids': ids[dry].tolist()})
         if not np.any(dry):
             self._temporary_dry_coastline_last = detail
-            return np.ones(n, dtype=bool)
+            return np.isin(original_ids, self.elements.ID)
         action = self.get_config('general:coastline_action')
         if action == 'none':
             raise RuntimeError('Dry water column with coastline_action=none')
@@ -15556,70 +15776,31 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             raise RuntimeError('Unsupported temporary coastline action')
         if np.any(z[dry] > 0.0):
             raise RuntimeError('Dry coastline contact for airborne element is unsupported')
-        if not hasattr(self.environment, 'land_binary_mask'):
-            raise RuntimeError('Coastline handler requires land_binary_mask cache')
-        if np.shape(self.environment.land_binary_mask) != (n,):
-            raise RuntimeError('Invalid coastline mask cache length')
         previous = getattr(self, '_elements_previous', None)
         if action == 'previous' and previous is None:
             raise RuntimeError('Missing OpenDrift previous-position ledger')
-        old_mask = self.environment.land_binary_mask
-        self.environment.land_binary_mask = np.ma.array(
-            np.where(dry, 1., 0.), mask=states < 0)
-        try:
-            self.interact_with_coastline(final=False)
-        finally:
-            # Do not persist a new reader's dry classification as a permanent
-            # static coastline mask or contaminate the environment cache.
-            self.environment.land_binary_mask = old_mask
         fallback_ids = []
         rollback_ids = []
-        if action == 'previous':
-            check_idx = np.flatnonzero(dry & (np.asarray(self.elements.status) == 0))
-            if check_idx.size:
-                if cached:
-                    # At the start of update, OpenDrift has already cached
-                    # all environmental scalars/profiles at the current point.
-                    # A rollback to a different wet point without a FULL
-                    # source/profiles refresh could contaminate chemistry.
-                    # The base step also records current positions as its
-                    # previous-state snapshot. Conservatively strand here.
-                    invalid = check_idx.copy()
-                else:
-                    returned, _ = self._temporary_dry_coastline_states(
-                        np.asarray(self.elements.lon)[check_idx],
-                        np.asarray(self.elements.lat)[check_idx], z[check_idx],
-                        ids[check_idx], cached=False)
-                    invalid = check_idx[returned != 1]
-                    if invalid.size:
-                        # A fixed static landmask crossing need not be WET for
-                        # temporary tidal islands. Retry only the original
-                        # previous-position coordinates; never search or invent.
-                        prior_lon = np.asarray(previous.lon, dtype=float)[ids[invalid]]
-                        prior_lat = np.asarray(previous.lat, dtype=float)[ids[invalid]]
-                        prior, _ = self._temporary_dry_coastline_states(
-                            prior_lon, prior_lat, z[invalid], ids[invalid], cached=False)
-                        okay = prior == 1
-                        if np.any(okay):
-                            good_idx = invalid[okay]
-                            self.elements.lon[good_idx] = prior_lon[okay]
-                            self.elements.lat[good_idx] = prior_lat[okay]
-                        invalid = invalid[~okay]
-                    else:
-                        invalid = np.zeros(0, dtype=np.int64)
-                fallback_ids = ids[invalid].tolist()
-                rollback_ids = ids[check_idx[~np.isin(check_idx, invalid)]].tolist()
-                if invalid.size:
-                    to_strand = np.zeros(n, dtype=bool)
-                    to_strand[invalid] = True
-                    # Use the existing OpenDrift `stranded` status. Its
-                    # deactivation bookkeeping moves mass unchanged.
-                    self.deactivate_elements(to_strand, reason='stranded')
-        if action == 'stranding':
-            # Existing OpenDrift stranding only applies to nonairborne z<=0.
-            if np.any(dry & (np.asarray(self.elements.status) == 0)):
-                raise RuntimeError('Configured stranding failed at dry element')
-            fallback_ids = ids[dry].tolist()
+        # Source-confirmed temporary DRY is not necessarily inside a static
+        # land polygon. Do not call BaseModel's static coastline_crossing()
+        # with a fabricated land mask. Keep the configured previous/stranding
+        # actions and only use the authentic previous coordinates for previous.
+        to_strand = dry.copy()
+        if action == 'previous' and not cached:
+            prior_lon = np.asarray(previous.lon, dtype=float)[ids[dry]]
+            prior_lat = np.asarray(previous.lat, dtype=float)[ids[dry]]
+            previous_state, _ = self._temporary_dry_coastline_states(
+                prior_lon, prior_lat, z[dry], ids[dry], cached=False)
+            wet_return = previous_state == 1
+            if np.any(wet_return):
+                iwet = np.flatnonzero(dry)[wet_return]
+                self.elements.lon[iwet] = prior_lon[wet_return]
+                self.elements.lat[iwet] = prior_lat[wet_return]
+                to_strand[iwet] = False
+                rollback_ids = ids[iwet].tolist()
+        if np.any(to_strand):
+            self.deactivate_elements(to_strand, reason='stranded')
+            fallback_ids = ids[to_strand].tolist()
         # Stranding can reduce the active set *during* update(), after
         # OpenDrift has selected the previous-source-time environment. Preserve
         # those genuine previous samples, subset them by surviving IDs, and
@@ -15641,7 +15822,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                        'stranded_ids': fallback_ids,
                        'remaining_ids': ids[kept].tolist()})
         self._temporary_dry_coastline_last = detail
-        return kept
+        return np.isin(original_ids, self.elements.ID)
 
     def _postadvection_outside_hydrodynamic_coverage(self, lon, lat):
         """Identify exits proven outside every available horizontal-current reader.
@@ -15773,6 +15954,7 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         snapshot = {a: dict(getattr(mgr, a, {})) for a in attrs}
         provenance_time = getattr(mgr, 'last_environment_provenance_time', None)
         changes = {}
+        bad_particles = np.zeros(n, dtype=bool)
         try:
             values, _profiles, missing = mgr.get_environment(
                 fields, self.time,
@@ -15786,18 +15968,18 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
                 if new_values.shape != (len(idx),) or codes is None or np.shape(codes) != (len(idx),):
                     raise RuntimeError(f'Invalid geometry sampling shape/provenance {name}')
                 codes = np.asarray(codes, dtype=np.uint8)
-                if np.any(bad | ~np.isfinite(new_values) | (~np.isin(codes, (mgr.PROVENANCE_READER, mgr.PROVENANCE_CONSTANT)))):
-                    raise RuntimeError(f'Post-advection {name} invalid or fallback-derived')
-                if name == 'sea_floor_depth_below_sea_level' and np.any(new_values < 0.):
-                    raise RuntimeError('Negative post-advection bathymetry')
+                reject = bad | ~np.isfinite(new_values) | (~np.isin(
+                    codes, (mgr.PROVENANCE_READER, mgr.PROVENANCE_CONSTANT)))
+                bad_particles[idx] |= reject
                 original = np.ma.asarray(getattr(self.environment, name), dtype=float)
                 old_codes = snapshot['last_environment_provenance'].get(name)
                 if original.shape != (n,) or old_codes is None or np.shape(old_codes) != (n,):
                     raise RuntimeError(f'Missing original geometry provenance {name}')
                 merged = original.copy()
-                merged[idx] = new_values
+                good_idx = idx[~reject]
+                merged[good_idx] = new_values[~reject]
                 new_codes = np.asarray(old_codes, dtype=np.uint8).copy()
-                new_codes[idx] = codes
+                new_codes[good_idx] = codes[~reject]
                 changes[name] = (merged, new_codes)
         finally:
             for a, value in snapshot.items():
@@ -15806,11 +15988,13 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         for name, (values, codes) in changes.items():
             getattr(self.environment, name)[:] = values
             snapshot['last_environment_provenance'][name] = codes
-        # Guard current location, without revising environment_previous or old eta.
-        self._instantaneous_water_depth(
-            require_physical_bathymetry='sea_floor_depth_below_sea_level' in fields,
-            require_surface_height='sea_surface_height' in fields)
-        return int(len(idx))
+        if np.any(bad_particles):
+            self._deactivate_particle_local(bad_particles, reason='missing_data')
+        # Guard remaining source-qualified instantaneous geometry without
+        # modifying previous sea-level history or adding a new fallback.
+        if self.num_elements_active():
+            self._remove_unavailable_water_column_geometry()
+        return int(len(idx) - np.count_nonzero(bad_particles))
 
     ###########################################################################
     # Main update loop
@@ -15830,6 +16014,9 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             self._handle_temporary_dry_coastline(cached=True)
             if self.num_elements_active() == 0:
                 return
+            self._remove_unavailable_water_column_geometry()
+            if self.num_elements_active() == 0:
+                return
 
         # Guard reader mutations even if a caller bypasses normal registration.
         self._ensure_doc_spm_reader_dimensions_current()
@@ -15841,12 +16028,32 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         previous_z = (np.asarray(self.elements.z, dtype=float).copy()
                       if self.get_config('drift:water_column_stretching')
                       else None)
+        previous_ids = np.asarray(self.elements.ID, dtype=np.int64).copy()
         self.water_column_stretching()
+        if self.num_elements_active() == 0:
+            return
+        if previous_z is not None:
+            previous_z = previous_z[np.isin(previous_ids, self.elements.ID)]
+            previous_ids = np.asarray(self.elements.ID, dtype=np.int64).copy()
         self._anchor_sediment_to_instantaneous_bed()
         self._validate_active_water_column_bounds()
+        if self.num_elements_active() == 0:
+            return
+        if previous_z is not None:
+            previous_z = previous_z[np.isin(previous_ids, self.elements.ID)]
+            previous_ids = np.asarray(self.elements.ID, dtype=np.int64).copy()
         self._refresh_poststretch_native_scalar_environment(previous_z)
+        if self.num_elements_active() == 0:
+            return
+        if previous_z is not None:
+            previous_z = previous_z[np.isin(previous_ids, self.elements.ID)]
+            previous_ids = np.asarray(self.elements.ID, dtype=np.int64).copy()
         self._refresh_poststretch_native_doc_spm(previous_z)
+        if self.num_elements_active() == 0:
+            return
         self._refresh_sediment_sampling_environment()
+        if self.num_elements_active() == 0:
+            return
 
         # Workaround due to conversion of datatype
         self.elements.specie = self.elements.specie.astype(np.int32)
@@ -15855,6 +16062,14 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
         self._resolve_new_sediment_diameter()
         # First-step remap of carrier f_OC from reader/configured local values
         self._apply_mapped_fOC_to_new_elements()
+
+        # Sediment oxygen dispersion can require DIRECT current stress before
+        # bed_exchange(); do not apply this check to water-column particles.
+        if self._oxygen_permeability_dispersion_active():
+            self._remove_unavailable_direct_stress_for_exchange(
+                False, False, sediment_oxygen=True)
+            if self.num_elements_active() == 0:
+                return
 
         # Degradation and Volatilization
         if self.get_config('chemical:transfer_setup')=='organics' or self.get_config('chemical:transfer_setup')=='custom':
@@ -15881,7 +16096,13 @@ class ChemicalDrift(ChemicalDriftPostProcessMixin, OceanDrift):
             self.vertical_buoyancy()
 
         # Deposition and resuspension
+        before_exchange_ids = np.asarray(self.elements.ID, dtype=np.int64).copy()
         self.bed_exchange()
+        if self.num_elements_active() == 0:
+            return
+        if z_before_mixing_for_transport is not None:
+            z_before_mixing_for_transport = z_before_mixing_for_transport[
+                np.isin(before_exchange_ids, np.asarray(self.elements.ID))]
         # Set newly deposited states to the present bed, never resuspended ones.
         self._anchor_sediment_to_instantaneous_bed()
 

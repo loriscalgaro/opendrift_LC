@@ -204,6 +204,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from opendrift.readers.basereader.unstructured import UnstructuredReader
+from opendrift.errors import OutsideSpatialCoverageError
 
 
 class Reader(UnstructuredReader):
@@ -409,6 +410,27 @@ class Reader(UnstructuredReader):
         if self._horizontal_interpolation == 'barycentric':
             self._initialize_native_barycentric_mesh()
         self.timer_end("open dataset")
+
+    def covers_positions_xy(self, x, y, z=0):
+        """Use authentic native triangle support in barycentric mode.
+
+        The inherited spatial-coverage check uses a bounding rectangle. In
+        native triangular mode that rectangle also contains points without a
+        source triangle. Report those positions as uncovered *before* the
+        native sampler is invoked; OpenDrift's existing interpolation wrapper
+        will mask them, and its environment manager will apply the existing
+        reader-priority/fallback/missing-data policy without modification.
+
+        Nearest-node mode retains the inherited coverage check unchanged.
+        """
+        indices, xx, yy = super().covers_positions_xy(x, y, z)
+        if self._horizontal_interpolation != 'barycentric' or len(indices) == 0:
+            return indices, xx, yy
+        faces = np.asarray(self._barycentric_trifinder(xx, yy), dtype=np.int64)
+        if faces.shape != np.asarray(xx).shape:
+            raise ValueError('Native triangle coverage returned unexpected shape')
+        inside = faces >= 0
+        return indices[inside], xx[inside], yy[inside]
 
     def lonlat_bounds(self):
         """Return geographic bounds as (lon_min, lat_min, lon_max, lat_max).
@@ -1038,7 +1060,7 @@ class Reader(UnstructuredReader):
             return states, None
         return states, current_row[vertices].copy()
 
-    def _barycentric_apply_d19_currents(self, env, time_index, vertices):
+    def _apply_barycentric_wetdry_current_overrides(self, env, time_index, vertices):
         # Only horizontal current components receive effective zeros. Keep
         # original categorical states and source provenance available to
         # distinguish operational overrides from observed current values.
@@ -1166,9 +1188,13 @@ class Reader(UnstructuredReader):
             return cache[2], cache[3], cache[4]
         self._barycentric_cache_misses += 1
         face = np.asarray(self._barycentric_trifinder(x, y), dtype=np.int32)
-        # Uncovered ROI edge and domain-external requests fail CLOSED.
+        # An absent native triangle is ordinary missing spatial coverage,
+        # not corrupt connectivity. OpenDrift handles this typed exception
+        # using its EXISTING reader priority and configured fallback policy.
+        # The public wrapper already filters mixed inside/outside batches.
         if np.any(face < 0):
-            raise ValueError('Barycentric sampling outside authenticated native ROI triangulation')
+            raise OutsideSpatialCoverageError(
+                'Barycentric sampling outside authenticated native ROI triangulation')
         verts = self._barycentric_faces[face]
         xx = np.asarray(self.x, dtype=float)[verts]
         yy = np.asarray(self.y, dtype=float)[verts]
@@ -1309,7 +1335,7 @@ class Reader(UnstructuredReader):
             vals=np.einsum('ij,ij->i',weights,np.ma.getdata(raw))
             results[v]=np.ma.array(vals,mask=bad,copy=False)
         self._last_barycentric_face_ids=face.copy()
-        return self._barycentric_apply_d19_currents(results,it,verts)
+        return self._apply_barycentric_wetdry_current_overrides(results,it,verts)
 
     def get_variables(self,
                       requested_variables,
@@ -1638,7 +1664,23 @@ class Reader(UnstructuredReader):
                 if profiles:
                     raise ValueError('Profile variables require ordinary reader request')
                 env, prof = {}, None
-            env['wetdry_state'] = self._published_wetdry_state(time, lon, lat)
+            # wetdry_state does not pass through OpenDrift's regular spatial
+            # interpolation wrapper. Apply the SAME native-mesh coverage here,
+            # leaving out-of-mesh categorical values masked (not UNKNOWN=-1,
+            # not DRY=0, and never an invented fallback value).
+            lon_array = np.atleast_1d(np.asarray(lon, dtype=float))
+            lat_array = np.atleast_1d(np.asarray(lat, dtype=float))
+            if lon_array.shape != lat_array.shape:
+                raise ValueError('wetdry_state longitude/latitude shape mismatch')
+            covered, _, _ = self.covers_positions_xy(
+                lon_array, lat_array, np.zeros_like(lon_array))
+            if len(covered) == 0:
+                raise OutsideSpatialCoverageError(
+                    'All requested wetdry_state positions lie outside native SHYFEM triangles')
+            wetdry_result = np.ma.masked_all(lon_array.shape, dtype=float)
+            wetdry_result[covered] = self._published_wetdry_state(
+                time, lon_array[covered], lat_array[covered])
+            env['wetdry_state'] = wetdry_result
             return env, prof
         # Depth-independent variables must remain readable at any particle z,
         # including when other readers cannot cover the particle vertically.

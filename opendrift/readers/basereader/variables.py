@@ -867,14 +867,20 @@ class Variables(ReaderDomain):
             logger.debug('Masking %i elements outside coverage' %
                          (numx - len(ind_covered)))
             for var in variables:
-                tmp = np.nan * np.ones(numx)
-                tmp[ind_covered] = env[var].copy()
+                # Preserve BOTH source masks and spatial coverage. Assigning a
+                # masked source into a plain ndarray silently exposes its
+                # underlying (potentially finite) invalid fill values.
+                source = np.ma.masked_invalid(np.ma.asarray(env[var]))
+                tmp = np.ma.masked_all(numx, dtype=np.result_type(source.dtype, np.float64))
+                tmp[ind_covered] = source
                 env[var] = np.ma.masked_invalid(tmp)
-                # Filling also in missing columns
-                # for env_profiles outside coverage
+                # Profiles: preserve every existing native-level mask as well
+                # as the missing particle columns (no vertical extrapolation).
                 if env_profiles is not None and var in env_profiles.keys():
-                    tmp = np.nan * np.ones((env_profiles[var].shape[0], numx))
-                    tmp[:, ind_covered] = env_profiles[var].copy()
+                    source = np.ma.masked_invalid(np.ma.asarray(env_profiles[var]))
+                    tmp = np.ma.masked_all((source.shape[0], numx),
+                        dtype=np.result_type(source.dtype, np.float64))
+                    tmp[:, ind_covered] = source
                     env_profiles[var] = np.ma.masked_invalid(tmp)
 
         self.timer_end('masking')
